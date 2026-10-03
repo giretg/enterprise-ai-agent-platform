@@ -10,12 +10,13 @@
  *
  * Fail-closed: ha a vault nem elérhető, a kérés nem megy ki (nyers e-mail nem juthat a modellhez).
  */
-import { createHmac } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { logger } from '@/lib/observability'
 import { findKnownValueMatches } from '@/domain/privacy/known-value-matcher'
 import { applySurrogateReplacements, type SurrogateReplacement } from '@/domain/privacy/apply-replacements'
 import { sealAesGcm, openAesGcm } from '@/domain/privacy/aes-gcm-envelope'
 import { collectSensitivityMatchSpans } from '@/domain/privacy/sensitivity-match-spans'
+import { keyedValSurrogateFingerprint } from '@/domain/privacy/val-fingerprint'
 import {
   findEmbeddedSurrogates,
   formatSurrogate,
@@ -42,12 +43,10 @@ export interface GatewayValVault {
 
 const MAX_ALLOC_ATTEMPTS = 5
 
-export function hermesSessionScope(ctx: Pick<GatewayCallContext, 'userId' | 'sessionId'>): PrivacyScope {
-  // ponytail: session-header nélkül egy userenkénti közös hatókör; a plugin (V1-6) mindig küld sessiont.
-  return { type: 'hermes_session', id: `${ctx.userId}:${ctx.sessionId ?? 'default'}` }
+/** `id = <userId>:<sessionId>`. A sessionId-t a hívó adja: header, vagy header nélkül kérésenkénti UUID. */
+export function hermesSessionScope(userId: string, sessionId: string): PrivacyScope {
+  return { type: 'hermes_session', id: `${userId}:${sessionId}` }
 }
-
-const normalizeValue = (value: string) => value.normalize('NFKC').trim().toLowerCase()
 
 /** Egy hatókör álnevei: memóriában (egy kérés élettartama), a vault a forrás. */
 export class SurrogateSession {
@@ -75,7 +74,7 @@ export class SurrogateSession {
   }
 
   private fingerprint(entityType: SurrogateEntityType, value: string): string {
-    return `val:${createHmac('sha256', this.tenantKey).update(`fp\n${entityType}\n${normalizeValue(value)}`).digest('hex')}`
+    return keyedValSurrogateFingerprint(this.tenantKey, entityType, value)
   }
 
   private async reload(): Promise<void> {
@@ -232,7 +231,9 @@ export function createContentFilterHooks(deps: {
   const sessionFor = (ctx: GatewayCallContext) => {
     let session = sessions.get(ctx)
     if (!session) {
-      session = SurrogateSession.load(deps.vault, ctx.tenantId, hermesSessionScope(ctx))
+      // Header nélkül ne essünk userenkénti „default” vaultba: a sessionök HMAC-tartománya maradjon külön.
+      const sessionId = ctx.sessionId?.trim() || randomUUID()
+      session = SurrogateSession.load(deps.vault, ctx.tenantId, hermesSessionScope(ctx.userId, sessionId))
       sessions.set(ctx, session)
     }
     return session

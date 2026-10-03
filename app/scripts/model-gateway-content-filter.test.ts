@@ -84,12 +84,15 @@ function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<R
       return typeof next === 'function' ? next() : next
     }) as never,
   }
-  const call = (body: Record<string, unknown>, session = 'sess-1') =>
+  const call = (body: Record<string, unknown>, session: string | null = 'sess-1') =>
     handleChatCompletion(
       deps,
       new Request('https://app.test/api/model-gateway/v1/chat/completions', {
         method: 'POST',
-        headers: { authorization: 'Bearer t', 'x-excellence-session': session },
+        headers: {
+          authorization: 'Bearer t',
+          ...(session !== null ? { 'x-excellence-session': session } : {}),
+        },
         body: JSON.stringify(body),
       }),
     )
@@ -191,6 +194,20 @@ async function main() {
     assert.equal((await res.json()).choices[0].message.content, '[[EMAIL_1]]') // sess-B-ben nincs ilyen → nem oldódik fel
   })
 
+  await check('session-header nélkül a kérések nem osztoznak vaulton (nem userenkénti default)', async () => {
+    const vault = memoryVault()
+    const s = setup({
+      vault,
+      scripts: [completion({ content: 'a' }), completion({ content: '[[EMAIL_1]]' }), completion({ content: 'b' })],
+    })
+    await s.call({ messages: [user('a@x.hu')] }, null)
+    const res = await s.call({ messages: [user('szia')] }, null)
+    assert.equal((await res.json()).choices[0].message.content, '[[EMAIL_1]]')
+    await s.call({ messages: [user('a@x.hu')] }, null)
+    assert.equal(vault.rows.length, 2)
+    assert.equal(new Set(vault.rows.map((r) => r.scopeId)).size, 2)
+  })
+
   await check('tool-argumentum és tool-üzenet: a modell tool-hívásában valódi érték, a tool-eredmény álneves', async () => {
     const s = setup({
       scripts: [completion({ content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'gmail_send', arguments: '{"to":"[[EMAIL_1]]","body":"szia"}' } }] })],
@@ -219,16 +236,31 @@ async function main() {
     assert.equal((await res.json()).choices[0].message.content, 'Kiss Jánosnak megírtam')
   })
 
-  await check('hamis pozitív nincs: legacy FP-fixture-ök változatlanul mennek ki', async () => {
+  await check('hamis pozitív nincs: legacy FALSE_POSITIVE_EVAL_CASES (fp-1–fp-10) változatlanul mennek ki', async () => {
     const texts = [
-      'A bevétel növekedése pozitív trendet mutat.', 'Az átlagos rendelés értéke 12 500 forint volt.', 'A jelentés 2026. augusztus 20-án készült.',
-      'A kérés azonosítója: REQ-2026-0819.', 'A raktár Budapesten található.', 'A növekedés 15,3%-ot ért el az előző negyedévhez képest.',
+      'A bevétel növekedése pozitív trendet mutat.',
+      'Az átlagos rendelés értéke 12 500 forint volt.',
+      'A jelentés 2026. augusztus 20-án készült.',
+      'A kiskereskedelmi lánc forgalma szezonális.',
+      'A kérés azonosítója: REQ-2026-0819.',
+      'A raktár Budapesten található.',
+      'A növekedés 15,3%-ot ért el az előző negyedévhez képest.',
+      'Kérem ellenőrizze a csatolt dokumentumot.',
+      'A tejtermékek ára emelkedett.',
+      'A jóváhagyási folyamat három lépésből áll.',
     ]
     for (const text of texts) {
       const s = setup({ scripts: [completion({ content: 'ok' })] })
       await s.call({ messages: [user(text)] })
       assert.equal(JSON.parse(sentTo(s.calls))[0].content, text)
     }
+  })
+
+  await check('legacy ft-pat-2 adószám nem tokenizálódik (kategória-policy #747)', async () => {
+    const text = 'Az adószám: 12345678-1-23, kérem ellenőrizze.'
+    const s = setup({ scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user(text)] })
+    assert.equal(JSON.parse(sentTo(s.calls))[0].content, text)
   })
 
   await check('párhuzamos kérés ütközése: újratölt és a már kiosztott álnevet használja', async () => {
