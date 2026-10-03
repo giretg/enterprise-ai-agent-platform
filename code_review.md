@@ -1,5 +1,16 @@
 # Enterprise code review log
 
+## 2026-10-03 - MCP `sandbox_run`: új bemenet a tenant work-fájlokból a zárt sandboxba
+
+- Áttekintett komponens: a `sandbox_run` **bemeneti** ága — a `inputs` mező validálása, a munkafájl beolvasása, a `/work/in/<path>` alá másolás, a hiba- és auditág, valamint a szerveroldali leírás és az agent-checkout `AGENTS.md` szabály. A 2026-10-01 bejegyzés a kimeneti/átirányítási ágat fedte; ez a bejegyzés a bemeneti határt.
+- Rendben talált kontrollok: a munkafájl olvasása tenant- és projektszinten zárt (`ProjectWorkService.readFile`); a `../`, az abszolút útvonal, a vezérlő karakter és a `skill/` ütközés elutasított; a sandbox továbbra sem kap hálózatot vagy credentialt; hiányzó fájl esetén a script nem fut le; a 16-os darabszám-kap mellett a skill-fa is belefér a sandbox fájlszám-korlátjába.
+- **Lelet (magas, határkerítés):** a `skill/` ütközésvédelem kis- és nagybetűre érzékeny volt. `Skill/run.py` átment a validáláson, és `/work/in/Skill/run.py` alá került. A gVisor/Cloud Run images egy része kisbetűtelen fájlrendszer, ott ez felülírhatta a pinnelt scriptet vagy annak helperét — vagyis a jóváhagyott kód végrehajtása helyett más kód futott volna.
+- Javítás: az ütközés-ellenőrzés az útvonal első szegmensét kisbetűre normalizálja, így `skill/`, `Skill/` és `SKILL/` egyaránt elutasított. A duplikátum-ellenőrzés már a normalizált útvonalon fut, így `sales.csv` és `sales.csv/` ugyanaz. A duplán felsorolt `error.message` whitelist helyett egyetlen `WORK_FILE_READ_ERROR_CODES` halmaz maradt, ahol a csak íráskor előforduló `file_too_large` kikerült.
+- Másodlagos: a fájlszám- és összméret-korlát hibakódjai (`sandbox_file_count_limit_exceeded`, `sandbox_input_total_size_exceeded`, `sandbox_input_file_too_large`) nem voltak a felhasználói szövegtárban, így méretkorlát helyett „Tool call denied" jelent meg. Mindhárom magyar magyarázatot kapott. A Hungarian UI-címke a domény nyelvű „munkafájl" szót használja a korábbi „work-fájl" helyett.
+- Üzleti hatás: a munkatárs által megadott fájl név szerinti behelyezése nem írhatja felül azt a jóváhagyott scriptet, amelyet az üzlet jóváhagyott; a méret- és darabszám-korlát pedig érthető magyarázattal tér vissza ahelyett, hogy jogosultsági hibának látszyna.
+- Ellenőrzés: `test:sandbox-run` (kisbetűs `Skill/` és `SKILL/` elutasítás, `sales.csv/` duplikum, fájlszám-korlát regresszió), `test:enterprise-tools` (`workPath` payload, hiányzó fájl, path traversal), `test:agent-checkout` zöld; `tsc --noEmit`, célzott ESLint és `git diff --check` zöld.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/794
+
 ## 2026-10-01 - MCP `sandbox_run`: átirányítással továbbítható volt a jóváhagyott script
 
 - Áttekintett, korábban itt külön nem naplózott komponens: az aktív **MCP `sandbox_run` végrehajtási út** — publikált agent-definition és jogosultság ellenőrzése, élő skill-verzió és mellékletek feloldása, sandbox connector, HTTP provider, kimeneti fájlok visszaírása és audit. A korábbi `sandbox_exec` Cloud Run runner a `legacy/` fában van; annak izolációját és telepítését ez a kör nem minősíti.

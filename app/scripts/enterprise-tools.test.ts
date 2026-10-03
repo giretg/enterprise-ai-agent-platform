@@ -1491,7 +1491,7 @@ async function main() {
     assert.equal(result.isError, undefined)
     const payload = parsePayload(result)
     assert.equal(payload.stdout, '60')
-    assert.deepEqual(payload.inputs, [{ path: 'sales.csv', sandboxPath: '/work/in/sales.csv' }])
+    assert.deepEqual(payload.inputs, [{ workPath: 'sales.csv', sandboxPath: '/work/in/sales.csv' }])
   })
 
   await check('sandbox_run missing work-file input is denied', async () => {

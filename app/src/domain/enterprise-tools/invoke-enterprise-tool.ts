@@ -46,6 +46,7 @@ import {
   resolveSandboxWorkInputs,
   sandboxWorkFilePrefix,
   splitSandboxArgs,
+  type ResolvedSandboxWorkInput,
 } from '@/domain/code-sandbox/skill-script'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -193,6 +194,9 @@ function textResult(payload: unknown, isError = false): EnterpriseToolMcpResult 
 function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseToolMcpResult {
   return textResult(enterpriseToolErrorPayload(code, extra), true)
 }
+
+/** `ProjectWorkService.readFile` codes that are safe to surface as-is; anything else is a bug, not a user error. */
+const WORK_FILE_READ_ERROR_CODES = new Set(['invalid_path', 'unknown_project', 'invalid_project_key'])
 
 export async function authorizationLinkFields(
   startAuthorization: StartDelegatedAuthorization | undefined,
@@ -890,7 +894,7 @@ async function invokeSandboxTool(
     await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
     return errorResult('tool_not_configured')
   }
-  const mounted: Array<{ path: string; sandboxPath: string }> = []
+  const mounted: ResolvedSandboxWorkInput[] = []
   for (const item of resolvedInputs.inputs) {
     let file: { path: string; content: string } | null
     try {
@@ -900,14 +904,8 @@ async function invokeSandboxTool(
         path: item.workPath,
       })
     } catch (error) {
-      const thrown = error instanceof Error ? error.message : 'tool_execution_failed'
-      const code =
-        thrown === 'invalid_path' ||
-        thrown === 'unknown_project' ||
-        thrown === 'invalid_project_key' ||
-        thrown === 'file_too_large'
-          ? thrown
-          : 'tool_execution_failed'
+      const thrown = error instanceof Error ? error.message : ''
+      const code = WORK_FILE_READ_ERROR_CODES.has(thrown) ? thrown : 'tool_execution_failed'
       await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
       return errorResult(code)
     }
@@ -916,7 +914,7 @@ async function invokeSandboxTool(
       return errorResult('file_not_found', { path: item.workPath })
     }
     files.push({ sandboxPath: item.sandboxPath, bytes: Buffer.from(file.content, 'utf8') })
-    mounted.push({ path: file.path, sandboxPath: item.sandboxPath })
+    mounted.push({ workPath: file.path, sandboxPath: item.sandboxPath })
   }
   const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
   try {
