@@ -25,6 +25,6 @@ export const AGENT_DETAIL_SECTION_LABELS: Record<AgentDetailSectionId, string> =
   tudasbazis: 'Tudásbázis',
   eszkozok: 'Eszközök',
   skillek: 'Skillek',
-  memoriairas: 'Memóriaírás',
+  memoriairas: 'Írások',
   hozzaferes: 'Hozzáférés',
 }

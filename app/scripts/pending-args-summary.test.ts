@@ -3,7 +3,7 @@
  * Futtatás: npx tsx scripts/pending-args-summary.test.ts
  */
 import assert from 'node:assert/strict'
-import { pendingArgsSummary } from '../src/domain/gateway-operation/pending-args-summary'
+import { pendingArgsSummary, pendingOperationHeadline } from '../src/domain/gateway-operation/pending-args-summary'
 
 const labels = {
   memoryKind: 'memory',
@@ -22,13 +22,28 @@ function check(name: string, fn: () => void) {
   }
 }
 
-check('http_api_request includes sorted query + body', () => {
+check('http_api_request includes sorted query + pretty body', () => {
   const text = pendingArgsSummary(
     'http_api_request',
     { method: 'POST', path: '/v1/users', query: { role: 'owner', admin: 'true' }, body: '{"ok":1}' },
     labels,
   )
-  assert.equal(text, 'POST /v1/users?admin=true&role=owner\n{"ok":1}')
+  assert.equal(text, 'POST /v1/users?admin=true&role=owner\n{\n  "ok": 1\n}')
+})
+
+check('http_api_request headline prefers endpoint description', () => {
+  assert.equal(
+    pendingOperationHeadline(
+      'http_api_request',
+      { method: 'POST', path: '/v1/tasks' },
+      { connectorName: 'CRM', endpointDescription: 'Teendő létrehozása' },
+    ),
+    'CRM: Teendő létrehozása',
+  )
+  assert.equal(
+    pendingOperationHeadline('http_api_request', { method: 'POST', path: '/v1/tasks' }, { connectorName: 'CRM' }),
+    'CRM: POST /v1/tasks',
+  )
 })
 
 check('gmail_send never falls through to Drive root chrome', () => {

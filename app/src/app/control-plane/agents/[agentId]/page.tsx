@@ -27,7 +27,7 @@ import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
-import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
+import { UpdateWriteApprovalForm } from '@/components/agents/update-write-approval-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
@@ -234,10 +234,13 @@ export default async function AgentDetailPage({
       description: sectionDesc('memoriairas'),
       content: (
         <div className="space-y-4">
-          <Card title={sectionLabel('memoriairas')}>
-            <UpdateMemoryWriteModeForm
+          <Card title="Jóváhagyások">
+            <UpdateWriteApprovalForm
               agentId={agent.id}
               memoryWriteMode={agent.memoryWriteMode}
+              httpApiWriteMode={agent.httpApiWriteMode}
+              gmailWriteMode={agent.gmailWriteMode}
+              driveWriteMode={agent.driveWriteMode}
               approverUserId={agent.approverUserId ?? null}
               canEdit={canManage}
             />

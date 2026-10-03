@@ -85,6 +85,10 @@ jobs:
           npm run test:client-policy
           npm run test:model-gateway-token
           npm run test:enterprise-tools
+          npm run test:write-approval-modes
+          npm run test:write-approval-ui
+          npm run test:pending-args-summary
+          npm run test:connector-template-icon-map
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
           npm run test:google-drive-api-client

@@ -327,8 +327,8 @@
         "eszkozokDesc": "Which platform tools the published definition may use.",
         "skillek": "Skills",
         "skillekDesc": "Ready-made instruction packs for this agent.",
-        "memoriairas": "Memory writes",
-        "memoriairasDesc": "Write mode, and project memory for this teammate. Pick a project, browse or edit memories. This does not open trained rules.",
+        "memoriairas": "Writes",
+        "memoriairasDesc": "Which writes need a person to approve. Browse project memory below. This does not open trained rules.",
         "hozzaferes": "Access",
         "hozzaferesDesc": "Who can start a chat or ticket with this teammate."
       }

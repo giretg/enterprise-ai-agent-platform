@@ -32,7 +32,8 @@ import {
   type GatewayOperationHistoryRow,
 } from '@/domain/gateway-operation'
 import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
-import { iconDataUrlByTemplateKey, provenanceTemplateKey } from '@/lib/connector-template-icon-map'
+import { modesFromAgentRow } from '@/domain/agent/write-approval-modes'
+import { iconDataUrlByTemplateKey, resolveConnectorIcon } from '@/lib/connector-template-icon-map'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import type { UserRole } from '@prisma/client'
@@ -54,6 +55,7 @@ import {
   invokeProjectWork,
   MCP_PROJECT_MEMORY_WRITE_TOOL,
 } from '@/domain/project-work/mcp'
+import { findHttpApiEndpoint, parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import { lookup } from 'node:dns/promises'
 
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants)
@@ -317,6 +319,22 @@ function operationArgs(row: GatewayOperationRecord): Record<string, unknown> {
   return {}
 }
 
+function httpApiEndpointDescription(
+  config: unknown,
+  method: unknown,
+  path: unknown,
+): string | null {
+  if (typeof method !== 'string' || typeof path !== 'string') return null
+  try {
+    const parsed = parseHttpApiConfig(config)
+    const endpoint = findHttpApiEndpoint(parsed, method, path)
+    const description = endpoint?.description?.trim()
+    return description || null
+  } catch {
+    return null
+  }
+}
+
 async function enrichGatewayOperationRows(
   tenantId: string,
   rows: Array<Awaited<ReturnType<typeof listPendingGatewayOperations>>[number]>,
@@ -342,15 +360,28 @@ async function enrichGatewayOperationRows(
         }),
       ])
       const connector = row.connectorId ? (connectorById.get(row.connectorId) ?? null) : null
-      const templateKey = connector ? provenanceTemplateKey(connector.config) : null
+      const args = row.args
+      const icon = connector
+        ? resolveConnectorIcon({
+            name: connector.name,
+            type: connector.type,
+            config: connector.config,
+            templates,
+            iconByTemplateKey,
+          })
+        : { iconDataUrl: null, provider: row.toolName }
       return {
         ...row,
         requesterName: user?.name || user?.email || row.principalUserId,
         agentName: agent?.name || row.agentId,
         definitionLabel: definition?.snapshot.name || row.definitionId,
         connectorName: connector?.name ?? null,
-        connectorIconDataUrl: templateKey ? (iconByTemplateKey.get(templateKey) ?? null) : null,
-        connectorIconProvider: templateKey ?? connector?.type ?? row.toolName,
+        connectorIconDataUrl: icon.iconDataUrl,
+        connectorIconProvider: icon.provider,
+        endpointDescription:
+          row.toolName === 'http_api_request' && connector
+            ? httpApiEndpointDescription(connector.config, args.method, args.path)
+            : null,
       }
     }),
   )
@@ -398,6 +429,10 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   findAgentOutputFolder: async ({ agentId, tenantId }) => {
     const agent = await repositories.agents.findById(agentId, tenantId)
     return agent?.outputDriveFolderId ?? null
+  },
+  findAgentWriteModes: async ({ agentId, tenantId }) => {
+    const agent = await repositories.agents.findById(agentId, tenantId)
+    return agent ? modesFromAgentRow(agent) : null
   },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
