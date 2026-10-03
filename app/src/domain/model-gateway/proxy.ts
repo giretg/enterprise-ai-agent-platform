@@ -22,6 +22,7 @@ import type { GatewayTokenFailure, GatewayTokenClaims } from '@/domain/model-gat
 import type { McpPrincipal } from '@/auth/mcp-principal'
 
 export const SESSION_HEADER = 'x-excellence-session'
+export const TURN_HEADER = 'x-excellence-turn'
 export const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const PROVIDER_CONNECT_TIMEOUT_MS = 120_000
 
@@ -69,6 +70,8 @@ export type GatewayCallContext = {
   installId: string
   policyVersion: string
   sessionId: string | null
+  /** A Guard fordulat-azonosítója: a gateway- és a Guard-események ezzel fűzhetők össze (V1-5). */
+  turnId: string | null
   stream: boolean
 }
 
@@ -83,14 +86,14 @@ export type ModelCallEvent = GatewayCallContext & {
   outcome: 'ok' | 'blocked' | 'error' | 'aborted'
   blockReason?: string
   errorClass?: FallbackErrorClass
-  /** A providernek ténylegesen elküldött kérés (szűrés után). Az érzékenység dönt a tárolásról: V1-5. */
+  /** A providernek ténylegesen elküldött kérés (szűrés után). Az audit-mélység dönt a tárolásról (V1-5). */
   request: unknown
   response: { content: string; toolCalls: unknown[]; finishReason: string | null } | null
   usage: { promptTokens?: number; completionTokens?: number } | null
   latencyMs: number
 }
 
-/** V1-5 (`AiInteractionEvent`, `kind: model_call`, `source: gateway`) implementálja. */
+/** `AiInteractionEvent` (`kind: model_call`, `source: gateway`) implementálja: `domain/ai-audit` (V1-5). */
 export interface ModelCallAuditSink {
   record(event: ModelCallEvent): Promise<void>
 }
@@ -302,6 +305,7 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
     installId: claims.installId,
     policyVersion: claims.policyVersion,
     sessionId: request.headers.get(SESSION_HEADER)?.slice(0, 200) ?? null,
+    turnId: request.headers.get(TURN_HEADER)?.slice(0, 200) ?? null,
     stream,
   }
   const requestedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null
@@ -311,7 +315,7 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
         ...ctx, requestedModel, model: null, substituted: false, failedCandidates: [], request: null,
         response: null, usage: null, latencyMs: Date.now() - started, ...e,
       })
-      // ponytail: az audit-hiba nem állítja meg a hívást; fail-closed audit, ha V1-5 megköveteli.
+      // ponytail: az audit-hiba nem állítja meg a hívást; fail-closed audit, ha a V1-7 megkerülés-észlelés megköveteli.
       .catch((err) => logger.error({ event: 'model_gateway.audit_failed', error: String(err) }, 'Model call audit failed'))
   const blocked = (reason: string, message: string) => {
     void record({ outcome: 'blocked', blockReason: reason })

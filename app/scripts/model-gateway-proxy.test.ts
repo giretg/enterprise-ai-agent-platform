@@ -73,7 +73,7 @@ function setup(opts: {
       deps,
       new Request('https://app.test/api/model-gateway/v1/chat/completions', {
         method: 'POST',
-        headers: { authorization: 'Bearer t', 'x-excellence-session': 'sess-1', ...headers },
+        headers: { authorization: 'Bearer t', 'x-excellence-session': 'sess-1', 'x-excellence-turn': 'turn-9', ...headers },
         body: JSON.stringify(body),
       }),
     )
@@ -116,6 +116,7 @@ async function main() {
     assert.equal(s.events[0].substituted, false)
     assert.equal(s.events[0].agentId, AGENT) // a tokenből, nem headerből (D1)
     assert.equal(s.events[0].sessionId, 'sess-1')
+    assert.equal(s.events[0].turnId, 'turn-9')
     assert.deepEqual(s.events[0].usage, { promptTokens: 7, completionTokens: 3 })
   })
 
