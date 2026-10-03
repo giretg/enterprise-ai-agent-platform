@@ -47,6 +47,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'idempotencyKey is already used by a different principal, tool, or arguments',
   google_drive_auth_failed: 'Google Drive authentication failed',
   google_drive_api_error: 'Google Drive request failed',
+  drive_file_modified: 'The Drive file changed since it was read; read it again and retry',
   gmail_auth_failed: 'Gmail authentication failed',
   gmail_api_error: 'Gmail request failed',
   http_api_error: 'HTTP API request failed',

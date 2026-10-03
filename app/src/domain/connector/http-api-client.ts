@@ -640,8 +640,10 @@ export type HttpApiResponse = {
   hint?: string
   /** true, ha a body truncate-elt előnézet (maxResponseChars). */
   truncated?: boolean
-  /** RFC 8288 lapozáshoz; csak a Link fejléc, más response header nem kerül tovább. */
+  /** RFC 8288 lapozáshoz: a Link fejléc. */
   linkHeader?: string
+  /** A válasz ETag fejléce (pl. If-Match-hez); más response header nem kerül tovább. */
+  etag?: string
   /** XML-protokolloknál a szolgáltató saját hibakódja (pl. Számlázz.hu `hibakod`). */
   errorCode?: string
 }
@@ -987,6 +989,7 @@ export class HttpApiClient {
       ok: res.ok,
       body,
       ...(res.headers.get('link') ? { linkHeader: res.headers.get('link')! } : {}),
+      ...(res.headers.get('etag') ? { etag: res.headers.get('etag')! } : {}),
       ...(truncated ? { truncated: true } : {}),
       ...(errorHint || truncationHint
         ? { hint: [errorHint, truncationHint].filter(Boolean).join(' ') }

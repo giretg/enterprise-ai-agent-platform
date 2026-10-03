@@ -4,6 +4,7 @@ export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
 export const GOOGLE_DRIVE_READ_FILE_TOOL = 'google_drive_read_file'
 export const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
 export const GOOGLE_DRIVE_UPLOAD_FILE_TOOL = 'google_drive_upload_file'
+export const GOOGLE_DRIVE_UPDATE_FILE_TOOL = 'google_drive_update_file'
 export const GOOGLE_SHEETS_WRITE_RANGE_TOOL = 'google_sheets_write_range'
 
 export const GMAIL_SEARCH_TOOL = 'gmail_search'
@@ -23,6 +24,7 @@ export const HTTP_API_REQUEST_TOOL = 'http_api_request'
 export const ENTERPRISE_DRIVE_WRITE_TOOLS = [
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
 ] as const
 
@@ -173,6 +175,15 @@ const optionalConnectorName = z
     'Human connector name from the published agent definition (connectors[].name). Prefer this over connectorId when several HTTP APIs are bound.',
   )
 const scalarMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+const callerHeaders = z
+  .record(z.string(), z.string())
+  .optional()
+  .describe(
+    'Only headers the endpoint declares (get_definition → endpoints[].headers), for example If-Match with the version you read. Never credentials or trace headers; undeclared headers are rejected (header_not_allowed).',
+  )
+
+/** Largest JSON body the model may send in one http_api_request (characters). */
+export const HTTP_API_REQUEST_BODY_MAX_CHARS = 200_000
 
 export const googleDriveSearchInputSchema = z
   .object({
@@ -246,6 +257,27 @@ export const googleDriveUploadFileInputSchema = z
     mimeType: z.string().max(200).optional(),
     parentFolderId: z.string().max(200).optional(),
     convertToGoogleType: z.enum(['doc', 'sheet', 'slides']).optional(),
+    idempotencyKey: z.string().min(1).max(200),
+  })
+  .passthrough()
+
+export const googleDriveUpdateFileInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    fileId: z.string().min(1).max(200).describe('Drive file id from google_drive_search.'),
+    textContent: z
+      .string()
+      .min(1)
+      .max(200_000)
+      .describe('The complete new text of the file. It replaces the whole current content.'),
+    expectedModifiedTime: z
+      .string()
+      .max(40)
+      .optional()
+      .describe(
+        'modifiedTime of the file as you last read it (google_drive_read_file → file.modifiedTime). If the file changed since, nothing is written (drive_file_modified). Always pass it when you read the file first.',
+      ),
     idempotencyKey: z.string().min(1).max(200),
   })
   .passthrough()
@@ -421,6 +453,7 @@ export const httpApiGetInputSchema = z
       .max(1000)
       .describe('Path relative to the connector baseUrl. Auth and host come from the connector.'),
     query: scalarMap.optional().describe('Query params documented on the connector endpoint'),
+    headers: callerHeaders,
   })
   .passthrough()
 
@@ -448,9 +481,12 @@ export const httpApiRequestInputSchema = z
     query: scalarMap.optional(),
     body: z
       .string()
-      .max(50_000)
+      .max(HTTP_API_REQUEST_BODY_MAX_CHARS)
       .optional()
-      .describe('JSON request body as a string. Required for POST/PUT/PATCH when the endpoint expects a body.'),
+      .describe(
+        `JSON request body as a string (compact, at most ${HTTP_API_REQUEST_BODY_MAX_CHARS} characters). Required for POST/PUT/PATCH when the endpoint expects a body.`,
+      ),
+    headers: callerHeaders,
     idempotencyKey: z.string().min(1).max(200),
   })
   .passthrough()
@@ -459,6 +495,7 @@ export function schemaForEnterpriseDriveTool(toolName: EnterpriseDriveTool) {
   if (toolName === GOOGLE_DRIVE_READ_FILE_TOOL) return googleDriveReadFileInputSchema
   if (toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) return googleDriveCreateFolderInputSchema
   if (toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) return googleDriveUploadFileInputSchema
+  if (toolName === GOOGLE_DRIVE_UPDATE_FILE_TOOL) return googleDriveUpdateFileInputSchema
   if (toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) return googleSheetsWriteRangeInputSchema
   return googleDriveSearchInputSchema
 }
