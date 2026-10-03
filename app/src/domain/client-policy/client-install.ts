@@ -86,7 +86,9 @@ export type ClientPolicyDeps = {
   store: ClientInstallStore
   audit?: AuditSink
   timing?: ClientPolicyTiming
-  /** A V1-8 által várt `/etc/hermes` hash; nincs megadva → az összevetés kimarad. */
+  /** A V1-8 által ehhez az installhoz mentett `/etc/hermes` hash. null → az env-tartalék. */
+  lookupExpectedManagedDirHash?: (input: ClientInstallKey) => Promise<string | null>
+  /** Env-tartalék, ha az installhoz nincs mentett hash. */
   expectedManagedDirHash?: string
   now?: () => Date
 }
@@ -113,7 +115,11 @@ export async function recordHeartbeat(
   if (previousHeartbeatAt && now.getTime() - previousHeartbeatAt.getTime() > timing.freshnessSeconds * 1000) {
     await signal('heartbeat_gap', { gapSeconds: Math.round((now.getTime() - previousHeartbeatAt.getTime()) / 1000) })
   }
-  if (deps.expectedManagedDirHash && input.body.managedDirHash !== deps.expectedManagedDirHash) {
+  const fromInstall = deps.lookupExpectedManagedDirHash
+    ? await deps.lookupExpectedManagedDirHash({ tenantId: input.tenantId, userId: input.userId, installId: input.installId })
+    : null
+  const expected = fromInstall || deps.expectedManagedDirHash
+  if (expected && input.body.managedDirHash !== expected) {
     await signal('managed_dir_hash_mismatch', { reported: input.body.managedDirHash })
   }
   return timing

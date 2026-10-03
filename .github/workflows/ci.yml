@@ -61,6 +61,7 @@ jobs:
       - name: Hermes Guard helper tests (Python)
         run: |
           python3 ../clients/hermes-guard/test_exc_token.py
+          python3 ../clients/hermes-guard/test_install_managed.py
           python3 ../clients/hermes-guard/test_guard_policy.py
           python3 ../clients/hermes-guard/test_guard_runtime.py
           python3 ../clients/hermes-guard/test_exc_guard.py
@@ -89,6 +90,7 @@ jobs:
           npm run test:agent-local-roots
           npm run test:client-policy
           npm run test:client-install
+          npm run test:machine-floor
           npm run test:model-gateway-token
           npm run test:model-fallback-chain
           npm run test:model-gateway-proxy

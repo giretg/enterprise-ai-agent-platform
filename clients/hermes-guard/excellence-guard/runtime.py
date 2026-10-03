@@ -6,6 +6,7 @@ A managed-dir hash kanonikus alakja megegyezik a V1-8 `managedDirHash`-ével
 """
 import hashlib
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import json
 import logging
 import os
@@ -94,7 +95,7 @@ def load_exc_token():
     for path in candidates:
         if not os.path.isfile(path):
             continue
-        spec = importlib.util.spec_from_file_location("exc_token_guard", path)
+        spec = importlib.util.spec_from_file_location("exc_token_guard", path, loader=SourceFileLoader("exc_token_guard", path))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
