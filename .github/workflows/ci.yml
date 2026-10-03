@@ -87,6 +87,8 @@ jobs:
           npm run test:enterprise-tools
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
+          npm run test:google-drive-api-client
+          npm run test:google-workspace-api-client
           npm run test:agentmail-connector
           npm run test:kb-gate
           npm run test:kb-retrieval

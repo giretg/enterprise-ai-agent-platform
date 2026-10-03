@@ -912,7 +912,11 @@ export class HttpApiClient {
       ...(hasBody ? { body: JSON.stringify(params.body) } : {}),
     }
 
-    const res = await this.fetchWithBackoff(url, init)
+    // Nem-idempotens író hívás (POST/PUT/PATCH/DELETE egy generikus API-n, pl.
+    // megrendelés/számla POST) 5xx után sem ismételhető: egy ambivalens 502 után a
+    // retry kettős bizonylatot/dupla megrendelést okozna. Írásnál csak a 429-et
+    // ismételjük; az olvasások tartják a teljes 5xx-retryt. Ua., mint a protokoll-ág.
+    const res = await this.fetchWithBackoff(url, init, READ_METHODS.has(method))
     const text = await res.text()
     const max = this.config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
     const overLimit = text.length > max
@@ -1023,7 +1027,11 @@ export class HttpApiClient {
     }
   }
 
-  private async fetchWithBackoff(input: URL, init: RequestInit, retry = true): Promise<Response> {
+  private async fetchWithBackoff(
+    input: URL,
+    init: RequestInit,
+    retryServerErrors = true,
+  ): Promise<Response> {
     const connectorUrl = new URL(this.config.baseUrl)
     const connectorHost = connectorUrl.hostname.toLowerCase()
     // A redirect-pinning ORIGIN-szinten köt (séma + host + port), nem csak hostname-en: egy
@@ -1047,12 +1055,17 @@ export class HttpApiClient {
     // `redirect: 'manual'`, és a redirecteket kézzel, a connector SAJÁT hostjára pinnelve
     // követjük; idegen hostra mutató átirányítás → blokk.
     const guardedInit: RequestInit = { ...init, redirect: 'manual' }
-    const delays = retry ? [250, 750] : []
+    const delays = [250, 750]
+    // Nem-idempotens írásnál (`retryServerErrors=false`) CSAK a 429-et ismételjük:
+    // az elutasított = fel nem dolgozott, tehát biztonságos; az ambivalens 5xx-et nem
+    // (dupla bizonylat/megrendelés). Olvasásnál a teljes 429/5xx készlet retryzhető.
+    // Ugyanaz a szemantika, mint a grant-kliensek `retryServerErrors` kapcsolója.
+    const retryable = retryServerErrors ? [429, 500, 502, 503, 504] : [429]
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
       const res = await this.fetchFollowingSameOriginRedirects(input, guardedInit, connectorOrigin)
       // 429 / 5xx → korlátozott backoff; minden mást (a 4xx-eket is) felfelé adunk
       // strukturált válaszként, hogy a modell reagálhasson rá.
-      if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
+      if (!retryable.includes(res.status) || attempt === delays.length) {
         return res
       }
       await sleep(delays[attempt])
