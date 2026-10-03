@@ -12,6 +12,7 @@ import {
   encryptContent,
   ingestGuardEvents,
   listAuditEvents,
+  normalizeDepth,
   type AiAuditDeps,
   type AiInteractionRow,
   type AiInteractionStore,
@@ -66,6 +67,11 @@ const ev = (n: number, over: Record<string, unknown> = {}) => ({
 })
 
 async function main() {
+  await check('ismeretlen audit_depth → metadata (a legkevesebbet tároló)', async () => {
+    assert.equal(normalizeDepth('wat'), 'metadata')
+    assert.equal(normalizeDepth(undefined), 'metadata')
+  })
+
   await check('titkosítás oda-vissza; a tárolt boríték nem tartalmaz nyílt szöveget; tenantonként más kulcs', async () => {
     const sealed = encryptContent(TENANT, 'titkos prompt')
     assert.ok(!sealed.includes('titkos'))
