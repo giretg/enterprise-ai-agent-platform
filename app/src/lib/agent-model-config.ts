@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { MODEL_PROVIDER_IDS } from '@/lib/model-providers'
-import { parseModelRefs, sameModel, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
+import { isModelAllowed, parseModelRefs, sameModel, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
 
 export const MAX_FALLBACK_MODELS = 5
 
@@ -27,12 +27,12 @@ export function parseAgentModelConfig(raw: unknown): AgentModelConfig | null {
 }
 
 /**
- * Az agent tényleges elsődleges modellje: a beállított, ha van; különben a tenant engedett
- * listájának első modellje (nincs legacy forrás a backfillhez, ezért ez az alapérték).
+ * Az agent tényleges elsődleges modellje: a beállított, ha a policy engedi; különben
+ * a tenant engedett listájának első modellje (nincs legacy forrás a backfillhez).
  */
 export function resolveAgentPrimary(raw: unknown, policy: ModelPolicy): ModelRef | null {
   const config = parseAgentModelConfig(raw)
-  if (config) return { provider: config.provider, model: config.model }
+  if (config && isModelAllowed(policy, config)) return { provider: config.provider, model: config.model }
   return policy.enabled[0] ?? null
 }
 

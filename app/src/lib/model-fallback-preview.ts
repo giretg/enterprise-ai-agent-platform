@@ -1,17 +1,16 @@
 import { buildEffectiveFallbackChain } from '@/domain/model-gateway/fallback-chain'
-import { modelDisplayName, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
+import type { ModelPolicy, ModelRef } from '@/lib/model-policy'
 
-/** „Ha a GPT-x nem elérhető, ezt próbáljuk: …" — az űrlap és a globális panel közös előnézete. */
-export function fallbackPreviewLines(input: {
+export type FallbackPreviewStep = { from: ModelRef; to: ModelRef }
+
+/** Lánc-előnézet lépései — a UI fordítja: „Ha a {from} nem elérhető, ezt próbáljuk: {to}.” */
+export function fallbackPreviewSteps(input: {
   primary: ModelRef | null
   agentFallbacks?: ModelRef[]
   globalFallbacks?: ModelRef[]
   policy: ModelPolicy
   maxAttempts: number
-}): string[] {
+}): FallbackPreviewStep[] {
   const chain = buildEffectiveFallbackChain(input)
-  return chain.slice(1).map((next, i) => {
-    const from = chain[i]!
-    return `Ha a ${modelDisplayName(from)} nem elérhető, ezt próbáljuk: ${modelDisplayName(next)}.`
-  })
+  return chain.slice(1).map((to, i) => ({ from: chain[i]!, to }))
 }

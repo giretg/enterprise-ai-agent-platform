@@ -49,7 +49,21 @@ export function classifyProviderError(error: unknown): FallbackErrorClass {
   if (/\b(401|403)\b/.test(message) || has(message, 'unauthorized', 'forbidden', 'invalid api key', 'authentication')) {
     return 'auth_error'
   }
-  if (/\b429\b/.test(message) || /\brate[ _-]?limit/.test(message) || has(message, 'quota', 'too many requests')) {
+  // Keret / költségkeret: szándékos limit, másik modellre váltva megkerülnénk.
+  if (
+    has(
+      message,
+      'keret',
+      'költségkeret',
+      'budget',
+      'spend limit',
+      'quota',
+      'insufficient_quota',
+    )
+  ) {
+    return 'blocked'
+  }
+  if (/\b429\b/.test(message) || /\brate[ _-]?limit/.test(message) || has(message, 'too many requests')) {
     return 'rate_limited'
   }
   if (

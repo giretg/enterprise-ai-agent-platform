@@ -2,14 +2,25 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { updateAgentModelConfig } from '@/app/actions/model-config'
+import { OrderedModelList } from '@/components/agents/ordered-model-list'
 import { Card } from '@/components/ui/shell'
+import { asTranslate } from '@/i18n/translate'
 import { MAX_FALLBACK_MODELS, type AgentModelConfig } from '@/lib/agent-model-config'
-import { fallbackPreviewLines } from '@/lib/model-fallback-preview'
+import { fallbackPreviewSteps } from '@/lib/model-fallback-preview'
 import { MODEL_TYPES, DEFAULT_MODEL_TYPE, providerUsesThinkingProfile, type ModelType } from '@/lib/model-providers'
 import { modelDisplayName, modelRefKey, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
 
-const fromKey = (policy: ModelPolicy, key: string) => policy.enabled.find((r) => modelRefKey(r) === key) ?? null
+function modelRefFromPolicy(policy: ModelPolicy, key: string): ModelRef | null {
+  return policy.enabled.find((r) => modelRefKey(r) === key) ?? null
+}
+
+const THINKING_COPY: Record<ModelType, 'thinkingLuna' | 'thinkingTerra' | 'thinkingSol'> = {
+  luna: 'thinkingLuna',
+  terra: 'thinkingTerra',
+  sol: 'thinkingSol',
+}
 
 /** Admin: elsődleges + tartalék modell agentenként — csak a tenant engedett listájából. */
 export function UpdateModelConfigForm({
@@ -25,12 +36,13 @@ export function UpdateModelConfigForm({
   policy: ModelPolicy
   globalChain: ModelRef[]
   config: AgentModelConfig | null
-  /** A beállított modell, vagy (ha nincs) az engedett lista első modellje. */
+  /** A beállított modell, vagy (ha nincs / tiltott) az engedett lista első modellje. */
   effectivePrimary: ModelRef | null
   maxAttempts: number
   canEdit: boolean
 }) {
   const router = useRouter()
+  const t = asTranslate(useTranslations('AgentModelConfig'))
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
@@ -43,20 +55,17 @@ export function UpdateModelConfigForm({
 
   if (policy.enabled.length === 0) {
     return (
-      <Card title="Gondolkodási motor">
-        <p className="rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm text-honey">
-          Még nincs engedélyezett modell, ezért az agentek nem tudnak válaszolni. Egy admin a Beállítások →
-          Engedett modellek oldalon engedélyezhet néhányat.
-        </p>
+      <Card title={t('title')}>
+        <p className="rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm text-honey">{t('emptyPolicy')}</p>
       </Card>
     )
   }
 
-  const primary = fromKey(policy, primaryKey)
+  const primary = modelRefFromPolicy(policy, primaryKey)
   const candidates = policy.enabled.filter(
     (r) => modelRefKey(r) !== primaryKey && !fallbacks.some((f) => modelRefKey(f) === modelRefKey(r)),
   )
-  const preview = fallbackPreviewLines({
+  const preview = fallbackPreviewSteps({
     primary,
     agentFallbacks: fallbacks,
     globalFallbacks: globalChain,
@@ -85,28 +94,29 @@ export function UpdateModelConfigForm({
         setDone(true)
         router.refresh()
       } else {
-        setError(res.error)
+        setError(
+          ['not_found', 'not_allowed', 'load_failed', 'save_failed'].includes(res.error)
+            ? t(`errors.${res.error}`)
+            : res.error,
+        )
       }
     })
   }
 
   return (
-    <Card title="Gondolkodási motor">
+    <Card title={t('title')}>
       <div className="space-y-4">
-        <p className="text-sm text-ink-soft">
-          Itt dönthetsz arról, melyik AI-modell dolgozik ennek a munkatársnak. A választék a cég engedett
-          modelljeiből áll. Ha nem állítasz be semmit, az engedett lista első modellje fut.
-        </p>
+        <p className="text-sm text-ink-soft">{t('help')}</p>
 
         <label className="block text-sm">
-          <span className="text-ink-soft">Elsődleges modell — ezt használja alapból</span>
+          <span className="text-ink-soft">{t('primary')}</span>
           <select
             value={primaryKey}
             disabled={!canEdit || pending}
             onChange={(e) => setPrimaryKey(e.target.value)}
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
           >
-            {!primary ? <option value={primaryKey}>{primaryKey || 'Válassz modellt…'}</option> : null}
+            {!primary ? <option value={primaryKey}>{primaryKey || t('pickModel')}</option> : null}
             {policy.enabled.map((r) => (
               <option key={modelRefKey(r)} value={modelRefKey(r)}>
                 {modelDisplayName(r)}
@@ -114,39 +124,22 @@ export function UpdateModelConfigForm({
             ))}
           </select>
         </label>
-        {!primary && primaryKey ? (
-          <p className="text-xs text-coral">
-            Ez a modell már nincs engedélyezve — válassz másikat, különben a tartalékra esik vissza.
-          </p>
-        ) : null}
+        {!primary && primaryKey ? <p className="text-xs text-coral">{t('primaryDisabled')}</p> : null}
 
         <div className="rounded-lg border border-line/50 bg-night/30 p-3">
-          <p className="text-sm font-medium text-ink">Tartalék modellek</p>
-          <p className="mt-1 text-xs text-ink-soft">
-            Ha az elsődleges modell szolgáltatója nem elérhető vagy túlterhelt, ezeket próbáljuk sorban.
-            A váltás a naplóban látszik. Beszélgetés közben, az első szó után már nem váltunk.
-          </p>
+          <p className="text-sm font-medium text-ink">{t('fallbacksTitle')}</p>
+          <p className="mt-1 text-xs text-ink-soft">{t('fallbacksHelp')}</p>
           {fallbacks.length === 0 ? (
-            <p className="mt-2 text-xs text-ink-faint">Nincs saját tartalék — csak a közös lánc segít kiesésnél.</p>
+            <p className="mt-2 text-xs text-ink-faint">{t('noOwnFallback')}</p>
           ) : (
-            <ol className="mt-2 space-y-1">
-              {fallbacks.map((f, i) => (
-                <li key={modelRefKey(f)} className="flex items-center justify-between text-sm text-ink">
-                  <span>
-                    {i + 1}. {modelDisplayName(f)}
-                  </span>
-                  {canEdit ? (
-                    <button
-                      type="button"
-                      className="text-xs text-coral"
-                      onClick={() => setFallbacks(fallbacks.filter((_, j) => j !== i))}
-                    >
-                      Töröl
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-            </ol>
+            <div className="mt-2">
+              <OrderedModelList
+                items={fallbacks}
+                canEdit={canEdit}
+                onRemove={(i) => setFallbacks(fallbacks.filter((_, j) => j !== i))}
+                removeLabel={t('remove')}
+              />
+            </div>
           )}
           {canEdit && fallbacks.length < MAX_FALLBACK_MODELS && candidates.length > 0 ? (
             <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -155,7 +148,7 @@ export function UpdateModelConfigForm({
                 onChange={(e) => setAddKey(e.target.value)}
                 className="rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
               >
-                <option value="">Válassz tartalékot…</option>
+                <option value="">{t('pickFallback')}</option>
                 {candidates.map((r) => (
                   <option key={modelRefKey(r)} value={modelRefKey(r)}>
                     {modelDisplayName(r)}
@@ -167,54 +160,57 @@ export function UpdateModelConfigForm({
                 disabled={!addKey}
                 className="rounded-full border border-line px-4 py-1.5 text-xs font-medium text-ink disabled:opacity-40"
                 onClick={() => {
-                  const ref = fromKey(policy, addKey)
+                  const ref = modelRefFromPolicy(policy, addKey)
                   if (ref) setFallbacks([...fallbacks, ref])
                   setAddKey('')
                 }}
               >
-                Hozzáad
+                {t('add')}
               </button>
             </div>
           ) : null}
         </div>
 
         <div className="rounded-lg border border-line/50 bg-night/30 p-3">
-          <p className="text-sm font-medium text-ink">Mi történik kiesés esetén?</p>
+          <p className="text-sm font-medium text-ink">{t('previewTitle')}</p>
           {preview.length === 0 ? (
-            <p className="mt-1 text-xs text-ink-faint">
-              Nincs tartalék, ami az engedett modellek közül elérhető lenne — kiesésnél hibát kap a felhasználó.
-            </p>
+            <p className="mt-1 text-xs text-ink-faint">{t('previewEmpty')}</p>
           ) : (
             <ul className="mt-1 space-y-1 text-xs text-ink-soft">
-              {preview.map((line) => (
-                <li key={line}>{line}</li>
+              {preview.map((step) => (
+                <li key={`${modelRefKey(step.from)}>${modelRefKey(step.to)}`}>
+                  {t('previewLine', {
+                    from: modelDisplayName(step.from),
+                    to: modelDisplayName(step.to),
+                  })}
+                </li>
               ))}
             </ul>
           )}
         </div>
 
         <details className="rounded-lg border border-line/50 bg-night/30 p-3">
-          <summary className="cursor-pointer text-sm font-medium text-ink">Haladó beállítások</summary>
+          <summary className="cursor-pointer text-sm font-medium text-ink">{t('advanced')}</summary>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {primary && providerUsesThinkingProfile(primary.provider) ? (
               <label className="block text-sm sm:col-span-2">
-                <span className="text-ink-soft">Gondolkodási mélység</span>
+                <span className="text-ink-soft">{t('thinking')}</span>
                 <select
                   value={modelType}
                   disabled={!canEdit || pending}
                   onChange={(e) => setModelType(e.target.value as ModelType)}
                   className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
                 >
-                  {MODEL_TYPES.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.label} — {t.description}
+                  {MODEL_TYPES.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label} — {t(THINKING_COPY[option.id])}
                     </option>
                   ))}
                 </select>
               </label>
             ) : null}
             <label className="block text-sm">
-              <span className="text-ink-soft">Kreativitás (0 = pontos, 2 = merész)</span>
+              <span className="text-ink-soft">{t('temperature')}</span>
               <input
                 type="number"
                 step="0.1"
@@ -227,7 +223,7 @@ export function UpdateModelConfigForm({
               />
             </label>
             <label className="block text-sm">
-              <span className="text-ink-soft">Válasz maximális hossza (token)</span>
+              <span className="text-ink-soft">{t('maxTokens')}</span>
               <input
                 type="number"
                 min={1}
@@ -236,13 +232,14 @@ export function UpdateModelConfigForm({
                 onChange={(e) => setMaxTokens(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
               />
+              <span className="mt-1 block text-xs text-ink-faint">{t('maxTokensHelp')}</span>
             </label>
           </div>
         </details>
 
         {error ? <p className="text-sm text-coral">{error}</p> : null}
         {done ? (
-          <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">Mentve.</p>
+          <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">{t('saved')}</p>
         ) : null}
         {canEdit ? (
           <button
@@ -251,10 +248,10 @@ export function UpdateModelConfigForm({
             onClick={save}
             className="rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
           >
-            {pending ? 'Mentés...' : 'Mentés'}
+            {pending ? t('saving') : t('save')}
           </button>
         ) : (
-          <p className="text-xs text-ink-soft">Módosításhoz admin jogosultság szükséges.</p>
+          <p className="text-xs text-ink-soft">{t('needAdmin')}</p>
         )}
       </div>
     </Card>
