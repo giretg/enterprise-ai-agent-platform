@@ -140,6 +140,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.model_config',
   // Client Policy heartbeat-regiszter (#774): Guard-eltérés (nincs/lejárt heartbeat, nem regisztrált session).
   'client_policy.deviation',
+  // Admin letöltötte egy munkatárs gép-padló csomagját (#771).
+  'client_policy.machine_floor.export',
 ])
 
 export class UnregisteredAuditActionError extends Error {

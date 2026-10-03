@@ -413,6 +413,14 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 | K10 | Mi a Hermes system promptjának stabil (cache-elt) része, és mit kell mégis tokenizálni benne (memória, context-fájlok)? |
 | K11 | A `key_cmd` helper a kiszolgált Bot-profil `HERMES_HOME`-jával fut-e (Desktop multiplex módban is), és eléri-e a profil `mcp-tokens/` tokenjét? **[forrás]:** igen (`tools/environments/local.py` `served_profile_child_env`, `mcp_oauth.py` `HERMES_HOME/mcp-tokens/`), a `key_cmd` kérésenként fut (`runtime_provider_custom.py:567`) → a helpernek cache-elnie kell. Élőben mérendő. |
 
+**V1-8 mérési eredmény (2026-10-03).** A generátor és a telepítő kész; élő Hermes (CLI és Desktop) ezen a gépen nem futott, ezért K1/K3/K4 forgalmi fele nyitva marad.
+
+| K | Eredmény |
+|---|---|
+| **K1** | A 2026-09-30-as CLI-mérés áll: a `hermes config` listázza a managed kulcsokat, a `config set` megtagadja, és a `model.base_url`-t külön kell pinelni. A generátor ezt a három modell-levelet, plusz a `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `agent.disabled_toolsets` kulcsokat kiírja. A Desktop élőben nem újramérve. A shell-hook doksi (Hermes, 2026-10) szerint a hook CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. |
+| **K3** | Generátor: minden ismert aux task `provider: main`, üres `base_url` / `api_key` / `model`, üres `fallback_chain`, és a top-level `fallback_providers: []`. Az aux hívások gateway-naplója élő Hermes nélkül nem mérhető. |
+| **K4** | Generátor: az ismert provider-kulcsok a managed `.env`-ben üresek, a modell-út levelenként pinelt. Élő `/model --provider openrouter` nem futott. |
+
 ---
 
 ## 13. Excellence oldali munkacsomagok
@@ -478,6 +486,8 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 - `website/docs/guides/secure-hermes-on-a-work-machine.md`
 
 **Élő mérés (2026-09-30, macOS, v0.21.5):** `HERMES_MANAGED_DIR` + pinelt `agent.disabled_toolsets`, `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `model.provider`. A `hermes config` mind az ötöt managed kulcsként listázta; a `model.base_url` user-értéke megmaradt (H-1b).
+
+**V1-8 generátor (2026-10-03):** a kiadott `config.yaml` a H-1b leveleket külön pineli (`model.provider`, `model.base_url`, `model.api_mode`), és ugyanezt megteszi minden aux tasknál (`provider`, `model`, `base_url`, `api_key`, `fallback_chain`). A plugin betöltési útvonala forrásból mérve: `$HERMES_HOME/plugins/<név>/` (Desktop-profil: `~/.hermes/profiles/<profil>/plugins/`). Élő `hermes config` ezen a napon nem futott, a build gépen nincs Hermes.
 
 **Excellence:** `docs/hermes-integration-foundation-2026-09-26.html`; `legacy/app/api/v1/gateway/v1/chat/completions/route.ts`; #682 / PR #683, #734; #485 sandbox; #272 / #320 APG.
 

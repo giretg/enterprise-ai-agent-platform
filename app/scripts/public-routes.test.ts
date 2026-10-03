@@ -163,6 +163,7 @@ check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer)
   assertProtected('/api/model-gateway/token/admin')
   assertProtected('/api/model-gateway/admin')
   assertProtected('/api/client-policy')
+  assertProtected('/api/client-policy/machine-floor')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

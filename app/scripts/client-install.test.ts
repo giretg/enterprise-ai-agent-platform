@@ -59,7 +59,10 @@ function memoryStore(): ClientInstallStore {
 const body = (sessions: string[] = ['sess-1']) =>
   heartbeatBodySchema.parse({ configHash: 'cfg', managedDirHash: 'dir', policyVersion: 'pv1', guardVersion: '0.1', hermesVersion: '1.0', sessions })
 
-function setup(opts: { expectedManagedDirHash?: string } = {}) {
+function setup(opts: {
+  expectedManagedDirHash?: string
+  lookupExpectedManagedDirHash?: ClientPolicyDeps['lookupExpectedManagedDirHash']
+} = {}) {
   let clock = new Date('2026-10-01T10:00:00Z')
   const audits: AuditAppendInput[] = []
   const deps: ClientPolicyDeps = {
@@ -67,6 +70,7 @@ function setup(opts: { expectedManagedDirHash?: string } = {}) {
     audit: { append: async (a) => void audits.push(a) },
     timing: { intervalSeconds: 60, freshnessSeconds: 180 },
     expectedManagedDirHash: opts.expectedManagedDirHash,
+    lookupExpectedManagedDirHash: opts.lookupExpectedManagedDirHash,
     now: () => clock,
   }
   const beat = (o: { tenantId?: string; userId?: string; installId?: string; agentId?: string; sessions?: string[] } = {}) =>
@@ -160,6 +164,12 @@ async function main() {
     const none = setup()
     await none.beat()
     assert.equal(none.audits.length, 0)
+    const saved = setup({
+      expectedManagedDirHash: 'dir',
+      lookupExpectedManagedDirHash: async () => 'mentett',
+    })
+    await saved.beat()
+    assert.equal((saved.audits[0].metadata as { kind: string }).kind, 'managed_dir_hash_mismatch')
   })
 
   await check('törzs-validáció: hiányzó hash / túl sok session elutasítva, session alapból üres', async () => {
