@@ -28,6 +28,7 @@ QUEUE_FILE = ("excellence-guard", "audit-queue.jsonl")
 MANAGED_FILES = ("config.yaml", ".env", "excellence-install-id")
 HASH_VERSION = "excellence-managed-dir-v1"
 MAX_CONTENT_CHARS = 200_000
+TOKEN_HELPER_PATH = "/opt/excellence/bin/exc-token"
 _lock = threading.Lock()
 
 
@@ -90,7 +91,7 @@ def load_exc_token():
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.path.join(here, "..", "exc_token.py"),
-        os.environ.get("EXC_TOKEN_BIN") or "/opt/excellence/bin/exc-token",
+        TOKEN_HELPER_PATH,
     ]
     for path in candidates:
         if not os.path.isfile(path):
@@ -399,13 +400,24 @@ class Guard:
 
     def llm_execution(self, request=None, next_call=None, provider=None, base_url=None, **kwargs):
         try:
-            if policy.is_excellence_route(provider, base_url):
-                return next_call(request)
-            return synthetic_refusal(policy.PROVIDER_BLOCK)
+            token_helper = load_exc_token()
+            expected_url = token_helper.read_profile(self.home)[0] + "/api/model-gateway/v1" if token_helper else None
+            allowed = policy.is_excellence_route(provider, base_url, expected_url)
         except Exception:
             log.exception("llm_execution")
             # A middleware fail-open: kivételre a Hermes továbbhívna. Inkább szintetikus elutasítás.
             return synthetic_refusal(policy.PROVIDER_BLOCK)
+        if not allowed:
+            return synthetic_refusal(policy.PROVIDER_BLOCK)
+        if isinstance(request, dict):
+            headers = dict(request.get("extra_headers") or {})
+            for key, field in (("X-Excellence-Session", "session_id"), ("X-Excellence-Turn", "turn_id")):
+                if kwargs.get(field):
+                    headers = {name: value for name, value in headers.items() if name.lower() != key.lower()}
+                    headers[key] = str(kwargs[field])[:200]
+            request = {**request, "extra_headers": headers}
+        # A provider hibája a Hermes újrapróbálási/tömörítési útjára tartozik.
+        return next_call(request)
 
     def _origin_and_token(self):
         mod = load_exc_token()

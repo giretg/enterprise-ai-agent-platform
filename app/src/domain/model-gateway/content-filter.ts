@@ -32,6 +32,8 @@ import {
 import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
 import type { GatewayCallContext, GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
 import { createRestoreTransform } from '@/domain/model-gateway/response-restorer'
+import { PRIVACY_CATEGORY_ALIASES, type PrivacyPolicyCategory } from '@/domain/privacy/privacy-category-policy'
+import { writeAudit, type AuditSink } from '@/lib/audit/types'
 
 /** Az álnév-vault, amit a szűrő használ (Postgres-adapter: `gateway-surrogate-repository.ts`). */
 export interface GatewayValVault {
@@ -205,16 +207,17 @@ function findCandidates(text: string): Candidate[] {
 }
 
 /** Kétlépéses, hogy az eredmény ne függjön az üzenetek sorrendjétől (a név a fejlécben későn is jöhet). */
-async function tokenizeSlots(slots: Slot[], session: SurrogateSession): Promise<void> {
+async function tokenizeSlots(slots: Slot[], session: SurrogateSession, types: Set<string>): Promise<void> {
   for (const slot of slots) {
-    for (const candidate of findCandidates(slot.text)) await session.surrogateFor(candidate.entityType, candidate.value)
+    for (const candidate of findCandidates(slot.text).filter((c) => types.has(c.entityType))) await session.surrogateFor(candidate.entityType, candidate.value)
   }
-  const known = session.personReplacements()
+  const known = types.has('person') ? session.personReplacements() : []
   for (const slot of slots) {
-    const own = findCandidates(slot.text)
+    const candidates = findCandidates(slot.text)
+    const own = candidates.filter((c) => types.has(c.entityType))
     const spans: SurrogateReplacement[] = own.map((c) => ({ start: c.start, end: c.end, surrogate: session.peek(c.entityType, c.value)! }))
     const bareNames = findKnownValueMatches(slot.text, known).filter(
-      (m) => !own.some((c) => m.start < c.end && m.end > c.start),
+      (m) => !candidates.some((c) => m.start < c.end && m.end > c.start),
     )
     const replaced = applySurrogateReplacements(slot.text, [...spans, ...bareNames])
     if (replaced !== slot.text) (slot.owner as Record<string | number, unknown>)[slot.key] = replaced
@@ -225,6 +228,8 @@ async function tokenizeSlots(slots: Slot[], session: SurrogateSession): Promise<
 
 export function createContentFilterHooks(deps: {
   vault: GatewayValVault
+  getCapabilities?: (ctx: GatewayCallContext) => Promise<Record<string, string>>
+  audit?: AuditSink
 }): Required<Pick<GatewayPipelineHooks, 'filterRequest' | 'transformResponse'>> {
   // A kérés session-je a szűrőtől a válasz-visszaállításig ugyanaz az objektum (a ctx azonos).
   const sessions = new WeakMap<GatewayCallContext, Promise<SurrogateSession>>()
@@ -243,9 +248,43 @@ export function createContentFilterHooks(deps: {
     async filterRequest(ctx, body) {
       const messages = structuredClone(body.messages)
       const slots = collectSlots(messages)
-      if (slots.some((slot) => containsPan(slot.text))) return { block: PAN_BLOCK_MESSAGE, reason: 'pan_detected' }
       try {
-        await tokenizeSlots(slots, await sessionFor(ctx))
+        const capabilities = await deps.getCapabilities?.(ctx)
+        // Without a policy loader retain the original V1 filter contract for standalone callers.
+        const level = (category: string) => capabilities
+          ? capabilities[`content_filter.${category}` as `content_filter.${PrivacyPolicyCategory}`] ?? 'block'
+          : category === 'pan' ? 'block' : ['email', 'person'].includes(category) ? 'tokenize' : 'off'
+        const categories = new Set<string>()
+        for (const slot of slots) {
+          for (const span of collectSensitivityMatchSpans(slot.text)) categories.add(PRIVACY_CATEGORY_ALIASES[span.category] ?? span.category)
+          for (const candidate of findCandidates(slot.text)) categories.add(candidate.entityType)
+        }
+        const blocked = () => [...categories].find((category) => level(category) === 'block'
+          // V1 only has reversible email/person aliases; unsupported tokenization must never leak raw values.
+          || (level(category) === 'tokenize' && !['email', 'person'].includes(category)))
+        const block = (category: string) => ({
+          block: category === 'pan' ? PAN_BLOCK_MESSAGE : 'Ezt a kérést nem küldtem el az AI-modellnek: a céges adatvédelmi beállítás tiltja a benne felismert adat továbbítását. Töröld vagy takard ki az érintett adatot, majd próbáld újra.',
+          reason: category === 'pan' ? 'pan_detected' : `content_filter_block:${category}`,
+        })
+        const firstBlocked = blocked()
+        if (firstBlocked) return block(firstBlocked)
+        const types = new Set(['email', 'person'].filter((category) => level(category) === 'tokenize'))
+        // Known names from earlier messages remain governed even when they occur without an email header.
+        const session = types.size || level('person') !== 'off' ? await sessionFor(ctx) : null
+        if (session && level('person') !== 'off' && slots.some((slot) =>
+          findKnownValueMatches(slot.text, session.personReplacements()).some((match) => !findCandidates(slot.text).some((candidate) =>
+            candidate.entityType === 'email' && match.start < candidate.end && match.end > candidate.start)))) categories.add('person')
+        const knownBlocked = blocked()
+        if (knownBlocked) return block(knownBlocked)
+        const warned = [...categories].filter((category) => level(category) === 'warn')
+        if (warned.length) {
+          await writeAudit(deps.audit, {
+            actorType: 'human', actorId: ctx.userId, tenantId: ctx.tenantId,
+            action: 'client_policy.content_warning', targetType: 'agent', targetId: ctx.agentId,
+            policyDecision: 'flagged', metadata: { categories: warned },
+          })
+        }
+        if (session && types.size) await tokenizeSlots(slots, session, types)
       } catch (error) {
         // Fail-closed, és a hibában sem szerepelhet érték (csak az üzenet).
         logger.error({ event: 'model_gateway.tokenize_failed', error: String(error) }, 'Gateway tokenization failed')
@@ -254,6 +293,8 @@ export function createContentFilterHooks(deps: {
       return { body: { ...body, messages } }
     },
 
-    transformResponse: (ctx) => createRestoreTransform({ stream: ctx.stream, session: () => sessionFor(ctx) }),
+    transformResponse: (ctx) => sessions.has(ctx)
+      ? createRestoreTransform({ stream: ctx.stream, session: () => sessionFor(ctx) })
+      : new TransformStream<Uint8Array, Uint8Array>(),
   }
 }

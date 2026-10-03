@@ -54,7 +54,7 @@ export interface ClientInstallStore {
   /** null = ehhez a (tenant, user, installId)-hoz nincs heartbeat. */
   findInstall(
     input: ClientInstallKey & { agentId: string; sessionId: string | null },
-  ): Promise<{ lastHeartbeatAt: Date; sessionLastSeenAt: Date | null } | null>
+  ): Promise<{ lastHeartbeatAt: Date; sessionLastSeenAt: Date | null; managedDirHash: string } | null>
 }
 
 export type DeviationKind =
@@ -64,6 +64,7 @@ export type DeviationKind =
   | 'session_stale'
   | 'heartbeat_gap'
   | 'managed_dir_hash_mismatch'
+  | 'managed_dir_unissued'
 
 /** R8 eltérés-jel; v1-ben a riasztási csatorna maga az audit-esemény. */
 async function recordDeviation(
@@ -139,6 +140,10 @@ export async function resolveClientMode(
   const found = await deps.store.findInstall(input)
   if (!found) return { mode: 'open', why: 'no_heartbeat' }
   if (found.lastHeartbeatAt.getTime() < cutoff) return { mode: 'open', why: 'stale_heartbeat' }
+  const fromInstall = deps.lookupExpectedManagedDirHash ? await deps.lookupExpectedManagedDirHash(input) : null
+  const expected = fromInstall || deps.expectedManagedDirHash
+  if (!expected) return { mode: 'open', why: 'managed_dir_unissued' }
+  if (found.managedDirHash !== expected) return { mode: 'open', why: 'managed_dir_hash_mismatch' }
   if (!input.sessionId || !found.sessionLastSeenAt) return { mode: 'open', why: 'session_unregistered' }
   if (found.sessionLastSeenAt.getTime() < cutoff) return { mode: 'open', why: 'session_stale' }
   return { mode: 'managed' }

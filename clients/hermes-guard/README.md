@@ -2,6 +2,18 @@
 
 A munkatárs gépére kerülő, rendszergazdai Hermes-beállítás. A munkatárs a saját Hermes-konfigjából nem tudja kikapcsolni a céges modell-utat és a Guardot. A finomabb, asszisztensenkénti engedélyt a Guard dönti el; ide csak az kerül, ami a munkatárs egyik asszisztensénél sem engedett.
 
+## Céges kontroll az adminfelületről
+
+1. **Adminisztráció → Hermes céges kontroll**: céges alap (Kötött pálya / Standard / Szabad), munkatársi preset és képességenkénti kivételek. A céges alapnál lazább kivételhez külön megerősítés és auditbejegyzés kell.
+2. Az **AI-munkatárs adatlap → Eszközök** részen állíts képesség-plafont. A tényleges jog a munkatárs engedélyének és az agent plafonjának metszete.
+3. Adj a munkatársnak hozzáférést legalább egy éles agenthez; az admin a munkatárs sorából letölti a gépi JSON-csomagot.
+4. Az informatikus telepíti a csomagot, majd a munkatárs újraindítja a Hermest, bejelentkezik az Excellence MCP-kapcsolatra és Botot választ.
+5. Ellenőrizzétek az alábbi átvételi eseteket, utána terítsétek a gépi csomagot központilag.
+
+Mentéskor verzió nő, és a beállítás az auditnaplóval egy tranzakcióban kerül mentésre. Más admin közben történt módosítását a szerver nem írja felül. Visszavonás a következő kérésnél, engedélybővítés legkésőbb a következő sessionben érvényes. Ha a korábbi gépi csomag letiltotta a most engedélyezett funkciót, új csomag telepítése is kell. A letöltés új elvárt hash-t adhat: a régi, eltérő csomag ezután nem kap céges modellválaszt a telepítésig.
+
+Szerveroldalon szükséges a `MODEL_GATEWAY_JWT_KEY` (külön, legalább 32 véletlen karakteres Secret Manager kulcs) és a kapcsolódó adatbázis-migrációk: lásd [DEPLOY.md](../../DEPLOY.md). Kulcs nélkül a token-csere elutasít.
+
 ## Letöltés
 
 Admin, a szervezetben:
@@ -54,6 +66,26 @@ A managed `.env` üresre állítja az ismert szolgáltatói kulcsokat (`OPENROUT
 
 Telepítés előtt vagy közvetlenül utána vond vissza (rotáld) azokat a kulcsokat, amelyek eddig a laptop `~/.hermes/.env` fájljában vagy a Hermes kulcstárában voltak. A céges modellkulcs csak az Excellence Model Gateway-en marad. A Hermes managed env csak a Hermes folyamatát érinti, a gép többi programjának kulcsát nem törli.
 
+## Érvényesítés és az első verzió korlátai
+
+- A Model Gateway friss heartbeatet, a session agenthez kötött regisztrációját és a szerver által kiadott gépi csomag hash-egyezését ellenőrzi. Nem kiadott vagy eltérő csomag = nincs céges modellválasz.
+- A shell-hook minden tool előtt friss szerver-policyt kér; a munkatárs által írható snapshot-cache nem adhat engedélyt. A profilt a root által telepített modellútvonalhoz ellenőrzi. Elérhetetlenségkor Kötött pálya, visszavonáskor teljes tiltás érvényes.
+- Az e-mail és az e-mail-fejlécből megismert név kitakarható és visszaállítható. Más **felismert** adattípusnál a kitakarás egyelőre blokk. Cégnév és tetszőleges név teljes felismerése a #747 része. A `warn` csak kategóriaadatot naplóz, az `off` átenged; az agent szigorúbb szűrője mindig érvényes.
+- Helyi projektírás, domain-listás böngésző és jóváhagyott helyi skill-betöltés a hiteles szerveroldali listák bekötéséig tiltott. A natív lokális memória céges memória módban tiltott; használd az Excellence MCP memóriaeszközeit. Sandbox/felhős böngésző helyi backendje külön szelet (#748/#749).
+- A natív `/skill` parancs és más, tool-middleware-t megkerülő kliensútvonalak külön átvételi ellenőrzést igényelnek; a plugin önmagában nem ad teljes gépszintű kontrollt.
+- A heartbeat jelenlétjelzés, nem kriptográfiai géphitelesítés. T2 kontrollhoz adminjog nélküli, MDM-mel kezelt gép és kimenő hálózati szabály kell. Adminjogú vagy saját, módosított klienssel a lokális korlátok nem bizonyíthatók; a szerveroldali vállalati hozzáférés-kontroll továbbra is érvényes.
+
+## Átvételi ellenőrzés
+
+- Állíts B munkatársnak sandboxos kódfuttatást, erősítsd meg a kivételt, és ellenőrizd az auditot. A helyi `terminal` továbbra is tiltott; a céges sandbox eszköz használható, ha az agent hozzáférése engedi.
+- Normál és streamelt céges modellhívás, valamint MCP- és helyi tool-hívás auditja azonos user/agent/session/turn azonosítóval.
+- Szolgáltatóváltás és segédhívások (tömörítés, címadás, vision) hálózati ellenőrzése: kizárólag a céges gateway.
+- Guard nélküli, eltérő hash-ű vagy nem telepített kliens ne kapjon modellválaszt.
+- Agent- vagy felhasználói hozzáférés visszavonása a következő hívásnál tiltson.
+- Desktop-session 30 percen túl, laptop alvás/ébredés, tokenmegújítás, új Bot-profil telepítése.
+
+2026-10-03: a helyi Hermes `6ec05205` named-provider feloldása (`excellence` → `custom`), plugin-betöltése és valós middleware-lánca ellenőrizve. Ez kompatibilitási mérés, nem éles szolgáltatói vagy teljes Desktop-session mérés.
+
 ## Hash
 
-A `managedDirHash` a három fájl (`config.yaml`, `.env`, `excellence-install-id`) sha256-jéből áll, `excellence-managed-dir-v1` előtaggal. A Guard heartbeatje ugyanezt küldi; eltérésnél a szerver jelez.
+A `managedDirHash` a három fájl (`config.yaml`, `.env`, `excellence-install-id`) sha256-jéből áll, `excellence-managed-dir-v1` előtaggal. A Guard heartbeatje ugyanezt küldi; eltérésnél a szerver megtagadja a céges modellhívást.

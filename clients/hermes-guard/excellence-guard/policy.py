@@ -7,6 +7,7 @@ blokkol (U1). Hibás vagy hiányzó snapshot helyett a Kötött pálya preset.
 """
 import os
 import re
+from urllib.parse import urlsplit
 
 GUARD_VERSION = "0.1.0"
 NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
@@ -107,13 +108,8 @@ def tool_origin(tool_name):
 
 
 def company_servers():
-    names = {"excellence"}
-    primary = os.environ.get("EXCELLENCE_MCP_SERVER", "excellence").strip()
-    if primary:
-        names.add(primary)
-    extra = os.environ.get("EXCELLENCE_COMPANY_MCP_SERVERS", "")
-    names.update(part.strip() for part in extra.split(",") if part.strip())
-    return {sanitize_mcp_component(name) for name in names}
+    # Environment variables are controlled by the caller, not the company policy.
+    return {"excellence"}
 
 
 def _classify(tool_name):
@@ -180,19 +176,27 @@ def _lead(kind, level, tool_name):
     if kind == "file_read" or (kind == "file_write" and level == "none"):
         return "Ezzel az asszisztenssel nem nyithatsz helyi fájlt."
     if kind == "file_write":
+        if level == "project_write":
+            return "A jóváhagyott projektmappa nincs megadva, ezért a helyi fájlmódosítást nem engedem."
         return "Fájlt olvashatsz, de írni vagy módosítani nem."
     if kind == "browser" and level == "company_cloud":
         return "A helyi böngésző nincs engedve. A céges böngésző ehhez az asszisztenshez még nem elérhető."
     if kind == "browser":
+        if level == "domain_allowlist":
+            return "A megengedett weboldalak céges listája nincs megadva, ezért a böngészőt nem engedem."
         return "A böngészőt ez a beállítás nem engedi."
     if kind == "web":
         return "A beépített webes keresés ki van kapcsolva."
     if kind == "memory":
+        if level == "excellence":
+            return "A céges memóriát az Excellence-eszközökön keresztül használd; a gépen tárolt memória ehhez az asszisztenshez nincs engedve."
         return "A helyi memória ki van kapcsolva."
     if kind == "autonomous":
         return "Önálló háttérfutást (másik asszisztens vagy időzített feladat) ez a beállítás nem enged."
     if kind == "skill_write":
         return "Új vagy módosított skillt ez a beállítás nem enged. Csak a jóváhagyott skillek használhatók."
+    if kind == "skill_read":
+        return "A jóváhagyott skillek ellenőrizhető céges listája még nem érhető el, ezért helyi skillt nem tölthetek be."
     return f"A(z) „{tool_name}” művelet nincs engedve."
 
 
@@ -224,22 +228,22 @@ def _capability_action(kind, level, tool_name):
     if kind == "file_read":
         return "block" if level == "none" else "allow"
     if kind == "file_write":
-        return "block" if level in ("none", "read_only") else "allow"
+        return "allow" if level == "free" else "block"
     if kind == "browser":
-        if level in ("denied", "company_cloud"):
+        if level in ("denied", "company_cloud", "domain_allowlist"):
             return "block"
-        if level == "domain_allowlist":
-            return "approve"
         return "allow"
     if kind == "web":
         return "block" if level in ("denied", "company_egress") else "allow"
     if kind == "memory":
-        return "block" if level == "denied" else "allow"
+        return "allow" if level == "local" else "block"
     if kind == "autonomous":
         return "block" if level == "denied" else "allow"
     if kind == "skill_write":
         return "block" if level == "approved_only" else "allow"
     if kind == "skill_read":
+        if tool_name == "skill_view" and level == "approved_only":
+            return "block"
         return "allow"
     if kind == "mcp":
         if level == "free":
@@ -341,11 +345,20 @@ def keep_content(depth, kind, content):
     return content
 
 
-def is_excellence_route(provider, base_url):
-    if str(provider or "").strip().lower() != "excellence":
+def is_excellence_route(provider, base_url, expected_base_url=None):
+    # Hermes named providers resolve to `custom` before execution middleware runs.
+    if str(provider or "").strip().lower() not in {"excellence", "custom"}:
         return False
-    url = str(base_url or "").strip()
-    return not url or "/api/model-gateway/" in url
+    def endpoint(value):
+        url = urlsplit(str(value or "").strip())
+        if url.scheme not in {"http", "https"} or not url.hostname or url.username is not None or url.password is not None or url.query or url.fragment:
+            return None
+        return url.scheme, url.hostname, url.port or (443 if url.scheme == "https" else 80), url.path.rstrip("/")
+    try:
+        actual, expected = endpoint(base_url), endpoint(expected_base_url)
+        return expected is not None and actual == expected
+    except ValueError:
+        return False
 
 
 PROVIDER_BLOCK = (

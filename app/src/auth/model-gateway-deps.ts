@@ -23,7 +23,11 @@ export function productionModelGatewayDeps(): ModelGatewayDeps {
     providers: envProviderRegistry(),
     hooks: {
       gate: createManagedGate(clientPolicyDeps()),
-      ...createContentFilterHooks({ vault: new PostgresGatewaySurrogateRepository() }),
+      ...createContentFilterHooks({
+        vault: new PostgresGatewaySurrogateRepository(),
+        getCapabilities: async (ctx) => (await getPolicySnapshot(clientPolicyStore, ctx)).capabilities,
+        audit: repositories.audit,
+      }),
     },
     audit: createGatewayAuditSink(productionAiAuditDeps()),
   }

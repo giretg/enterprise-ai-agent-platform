@@ -49,6 +49,7 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/get-started'))
     assert.ok(hrefs.includes('/control-plane/projects'))
     assert.ok(!hrefs.includes('/control-plane/connectors'))
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/provisioning'))
     assert.ok(!hrefs.includes('/control-plane/system'))
@@ -70,6 +71,7 @@ function main() {
     const hrefs = flattenNavHrefs(
       buildControlPlaneNav({ tenantRole: 'admin', platformRoles: [] }),
     )
+    assert.ok(hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(hrefs.includes('/control-plane/iam'))
     assert.ok(hrefs.includes('/control-plane/settings'))
     assert.ok(hrefs.includes('/control-plane/menu-access'))
@@ -90,6 +92,7 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/mcp-parity'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/operations'))
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/system'))
   })
@@ -166,6 +169,7 @@ function main() {
       }),
     )
     assert.ok(hrefs.includes('/control-plane/account'))
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
   })
 
@@ -218,6 +222,7 @@ function main() {
         navVisibility: policyWith({ viewer: ['board'] }),
       }),
     )
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(hrefs.includes('/control-plane/agents'))
   })

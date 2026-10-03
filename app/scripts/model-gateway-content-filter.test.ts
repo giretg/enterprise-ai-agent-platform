@@ -6,6 +6,8 @@ import assert from 'node:assert/strict'
 import { handleChatCompletion, type ModelCallEvent, type ModelGatewayDeps } from '../src/domain/model-gateway/proxy'
 import { createContentFilterHooks, PAN_BLOCK_MESSAGE, type GatewayValVault } from '../src/domain/model-gateway/content-filter'
 import { SurrogateTakenError, type InsertValInput, type ValVaultRecord } from '../src/domain/privacy/surrogate-vault'
+import { PRESETS, type CapabilityMap } from '../src/domain/client-policy/capabilities'
+import type { AuditAppendInput } from '../src/lib/audit/types'
 
 const TENANT = '22222222-2222-4222-8222-222222222222'
 const USER = '11111111-1111-4111-8111-111111111111'
@@ -57,10 +59,11 @@ const chunk = (delta: object, finish: string | null = null) => sseData({ id: 'c1
 const streamOf = (text: string, size: number) =>
   new Response(new ReadableStream({ start(c) { for (let i = 0; i < text.length; i += size) c.enqueue(enc.encode(text.slice(i, i + size))); c.close() } }), { status: 200 })
 
-function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<Response | (() => Response)> } = {}) {
+function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<Response | (() => Response)>; capabilities?: CapabilityMap } = {}) {
   const vault = opts.vault ?? memoryVault()
   const calls: Array<Record<string, unknown>> = []
   const events: ModelCallEvent[] = []
+  const warnings: AuditAppendInput[] = []
   const scripts = [...(opts.scripts ?? [])]
   const deps: ModelGatewayDeps = {
     verify: async () =>
@@ -75,7 +78,7 @@ function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<R
     getAllowedModels: async () => null,
     providers: () => ({ baseUrl: 'https://or.test/v1', apiKey: 'sk' }),
     audit: { record: async (e) => void events.push(e) },
-    hooks: createContentFilterHooks({ vault }),
+    hooks: createContentFilterHooks({ vault, ...(opts.capabilities ? { getCapabilities: async () => opts.capabilities! } : {}), audit: { append: async (event) => void warnings.push(event) } }),
     maxAttempts: 1,
     fetchImpl: (async (_url: string, init: RequestInit) => {
       calls.push(JSON.parse(init.body as string))
@@ -96,13 +99,62 @@ function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<R
         body: JSON.stringify(body),
       }),
     )
-  return { call, calls, events, vault }
+  return { call, calls, events, warnings, vault }
 }
 
 const user = (content: string) => ({ role: 'user', content })
 const sentTo = (calls: Array<Record<string, unknown>>, i = 0) => JSON.stringify(calls[i].messages)
 
 async function main() {
+  console.log('Effektív céges tartalomszűrés')
+  await check('email/person szintek: blokk, csak kiválasztott kategória álnevezése, kikapcsolás és tartalommentes audit', async () => {
+    const text = 'Kiss János <kiss@example.hu>'
+    const policy = (email: string, person: string) => ({ ...PRESETS.free, 'content_filter.email': email, 'content_filter.person': person })
+    for (const category of ['email', 'person']) {
+      const capabilities = policy('off', 'off')
+      capabilities[`content_filter.${category}` as 'content_filter.email'] = 'block'
+      const blocked = setup({ capabilities })
+      await blocked.call({ messages: [user(text)] })
+      assert.equal(blocked.calls.length, 0)
+    }
+    const emailOnly = setup({ capabilities: policy('tokenize', 'off'), scripts: [completion({ content: 'ok' })] })
+    await emailOnly.call({ messages: [user(text)] })
+    assert.match(sentTo(emailOnly.calls), /Kiss János/)
+    assert.doesNotMatch(sentTo(emailOnly.calls), /kiss@example.hu/)
+    const personOnly = setup({ capabilities: policy('off', 'tokenize'), scripts: [completion({ content: 'ok' })] })
+    await personOnly.call({ messages: [user(text)] })
+    assert.match(sentTo(personOnly.calls), /kiss@example.hu/)
+    assert.doesNotMatch(sentTo(personOnly.calls), /Kiss János/)
+    const warned = setup({ capabilities: policy('warn', 'off'), scripts: [completion({ content: 'ok' })] })
+    await warned.call({ messages: [user(text)] })
+    assert.match(sentTo(warned.calls), /kiss@example.hu/)
+    assert.deepEqual(warned.warnings[0].metadata, { categories: ['email'] })
+    assert.doesNotMatch(JSON.stringify(warned.warnings), /kiss@example.hu|Kiss János/)
+    const off = setup({ capabilities: policy('off', 'off'), scripts: [completion({ content: 'ok' })] })
+    await off.call({ messages: [user(text)] })
+    assert.match(sentTo(off.calls), /kiss@example.hu/)
+    assert.equal(off.warnings.length, 0)
+  })
+  await check('kikapcsolt szűrés vault nélkül is átadja a teljes választ', async () => {
+    const vault = memoryVault()
+    vault.list = async () => { throw new Error('vault must not be used') }
+    const s = setup({ vault, capabilities: PRESETS.free, scripts: [completion({ content: 'válasz' })] })
+    const data = await (await s.call({ messages: [user('a@x.hu')] })).json()
+    assert.equal(data.choices[0].message.content, 'válasz')
+    assert.equal(s.calls.length, 1)
+  })
+  await check('PAN tokenize blokkol, warn auditál, off átenged; más felismert, nem álnevezhető kategória fail-closed', async () => {
+    for (const mode of ['block', 'tokenize', 'warn', 'off']) {
+      const s = setup({ capabilities: { ...PRESETS.free, 'content_filter.pan': mode }, scripts: [completion({ content: 'ok' })] })
+      await s.call({ messages: [user('4111 1111 1111 1111')] })
+      assert.equal(s.calls.length, ['block', 'tokenize'].includes(mode) ? 0 : 1)
+      assert.equal(s.warnings.length, mode === 'warn' ? 1 : 0)
+    }
+    const tax = setup({ capabilities: { ...PRESETS.free, 'content_filter.adoszam': 'tokenize' } })
+    await tax.call({ messages: [user('Adószám: 12345678-2-42')] })
+    assert.equal(tax.calls.length, 0)
+    assert.equal(tax.events[0].outcome, 'blocked')
+  })
   console.log('PAN-blokk')
 
   await check('PAN-t tartalmazó prompt nem jut a providerig; 200 + érthető asszisztens-üzenet', async () => {

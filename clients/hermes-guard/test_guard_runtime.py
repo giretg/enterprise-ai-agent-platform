@@ -5,6 +5,7 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "excellence-guard"))
 import policy
@@ -12,6 +13,14 @@ import runtime
 
 
 class Runtime(unittest.TestCase):
+    def test_user_environment_cannot_replace_installed_token_helper(self):
+        with tempfile.TemporaryDirectory() as home:
+            fake = os.path.join(home, "fake.py")
+            with open(fake, "w") as fh:
+                fh.write("def get_token(_home): return 'forged'\n")
+            with patch.dict(os.environ, {"EXC_TOKEN_BIN": fake}), patch.object(runtime, "__file__", os.path.join(home, "plugins", "runtime.py")), patch.object(runtime, "TOKEN_HELPER_PATH", os.path.join(home, "missing")):
+                self.assertIsNone(runtime.load_exc_token())
+
     def test_managed_dir_hash_matches_v1_8_vector(self):
         files = {"config.yaml": b"a\n", ".env": b"b\n", "excellence-install-id": b"id\n"}
         self.assertEqual(runtime.managed_dir_hash(files), "0589eb3acdd43a350f50e45951471fcb70ff45fef63b8ef1ee11db4c1dd73074")
@@ -98,14 +107,37 @@ class Runtime(unittest.TestCase):
 
     def test_llm_execution_blocks_foreign_provider(self):
         home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
         guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
         called = []
         blocked = guard.llm_execution(request={"model": "x"}, next_call=lambda req: called.append(req) or "live", provider="openrouter", base_url="https://openrouter.ai/api")
         self.assertEqual(called, [])
         self.assertIn("Excellence", blocked.choices[0].message.content)
         self.assertEqual(blocked.choices[0].finish_reason, "stop")
-        live = guard.llm_execution(request={"model": "m"}, next_call=lambda req: "ok", provider="excellence", base_url="https://ai.example/api/model-gateway/v1")
+        live = guard.llm_execution(request={"model": "m"}, next_call=lambda req: "ok", provider="custom", base_url="https://ai.example/api/model-gateway/v1")
         self.assertEqual(live, "ok")
+        request = {"extra_headers": {"Custom": "retained", "x-excellence-turn": "stale"}}
+        forwarded = guard.llm_execution(request=request, next_call=lambda req: req, provider="custom", base_url="https://ai.example/api/model-gateway/v1", session_id="session-1", turn_id="turn-1")
+        self.assertEqual(forwarded["extra_headers"], {"Custom": "retained", "X-Excellence-Session": "session-1", "X-Excellence-Turn": "turn-1"})
+        self.assertEqual(request["extra_headers"]["x-excellence-turn"], "stale")
+        foreign = guard.llm_execution(request={}, next_call=lambda req: called.append(req), provider="custom", base_url="https://foreign.example/api/model-gateway/v1")
+        self.assertEqual(called, [])
+        self.assertIn("Excellence", foreign.choices[0].message.content)
+
+        def provider_failure(_request):
+            raise ValueError("context length exceeded")
+
+        with self.assertRaisesRegex(ValueError, "context length exceeded"):
+            guard.llm_execution(request={}, next_call=provider_failure, provider="custom", base_url="https://ai.example/api/model-gateway/v1")
+
+    def test_llm_execution_without_company_profile_fails_closed(self):
+        with tempfile.TemporaryDirectory() as home:
+            guard = runtime.Guard(home)
+            called = []
+            response = guard.llm_execution(request={}, next_call=lambda req: called.append(req), provider="custom", base_url="https://ai.example/api/model-gateway/v1")
+            self.assertEqual(called, [])
+            self.assertIn("Excellence", response.choices[0].message.content)
 
     def test_heartbeat_payload_shape(self):
         home = tempfile.mkdtemp()

@@ -184,6 +184,26 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
                 <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
               </HermesStep>
             </ol>
+            <details id="hermes-company-controls" className="rounded-xl border border-coral/30 bg-card p-3">
+              <summary className="cursor-pointer font-semibold text-ink">{t('hermesManagedTitle')}</summary>
+              <div className="mt-3 space-y-3">
+                <p>{t('hermesManagedIntro')}</p>
+                <ol className="space-y-3">
+                  <li>{t('hermesManagedPolicy')}</li>
+                  <li>{t('hermesManagedDownload')}</li>
+                  <li>{t('hermesManagedInstall')}</li>
+                  <li><CodeBlock value="sudo ./install-managed.sh floor.json" copyLabel={t('copyCommand')} /></li>
+                  <li>{t('hermesManagedVerify')}</li>
+                  <li>{t('hermesManagedSecurity')}</li>
+                </ol>
+                <p className="text-xs text-ink-faint">{t('hermesManagedLimits')}</p>
+                <div className="flex flex-wrap gap-3">
+                  <Link href="/control-plane/ai-client-policy" className="font-semibold text-coral-deep underline">{t('hermesManagedOpen')}</Link>
+                  <a href="https://github.com/giretg/enterprise-ai-agent-platform/archive/refs/heads/main.zip" className="font-semibold text-coral-deep underline">{t('hermesManagedPackage')}</a>
+                  <a href="https://github.com/giretg/enterprise-ai-agent-platform/tree/main/clients/hermes-guard" target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline">{t('hermesManagedDocs')} ↗</a>
+                </div>
+              </div>
+            </details>
             <div className="rounded-xl border border-line bg-card p-3">
               <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
               <p className="mt-1">{t('hermesUpdateBody')}</p>
