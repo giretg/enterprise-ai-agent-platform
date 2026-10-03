@@ -1,13 +1,16 @@
 'use client'
 
 import { useMemo, useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { setTenantModelEnabled } from '@/app/actions/model-config'
 import { Card } from '@/components/ui/shell'
+import { asTranslate } from '@/i18n/translate'
 import { MODEL_PROVIDERS } from '@/lib/model-providers'
 import { modelCatalog, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
 
-/** Tenant admin: mely modelleket használhatják az agentek (költség, adatvédelem). */
+/** Tenant admin: mely modelleket használhatják a munkatársak (költség, adatvédelem). */
 export function ModelPolicyPanel({ initial, canEdit }: { initial: ModelPolicy; canEdit: boolean }) {
+  const t = asTranslate(useTranslations('ControlPlane.settings'))
   const [policy, setPolicy] = useState(initial)
   const [provider, setProvider] = useState<ModelRef['provider']>(MODEL_PROVIDERS[0]!.value as ModelRef['provider'])
   const [custom, setCustom] = useState('')
@@ -15,31 +18,28 @@ export function ModelPolicyPanel({ initial, canEdit }: { initial: ModelPolicy; c
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const catalog = useMemo(() => modelCatalog(policy), [policy])
 
-  function set(ref: ModelRef, enabled: boolean, okText: string) {
+  function setEnabled(ref: ModelRef, enabled: boolean) {
     setMessage(null)
     startTransition(async () => {
       const res = await setTenantModelEnabled({ ...ref, enabled })
       if (res.success) {
         setPolicy(res.data)
-        setMessage({ tone: 'ok', text: okText })
+        setMessage({ tone: 'ok', text: enabled ? t('modelsEnabled') : t('modelsDisabled') })
       } else {
-        setMessage({ tone: 'err', text: res.error })
+        setMessage({
+          tone: 'err',
+          text: res.error === 'save_failed' || res.error === 'load_failed' ? t('modelsSaveFailed') : res.error,
+        })
       }
     })
   }
 
   return (
-    <Card title="Engedett modellek">
+    <Card title={t('modelsTitle')}>
       <div className="space-y-5">
-        <p className="text-sm text-ink-soft">
-          Itt döntöd el, melyik AI-modelleket használhatják a munkatársak. Csak a bepipált modellek
-          választhatók ki egy munkatárs beállításainál, és csak ezekre válthat a rendszer, ha egy
-          szolgáltató kiesik.
-        </p>
+        <p className="text-sm text-ink-soft">{t('modelsBody')}</p>
         {policy.enabled.length === 0 ? (
-          <p className="rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm text-honey">
-            Még nincs engedélyezett modell, ezért az agentek nem tudnak válaszolni. Pipálj be legalább egyet.
-          </p>
+          <p className="rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm text-honey">{t('modelsEmpty')}</p>
         ) : null}
         <div className="grid gap-4 lg:grid-cols-2">
           {MODEL_PROVIDERS.map((option) => (
@@ -58,9 +58,7 @@ export function ModelPolicyPanel({ initial, canEdit }: { initial: ModelPolicy; c
                         type="checkbox"
                         checked={entry.enabled}
                         disabled={!canEdit || pending}
-                        onChange={(e) =>
-                          set(entry, e.target.checked, e.target.checked ? 'Modell engedélyezve.' : 'Modell letiltva.')
-                        }
+                        onChange={(e) => setEnabled(entry, e.target.checked)}
                         className="mt-1 h-4 w-4 accent-coral"
                       />
                       <span className="min-w-0">
@@ -79,11 +77,8 @@ export function ModelPolicyPanel({ initial, canEdit }: { initial: ModelPolicy; c
 
         {canEdit ? (
           <div className="rounded-lg border border-line/70 bg-night/40 p-4">
-            <p className="text-sm font-semibold text-ink">Másik modell hozzáadása</p>
-            <p className="mt-1 text-xs text-ink-soft">
-              Ha a fenti listában nincs ott, add meg a szolgáltató szerinti pontos modellnevet (pl.
-              anthropic/claude-sonnet-4 az OpenRouteren).
-            </p>
+            <p className="text-sm font-semibold text-ink">{t('modelsCustomTitle')}</p>
+            <p className="mt-1 text-xs text-ink-soft">{t('modelsCustomBody')}</p>
             <div className="mt-3 grid gap-3 sm:grid-cols-[220px_1fr_auto]">
               <select
                 value={provider}
@@ -101,24 +96,24 @@ export function ModelPolicyPanel({ initial, canEdit }: { initial: ModelPolicy; c
                 value={custom}
                 disabled={pending}
                 onChange={(e) => setCustom(e.target.value)}
-                placeholder="Modellnév"
+                placeholder={t('modelsCustomPlaceholder')}
                 className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-ink"
               />
               <button
                 type="button"
                 disabled={pending || !custom.trim()}
                 onClick={() => {
-                  set({ provider, model: custom.trim() }, true, 'Modell engedélyezve.')
+                  setEnabled({ provider, model: custom.trim() }, true)
                   setCustom('')
                 }}
                 className="rounded-lg bg-coral/20 px-4 py-2 text-sm font-semibold text-coral disabled:opacity-40"
               >
-                Engedélyezés
+                {t('modelsEnable')}
               </button>
             </div>
           </div>
         ) : (
-          <p className="text-xs text-ink-soft">Módosításhoz admin jogosultság szükséges.</p>
+          <p className="text-xs text-ink-soft">{t('modelsNeedAdmin')}</p>
         )}
 
         {message ? (

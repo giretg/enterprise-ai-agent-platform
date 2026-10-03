@@ -92,7 +92,7 @@ export default async function PlatformSettingsPage() {
             content: fallbackChain.success ? (
               <FallbackChainPanel initial={fallbackChain.data} canEdit={canEditChain} />
             ) : (
-              <p className="text-sm text-coral-deep">{fallbackChain.error}</p>
+              <p className="text-sm text-coral-deep">{t('fallbackLoadFailed')}</p>
             ),
           },
         ]}

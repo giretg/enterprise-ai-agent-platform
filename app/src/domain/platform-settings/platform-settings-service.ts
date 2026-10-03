@@ -111,13 +111,6 @@ export class PlatformSettingsService {
     return next
   }
 
-  async assertModelAllowed(tenantId: string, ref: ModelRef): Promise<void> {
-    const policy = await this.getModelPolicy(tenantId)
-    if (!policy.enabled.some((e) => e.provider === ref.provider && e.model === ref.model)) {
-      throw new Error(`A modell nincs engedélyezve: ${ref.provider}/${ref.model}`)
-    }
-  }
-
   /** Globális tartalék-lánc (platform-szintű) — `model.fallback_chain`. */
   async getFallbackChain(): Promise<ModelRef[]> {
     return parseModelRefs(await this.settings.get(FALLBACK_CHAIN_SETTING_KEY))

@@ -42,7 +42,7 @@ export default async function TenantSettingsPage() {
             content: modelPolicy.success ? (
               <ModelPolicyPanel initial={modelPolicy.data} canEdit />
             ) : (
-              <p className="text-sm text-coral-deep">{modelPolicy.error}</p>
+              <p className="text-sm text-coral-deep">{t('modelsLoadFailed')}</p>
             ),
           },
           {

@@ -452,6 +452,14 @@ export const services = {
             )
             return membership?.status === 'active'
           },
+          findTenantMemberByEmail: async (lookup) => {
+            const candidates = await repositories.users.findManyByEmail(lookup.email.trim().toLowerCase())
+            for (const user of candidates) {
+              const membership = await repositories.tenantMemberships.findByTenantAndUser(lookup.tenantId, user.id)
+              if (membership?.status === 'active') return { userId: user.id }
+            }
+            return null
+          },
           projectWork: projectWorkService,
           handoffs: handoffRepository,
           enqueueMemoryWrite: async (enqueueInput) =>

@@ -84,10 +84,14 @@ jobs:
           npm run test:agent-local-roots
           npm run test:client-policy
           npm run test:model-gateway-token
+          npm run test:model-fallback-chain
           npm run test:model-gateway-proxy
           npm run test:enterprise-tools
+          npm run test:drive-update-file
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
+          npm run test:google-drive-api-client
+          npm run test:google-workspace-api-client
           npm run test:agentmail-connector
           npm run test:kb-gate
           npm run test:kb-retrieval

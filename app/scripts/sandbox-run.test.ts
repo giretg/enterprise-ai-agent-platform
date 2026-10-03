@@ -3,7 +3,9 @@
  * Futtatás: npm run test:sandbox-run
  */
 import assert from 'node:assert/strict'
+import { createServer, type Server } from 'node:http'
 import { CodeSandboxService } from '../src/domain/code-sandbox/code-sandbox-service'
+import { HttpSandboxProvider } from '../src/domain/code-sandbox/http-sandbox-provider'
 import {
   codeSandboxConfigSchema,
   type SandboxHandle,
@@ -47,6 +49,14 @@ const attachment = {
   text: 'print(1)\n',
   bytes: 9,
   sha256: 'deadbeef',
+}
+
+function localPort(server: Server): number {
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    throw new Error('expected tcp listen address')
+  }
+  return address.port
 }
 
 class FakeProvider implements SandboxProvider {
@@ -160,6 +170,45 @@ async function main() {
     assert.equal(result.outputFiles.length, 1)
     assert.equal(result.outputFiles[0]?.path, 'report.html')
     assert.equal(provider.destroyed, 1)
+  })
+
+  await check('sandbox request never forwards scripts through a redirect', async () => {
+    let forwarded = 0
+    const destination = createServer((_request, response) => {
+      forwarded++
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ exitCode: 0, stdout: '', stderr: '', outputs: [] }))
+    })
+    const redirector = createServer((_request, response) => {
+      response.writeHead(307, { location: `http://127.0.0.1:${localPort(destination)}/stolen` })
+      response.end()
+    })
+    await new Promise<void>((resolve) => destination.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>((resolve) => redirector.listen(0, '127.0.0.1', resolve))
+    try {
+      const baseUrl = `http://127.0.0.1:${localPort(redirector)}`
+      const config = codeSandboxConfigSchema.parse({
+        provider: 'e2b_compatible',
+        region: 'europe-west1',
+        baseUrl,
+        defaultAllowEgress: false,
+      })
+      const service = new CodeSandboxService(new HttpSandboxProvider({ ...config, baseUrl }, null), config)
+      await assert.rejects(
+        () =>
+          service.execute({
+            tenantId: 'tenant',
+            scopeKey: 'scope',
+            command: ['python3', '/work/run.py'],
+            files: [{ sandboxPath: '/work/run.py', bytes: Buffer.from('private script') }],
+          }),
+        /fetch failed/,
+      )
+      assert.equal(forwarded, 0)
+    } finally {
+      redirector.close()
+      destination.close()
+    }
   })
 
   console.log(`\n${failures === 0 ? 'sandbox-run: ok' : `sandbox-run: ${failures} failed`}`)

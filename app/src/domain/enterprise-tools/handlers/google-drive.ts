@@ -1,9 +1,10 @@
-import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
+import { GoogleDriveApiClient, GoogleDriveApiError } from '@/domain/connector-grant/google-drive-api-client'
 import { GoogleWorkspaceApiClient } from '@/domain/connector-grant/google-workspace-api-client'
 import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
   type EnterpriseDriveTool,
@@ -99,6 +100,27 @@ export async function executeGoogleDriveTool(
       convertToGoogleType:
         convert === 'doc' || convert === 'sheet' || convert === 'slides' ? convert : undefined,
     })
+  }
+  if (toolName === GOOGLE_DRIVE_UPDATE_FILE_TOOL) {
+    const fileId = optionalString(args.fileId) ?? ''
+    const textContent = optionalString(args.textContent)
+    if (!fileId || !textContent) {
+      throw new Error('google_drive_update_file requires fileId and textContent')
+    }
+    const { file, conflict } = await drive.updateTextContent({
+      fileId,
+      textContent,
+      expectedModifiedTime: optionalString(args.expectedModifiedTime),
+    })
+    // A concurrent edit must fail the operation, not look like a successful overwrite.
+    if (conflict) {
+      throw new GoogleDriveApiError(
+        'google_drive_update_file: the file changed since it was read',
+        409,
+        'file_modified',
+      )
+    }
+    return { file }
   }
   if (toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) {
     const sheets = new GoogleWorkspaceApiClient(accessToken)
