@@ -11,6 +11,7 @@ import {
   listKbDocuments,
   listKnowledgeCatalog,
 } from '@/app/actions/platform'
+import { getAgentModelSettings } from '@/app/actions/model-config'
 import { listWorkProjectsAction } from '@/app/actions/project-work'
 import { getMyGoogleDriveGrantForPicker } from '@/app/actions/connector-grants'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
@@ -26,6 +27,7 @@ import { SettingsSectionShell } from '@/app/control-plane/system/system-settings
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
+import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateMemoryWriteModeForm } from '@/components/agents/update-memory-write-mode-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
@@ -44,6 +46,7 @@ export const dynamic = 'force-dynamic'
 
 const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   elesites: 'elesitesDesc',
+  modell: 'modellDesc',
   kapcsolatok: 'kapcsolatokDesc',
   tudasbazis: 'tudasbazisDesc',
   eszkozok: 'eszkozokDesc',
@@ -83,6 +86,7 @@ export default async function AgentDetailPage({
     publishRes,
     projectsRes,
     drivePickerCtxRes,
+    modelRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -95,6 +99,7 @@ export default async function AgentDetailPage({
     getAgentPublishStatus({ agentId }),
     listWorkProjectsAction(),
     getMyGoogleDriveGrantForPicker(),
+    getAgentModelSettings({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -179,6 +184,26 @@ export default async function AgentDetailPage({
         </Card>
       ),
     },
+    ...(modelRes.success
+      ? [
+          {
+            id: 'modell' as const,
+            label: sectionLabel('modell'),
+            description: sectionDesc('modell'),
+            content: (
+              <UpdateModelConfigForm
+                agentId={agent.id}
+                policy={modelRes.data.policy}
+                globalChain={modelRes.data.globalChain}
+                config={modelRes.data.config}
+                effectivePrimary={modelRes.data.effectivePrimary}
+                maxAttempts={modelRes.data.maxAttempts}
+                canEdit={canManage}
+              />
+            ),
+          },
+        ]
+      : []),
     {
       id: 'kapcsolatok',
       label: sectionLabel('kapcsolatok'),

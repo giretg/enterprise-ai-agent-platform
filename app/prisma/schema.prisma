@@ -482,6 +482,8 @@ model Agent {
   outputDriveFolderId        String?         @map("output_drive_folder_id")
   /** Helyi kódmappa-hint (#729): soronként egy jelölt ~/… vagy abszolút path (több gép); publikáláskor a snapshotba. */
   localRoots                 String          @default("") @map("local_roots")
+  /** Admin által beállított modell (#768): provider/model/modelType/temperature/maxTokens/fallbackModels. NEM kerül az MCP-snapshotba. */
+  modelConfig                Json?           @map("model_config")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz

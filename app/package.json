@@ -44,6 +44,7 @@
     "test:gateway-ticket-context-route": "tsx scripts/gateway-ticket-context-route.test.ts",
     "test:timing-safe-token": "tsx scripts/timing-safe-token.test.ts",
     "test:fallback-chain": "tsx scripts/fallback-chain.test.ts",
+    "test:model-fallback-chain": "tsx scripts/model-fallback-chain.test.ts",
     "test:client-policy": "tsx scripts/client-policy-resolve.test.ts",
     "test:model-gateway-token": "tsx scripts/model-gateway-token.test.ts",
     "test:write-gate-single-use": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/write-gate-single-use.test.ts",
