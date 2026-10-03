@@ -8,6 +8,7 @@ import { CodeSandboxService } from '../src/domain/code-sandbox/code-sandbox-serv
 import { HttpSandboxProvider } from '../src/domain/code-sandbox/http-sandbox-provider'
 import {
   codeSandboxConfigSchema,
+  codeSandboxLimits,
   type SandboxHandle,
   type SandboxProvider,
 } from '../src/domain/code-sandbox/code-sandbox-types'
@@ -128,12 +129,22 @@ async function main() {
     assert.equal(resolveSandboxWorkInputs('../secret.csv').ok, false)
     assert.equal(resolveSandboxWorkInputs('/etc/passwd').ok, false)
     assert.equal(resolveSandboxWorkInputs('skill/run.py').ok, false)
+    // The sandbox filesystem may case-fold; the pinned tree must stay unreachable either way.
+    assert.equal(resolveSandboxWorkInputs('Skill/run.py').ok, false)
+    assert.equal(resolveSandboxWorkInputs('SKILL/run.py').ok, false)
+    assert.equal(resolveSandboxWorkInputs('SKILL').ok, false)
     assert.equal(resolveSandboxWorkInputs('sales.csv, sales.csv').ok, false)
+    assert.equal(resolveSandboxWorkInputs('sales.csv, sales.csv/').ok, false)
     assert.equal(
       resolveSandboxWorkInputs(Array.from({ length: MAX_SANDBOX_WORK_INPUTS + 1 }, (_, i) => `f${i}.csv`).join(','))
         .ok,
       false,
     )
+  })
+
+  await check('work inputs plus the skill tree stay inside the sandbox file-count limit', () => {
+    // entry + /work/run.py + helpers + work inputs must not trip CODE_SANDBOX_MAX_FILES (32).
+    assert.ok(MAX_SANDBOX_WORK_INPUTS + 3 < codeSandboxLimits().maxFiles)
   })
 
   await check('pinned .py entry resolves helpers', () => {

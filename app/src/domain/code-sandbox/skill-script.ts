@@ -7,6 +7,8 @@ import { normalizeSandboxWorkspacePath } from './code-sandbox-types'
 /** Claude.ai drops MCP tools whose advertised schema has arrays — keep a string field. */
 export const MAX_SANDBOX_WORK_INPUTS = 16
 export const SANDBOX_WORK_INPUT_PREFIX = '/work/in/'
+/** The pinned skill tree is mounted here; a work input must never shadow it, whatever the sandbox filesystem case-folds. */
+const SKILL_TREE_DIR = 'skill'
 
 export type ResolvedSkillScript = {
   skillName: string
@@ -47,7 +49,8 @@ export type ResolveSandboxWorkInputsResult =
 function resolveSandboxWorkInput(raw: string): ResolveSandboxWorkInputResult {
   const workPath = normalizeWorkFilePath(raw)
   if (!workPath) return { ok: false, reason: 'invalid_args' }
-  if (workPath === 'skill' || workPath.startsWith('skill/')) return { ok: false, reason: 'invalid_args' }
+  const top = workPath.split('/')[0]!.toLowerCase()
+  if (top === SKILL_TREE_DIR) return { ok: false, reason: 'invalid_args' }
   try {
     normalizeSandboxWorkspacePath(workPath)
   } catch {
