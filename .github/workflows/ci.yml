@@ -85,6 +85,7 @@ jobs:
           npm run test:client-policy
           npm run test:model-gateway-token
           npm run test:model-fallback-chain
+          npm run test:model-gateway-proxy
           npm run test:enterprise-tools
           npm run test:drive-update-file
           npm run test:sandbox-run

@@ -128,6 +128,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model_gateway.token.issued',
   'model_gateway.token.deny',
   'model_gateway.token.revoked',
+  // Model Gateway proxy (#769): minden céges modellhívás. Tartalom nélkül (V1-5 váltja).
+  'model_call',
   // Agent modell-konfig + tenant policy + globális tartalék-lánc (#768).
   // Regisztráció nélkül az admin mentés UnregisteredAuditActionError-t dobna
   // (a beállítás már elment, a UI hibát jelezne).

@@ -156,7 +156,9 @@ check('az MCP resource URL és az OAuth well-known discovery publikus (Clerk-kap
 check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer), a testvér-route-ok nem', () => {
   assertPublic('/api/model-gateway/token')
   assertPublic('/api/client-policy/snapshot')
+  assertPublic('/api/model-gateway/v1/chat/completions')
   assertProtected('/api/model-gateway/token/admin')
+  assertProtected('/api/model-gateway/admin')
   assertProtected('/api/client-policy')
 })
 
