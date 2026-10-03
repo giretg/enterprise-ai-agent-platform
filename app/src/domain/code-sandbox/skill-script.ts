@@ -36,7 +36,7 @@ export type ResolvedSandboxWorkInput = {
   sandboxPath: string
 }
 
-export type ResolveSandboxWorkInputResult =
+type ResolveSandboxWorkInputResult =
   | ({ ok: true } & ResolvedSandboxWorkInput)
   | { ok: false; reason: string }
 
@@ -44,7 +44,7 @@ export type ResolveSandboxWorkInputsResult =
   | { ok: true; inputs: ResolvedSandboxWorkInput[] }
   | { ok: false; reason: string }
 
-export function resolveSandboxWorkInput(raw: string): ResolveSandboxWorkInputResult {
+function resolveSandboxWorkInput(raw: string): ResolveSandboxWorkInputResult {
   const workPath = normalizeWorkFilePath(raw)
   if (!workPath) return { ok: false, reason: 'invalid_args' }
   if (workPath === 'skill' || workPath.startsWith('skill/')) return { ok: false, reason: 'invalid_args' }

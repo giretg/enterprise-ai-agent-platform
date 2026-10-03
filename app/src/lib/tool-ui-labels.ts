@@ -393,7 +393,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   sandbox_run: {
     label: 'Skill-script futtatása',
     description:
-      'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában. A megadott work-fájlok a /work/in alá kerülnek; a sandboxnak nincs hálózata.',
+      'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában. A megadott munkafájlok bemásolódnak a futtatásba; a sandboxnak nincs internetelérése.',
   },
 
   // Webes kutatás
