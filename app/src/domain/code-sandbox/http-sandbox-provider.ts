@@ -168,6 +168,7 @@ export class HttpSandboxProvider implements SandboxProvider {
     const token = await this.authToken()
     return this.fetchFn(new URL(path, this.config.baseUrl), {
       method: 'POST',
+      redirect: 'error',
       headers: {
         'content-type': 'application/json',
         ...(token ? { authorization: `Bearer ${token}` } : {}),
