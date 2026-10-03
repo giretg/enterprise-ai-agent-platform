@@ -58,6 +58,9 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   invalid_project_key: 'Invalid projectKey',
   quota_exceeded: 'Work-file quota exceeded',
   invalid_path: 'Invalid work-file path',
+  sandbox_file_count_limit_exceeded: 'Too many input files for the sandbox — pass fewer inputs',
+  sandbox_input_total_size_exceeded: 'Input files are too large in total for the sandbox',
+  sandbox_input_file_too_large: 'An input file is too large for the sandbox',
   tool_execution_failed: 'Tool execution failed',
 }
 
