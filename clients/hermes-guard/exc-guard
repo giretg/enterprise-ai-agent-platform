@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""exc-guard — fail-closed shell-hook tartalék a `hooks.pre_tool_call`-hoz (#775, H-4, P5).
+
+Külön processz. Csak a plugin által kiírt snapshot-cache-ből dönt, hálózat nélkül.
+Ha a cache hiányzik, lejárt, hibás, vagy ez a program elszáll, a Hermes
+(`fail_closed: true`) blokkolja a toolt. Az allow üres JSON, mert a nem-JSON
+stdoutot a fail_closed szintén blokkolná.
+"""
+import json
+import os
+import sys
+import time
+
+
+def plugin_dir():
+    here = os.path.dirname(os.path.abspath(__file__))
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    candidates = [
+        os.path.join(here, "excellence-guard"),
+        "/opt/excellence/hermes-plugins/excellence-guard",
+        os.path.join(home, "plugins", "excellence-guard"),
+    ]
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, "policy.py")):
+            return path
+    return None
+
+
+def main():
+    directory = plugin_dir()
+    if not directory:
+        sys.stderr.write("Az exc-guard nem találja a céges szabálymodult, ezért nem engedek műveletet.\n")
+        return 2
+    sys.path.insert(0, directory)
+    import policy
+    import runtime
+
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        sys.stderr.write("A céges ellenőrzés nem tudta elolvasni a kérést, ezért nem engedem.\n")
+        return 2
+    if not isinstance(payload, dict):
+        payload = {}
+    tool = payload.get("tool_name") or ""
+    args = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    state = runtime.read_json(runtime._under(home, runtime.CACHE_FILE))
+    interpreted = policy.interpret_cache(state, time.time())
+    decision = policy.decide_interpreted(interpreted, tool, args)
+    sys.stdout.write(json.dumps(policy.hook_body(decision), ensure_ascii=False) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        sys.stderr.write("A céges ellenőrzés hibázott, ezért ezt a műveletet nem engedem.\n")
+        sys.exit(2)
