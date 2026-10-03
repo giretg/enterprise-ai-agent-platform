@@ -47,6 +47,7 @@
     "test:model-fallback-chain": "tsx scripts/model-fallback-chain.test.ts",
     "test:client-policy": "tsx scripts/client-policy-resolve.test.ts",
     "test:model-gateway-proxy": "tsx scripts/model-gateway-proxy.test.ts",
+    "test:model-gateway-content-filter": "tsx scripts/model-gateway-content-filter.test.ts",
     "test:model-gateway-token": "tsx scripts/model-gateway-token.test.ts",
     "test:ai-audit": "tsx scripts/ai-audit.test.ts",
     "test:write-gate-single-use": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/write-gate-single-use.test.ts",
