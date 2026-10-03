@@ -1,24 +1,37 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """exc-guard — fail-closed shell-hook tartalék a `hooks.pre_tool_call`-hoz (#775, H-4, P5).
 
-Külön processz. Csak a plugin által kiírt snapshot-cache-ből dönt, hálózat nélkül.
-Ha a cache hiányzik, lejárt, hibás, vagy ez a program elszáll, a Hermes
+Külön processz. Minden művelet előtt friss, szerveroldali policyból dönt.
+Ha a szerver nem érhető el, Kötött pálya érvényes; a user írható cache-e nem ad engedélyt.
+Ha ez a program elszáll, a Hermes
 (`fail_closed: true`) blokkolja a toolt. Az allow üres JSON, mert a nem-JSON
 stdoutot a fail_closed szintén blokkolná.
 """
 import json
 import os
 import sys
-import time
+
+
+def managed_gateway_url():
+    path = "/etc/hermes/config.yaml"
+    info = os.stat(path)
+    if info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError("A céges konfiguráció rendszergazdai tulajdont és írásvédelmet igényel")
+    with open(path, encoding="utf-8") as fh:
+        in_model = False
+        for line in fh:
+            if line.strip() and not line.startswith((" ", "#")):
+                in_model = line.strip() == "model:"
+            if in_model and line.startswith("  base_url:"):
+                return json.loads(line.split(":", 1)[1].strip())
+    raise ValueError("Hiányzó céges modell-útvonal")
 
 
 def plugin_dir():
     here = os.path.dirname(os.path.abspath(__file__))
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
     candidates = [
         os.path.join(here, "excellence-guard"),
         "/opt/excellence/hermes-plugins/excellence-guard",
-        os.path.join(home, "plugins", "excellence-guard"),
     ]
     for path in candidates:
         if os.path.isfile(os.path.join(path, "policy.py")):
@@ -46,8 +59,16 @@ def main():
     tool = payload.get("tool_name") or ""
     args = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
     home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    state = runtime.read_json(runtime._under(home, runtime.CACHE_FILE))
-    interpreted = policy.interpret_cache(state, time.time())
+    try:
+        token_helper = runtime.load_exc_token()
+        origin = token_helper.read_profile(home)[0] if token_helper else None
+        expected = origin + "/api/model-gateway/v1" if origin else None
+        if not policy.is_excellence_route("excellence", managed_gateway_url(), expected):
+            raise ValueError("A profil nem a céges modell-útvonalhoz tartozik")
+        status, snapshot = runtime.fetch_snapshot(home)
+    except Exception:
+        status, snapshot = "down", None
+    interpreted = {"kind": "snapshot", "snapshot": snapshot} if status == "ok" else {"kind": "revoked" if status == "revoked" else "bound"}
     decision = policy.decide_interpreted(interpreted, tool, args)
     sys.stdout.write(json.dumps(policy.hook_body(decision), ensure_ascii=False) + "\n")
     return 0

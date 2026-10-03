@@ -339,7 +339,9 @@
     "test:reconcile-records": "tsx scripts/reconcile-records.test.ts",
     "test:trained-memory-prompt": "tsx scripts/trained-memory-prompt.test.ts",
     "probe:crm-privacy": "tsx scripts/crm-privacy-probe.ts",
-    "test:handoff": "tsx scripts/handoff.test.ts"
+    "test:handoff": "tsx scripts/handoff.test.ts",
+    "test:client-policy-admin": "tsx scripts/client-policy-admin.test.ts",
+    "test:client-policy-admin-db": "tsx scripts/client-policy-admin-db.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

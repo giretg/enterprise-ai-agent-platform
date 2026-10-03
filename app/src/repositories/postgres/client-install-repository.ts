@@ -40,11 +40,12 @@ export class PostgresClientInstallRepository implements ClientInstallStore {
       where: { tenantId_userId_installId: { tenantId: input.tenantId, userId: input.userId, installId: input.installId } },
       select: {
         lastHeartbeatAt: true,
+        managedDirHash: true,
         sessions: input.sessionId
           ? { where: { sessionId: input.sessionId, agentId: input.agentId }, select: { lastSeenAt: true } }
           : false,
       },
     })
-    return row && { lastHeartbeatAt: row.lastHeartbeatAt, sessionLastSeenAt: row.sessions?.[0]?.lastSeenAt ?? null }
+    return row && { lastHeartbeatAt: row.lastHeartbeatAt, managedDirHash: row.managedDirHash, sessionLastSeenAt: row.sessions?.[0]?.lastSeenAt ?? null }
   }
 }

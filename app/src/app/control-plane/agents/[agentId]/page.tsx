@@ -1,3 +1,6 @@
+import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
+import { adminPolicyView } from '@/domain/client-policy/admin-policy'
+import { prisma } from '@/lib/db'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
@@ -118,6 +121,7 @@ export default async function AgentDetailPage({
     connectors.map((row) => row.connector.id),
   )
   const canManage = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const hermesPolicy = canManage ? await prisma.clientPolicy.findUnique({ where: { tenantId_scope_scopeId: { tenantId: ctx.activeTenantId, scope: 'agent', scopeId: agent.id } } }) : null
   const drivePickerCtx = drivePickerCtxRes.success ? drivePickerCtxRes.data : null
   const canEditMemory = hasMinimumRole(ctx.activeTenantRole, 'approver')
   const canDelete = isSuperadmin(ctx.platformRoles)
@@ -235,7 +239,9 @@ export default async function AgentDetailPage({
       id: 'eszkozok',
       label: sectionLabel('eszkozok'),
       description: sectionDesc('eszkozok'),
-      content: <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />,
+      content: <div className="space-y-4"><AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />
+        {canManage ? <Card title={t('hermesControlTitle')}><ClientPolicyForm key={agent.id} scope="agent" scopeId={agent.id} policy={adminPolicyView(hermesPolicy)} tenantPolicy={null} /></Card> : null}
+      </div>,
     },
     {
       id: 'skillek',

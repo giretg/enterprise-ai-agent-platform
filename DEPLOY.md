@@ -37,6 +37,9 @@ npx -y firebase-tools@latest apphosting:secrets:set CLERK_WEBHOOK_SIGNING_SECRET
 # Fázis 2 — write-gate
 npx -y firebase-tools@latest apphosting:secrets:set WRITE_GATE_SECRET
 
+# Hermes Managed Client — legalább 32 véletlen karakter, a szerveren marad
+npx -y firebase-tools@latest apphosting:secrets:set MODEL_GATEWAY_JWT_KEY
+
 # MCP requestState (#618, MRTR űrlap) — opcionális; hiányában link-fallback
 npx -y firebase-tools@latest apphosting:secrets:set MCP_REQUEST_STATE_KEY
 ```
@@ -44,6 +47,25 @@ npx -y firebase-tools@latest apphosting:secrets:set MCP_REQUEST_STATE_KEY
 A backend hozzáférést kap automatikusan az `apphosting.yaml`-ban felsorolt secret-ekhez.
 
 **Agent workspace (file editor):** a `WORKSPACE_BUCKET` és `GCS_SERVICE_ACCOUNT_EMAIL` plain env-ként szerepelnek az `apphosting.yaml`-ban (nem secret). GCS bucket + IAM: `app/infra/gcp/WORKSPACE-GCS-SETUP.md`.
+
+### Hermes céges kontroll (#776)
+
+A `MODEL_GATEWAY_JWT_KEY` kötelező: nélküle a modell-token végpont `503 key_missing`
+választ ad, és a céges Hermes-modellek nem használhatók. Legalább 32 véletlen
+karakter legyen, külön a modellgyártó API-kulcsától. Mindkét App Hosting config
+ugyanazt a Secret Manager-bejegyzést köti be. A kulcsot ne tedd kliensre.
+
+Rollout előtt alkalmazd a ClientPolicy, ClientInstall/ClientSession, MachineFloor
+és AiInteractionEvent migrációit. Az admin a **Hermes céges kontroll** menüben
+beállítja a céges és felhasználói szabályokat; az agent **Eszközök** lapján a
+képesség-plafont. A munkatárs csomagját külön kell letölteni és az alábbi útmutató
+szerint telepíteni: [Hermes telepítés](clients/hermes-guard/README.md).
+
+Éles átvétel: adminmentés auditnyoma, Bot-bejelentkezés, egy normál és streamelt
+modellkérés, MCP- és helyi tool tiltás/engedély, teljes audit user/agent/session/turn
+azonosítóval, tokenmegújítás, 30 percnél hosszabb Desktop-session, segédmodellhívások,
+provider-váltási kísérlet és hozzáférés-visszavonás a következő kérésnél. A helyi
+kompatibilitási teszt nem helyettesíti ezeket az éles kliens- és hálózati méréseket.
 
 ## 2. DB migráció (Neon)
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """exc-token — a Hermes `providers.excellence.key_cmd` helper (#746 V1-2, D1).
 
 A kiszolgált Bot-profil MCP OAuth tokenjét 10 perces Model Gateway JWT-re cseréli, és

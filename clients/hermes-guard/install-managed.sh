@@ -90,25 +90,40 @@ PLUGIN_SRC="$SCRIPT_DIR/excellence-guard"
 
 copy_plugin() {
   local dest="$1"
-  mkdir -p "$dest"
-  cp -R "$PLUGIN_SRC/." "$dest/"
-  if [ -n "$OWNER" ]; then chown -R "$OWNER" "$dest"; fi
+  python3 - "$PLUGIN_SRC" "$dest" "${2:-}" <<'PYCOPY'
+import os, pathlib, pwd, shutil, sys
+src, dest, user = sys.argv[1:]
+# A user profiljába soha nem írunk root-joggal: átirányítás sem adhat root-írást.
+if user:
+    account = pwd.getpwnam(user)
+    os.initgroups(user, account.pw_gid)
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+path = pathlib.Path(dest)
+if path.is_symlink() or any(part.is_symlink() and part.lstat().st_uid != 0 for part in path.parents):
+    raise ValueError("A plugin telepítési útvonala nem lehet symlink")
+if path.exists() and any(part.is_symlink() for part in path.rglob("*")):
+    raise ValueError("A plugin telepítési könyvtára nem tartalmazhat symlinket")
+shutil.copytree(src, dest, dirs_exist_ok=True)
+PYCOPY
 }
 
 copy_plugin "$PLUGIN_ROOT/excellence-guard"
 TARGET_HOME=""
+TARGET_USER=""
 if [ -n "$PREFIX" ]; then
   TARGET_HOME="$PREFIX/home"
   mkdir -p "$TARGET_HOME"
 elif [ -n "${SUDO_USER:-}" ]; then
   TARGET_HOME=$(python3 -c 'import pwd, sys; print(pwd.getpwnam(sys.argv[1]).pw_dir)' "$SUDO_USER")
+  TARGET_USER="$SUDO_USER"
 fi
 if [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]; then
-  copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard"
+  copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard" "$TARGET_USER"
   if [ -d "$TARGET_HOME/.hermes/profiles" ]; then
     for profile in "$TARGET_HOME/.hermes/profiles"/*; do
       [ -d "$profile" ] || continue
-      copy_plugin "$profile/plugins/excellence-guard"
+      copy_plugin "$profile/plugins/excellence-guard" "$TARGET_USER"
     done
   fi
 fi

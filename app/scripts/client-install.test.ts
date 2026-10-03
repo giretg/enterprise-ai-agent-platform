@@ -35,14 +35,15 @@ async function check(name: string, fn: () => Promise<void>) {
 
 /** A Postgres-repo kulcs-szemantikáját követi: (tenant, user, installId) install; (install, session, agent) session. */
 function memoryStore(): ClientInstallStore {
-  const installs = new Map<string, { at: Date; sessions: Map<string, Date> }>()
+  const installs = new Map<string, { at: Date; managedDirHash: string; sessions: Map<string, Date> }>()
   const k = (i: { tenantId: string; userId: string; installId: string }) => `${i.tenantId}|${i.userId}|${i.installId}`
   return {
     async recordHeartbeat(i) {
       const prev = installs.get(k(i))
       const previousHeartbeatAt = prev?.at ?? null
-      const row = prev ?? { at: i.now, sessions: new Map() }
+      const row = prev ?? { at: i.now, managedDirHash: i.managedDirHash, sessions: new Map() }
       row.at = i.now
+      row.managedDirHash = i.managedDirHash
       for (const s of i.sessions) row.sessions.set(`${s}|${i.agentId}`, i.now)
       for (const [key, seen] of row.sessions) if (seen < i.sessionsOlderThan) row.sessions.delete(key)
       installs.set(k(i), row)
@@ -51,7 +52,7 @@ function memoryStore(): ClientInstallStore {
     async findInstall(i) {
       const row = installs.get(k(i))
       if (!row) return null
-      return { lastHeartbeatAt: row.at, sessionLastSeenAt: i.sessionId ? (row.sessions.get(`${i.sessionId}|${i.agentId}`) ?? null) : null }
+      return { lastHeartbeatAt: row.at, managedDirHash: row.managedDirHash, sessionLastSeenAt: i.sessionId ? (row.sessions.get(`${i.sessionId}|${i.agentId}`) ?? null) : null }
     },
   }
 }
@@ -69,7 +70,7 @@ function setup(opts: {
     store: memoryStore(),
     audit: { append: async (a) => void audits.push(a) },
     timing: { intervalSeconds: 60, freshnessSeconds: 180 },
-    expectedManagedDirHash: opts.expectedManagedDirHash,
+    expectedManagedDirHash: 'expectedManagedDirHash' in opts ? opts.expectedManagedDirHash : 'dir',
     lookupExpectedManagedDirHash: opts.lookupExpectedManagedDirHash,
     now: () => clock,
   }
@@ -161,7 +162,7 @@ async function main() {
     const ok = setup({ expectedManagedDirHash: 'dir' })
     await ok.beat()
     assert.equal(ok.audits.length, 0)
-    const none = setup()
+    const none = setup({ expectedManagedDirHash: undefined })
     await none.beat()
     assert.equal(none.audits.length, 0)
     const saved = setup({
@@ -170,6 +171,23 @@ async function main() {
     })
     await saved.beat()
     assert.equal((saved.audits[0].metadata as { kind: string }).kind, 'managed_dir_hash_mismatch')
+  })
+
+  await check('módosított vagy nem kiadott gép-padló → Open; az új csomag azonnal érvényes', async () => {
+    const mismatch = setup({ expectedManagedDirHash: 'changed' })
+    await mismatch.beat()
+    assert.equal((await mismatch.ask())?.reason, 'client_open:managed_dir_hash_mismatch')
+    const missing = setup({ expectedManagedDirHash: undefined, lookupExpectedManagedDirHash: async () => null })
+    await missing.beat()
+    assert.equal((await missing.ask())?.reason, 'client_open:managed_dir_unissued')
+    let expected = 'dir'
+    const issued = setup({ lookupExpectedManagedDirHash: async () => expected })
+    await issued.beat()
+    assert.equal(await issued.ask(), null)
+    expected = 'replacement'
+    assert.equal((await issued.ask())?.reason, 'client_open:managed_dir_hash_mismatch')
+    expected = 'dir'
+    assert.equal(await issued.ask(), null)
   })
 
   await check('törzs-validáció: hiányzó hash / túl sok session elutasítva, session alapból üres', async () => {
