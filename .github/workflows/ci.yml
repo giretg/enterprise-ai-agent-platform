@@ -168,6 +168,7 @@ jobs:
           npm run test:iam-token-redeem-escalation
           npm run test:tenant-management
           npm run test:self-service-tenant
+          npm run test:platform-registration-approve
 
   platform-chat-worker:
     # #1004: a beépített platform-chat worker (külön csomag). Elfogadási feltétel 7: a CI elbukik,

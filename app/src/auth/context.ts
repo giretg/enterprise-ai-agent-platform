@@ -32,6 +32,23 @@ export type AuthContext = {
   assumed: boolean
 }
 
+/**
+ * N-IAM-3: pending/suspended User soha ne örököljön tenant- vagy platform-kindet
+ * a membership / platform-szerep sorokból. A tagság önmagában nem jogosít fel, amíg
+ * a fiók nincs `active` — különben egy félbehagyott jóváhagyás (aktív membership +
+ * még pending User) control-plane hozzáférést adna.
+ */
+export function applyUserStatusGate(ctx: AuthContext): AuthContext {
+  if (ctx.user.status === 'active') return ctx
+  return {
+    ...ctx,
+    kind: 'none',
+    activeTenantId: null,
+    activeTenantRole: null,
+    assumed: false,
+  }
+}
+
 export type TenantAuthContext = AuthContext & {
   kind: 'tenant'
   activeTenantId: string
@@ -108,11 +125,13 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
     !!requestedTenantId &&
     memberships.some((m) => m.tenantId === requestedTenantId && m.status === 'active')
 
+  let ctx: AuthContext
+
   if (requestedTenantId && !requestedIsActiveMembership && isSuperadmin(platformRoles)) {
     try {
       const tenant = await repositories.tenants.findById(requestedTenantId)
       if (tenant) {
-        return {
+        ctx = {
           user,
           platformRoles,
           memberships,
@@ -122,6 +141,7 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
           activeTenantRole: 'admin',
           assumed: true,
         }
+        return applyUserStatusGate(ctx)
       }
     } catch {
       // ignore — a normál feloldásra (membership/default/platform) esünk vissza
@@ -131,7 +151,7 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
   const resolved = resolveActiveTenant({ memberships, platformRoles, requestedTenantId })
 
   if (resolved.kind === 'tenant') {
-    return {
+    ctx = {
       user,
       platformRoles,
       memberships,
@@ -140,10 +160,8 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
       activeTenantRole: resolved.role,
       assumed: false,
     }
-  }
-
-  if (resolved.kind === 'platform') {
-    return {
+  } else if (resolved.kind === 'platform') {
+    ctx = {
       user,
       platformRoles,
       memberships,
@@ -152,17 +170,19 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
       activeTenantRole: null,
       assumed: false,
     }
+  } else {
+    ctx = {
+      user,
+      platformRoles,
+      memberships,
+      kind: 'none',
+      activeTenantId: null,
+      activeTenantRole: null,
+      assumed: false,
+    }
   }
 
-  return {
-    user,
-    platformRoles,
-    memberships,
-    kind: 'none',
-    activeTenantId: null,
-    activeTenantRole: null,
-    assumed: false,
-  }
+  return applyUserStatusGate(ctx)
 }
 
 /** Request-szintű deduplikáció: párhuzamos Server Action / RSC hívások egy auth stacket osztanak. */
