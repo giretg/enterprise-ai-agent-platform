@@ -15,6 +15,7 @@ export const MAX_CONTENT_BYTES = 256 * 1024
 export const MAX_META_BYTES = 16 * 1024
 export const MAX_BATCH_BYTES = 8 * 1024 * 1024
 export const DEFAULT_RETENTION_DAYS = 90
+export const DEFAULT_SWEEP_LIMIT = 5000
 export const MAX_LIST_LIMIT = 500
 
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
@@ -65,6 +66,8 @@ export interface AiInteractionStore {
   /** A már létező `(tenantId, id)` kimarad (idempotens); a ténylegesen beírt sorok számát adja. */
   insertMany(rows: AiInteractionRow[]): Promise<number>
   list(filter: AiInteractionFilter): Promise<AiInteractionRow[]>
+  /** Lejárt sorok törlése, legfeljebb `limit` darab. A ténylegesen töröltek számát adja. */
+  deleteExpired(now: Date, limit: number): Promise<number>
 }
 
 export type AiAuditDeps = {
@@ -226,14 +229,27 @@ export type AuditEventView = Omit<AiInteractionRow, 'content'> & { hasContent: b
 export async function listAuditEvents(
   store: AiInteractionStore,
   filter: AiInteractionFilter,
-  opts: { decrypt: boolean },
+  opts: { decrypt: boolean; now?: Date },
 ): Promise<AuditEventView[]> {
+  const now = opts.now ?? new Date()
   const rows = await store.list({ ...filter, limit: Math.min(Math.max(filter.limit, 1), MAX_LIST_LIMIT) })
-  return rows.map(({ content, ...rest }) => {
-    const view: AuditEventView = { ...rest, hasContent: content != null }
-    if (opts.decrypt && content != null) {
-      view.content = JSON.parse(decryptContent(rest.tenantId, content))
-    }
-    return view
-  })
+  return rows
+    .filter((r) => r.expiresAt.getTime() > now.getTime())
+    .map(({ content, ...rest }) => {
+      const view: AuditEventView = { ...rest, hasContent: content != null }
+      if (opts.decrypt && content != null) {
+        view.content = JSON.parse(decryptContent(rest.tenantId, content))
+      }
+      return view
+    })
+}
+
+/** Lejárt `AiInteractionEvent` sorok törlése. A Cloud Scheduler ezt hívja a retention-route-on. */
+export async function sweepExpiredAiAuditEvents(
+  store: Pick<AiInteractionStore, 'deleteExpired'>,
+  input: { now?: Date; limit?: number } = {},
+): Promise<{ deleted: number }> {
+  const now = input.now ?? new Date()
+  const limit = input.limit ?? DEFAULT_SWEEP_LIMIT
+  return { deleted: await store.deleteExpired(now, Math.max(1, limit)) }
 }

@@ -440,7 +440,7 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 
 ## 14. Adatvédelem, munkajog
 
-A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és előzetes tájékoztatás (a kliens jelzi: „Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek”), céltól függő retenció, szűk hozzáférés (audit-szerep, négy szem elve), érzékeny adatnál tokenizálás. Az audit-mélység paraméter (§5.2), ez az arányosságot is szolgálja. A DPIA a WP-D előfeltétele.
+A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és előzetes tájékoztatás (a kliens jelzi: „Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek”), céltól függő retenció, szűk hozzáférés (audit-szerep, négy szem elve), érzékeny adatnál tokenizálás. Az audit-mélység paraméter (§5.2), ez az arányosságot is szolgálja. A DPIA a WP-D előfeltétele; a #759 DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
 
 ---
 
@@ -452,7 +452,7 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 | D2 | Saját ChatGPT/Codex előfizetés menedzselt módban | **Nem.** Kikerülne az auditból és a szűrésből. |
 | D3 | Felülírhatja-e a specifikusabb szint a tágabb tiltását? | **Igen**, felhasználói szinten explicit, auditált kivétellel. Az agent-plafont semmi nem lépi túl, azonos szinten a tiltás nyer. |
 | D4 | Elérhetetlen Control Plane esetén a Guard | Az utolsó érvényes snapshot **1 óráig**, utána „Kötött pálya”. (A Model Gateway ugyanabban a deploymentben fut, így kiesésnél a modell sem érhető el.) |
-| D5 | Prompt-tartalom tárolása | Titkosított tartalom (meglévő `app/src/domain/privacy/aes-gcm-envelope.ts`), az audit-rekordban hivatkozással. Szerveroldali tartalom-retenció alapból 90 nap (konfig); a lokális session-DB-t v1-ben a Guard nem törli. **A DPIA után véglegesítendő.** |
+| D5 | Prompt-tartalom tárolása | Titkosított tartalom (meglévő `app/src/domain/privacy/aes-gcm-envelope.ts`), az audit-rekordban hivatkozással. Szerveroldali tartalom-retenció **véglegesítve a #759 DPIA-ban:** alapból 90 nap (`AI_AUDIT_RETENTION_DAYS`); a lokális session-DB-t v1-ben a Guard nem törli. Élő hívó: napi `POST /api/v1/internal/ai-audit-retention`. |
 | D6 | Audit-mélység „metaadat” alá? | **Nem**, a metaadat-szint az alapréteg része. |
 | D7 | Upstream PR-ok (U1, U2) | A POC-mérések után, mérési eredménnyel. |
 | D8 | Első fejlesztési szelet | **POC-szelet, élesíthető kóddal** (§17). A többi WP külön issue-kba kerül. |
@@ -465,7 +465,7 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 | D14 | Snapshot és heartbeat szállítása | REST: `GET /api/client-policy/snapshot`, `POST /api/client-policy/heartbeat`, ugyanazzal a gateway-JWT-vel, mint a modellhívás. Nem MCP-tool, mert a Guard nem LLM. |
 | D15 | A blokkolás jelzése a Hermesnek | HTTP 200, szintetikus asszisztens-üzenet hétköznapi nyelven (a legacy `formatSensitivityBlockMessage` alapján). 4xx nem, mert újrapróbálkozást vagy fallbacket vált ki (§7.2/1). |
 
-**Nem fejlesztési, de éles bekapcsolás előfeltétele:** DPIA + munkavállalói tájékoztatás (§14). A staging POC belső, tájékoztatott userekkel ezek nélkül is futhat.
+**Nem fejlesztési, de éles bekapcsolás előfeltétele:** DPIA + munkavállalói tájékoztatás (§14). A staging POC belső, tájékoztatott userekkel ezek nélkül is futhat. A műszaki DPIA, a Guard-tájékoztatás, a 90 napos retenciós sweep élő hívója és a négy-szemes tartalomolvasás: #759.
 
 ---
 

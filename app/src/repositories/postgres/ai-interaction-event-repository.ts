@@ -19,6 +19,7 @@ export class PostgresAiInteractionEventRepository implements AiInteractionStore 
         agentId: f.agentId,
         sessionId: f.sessionId,
         createdAt: { gte: f.from, lte: f.to },
+        expiresAt: { gt: new Date() },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: f.limit,
@@ -29,5 +30,17 @@ export class PostgresAiInteractionEventRepository implements AiInteractionStore 
       source: r.source as AiInteractionRow['source'],
       meta: (r.meta ?? {}) as Record<string, unknown>,
     }))
+  }
+
+  async deleteExpired(now: Date, limit: number): Promise<number> {
+    return prisma.$executeRaw`
+      DELETE FROM "ai_interaction_events" AS e
+      USING (
+        SELECT "tenant_id", "id" FROM "ai_interaction_events"
+        WHERE "expires_at" <= ${now}
+        LIMIT ${limit}
+      ) AS d
+      WHERE e."tenant_id" = d."tenant_id" AND e."id" = d."id"
+    `
   }
 }

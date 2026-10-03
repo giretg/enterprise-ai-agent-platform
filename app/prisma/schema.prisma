@@ -986,6 +986,7 @@ model AiInteractionEvent {
   @@id([tenantId, id])
   @@index([tenantId, sessionId])
   @@index([tenantId, userId, createdAt])
+  @@index([expiresAt])
   @@map("ai_interaction_events")
 }
 

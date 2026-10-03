@@ -1,12 +1,13 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
-import { aiInteractionStore, productionAiAuditDeps } from '@/auth/ai-audit-deps'
+import { aiInteractionStore, productionAiAuditDeps, productionContentGrantKey } from '@/auth/ai-audit-deps'
 import { productionGatewayTokenDeps } from '@/auth/gateway-token-deps'
-import { requireTenantApiUser } from '@/lib/api-tenant-auth'
-import { repositories } from '@/repositories/postgres'
-import { writeAudit } from '@/lib/audit/types'
+import { verifyContentGrant } from '@/domain/ai-audit/content-grant'
 import { MAX_BATCH_BYTES, MAX_LIST_LIMIT, ingestGuardEvents, listAuditEvents } from '@/domain/ai-audit/ai-audit-service'
 import { verifyGatewayToken } from '@/domain/model-gateway-token/gateway-token'
+import { requireTenantApiUser } from '@/lib/api-tenant-auth'
+import { writeAudit } from '@/lib/audit/types'
+import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -62,8 +63,9 @@ const querySchema = z.object({
 })
 
 /**
- * Admin olvasó API: alapból csak metaadat; `includeContent=true` visszafejti a tartalmat, és maga a
- * visszafejtés is `AuditLog` esemény (ki, milyen szűrővel, hány eseményt olvasott).
+ * Admin olvasó API: alapból csak metaadat. A tartalom (`includeContent=true`) négy szem:
+ * `x-ai-audit-grant` egy másik admin által jóváhagyott grant (lásd content-unlock).
+ * Maga a visszafejtés `AuditLog` esemény (ki, kivel, milyen szűrővel, hány sor).
  */
 export async function GET(request: Request): Promise<Response> {
   const auth = await requireTenantApiUser('admin')
@@ -75,6 +77,21 @@ export async function GET(request: Request): Promise<Response> {
   const { includeContent, ...filter } = parsed.data
   const decrypt = includeContent === 'true'
 
+  let fourEyes: { requesterId: string; approverId: string } | undefined
+  if (decrypt) {
+    const granted = verifyContentGrant(productionContentGrantKey(), request.headers.get('x-ai-audit-grant'), {
+      tenantId: user.activeTenantId,
+      readerId: user.user.id,
+    })
+    if (!granted.ok) {
+      return NextResponse.json(
+        { error: granted.code === 'invalid_token' ? 'four_eyes_required' : granted.code },
+        { status: 403 },
+      )
+    }
+    fourEyes = { requesterId: granted.grant.requesterId, approverId: granted.grant.approverId }
+  }
+
   const events = await listAuditEvents(aiInteractionStore, { ...filter, tenantId: user.activeTenantId }, { decrypt })
   if (decrypt) {
     await writeAudit(repositories.audit, {
@@ -83,7 +100,11 @@ export async function GET(request: Request): Promise<Response> {
       action: 'ai_audit.content_read',
       targetType: 'ai_interaction_event',
       policyDecision: 'allowed',
-      metadata: { filter: { ...filter, from: filter.from?.toISOString(), to: filter.to?.toISOString() }, count: events.length },
+      metadata: {
+        filter: { ...filter, from: filter.from?.toISOString(), to: filter.to?.toISOString() },
+        count: events.length,
+        fourEyes,
+      },
       tenantId: user.activeTenantId,
     })
   }
