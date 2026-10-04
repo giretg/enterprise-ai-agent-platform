@@ -3,8 +3,10 @@
  * Futtatás: npm run test:model-gateway-proxy
  */
 import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
 import {
   handleChatCompletion,
+  MAX_REQUEST_BYTES,
   type GatewayPipelineHooks,
   type ModelCallEvent,
   type ModelGatewayDeps,
@@ -103,6 +105,52 @@ async function main() {
   await check('hibás kérés (nincs messages) → 400', async () => {
     const s = setup({ agent: { primary: A } })
     assert.equal((await s.call({ model: 'x' })).status, 400)
+  })
+
+  await check('hamis Content-Length nélkül sem olvas 16 MiB fölé', async () => {
+    const s = setup({ agent: { primary: A }, scripts: [completion('nem szabad')] })
+    let chunksRead = 0
+    const request = new Request('https://app.test/api/model-gateway/v1/chat/completions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer t' },
+      duplex: 'half',
+      body: new ReadableStream({
+        pull(controller) {
+          chunksRead++
+          controller.enqueue(new Uint8Array(1024 * 1024))
+          if (chunksRead === 32) controller.close()
+        },
+      }),
+    } as RequestInit)
+    const res = await handleChatCompletion(s.deps, request)
+    assert.equal(res.status, 413)
+    assert.ok(chunksRead <= Math.ceil(MAX_REQUEST_BYTES / (1024 * 1024)) + 2, `read ${chunksRead} MiB`)
+    assert.equal(s.calls.length, 0)
+  })
+
+  await check('provider 307 átirányítás nem továbbítja a promptot másik címre', async () => {
+    let leaked = false
+    let sourceCalled = false
+    const target = createServer((_req, res) => { leaked = true; res.end('{}') })
+    const source = createServer((_req, res) => {
+      sourceCalled = true
+      res.writeHead(307, { location: `http://127.0.0.1:${(target.address() as { port: number }).port}/leak` })
+      res.end()
+    })
+    await Promise.all([new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve)), new Promise<void>((resolve) => source.listen(0, '127.0.0.1', resolve))])
+    try {
+      const s = setup({ agent: { primary: A } })
+      s.deps.providers = () => ({ baseUrl: `http://127.0.0.1:${(source.address() as { port: number }).port}`, apiKey: 'sk-test' })
+      s.deps.fetchImpl = fetch
+      await s.call(ask)
+      assert.equal(sourceCalled, true)
+      assert.equal(leaked, false)
+      await flush()
+      assert.equal(s.events[0].outcome, 'error')
+      assert.deepEqual((s.events[0].request as { messages: unknown }).messages, ask.messages)
+    } finally {
+      await Promise.all([new Promise<void>((resolve) => source.close(() => resolve())), new Promise<void>((resolve) => target.close(() => resolve()))])
+    }
   })
 
   await check('D12: engedett kért modell fut; a céges kulcs a gateway-é, nem a klienséé', async () => {
