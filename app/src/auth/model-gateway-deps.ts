@@ -11,8 +11,8 @@ import { PostgresGatewaySurrogateRepository } from '@/repositories/postgres/gate
 import { clientPolicyDeps } from '@/auth/client-policy-deps'
 import { createManagedGate } from '@/domain/client-policy/client-install'
 
-export function productionModelGatewayDeps(): ModelGatewayDeps {
-  const tokenDeps = productionGatewayTokenDeps()
+export async function productionModelGatewayDeps(): Promise<ModelGatewayDeps> {
+  const tokenDeps = await productionGatewayTokenDeps()
   return {
     verify: (authorization) => verifyGatewayToken(tokenDeps, authorization),
     loadAgentModelConfig: async ({ tenantId, agentId }) =>

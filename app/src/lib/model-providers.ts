@@ -218,7 +218,7 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     value: 'openrouter',
     label: 'OpenRouter (kísérleti)',
     defaultModel: '~openai/gpt-latest',
-    hint: 'OpenAI-kompatibilis OpenRouter API (OPENROUTER_API_KEY). Modellek csak admin allowlist után választhatók agenthez.',
+    hint: 'OpenAI-kompatibilis OpenRouter. A céges kulcsot a Beállítások → Céges modellkulcs alatt viszi fel az admin. Modellek csak allowlist után választhatók agenthez.',
     models: OPENROUTER_TEXT_MODELS,
   },
 ]

@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic'
 
 /** #774 (D14): a Guard heartbeatje a gateway-JWT-vel; ez teszi a klienst Managed-dé a Model Gateway-en. */
 export async function POST(request: Request): Promise<Response> {
-  const verified = await verifyGatewayToken(productionGatewayTokenDeps(), request.headers.get('authorization'))
+  const verified = await verifyGatewayToken(await productionGatewayTokenDeps(), request.headers.get('authorization'))
   if (!verified.ok) {
     const status = verified.code === 'key_missing' ? 503 : verified.code === 'forbidden' ? 403 : 401
     return NextResponse.json({ error: verified.code }, { status })

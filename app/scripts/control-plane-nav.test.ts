@@ -237,6 +237,7 @@ function main() {
     })
     const hrefs = flattenNavHrefs(nav)
     assert.ok(hrefs.includes('/control-plane/menu-access'))
+    assert.ok(hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
   })
 
@@ -250,6 +251,31 @@ function main() {
     assert.deepEqual(policy.admin, ['admin.system'])
     assert.deepEqual(policy.operator, [])
     assert.deepEqual(policy.approver, [])
+  })
+
+  check('admin cannot hide Hermes company controls', () => {
+    const hrefs = flattenNavHrefs(
+      buildControlPlaneNav({
+        tenantRole: 'admin',
+        platformRoles: [],
+        navVisibility: sanitizeNavVisibilityPolicy({ admin: ['admin.ai-client-policy'] }),
+      }),
+    )
+    assert.ok(hrefs.includes('/control-plane/ai-client-policy'))
+  })
+
+  check('every catalog key has a ControlPlane.nav message in hu and en', () => {
+    const hu = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'hu.json'), 'utf8'),
+    ) as { ControlPlane: { nav: Record<string, string> } }
+    const en = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'en.json'), 'utf8'),
+    ) as { ControlPlane: { nav: Record<string, string> } }
+    for (const key of allNavKeys()) {
+      const msgKey = key.replaceAll('.', '_')
+      assert.equal(typeof hu.ControlPlane.nav[msgKey], 'string', `hu missing ${msgKey}`)
+      assert.equal(typeof en.ControlPlane.nav[msgKey], 'string', `en missing ${msgKey}`)
+    }
   })
 
   check('settings round-trip keeps other tenant settings intact', () => {

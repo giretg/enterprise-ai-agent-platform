@@ -17,7 +17,7 @@ export const runtime = 'nodejs'
  * a payloadból soha. Ismételt `id` nem duplikál (a Guard bátran újrapróbálhat).
  */
 export async function POST(request: Request): Promise<Response> {
-  const verified = await verifyGatewayToken(productionGatewayTokenDeps(), request.headers.get('authorization'))
+  const verified = await verifyGatewayToken(await productionGatewayTokenDeps(), request.headers.get('authorization'))
   if (!verified.ok) {
     const status = verified.code === 'key_missing' ? 503 : verified.code === 'forbidden' || verified.code === 'agent_not_found' ? 403 : 401
     return NextResponse.json({ error: verified.code }, { status })

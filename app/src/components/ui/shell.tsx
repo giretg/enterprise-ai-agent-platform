@@ -180,9 +180,9 @@ export function AppShell({
                         )}
                       </button>
                       {open && (
-                        <div
+        <div
                           role="menu"
-                          className="absolute right-0 top-full z-40 mt-2 min-w-[12rem] rounded-2xl border border-line bg-night/95 p-1.5 shadow-xl backdrop-blur-xl"
+                          className="absolute right-0 top-full z-40 mt-2 max-h-[min(70vh,28rem)] min-w-[12rem] overflow-y-auto rounded-2xl border border-line bg-night/95 p-1.5 shadow-xl backdrop-blur-xl"
                         >
                           {item.children.map((child) => {
                             const childActive = isActive(child.href, child.exact)

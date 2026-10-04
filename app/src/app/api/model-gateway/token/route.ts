@@ -17,7 +17,7 @@ const STATUS: Record<GatewayTokenFailureCode, number> = {
 /** #772: MCP OAuth Bearer + { tenantSlug, agentId, installId } → 10 perces gateway-JWT. */
 export async function POST(request: Request): Promise<Response> {
   const body: unknown = await request.json().catch(() => null)
-  const result = await issueGatewayToken(productionGatewayTokenDeps(), {
+  const result = await issueGatewayToken(await productionGatewayTokenDeps(), {
     authorizationHeader: request.headers.get('authorization'),
     resourceOrigin: resolvePublicAppOrigin(request),
     body,

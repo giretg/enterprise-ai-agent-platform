@@ -95,6 +95,8 @@ jobs:
           npm run test:model-gateway-token
           npm run test:model-fallback-chain
           npm run test:model-gateway-proxy
+          npm run test:openrouter-tenant-key
+          npm run test:model-gateway-jwt-key
           npm run test:model-gateway-content-filter
           npm run test:ai-audit
           npm run test:enterprise-tools

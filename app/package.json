@@ -49,6 +49,8 @@
     "test:client-install": "tsx scripts/client-install.test.ts",
     "test:machine-floor": "tsx scripts/machine-floor.test.ts",
     "test:model-gateway-proxy": "tsx scripts/model-gateway-proxy.test.ts",
+    "test:openrouter-tenant-key": "tsx scripts/openrouter-tenant-key.test.ts",
+    "test:model-gateway-jwt-key": "tsx scripts/model-gateway-jwt-key.test.ts",
     "test:model-gateway-content-filter": "tsx scripts/model-gateway-content-filter.test.ts",
     "test:model-gateway-token": "tsx scripts/model-gateway-token.test.ts",
     "test:ai-audit": "tsx scripts/ai-audit.test.ts",
