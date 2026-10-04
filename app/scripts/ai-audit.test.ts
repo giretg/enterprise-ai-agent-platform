@@ -162,7 +162,7 @@ async function main() {
   })
 
   const modelCall = (over: Partial<ModelCallEvent> = {}): ModelCallEvent => ({
-    ...ctx, tenantSlug: 'acme', sessionId: 'sess-1', turnId: 'turn-1', stream: false,
+    ...ctx, tenantSlug: 'acme', sessionId: 'sess-1', turnId: 'turn-1', callId: uuid(9), stream: false,
     requestedModel: null, model: 'openrouter/a', substituted: false, failedCandidates: [], outcome: 'ok',
     request: { model: 'a', messages: [{ role: 'user', content: 'szia' }, { role: 'tool', content: 'TOOL-TITOK' }] },
     response: { content: 'válasz', toolCalls: [], finishReason: 'stop' },
@@ -193,6 +193,16 @@ async function main() {
     assert.ok(!stored.includes('TOOL-TITOK'))
   })
 
+  await check('gateway-írás a provider teljes válaszát és hibaválaszát tárolja', async () => {
+    const s = setup('prompt_and_response')
+    const sink = createGatewayAuditSink(s.deps)
+    const raw = { choices: [{ message: { content: 'válasz', reasoning: 'indok' } }, { message: { content: 'második' } }], usage: { prompt_tokens: 5 } }
+    await sink.record(modelCall({ providerResponse: raw }))
+    await sink.record(modelCall({ outcome: 'error', response: null, providerResponse: { error: { message: 'provider rejected' } } }))
+    assert.deepEqual(JSON.parse(decryptContent(TENANT, s.rows[0].content!)).response, raw)
+    assert.deepEqual(JSON.parse(decryptContent(TENANT, s.rows[1].content!)).response, { error: { message: 'provider rejected' } })
+  })
+
   await check('gateway-írás metaadat-mélységben: content null; blokk is rekordot kap', async () => {
     const s = setup('metadata')
     const sink = createGatewayAuditSink(s.deps)
@@ -201,6 +211,16 @@ async function main() {
     assert.ok(s.rows.every((r) => r.content === null))
     assert.equal(s.rows[1].meta.policyDecision, 'denied')
     assert.equal(s.rows[1].meta.blockReason, 'pan')
+  })
+
+  await check('gateway-írás túlméretes tartalmat és nem tartós beszúrást elutasít', async () => {
+    const s = setup('prompt_and_response')
+    const sink = createGatewayAuditSink(s.deps)
+    await assert.rejects(sink.record(modelCall({ request: { messages: [{ role: 'user', content: 'x'.repeat(MAX_CONTENT_BYTES) }] } })),
+      { name: 'AuditContentTooLargeError' })
+    assert.equal(s.rows.length, 0)
+    await assert.rejects(createGatewayAuditSink({ ...s.deps, store: { ...s.store, insertMany: async () => 0 } }).record(modelCall()),
+      /not durable/)
   })
 
   await check('olvasó: alapból nincs content; decrypt=true visszafejt; tenant-szűrés', async () => {
