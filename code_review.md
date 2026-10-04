@@ -9,6 +9,7 @@
 - Üzleti hatás: a cég auditrendszerének kiesése nem alakulhat észrevétlen, naplózatlan AI-használattá. A munkatárs világos hibát kap, a vállalat pedig legalább a tartós kezdő rekordból látja, ki, melyik agenttel, melyik modell felé és milyen kéréssel indult; a befejező rekord jelzi a sikeres, hibás vagy megszakított futást. Nagy válasz esetén a szolgáltatás inkább hibát ad, mint hogy hiányos tartalomnaplóval sikeresnek mutassa a kérést.
 - Ellenőrzés: `test:model-gateway-proxy` az elutasított beszúrás és a nullás tárolási eredmény előtti provider-tiltást, a késleltetett írás sorrendjét, a normál/SSE eredményhiba viselkedését, a `[DONE]` visszatartását, a csonka streamet, a fetch- és stream-megszakítást, a teljes válasz rögzítését, valamint a tartalom- és szolgáltatási méretkorlátot fedi. `test:ai-audit`, `test:model-gateway-content-filter`, `test:client-install`, célzott ESLint, teljes `tsc --noEmit` és `git diff --check` zöld.
 - Korlát: stream közben már elküldött korábbi chunkokat utólag nem lehet visszavonni; ilyenkor a kezdő rekord tartós, az auditírás hibája a streamet hibával zárja. A PR #804 független redirect-/kérésméret-javítása külön merge-re vár.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/807 (`codex`, `codex-automation`, `security`).
 
 ## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
 
