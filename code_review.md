@@ -10,6 +10,7 @@
 - Üzleti hatás: a vállalati AI-kapun átmenő ügyféladat nem kerülhet automatikus HTTP-átirányítással nem jóváhagyott célhoz, és egy hibás vagy rosszindulatú kliens nem foglalhatja le korlátlanul a szerver memóriáját már a kérésfeldolgozás előtt.
 - Ellenőrzés: a 307-es regresszió a javítás előtt piros, utána zöld, és a hibás hívás audit-eseményében megvan a megkísérelt kérés; a 32 MiB-os streamelő kliensnél a proxy legfeljebb a 16 MiB-os határhoz szükséges részt olvassa. `test:model-gateway-proxy`, `test:model-gateway-token`, `test:client-install`, `test:ai-audit`, célzott ESLint, teljes `tsc --noEmit` és `git diff --check` zöld.
 - Éles üzemi korlát: a jelenlegi modellhívás-audit írási hibája csak logolódik, a hívást nem állítja meg (`proxy.ts` `record` ág); ezért a #769/#770 szerinti maradéktalan auditgarancia külön javításig nem igazolható. A követő feladat: #803. A kliens kriptográfiai eszközkötése a #758 külön feladata. Ez a PR a fent reprodukált proxy-adatvédelmi, bemeneti DoS- és hibaút-audit rést zárja.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/804 (`codex`, `codex-automation`, `security`).
 
 ## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
 
