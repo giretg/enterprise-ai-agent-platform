@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:local-auth": "AUTH_DISABLED=true NEXT_DIST_DIR=.next-local-auth next dev --port 3001",
-    "build": "prisma generate && WRITE_GATE_SECRET=${WRITE_GATE_SECRET:-local-dev-write-gate-secret} AGENT_API_KEY_LOOKUP_SECRET=${AGENT_API_KEY_LOOKUP_SECRET:-local-dev-write-gate-secret} next build",
+    "build": "([ \"$PRISMA_MIGRATE_ON_BUILD\" != 1 ] || prisma migrate deploy) && prisma generate && WRITE_GATE_SECRET=${WRITE_GATE_SECRET:-local-dev-write-gate-secret} AGENT_API_KEY_LOOKUP_SECRET=${AGENT_API_KEY_LOOKUP_SECRET:-local-dev-write-gate-secret} next build",
     "start": "next start",
     "lint": "eslint",
     "test:import-boundary": "tsx src/domain/import-boundary-guard.ts",
