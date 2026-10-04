@@ -15,7 +15,7 @@ export function ModelGatewayJwtKeyPanel({
   const t = useTranslations('ControlPlane.platformSettings')
   const [configured, setConfigured] = useState(initialConfigured)
   const [editing, setEditing] = useState(canEdit && !initialConfigured)
-  const [apiKey, setApiKey] = useState('')
+  const [signingKey, setSigningKey] = useState('')
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
@@ -23,9 +23,9 @@ export function ModelGatewayJwtKeyPanel({
     if (!canEdit || pending) return
     startTransition(async () => {
       setMessage(null)
-      const res = await setModelGatewayJwtKey(generate ? { generate: true } : { apiKey })
+      const res = await setModelGatewayJwtKey(generate ? { generate: true } : { signingKey })
       if (res.success) {
-        setApiKey('')
+        setSigningKey('')
         setConfigured(true)
         setEditing(false)
         setMessage({ tone: 'ok', text: t('jwtSaved') })
@@ -35,9 +35,11 @@ export function ModelGatewayJwtKeyPanel({
           text:
             res.error === 'invalid_key'
               ? t('jwtInvalid')
-              : res.error === 'save_failed' || res.error === 'load_failed'
-                ? t('jwtSaveFailed')
-                : res.error,
+              : res.error === 'INSUFFICIENT_PLATFORM_ROLE' || res.error === 'INSUFFICIENT_ROLE'
+                ? t('jwtNeedSuperadmin')
+                : res.error === 'save_failed' || res.error === 'load_failed'
+                  ? t('jwtSaveFailed')
+                  : res.error,
         })
       }
     })
@@ -73,8 +75,8 @@ export function ModelGatewayJwtKeyPanel({
               <input
                 type="password"
                 autoComplete="new-password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                value={signingKey}
+                onChange={(e) => setSigningKey(e.target.value)}
                 placeholder={t('jwtPlaceholder')}
                 className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm text-ink"
               />
@@ -82,7 +84,7 @@ export function ModelGatewayJwtKeyPanel({
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                disabled={pending || apiKey.trim().length < 32}
+                disabled={pending || signingKey.trim().length < 32}
                 onClick={() => save(false)}
                 className="rounded-lg border border-line px-4 py-2 text-sm font-semibold text-ink disabled:opacity-40"
               >
@@ -92,7 +94,7 @@ export function ModelGatewayJwtKeyPanel({
                 <button
                   type="button"
                   onClick={() => {
-                    setApiKey('')
+                    setSigningKey('')
                     setEditing(false)
                     setMessage(null)
                   }}
@@ -107,7 +109,7 @@ export function ModelGatewayJwtKeyPanel({
           <button
             type="button"
             onClick={() => {
-              setApiKey('')
+              setSigningKey('')
               setEditing(true)
               setMessage(null)
             }}

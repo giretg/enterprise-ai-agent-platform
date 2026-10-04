@@ -94,15 +94,15 @@ export async function getModelGatewayJwtKeyStatus() {
 export async function setModelGatewayJwtKey(input: unknown) {
   try {
     const ctx = await requirePlatformRole('superadmin')
-    const parsed = z.object({ apiKey: z.string().optional(), generate: z.boolean().optional() }).safeParse(input)
+    const parsed = z.object({ signingKey: z.string().optional(), generate: z.boolean().optional() }).safeParse(input)
     if (!parsed.success) return fail('invalid_key')
-    let apiKey: string
+    let signingKey: string
     try {
-      apiKey = parsed.data.generate ? generateModelGatewayJwtKey() : parseModelGatewayJwtKey(parsed.data.apiKey)
+      signingKey = parsed.data.generate ? generateModelGatewayJwtKey() : parseModelGatewayJwtKey(parsed.data.signingKey)
     } catch {
       return fail('invalid_key')
     }
-    await saveModelGatewayJwtKey(apiKey)
+    await saveModelGatewayJwtKey(signingKey)
     await services.audit.append({
       actorType: 'human',
       actorId: ctx.user.id,

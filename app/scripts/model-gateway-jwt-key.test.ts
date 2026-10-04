@@ -3,6 +3,7 @@
  * Futtatás: npm run test:model-gateway-jwt-key
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -101,6 +102,30 @@ async function main() {
 
   await check('audit action regisztrálva', () => {
     assert.doesNotThrow(() => assertAuditActionRegistered('model.gateway_jwt_key.set'))
+  })
+
+  await check('a felület platform-kulcsot mond, nem cégeset', () => {
+    const hu = JSON.parse(readFileSync(join(import.meta.dirname, '../src/messages/hu.json'), 'utf8')) as {
+      ControlPlane: { platformSettings: { jwtTitle: string; body: string } }
+    }
+    const en = JSON.parse(readFileSync(join(import.meta.dirname, '../src/messages/en.json'), 'utf8')) as {
+      ControlPlane: { platformSettings: { jwtTitle: string; body: string } }
+    }
+    assert.doesNotMatch(hu.ControlPlane.platformSettings.jwtTitle, /céges/i)
+    assert.doesNotMatch(hu.ControlPlane.platformSettings.body, /céges modell-munkamenet/i)
+    assert.doesNotMatch(en.ControlPlane.platformSettings.jwtTitle, /company/i)
+    assert.doesNotMatch(en.ControlPlane.platformSettings.body, /company model-session/i)
+  })
+
+  await check('a JWT-mentés aláíró kulcsot vár, nem provider apiKey-t', () => {
+    const src = readFileSync(join(import.meta.dirname, '../src/app/actions/model-config.ts'), 'utf8')
+    const start = src.indexOf('export async function setModelGatewayJwtKey')
+    const next = src.indexOf('\nexport async function', start + 1)
+    const fn = src.slice(start, next === -1 ? undefined : next)
+    assert.match(fn, /requirePlatformRole\('superadmin'\)/)
+    assert.match(fn, /signingKey/)
+    assert.doesNotMatch(fn, /apiKey/)
+    assert.match(fn, /metadata: \{ configured: true/)
   })
 
   if (failures) {

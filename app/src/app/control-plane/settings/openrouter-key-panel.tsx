@@ -35,9 +35,11 @@ export function OpenRouterKeyPanel({
           text:
             res.error === 'invalid_key'
               ? t('openrouterInvalid')
-              : res.error === 'save_failed' || res.error === 'load_failed'
-                ? t('openrouterSaveFailed')
-                : res.error,
+              : res.error === 'INSUFFICIENT_ROLE'
+                ? t('openrouterNeedAdmin')
+                : res.error === 'save_failed' || res.error === 'load_failed'
+                  ? t('openrouterSaveFailed')
+                  : res.error,
         })
       }
     })
