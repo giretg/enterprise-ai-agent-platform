@@ -27,7 +27,10 @@ CACHE_FILE = ("excellence-guard", "snapshot.json")
 QUEUE_FILE = ("excellence-guard", "audit-queue.jsonl")
 MANAGED_FILES = ("config.yaml", ".env", "excellence-install-id")
 HASH_VERSION = "excellence-managed-dir-v1"
-MAX_CONTENT_CHARS = 200_000
+# Egyezzen a szerver `MAX_CONTENT_BYTES` / `MAX_BATCH_BYTES` kapuival (#770).
+# A tartalom méretét a JSON-wire hosszon mérjük (a szerver is `JSON.stringify`-el ellenőriz).
+MAX_CONTENT_CHARS = 256 * 1024
+MAX_FLUSH_PAYLOAD_BYTES = 7 * 1024 * 1024
 TOKEN_HELPER_PATH = "/opt/excellence/bin/exc-token"
 _lock = threading.Lock()
 
@@ -173,18 +176,37 @@ class SnapshotClient:
         return policy.interpret_cache(state, now, self.offline_ttl)
 
 
+def _json_wire_bytes(value):
+    """A szerver `byteLength(JSON.stringify(...))` kapujával összevethető UTF-8 wire-méret."""
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
 def _clip(value):
+    """Úgy vág, hogy a *szerializált* tartalom is a szerver 256 KiB-os kapuja alatt maradjon.
+
+    Nyers UTF-8 hossz alapján vágni kevés: a szerver `JSON.stringify`-el mér, és a `"` / `\\`
+    escape kb. megduplázhatja a payloadot → 413 → a flush egész köteget eldobta.
+    """
     if value is None:
         return None
+    if _json_wire_bytes(value) <= MAX_CONTENT_CHARS:
+        return value
     if isinstance(value, str):
         raw = value.encode("utf-8")
-        if len(raw) <= MAX_CONTENT_CHARS:
-            return value
-        return raw[:MAX_CONTENT_CHARS].decode("utf-8", errors="ignore") + "… [levágva]"
-    text = json.dumps(value, ensure_ascii=False, default=str)
-    if len(text.encode("utf-8")) <= MAX_CONTENT_CHARS:
-        return value
-    return text.encode("utf-8")[:MAX_CONTENT_CHARS].decode("utf-8", errors="ignore") + "… [levágva]"
+    else:
+        raw = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+    suffix = "… [levágva]"
+    lo, hi = 0, len(raw)
+    best = suffix
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = raw[:mid].decode("utf-8", errors="ignore") + suffix
+        if _json_wire_bytes(candidate) <= MAX_CONTENT_CHARS:
+            best = candidate
+            lo = mid
+        else:
+            hi = mid - 1
+    return best
 
 
 def build_event(snapshot, session_id, turn_id, kind, content, meta):
@@ -240,26 +262,55 @@ def write_json_lines(path, events):
     os.replace(tmp, path)
 
 
+def _fit_batch(events, limit=100, max_payload_bytes=MAX_FLUSH_PAYLOAD_BYTES):
+    """Legfeljebb `limit` esemény, amíg a `{\"events\":...}` wire a 8 MiB-os szerverkapu alatt marad."""
+    chosen = []
+    for event in events[:limit]:
+        trial = chosen + [event]
+        if chosen and len(json.dumps({"events": trial}, ensure_ascii=False).encode("utf-8")) > max_payload_bytes:
+            break
+        chosen.append(event)
+    return chosen or events[:1]
+
+
+def _remove_queue_ids(path, sent_ids):
+    with _lock:
+        current = _read_queue(path)
+        keep = [event for event in current if event.get("id") not in sent_ids]
+        if keep:
+            write_json_lines(path, keep)
+        elif os.path.exists(path):
+            os.remove(path)
+
+
+def _flush_batch(path, batch, post):
+    """Egy köteg feladása. 400/413 több eseménynél szétválaszt — egy rossz sor nem törölhet testvéreket."""
+    if not batch:
+        return 0
+    batch = _fit_batch(batch, limit=len(batch))
+    outcome = post(batch)
+    if outcome == "retry":
+        return 0
+    if outcome == "drop" and len(batch) > 1:
+        mid = len(batch) // 2
+        return _flush_batch(path, batch[:mid], post) + _flush_batch(path, batch[mid:], post)
+    _remove_queue_ids(path, {event.get("id") for event in batch})
+    return len(batch) if outcome == "ok" else 0
+
+
 def flush_queue(home, post, limit=100):
-    """post(events) → 'ok' | 'drop' | 'retry'. Az ok és a drop is kiveszi a feladott id-ket."""
+    """post(events) → 'ok' | 'drop' | 'retry'.
+
+    - ok: a feladott id-k kikerülnek a sorból
+    - drop: csak egyelemű kötegnél végleges eldobás (tárolhatatlan); több elemnél szétválasztás
+    - retry: a sor érintetlen (átmeneti hiba)
+    """
     path = _under(home, QUEUE_FILE)
     with _lock:
         events = _read_queue(path)
     if not events:
         return 0
-    batch = events[:limit]
-    outcome = post(batch)
-    if outcome == "retry":
-        return 0
-    sent = {event.get("id") for event in batch}
-    with _lock:
-        current = _read_queue(path)
-        keep = [event for event in current if event.get("id") not in sent]
-        if keep:
-            write_json_lines(path, keep)
-        elif os.path.exists(path):
-            os.remove(path)
-    return len(batch) if outcome == "ok" else 0
+    return _flush_batch(path, events[:limit], post)
 
 
 def post_json(url, token, payload, timeout=5):
