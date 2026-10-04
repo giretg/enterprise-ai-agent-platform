@@ -11,8 +11,9 @@
  * Két állapot nem szerkeszthető, és mindkettőt megindokoljuk a felületen:
  *   • „nincs joga" — a szerepkör amúgy sem éri el az oldalt (a menüpont magasabb
  *     szerepet kér), tehát nincs mit elrejteni előle;
- *   • „kötelező" — az adminisztrátor elől nem rejthető el ez a szerkesztő és a
- *     befoglaló Adminisztráció menü, különben a beállítás visszavonhatatlan lenne.
+ *   • „kötelező" — az adminisztrátor elől nem rejthető el ez a szerkesztő, a
+ *     befoglaló Adminisztráció menü, és a Hermes céges kontroll; különben a
+ *     beállítás visszavonhatatlan lenne, illetve a céges kontroll eltűnne.
  */
 import { useMemo, useState, useTransition } from 'react'
 import { useTranslations } from 'next-intl'

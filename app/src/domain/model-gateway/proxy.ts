@@ -20,6 +20,7 @@ import {
 } from '@/domain/model-gateway/fallback-chain'
 import type { GatewayTokenFailure, GatewayTokenClaims } from '@/domain/model-gateway-token/gateway-token'
 import type { McpPrincipal } from '@/auth/mcp-principal'
+import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrouter-tenant-key'
 
 export const SESSION_HEADER = 'x-excellence-session'
 export const TURN_HEADER = 'x-excellence-turn'
@@ -37,14 +38,20 @@ const FORWARDED_PARAMS = [
 ] as const
 
 export type ProviderEndpoint = { baseUrl: string; apiKey?: string; headers?: Record<string, string> }
-/** null = a provider ezen a hoston nincs bekötve. */
-export type ProviderRegistry = (provider: string) => ProviderEndpoint | null
+/** null = a provider ezen a hoston nincs bekötve. Tenant-titok → env fallback. */
+export type ProviderRegistry = (
+  provider: string,
+  tenantId: string,
+) => ProviderEndpoint | null | Promise<ProviderEndpoint | null>
 
 /** v1: OpenAI-kompatibilis providerek (D11). A céges modell-kulcs egyetlen helye. */
-export function envProviderRegistry(env: Record<string, string | undefined> = process.env): ProviderRegistry {
-  return (provider) => {
+export function envProviderRegistry(
+  env: Record<string, string | undefined> = process.env,
+  loadTenantOpenRouterKey: (tenantId: string) => Promise<string | null> = loadOpenRouterTenantKey,
+): ProviderRegistry {
+  return async (provider, tenantId) => {
     if (provider === 'openrouter') {
-      const apiKey = env.OPENROUTER_API_KEY?.trim()
+      const apiKey = await resolveOpenRouterApiKey(tenantId, loadTenantOpenRouterKey, env)
       if (!apiKey) return null
       return {
         baseUrl: (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, ''),
@@ -423,7 +430,7 @@ async function callProvider(
     collected: { response: ModelCallEvent['response']; usage: ModelCallEvent['usage'] },
   ) => void,
 ): Promise<Response> {
-  const endpoint = deps.providers(candidate.provider)
+  const endpoint = await deps.providers(candidate.provider, ctx.tenantId)
   if (!endpoint) throw new Error(`${candidate.provider} provider is not configured`)
 
   const controller = new AbortController()

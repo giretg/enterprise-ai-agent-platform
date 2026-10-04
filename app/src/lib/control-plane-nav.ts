@@ -122,7 +122,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         label: 'Konnektorok',
         requires: { tenantRole: 'admin' },
       },
-      { key: 'admin.ai-client-policy', href: '/control-plane/ai-client-policy', label: 'Hermes céges kontroll', requires: { tenantRole: 'admin' } },
+      {
+        key: 'admin.ai-client-policy',
+        href: '/control-plane/ai-client-policy',
+        label: 'Hermes céges kontroll',
+        requires: { tenantRole: 'admin' },
+      },
       { key: 'admin.iam', href: '/control-plane/iam', label: 'IAM', requires: { tenantRole: 'admin' } },
       {
         key: 'admin.settings',

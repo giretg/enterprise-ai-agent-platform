@@ -6,5 +6,5 @@ export const runtime = 'nodejs'
 
 /** #769: a Hermes Managed Client egyetlen céges modell-kapuja (OpenAI chat_completions, SSE-vel). */
 export async function POST(request: Request): Promise<Response> {
-  return handleChatCompletion(productionModelGatewayDeps(), request)
+  return handleChatCompletion(await productionModelGatewayDeps(), request)
 }

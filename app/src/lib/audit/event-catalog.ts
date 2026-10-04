@@ -142,6 +142,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model_policy.set',
   'model_fallback_chain.set',
   'agent.model_config',
+  'model.openrouter_key.set',
+  'model.gateway_jwt_key.set',
   // Client Policy heartbeat-regiszter (#774): Guard-eltérés (nincs/lejárt heartbeat, nem regisztrált session).
   'client_policy.deviation',
   // Admin letöltötte egy munkatárs gép-padló csomagját (#771).
