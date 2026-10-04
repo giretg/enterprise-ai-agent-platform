@@ -1,7 +1,7 @@
 /**
  * Model Gateway tartalomszűrő (#746 V1-4) — a #769 proxy `filterRequest`/`transformResponse` horgainak tartalma.
  *
- * 1. PAN → blokk: a teljes kimenő kérésen (system/user/assistant/tool üzenet, tool-argumentum), slotonként
+ * 1. PAN → blokk: a teljes kimenő kérésen (messages + tools/response_format/reasoning), slotonként
  *    szkennelve (üzenethatáron át nincs hamis PAN-találat). Találatnál nincs provider-hívás (D15).
  * 2. E-mail + személynév → álnév, `hermes_session` hatókörben, bijektíven és stabilan (prompt-cache).
  *    Személynév csak ott ismerhető fel katalógus nélkül, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
@@ -170,13 +170,24 @@ type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; 
 
 const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
 
-/** Minden string a `messages`-ben (content, content-részek, tool_calls argumentumok, reasoning…). */
+/**
+ * A proxy ezeket a szabad-szöveges mezőket továbbítja a providernek — a szűrőnek ugyanazokat
+ * kell bejárnia. (Skálárisok: temperature/stop/… nem hordoznak PII-t a V1-4 modellben.)
+ */
+const SCANNED_BODY_KEYS = ['messages', 'tools', 'response_format', 'reasoning'] as const
+
+/** Csak bináris média data-URL (image/audio/…;base64,) — a sima `data:…` szöveg továbbra is szkennelendő. */
+function isMediaDataUrl(text: string): boolean {
+  return /^data:(?:image|audio|video|application)\/[a-z0-9.+-]+(?:;[^,]*)?;base64,/i.test(text)
+}
+
+/** Minden string a kimenő kérés szöveges mezőiben (messages, tools, response_format, reasoning…). */
 function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
   if (Array.isArray(value) || (value && typeof value === 'object')) {
     const owner = value as Record<string, unknown> | unknown[]
     for (const [key, child] of Object.entries(owner)) {
       if (typeof child === 'string') {
-        if (!SKIP_KEYS.has(key) && !child.startsWith('data:')) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
+        if (!SKIP_KEYS.has(key) && !isMediaDataUrl(child)) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
       } else collectSlots(child, out)
     }
   }
@@ -246,8 +257,12 @@ export function createContentFilterHooks(deps: {
 
   return {
     async filterRequest(ctx, body) {
-      const messages = structuredClone(body.messages)
-      const slots = collectSlots(messages)
+      // Clone every forwarded free-text field the proxy may send upstream — not only `messages`.
+      const scanned: Record<string, unknown> = {}
+      for (const key of SCANNED_BODY_KEYS) {
+        if (body[key] !== undefined) scanned[key] = structuredClone(body[key])
+      }
+      const slots = Object.values(scanned).flatMap((value) => collectSlots(value))
       try {
         const capabilities = await deps.getCapabilities?.(ctx)
         // Without a policy loader retain the original V1 filter contract for standalone callers.
@@ -290,7 +305,7 @@ export function createContentFilterHooks(deps: {
         logger.error({ event: 'model_gateway.tokenize_failed', error: String(error) }, 'Gateway tokenization failed')
         return { block: PRIVACY_UNAVAILABLE_MESSAGE, reason: 'privacy_unavailable' }
       }
-      return { body: { ...body, messages } }
+      return { body: { ...body, ...scanned } }
     },
 
     transformResponse: (ctx) => sessions.has(ctx)
