@@ -20,6 +20,10 @@ export const DEFAULT_SWEEP_LIMIT = 5000
 export const MAX_SWEEP_BATCHES = 100
 export const MAX_LIST_LIMIT = 500
 
+export class AuditContentTooLargeError extends Error {
+  constructor(message: string) { super(message); this.name = 'AuditContentTooLargeError' }
+}
+
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
 export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final'
 export type AuditSource = 'gateway' | 'guard'
@@ -196,6 +200,15 @@ export function createGatewayAuditSink(deps: AiAuditDeps): ModelCallAuditSink {
     async record(e: ModelCallEvent) {
       const ctx = { tenantId: e.tenantId, userId: e.userId, agentId: e.agentId, installId: e.installId, policyVersion: e.policyVersion }
       const depth = await deps.depthFor(ctx)
+      const response = e.providerResponse ?? e.response
+      const content = e.request == null && response == null
+        ? null
+        : { request: depth === 'plus_tool_results' ? e.request : stripToolResults(e.request), response }
+      // A Guard és a gateway ugyanazt a titkosított tartalomplafont tartja be.
+      // Túlméretes esemény nem válhat csendben metaadat-szintűvé.
+      if (content != null && contentAllowed(depth, 'model_call') && byteLength(serialize(content)) > MAX_CONTENT_BYTES) {
+        throw new AuditContentTooLargeError('AI audit content exceeds storage limit')
+      }
       const row = buildRow(deps, depth, {
         id: randomUUID(),
         ctx,
@@ -203,10 +216,9 @@ export function createGatewayAuditSink(deps: AiAuditDeps): ModelCallAuditSink {
         turnId: e.turnId,
         kind: 'model_call',
         source: 'gateway',
-        content: e.request == null && e.response == null
-          ? null
-          : { request: depth === 'plus_tool_results' ? e.request : stripToolResults(e.request), response: e.response },
+        content,
         meta: {
+          callId: e.callId,
           model: e.model,
           requestedModel: e.requestedModel,
           substituted: e.substituted,
@@ -220,7 +232,7 @@ export function createGatewayAuditSink(deps: AiAuditDeps): ModelCallAuditSink {
           latencyMs: e.latencyMs,
         },
       })
-      await deps.store.insertMany([row])
+      if (await deps.store.insertMany([row]) !== 1) throw new Error('AI audit insert was not durable')
     },
   }
 }
