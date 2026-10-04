@@ -172,6 +172,57 @@ class Runtime(unittest.TestCase):
         self.assertEqual(guard.interval, 30)
         json.dumps(body)
 
+    def test_clip_quote_heavy_string_stays_under_server_wire_cap(self):
+        # Nyers 200 KiB `"` → JSON escape megduplázza; a régi clip 413-at okozott a szerveren.
+        heavy = '"' * 200_000
+        clipped = runtime._clip(heavy)
+        self.assertIsInstance(clipped, str)
+        self.assertIn("levágva", clipped)
+        self.assertLessEqual(runtime._json_wire_bytes(clipped), runtime.MAX_CONTENT_CHARS)
+
+    def test_flush_drop_on_multi_event_batch_splits_instead_of_erasing_siblings(self):
+        home = tempfile.mkdtemp()
+        good = {"id": "00000000-0000-4000-8000-000000000001", "sessionId": "s", "kind": "user_prompt", "meta": {}, "content": "ok"}
+        bad = {
+            "id": "00000000-0000-4000-8000-000000000002",
+            "sessionId": "s",
+            "kind": "user_prompt",
+            "meta": {},
+            "content": "x" * 10,
+        }
+        other = {"id": "00000000-0000-4000-8000-000000000003", "sessionId": "s", "kind": "final", "meta": {}, "content": "done"}
+        runtime.write_json_lines(runtime._under(home, runtime.QUEUE_FILE), [good, bad, other])
+
+        posts = []
+
+        def post(events):
+            posts.append([e["id"] for e in events])
+            # Szerver all-or-nothing 413: a kötegben van tárolhatatlan elem.
+            if any(e["id"] == bad["id"] for e in events) and len(events) > 1:
+                return "drop"
+            if len(events) == 1 and events[0]["id"] == bad["id"]:
+                return "drop"
+            return "ok"
+
+        ok_count = runtime.flush_queue(home, post)
+        self.assertEqual(ok_count, 2)
+        remaining = runtime._read_queue(runtime._under(home, runtime.QUEUE_FILE))
+        self.assertEqual(remaining, [])
+        # Legalább egy egyelemű drop a rossz sorra, és a jók külön kötegben ok-ot kaptak.
+        self.assertTrue(any(ids == [bad["id"]] for ids in posts))
+        self.assertTrue(any(good["id"] in ids and bad["id"] not in ids for ids in posts))
+
+    def test_fit_batch_respects_payload_byte_budget(self):
+        events = [
+            {"id": f"00000000-0000-4000-8000-{i:012d}", "sessionId": "s", "kind": "user_prompt", "meta": {}, "content": "y" * 100_000}
+            for i in range(1, 120)
+        ]
+        fitted = runtime._fit_batch(events, limit=100, max_payload_bytes=500_000)
+        self.assertGreaterEqual(len(fitted), 1)
+        self.assertLess(len(fitted), 100)
+        wire = len(json.dumps({"events": fitted}, ensure_ascii=False).encode("utf-8"))
+        self.assertLessEqual(wire, 500_000)
+
 
 if __name__ == "__main__":
     unittest.main()
