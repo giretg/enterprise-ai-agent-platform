@@ -75,6 +75,7 @@ jobs:
           npm run test:mcp-client-setup
           npm run test:health-endpoints
           npm run test:public-routes
+          npm run test:public-app-url
           npm run test:mcp-principal
           npm run test:mcp-http
           npm run test:mcp-parity

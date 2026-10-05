@@ -29,6 +29,7 @@ import {
   driveScopeProfile,
 } from '@/domain/connector-grant/google-drive-scopes'
 import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
+import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 
 async function loadAgentDelegatedConnectors(
   _agentId: string,
@@ -473,8 +474,7 @@ export async function getGoogleDrivePickerSession(input: { grantId: string }) {
       actingUserId: ctx.user.id,
       tenantId: grant.tenantId ?? ctx.activeTenantId,
     })
-    const origin =
-      process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, '') ?? 'http://localhost:3000'
+    const origin = resolvePublicAppOrigin()
     return ok({
       accessToken,
       apiKey: pickerConfig.config.apiKey,

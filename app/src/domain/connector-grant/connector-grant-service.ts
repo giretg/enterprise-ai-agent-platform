@@ -37,6 +37,7 @@ import {
 } from './delegated-oauth-registry'
 import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
+import { publicAppUrl } from '@/lib/public-app-url'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -139,10 +140,7 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
       (() => {
         const service = googleOAuthService(connector)
         const envRedirect = googleOAuthRedirectUriFromEnv(service)
-        return (
-          envRedirect ||
-          `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`
-        )
+        return envRedirect || publicAppUrl('/api/connectors/oauth/callback').href
       })(),
     userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
     accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',

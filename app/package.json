@@ -149,6 +149,7 @@
     "test:channel-approval": "tsx scripts/channel-approval.test.ts",
     "test:ttl-secret-cache": "tsx scripts/ttl-secret-cache.test.ts",
     "test:public-routes": "tsx scripts/public-routes.test.ts",
+    "test:public-app-url": "tsx scripts/public-app-url.test.ts",
     "test:mcp-principal": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-principal.test.ts",
     "test:mcp-http": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-http.test.ts",
     "test:project-work": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/project-work.test.ts",
