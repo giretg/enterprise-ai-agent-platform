@@ -191,6 +191,23 @@ async function main() {
     }
   })
 
+  await check('stop string/tömb PAN blokkol — a messages tiszta maradhat', async () => {
+    for (const stop of ['4111 1111 1111 1111', ['END', '5555 5555 5555 4444']] as const) {
+      const s = setup()
+      const data = await (await s.call({ messages: [user('szia')], stop })).json()
+      assert.equal(data.choices[0].message.content, PAN_BLOCK_MESSAGE)
+      assert.equal(s.calls.length, 0)
+    }
+  })
+
+  await check('stop string e-mail tokenizálódik a továbbított mezőben', async () => {
+    const s = setup({ scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user('szia')], stop: 'kovacs.janos@tesco.hu' })
+    assert.equal(s.calls.length, 1)
+    assert.equal(s.calls[0].stop, '[[EMAIL_1]]')
+    assert.doesNotMatch(JSON.stringify(s.calls[0]), /tesco\.hu/)
+  })
+
   await check('audit: blocked + pan_detected, a PAN értéke nélkül (V1-5 sink a kérés nélkül kapja)', async () => {
     const s = setup()
     await s.call({ messages: [user('4012 8888 8888 1881')] })
