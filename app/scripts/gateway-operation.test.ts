@@ -126,6 +126,7 @@ function deps(opts?: {
   currentDefinitionId?: string | null
   findAgentGrant?: GatewayOperationServiceDeps['findAgentGrant']
   executeDriveTool?: GatewayOperationServiceDeps['executeDriveTool']
+  executeHttpApiTool?: GatewayOperationServiceDeps['executeHttpApiTool']
   recordCreatedDriveFiles?: GatewayOperationServiceDeps['recordCreatedDriveFiles']
   driveCalls?: unknown[]
   executedTools?: string[]
@@ -191,6 +192,7 @@ function deps(opts?: {
             created: true,
           }
         }),
+      executeHttpApiTool: opts?.executeHttpApiTool,
     },
   }
 }
@@ -917,6 +919,62 @@ async function main() {
     assert.equal(approved.view.status, 'failed')
     assert.equal(approved.view.errorCode, 'tool_execution_failed')
     assert.equal(approved.view.result, null)
+  })
+
+  await check('http_api_request If-Match 412 is failed, not succeeded', async () => {
+    const conflict = { ok: false, status: 412, body: { error: 'precondition failed' }, etag: '"5"' }
+    const wired = deps({
+      executeHttpApiTool: async () => conflict,
+    })
+    const withHttp: GatewayOperationServiceDeps = {
+      ...wired.deps,
+      async loadDefinition() {
+        const base = definition()
+        return {
+          ...base,
+          snapshot: {
+            ...base.snapshot,
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write', name: 'CRM' }],
+            capabilities: [
+              ...base.snapshot.capabilities,
+              { toolName: HTTP_API_REQUEST_TOOL, allowed: true },
+            ],
+          },
+        }
+      },
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'api_key' })
+      },
+    }
+    const enqueued = await enqueueGatewayOperation(withHttp, {
+      principal: principal(),
+      toolName: HTTP_API_REQUEST_TOOL,
+      args: {
+        definitionId: DEFINITION_ID,
+        method: 'PATCH',
+        path: '/v1/playbooks/1',
+        headers: { 'If-Match': '"4"' },
+        body: '{"title":"x"}',
+        idempotencyKey: 'idem-http-412',
+      },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    const approved = await approveGatewayOperation(withHttp, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal(),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'failed')
+    assert.equal(approved.view.errorCode, 'http_api_error')
+    assert.deepEqual(approved.view.result, conflict)
+    assert.ok(wired.audit.some((row) => row.action === 'gateway.operation.failed'))
+    assert.equal(
+      wired.audit.some((row) => row.action === 'gateway.operation.succeeded'),
+      false,
+    )
   })
 
   await check('cross-tenant get is operation_not_found', async () => {
