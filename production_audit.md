@@ -7,6 +7,101 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-07 — Model Gateway önhitelesített ingress-route-ok: kérés-törzs méret-kapu (OOM / cross-tenant kiesés) + #774/#773 coverage
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legfrissebb, legnagyobb
+blast-radiusú **nem auditált** felület a **Model Gateway stack** friss rétege. A 10-02-i kör
+(PR #787, más ágon) csak a token audit-action katalógus-rést fedte; azóta main-re került a
+**#774 heartbeat + Managed/Open kapu**, a **#773 V1-4 tartalomszűrő + `gateway_surrogates`
+PII-álnév-vault** (AES-GCM + HMAC, visszafejtéssel a külső provider felé), a #770
+AiInteractionEvent-napló és a #771 gép-padló. A kiinduló munkafa egy **elavult, divergens**
+`feat/774-client-policy-heartbeat` lokális ág volt (egyetlen commit a main felett); a tényleges
+production = `main`, ezért az auditot egy main-ről nyitott worktree-ben végeztem.
+
+**Coverage (kötelező scoped security scan + kézi end-to-end + reliability-trace):**
+1. **#774 bizalmi határ** (`client-policy/heartbeat` route → `verifyGatewayToken` → `recordHeartbeat`
+   → `PostgresClientInstallRepository` tranzakció; `createManagedGate` → `resolveClientMode`;
+   gate-ctx a proxyból: `installId/agentId` a JWT-ből, `sessionId` a `x-excellence-session`
+   fejlécből). 2. **#773 tartalomszűrő** (`content-filter.ts` PAN-blokk + email/person →
+   session-hatókörű bijektív álnév; `SurrogateSession` tenant-scoped HMAC-kulcs; `response-restorer.ts`
+   stream/non-stream/tool-arg visszaállítás). 3. **ingress body-olvasás** az összes
+   gateway/client-policy/ai-audit route-on.
+
+### Biztonsági megállapítás — NINCS ≥8-konfidenciájú finding; a bizalmi határ helytáll
+
+A kötelező scoped security scan (`/security-review`, dedikált felderítő sub-agent) **és** a
+független kézi trace egyaránt **0 bizonyítható, kihasználható** auth/IDOR/cross-tenant/injekció/
+adat-kiszivárgás hibát talált a #774/#773 scope-ban. Tételesen:
+- **#774 Managed/Open nem hamisítható határon át.** `tenantId/userId` szerver-feloldott (principal),
+  `installId/agentId` szerver-aláírt JWT-claim; a heartbeat és a gateway-hívás **ugyanazon JWT-hez**
+  köti őket, csak a `sessionId` jön fejlécből (és csak a hívó saját install-ján belül lookup-kulcs).
+  `findInstall` a `(tenantId,userId,installId)` kompozit kulcsra scope-olt → nincs cross-user/
+  cross-tenant/cross-agent olvasás vagy írás. Prisma strukturált query (nincs raw SQL). A gate
+  **fail-closed** (kivétel → a kérés elbukik, nem esik céges modellhívásba; Open → szintetikus
+  válasz provider-hívás nélkül). A security-scan által jelzett egyetlen LOW (a `managedDirHash`
+  tanácsadó volt) **már ZÁRVA main-en**: a `resolveClientMode` kikényszeríti
+  (`managed_dir_unissued` / `managed_dir_hash_mismatch` → Open), per-install hash-lookuppal.
+- **#773 PII-egress helytáll.** Fail-closed a vault-hibára (nyers email/név nem mehet ki),
+  PAN-blokk, tenant-scoped HMAC-kulcs (ugyanaz az érték két tenantban eltérő ujjlenyomat),
+  és **header nélkül kérésenkénti UUID** scope (nem esik userenkénti „default" vaultba — a #773
+  `e0ee4bd7` fix). A válasz-visszaállítás legfeljebb a **saját session** értékét érinti (nem
+  cross-party). Nem találtam ≥8-konfidenciájú kimenő-leak vagy cross-session kollízió bugot.
+
+### Bizonyított finding (reliability / availability) — javítva
+
+**Két önhitelesített publikus gateway-ingress-route méret-kapu nélkül olvasta a kérés-törzset.**
+A `POST /api/model-gateway/token` (#772) és a `POST /api/client-policy/heartbeat` (#774) nyers
+`request.json()`-nal, plafon nélkül pufferelt — miközben a testvér-route-ok kapuznak (a `/v1`
+chat-proxy `MAX_REQUEST_BYTES`, az `/api/ai-audit/events` `MAX_BATCH_BYTES`). A Model Gateway
+memóriaszűkös Cloud Runon fut, egy instance több bérlőt szolgál ki; egy **hitelesített** kliens
+(bármely tenant install-ja a saját gateway-JWT-jével) tetszőlegesen nagy törzzsel OOM-ölhette a
+konténert → az adott instance **minden bérlőjének** kérése elesik (cross-tenant kiesés, a már
+nyitott Cloud Run OOM-kockázat mellett). Nem SQL/auth-hiba, hanem availability-osztály — a
+`/security-review` DoS-kizárása miatt a scan nem jelzi, de a napi audit reliability-tengelye
+(„jelentős szolgáltatáskiesés") kifejezetten lefedi.
+
+**Root-cause javítás a határon (PR #813, ág `fix/gateway-ingress-body-size-cap`, main-ről):**
+- Új `app/src/lib/request-body.ts` — `readBoundedText`/`readBoundedJson`: Content-Length gyors-
+  elutasítás **és** streamelő bájt-számláló (`reader.cancel()` a plafon átlépésekor), így a
+  hiányzó/hazudott CL (chunked) törzs is korlátos a teljes pufferelés előtt. Ugyanaz a stream-cap
+  idióma, mint a `skill-package-fetcher` letöltő-kapuja.
+- `model-gateway/token` 16 KiB, `client-policy/heartbeat` 64 KiB plafon (mindkét törzs apró).
+  Túl nagy → 413; érvénytelen JSON → a meglévő 400-út változatlan (token: `body=null` →
+  `issueGatewayToken` `bad_request`; heartbeat: közvetlen 400).
+
+### Ellenőrzések
+- `npm run test:request-body-limit` (új, 10 assert, **zöld**): CL gyors-út, a fő **chunked/
+  hiányzó-CL bypass** (streamszámláló), bájt-pontos határ (plafon vs. +1), multibyte bájt-számolás,
+  413-vs-400 (SyntaxError ≠ RequestTooLargeError) megkülönböztetés. Bekötve package.json + ci.yml.
+- `tsc --noEmit` tiszta az érintett fájlokra. (eslint lokálisan nem futott az izolált worktree
+  hiányos `node_modules`-a miatt; a CI `npm run lint` az autoritatív.)
+- Matt Pocock `/code-review` (Standards + Spec, párhuzamos sub-agentek): **mindkét tengely tiszta** —
+  0 dokumentált-standard sértés, 0 korrektségi hiba. Standards judgement-callok átvezetve: a helper
+  docstringje nem állít többé „egyetlen helyen"-t (a testvér-route-ok nem lettek erre terelve —
+  követő munka). Spec teszt-caveat átvezetve: a „hazudott kis CL" eset a fetch-spec tiltotta
+  content-length miatt degenerálódott; most explicit a hiányzó-CL stream-utat állítja.
+
+### Residual risk / következő audithoz
+- **🟠 A két ADMIN-authentikált route ugyanilyen nyers `request.json()`-t használ:**
+  `client-policy/admin` és `ai-audit/content-unlock/approve`. Kisebb blast-radius (csak tenant-admin),
+  de ugyanaz az OOM-osztály — olcsó követő kör: ugyanerre a helperre terelni őket.
+- **🟠 A testvér-kapuk (`MAX_REQUEST_BYTES` proxy, `MAX_BATCH_BYTES` ai-audit) `request.text()`-tel
+  előbb pufferelnek, és `text.length` (UTF-16 karakter) alapján kapuznak** — a chunked/hiányzó-CL
+  bypass ellen NEM zárnak teljesen, és a bájt↔karakter eltérés miatt a tényleges plafon pontatlan.
+  A most bevezetett `readBoundedText`-re terelésük a kanonikus konszolidáció (az eredeti 09-09-i
+  „közös kötött olvasó" szándék — a `readJson` ma triviális, nem kötött).
+- **🟡 `gateway_surrogates` korlátlan növekedés header nélküli kéréseknél:** minden session-header
+  nélküli, emailt tartalmazó kérés új, soha vissza nem olvasott vault-sort ír (kérésenkénti UUID
+  scope); nincs retenció rá (a #759 sweep az AiInteractionEvent-é). Resource-osztály, scope-on kívül.
+- **🟡 A tartalomszűrő csak a `body.messages`-t dolgozza fel** (a top-level/`tools` mezőket nem),
+  és a `data:`-prefixű stringeket kihagyja — fejlesztői tartalom / under-detection, nem bizonyított leak.
+- **Elavult lokális ág (`feat/774-client-policy-heartbeat`):** a 0022_client_installs migráció-szám
+  ÜTKÖZIK a main 0022_ai_interaction_events-ével; a main helyesen 0024-re számozta. A munka már
+  main-en van, ezért az ág **ne kerüljön mergelésre** (abandon/rebase) — nem production-finding,
+  de merge-hazard.
+
+---
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
