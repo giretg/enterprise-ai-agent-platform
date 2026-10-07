@@ -66,10 +66,14 @@ async function main() {
     await assert.rejects(readBoundedText(reqChunked(MAX * 8), MAX), RequestTooLargeError)
   })
 
-  await check('chunked body with lying small content-length still capped on stream', async () => {
+  await check('small/absent content-length still capped on stream', async () => {
+    // A `content-length` a fetch-spec szerint tiltott kérés-fejléc, így egy
+    // felépített Request-re nem állítható (az undici eldobja) — éppen ezért a
+    // kapu nem bízhat a fejlécben: kicsi/hiányzó CL mellett a streamszámlálónak
+    // kell megfognia a túl nagy törzset. (Hazudott NAGY CL-t a content-length
+    // gyors-út fog meg, l. a legelső esetet.)
     const req = reqChunked(MAX * 8)
-    // Hamis, kicsi CL — a gyors-út átengedi, a streamszámlálónak kell megfognia.
-    ;(req.headers as Headers).set('content-length', '10')
+    assert.equal(req.headers.get('content-length'), null, 'CL tényleg nincs beállítva')
     await assert.rejects(readBoundedText(req, MAX), RequestTooLargeError)
   })
 

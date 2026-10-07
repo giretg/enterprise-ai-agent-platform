@@ -8,8 +8,11 @@
  * bájt-plafonig olvassa, és streamelve megszakít, mielőtt pufferelné; így a
  * hiányzó vagy hazudott `Content-Length` (chunked) törzs is korlátos marad.
  *
- * Ugyanaz a minta, mint a `model-gateway` proxy (`MAX_REQUEST_BYTES`) és az
- * `ai-audit/events` (`MAX_BATCH_BYTES`) kapuja, egyetlen helyen.
+ * Rokon a `model-gateway` proxy (`MAX_REQUEST_BYTES`) és az `ai-audit/events`
+ * (`MAX_BATCH_BYTES`) saját, soron belüli kapujával; azok ma `request.text()`-tel
+ * előbb pufferelnek, és karakterhosszt (UTF-16) néznek — ez a helper bájtban
+ * számol ÉS streamelve szakít meg, ezért a chunked (CL nélküli/hazudott) törzs
+ * ellen is zár. A testvér-route-ok erre a helperre terelése külön, követő munka.
  */
 
 /** A törzs túllépte a megengedett bájt-plafont (→ a hívó 413-at adjon). */
