@@ -91,6 +91,7 @@ jobs:
           npm run test:client-policy
           npm run test:client-policy-admin
           npm run test:client-install
+          npm run test:request-body-limit
           npm run test:machine-floor
           npm run test:model-gateway-token
           npm run test:model-fallback-chain
