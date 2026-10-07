@@ -47,6 +47,7 @@
     "test:model-fallback-chain": "tsx scripts/model-fallback-chain.test.ts",
     "test:client-policy": "tsx scripts/client-policy-resolve.test.ts",
     "test:client-install": "tsx scripts/client-install.test.ts",
+    "test:request-body-limit": "tsx scripts/request-body-limit.test.ts",
     "test:machine-floor": "tsx scripts/machine-floor.test.ts",
     "test:model-gateway-proxy": "tsx scripts/model-gateway-proxy.test.ts",
     "test:openrouter-tenant-key": "tsx scripts/openrouter-tenant-key.test.ts",
