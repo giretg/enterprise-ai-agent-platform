@@ -209,6 +209,7 @@ async function main() {
       connector: connector(),
       grantId: GRANT_ID,
       tokenRef: 'stub-drive-token',
+      grant: grant(),
     })
   })
 
@@ -921,6 +922,65 @@ async function main() {
     assert.equal(result.allowed, true)
     if (result.allowed) {
       assert.equal(result.connectorId, CONNECTOR_ID)
+    }
+  })
+
+  await check('gmail search with two grants requires account', async () => {
+    const personal = grant({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountLabel: 'anna@gmail.com',
+      nickname: 'magán',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const work = grant({
+      id: '22222222-2222-4222-8222-222222222222',
+      tokenRef: 'stub-gmail-work',
+      accountLabel: 'anna@ceg.hu',
+      nickname: 'céges',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const deps: AuthorizeToolCallDeps = {
+      async findConnector() {
+        return connector({ type: 'gmail' })
+      },
+      async findActiveGrant() {
+        return personal
+      },
+      async findActiveGrants() {
+        return [personal, work]
+      },
+    }
+    const input = {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Mail',
+          roleInstruction: 'Read mail',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'read' }],
+          capabilities: [{ toolName: GMAIL_SEARCH_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GMAIL_SEARCH_TOOL,
+      args: { query: 'is:unread' },
+    }
+    const missing = await authorizeToolCall(deps, input)
+    assert.equal(missing.allowed, false)
+    if (!missing.allowed) {
+      assert.equal(missing.reason, 'account_required')
+      assert.deepEqual(
+        missing.accountChoices?.map((row) => row.account),
+        ['magán', 'céges'],
+      )
+    }
+    const picked = await authorizeToolCall(deps, {
+      ...input,
+      args: { query: 'is:unread', account: 'céges' },
+    })
+    assert.equal(picked.allowed, true)
+    if (picked.allowed) {
+      assert.equal(picked.grantId, work.id)
+      assert.equal(picked.tokenRef, 'stub-gmail-work')
     }
   })
 

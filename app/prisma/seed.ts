@@ -96,35 +96,35 @@ async function main() {
 
   const connector = await ensureTenantGoogleDriveConnector(prisma, tenant.id)
 
-  await prisma.connectorGrant.upsert({
-    where: {
-      tenantId_connectorId_userId: {
-        tenantId: tenant.id,
-        connectorId: connector.id,
-        userId: user.id,
+  const seedGrantWhere = {
+    tenantId: tenant.id,
+    connectorId: connector.id,
+    userId: user.id,
+    accountLabel: 'seed-placeholder',
+  }
+  const existingSeedGrant = await prisma.connectorGrant.findFirst({ where: seedGrantWhere })
+  const seedGrantData = {
+    status: 'active' as const,
+    tokenRef: `stub-seed-drive-grant:${user.id}`,
+    scopes: [
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
+    nickname: 'seed',
+  }
+  if (existingSeedGrant) {
+    await prisma.connectorGrant.update({
+      where: { id: existingSeedGrant.id },
+      data: seedGrantData,
+    })
+  } else {
+    await prisma.connectorGrant.create({
+      data: {
+        ...seedGrantWhere,
+        ...seedGrantData,
       },
-    },
-    update: {
-      status: 'active',
-      tokenRef: `stub-seed-drive-grant:${user.id}`,
-      scopes: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/drive.file',
-      ],
-    },
-    create: {
-      tenantId: tenant.id,
-      connectorId: connector.id,
-      userId: user.id,
-      status: 'active',
-      scopes: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/drive.file',
-      ],
-      tokenRef: `stub-seed-drive-grant:${user.id}`,
-      accountLabel: 'seed-placeholder',
-    },
-  })
+    })
+  }
 
   const agent = await prisma.agent.upsert({
     where: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },

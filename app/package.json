@@ -102,6 +102,7 @@
     "test:agent-diagnostics": "tsx scripts/agent-diagnostics.test.ts",
     "test:gmail-draft-attachment": "tsx scripts/gmail-draft-attachment.test.ts",
     "test:linked-account-view": "tsx scripts/linked-account-view.test.ts",
+    "test:linked-account": "tsx scripts/linked-account.test.ts && DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/linked-account-oauth.test.ts",
     "test:oauth-navigation": "tsx scripts/oauth-navigation.test.ts",
     "test:context-compactor": "tsx scripts/context-compactor.test.ts",
     "test:prompt-assembler": "tsx scripts/prompt-assembler.test.ts",

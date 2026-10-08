@@ -339,7 +339,7 @@
     },
     "account": {
       "title": "Linked accounts",
-      "body": "Make data from the apps you already use available to the AI."
+      "body": "Connect your own Gmail and Drive accounts for the AI teammate. You can connect more than one — for example personal and work — and label them so the teammate knows which to use."
     },
     "operations": {
       "eyebrow": "Your queue",
@@ -872,9 +872,23 @@
     "availableBody": "Connect the services you want to use.",
     "availableEmpty": "Every currently available account is already connected.",
     "account": "Account",
-    "gmailDesc": "An AI teammate reads and writes with your Gmail account — only with your permission, in your name.",
-    "driveDesc": "The AI teammate can search and read Drive files with your permission. If you choose a write profile, it may create or change files under the approval rules.",
-    "genericDesc": "The agent acts with your {name} account.",
+    "nicknameLabel": "Label",
+    "nicknamePlaceholder": "e.g. personal or work",
+    "nicknameHint": "The AI teammate uses this name to tell your accounts apart — for example personal or work.",
+    "nicknamePersonal": "Personal",
+    "nicknameWork": "Work",
+    "nicknameRequiredAdd": "Give the extra account a label (Personal or Work) before connecting.",
+    "statusActive": "active",
+    "statusRevoked": "disconnected",
+    "addAccount": "Add another account",
+    "accountsCount": "{count} accounts · {names}",
+    "saveNickname": "Save",
+    "nicknameSaved": "Label saved.",
+    "nicknameTaken": "This label is already used for this service.",
+    "invalidNickname": "The label is too long or invalid.",
+    "gmailDesc": "An AI teammate reads and writes with your Gmail account — only with your permission, in your name. You can connect more than one mailbox (personal, work); the teammate picks by this label.",
+    "driveDesc": "The AI teammate can search and read Drive files with your permission. You can connect more than one Drive account (personal, work). If you choose a write profile, it may create or change files under the approval rules.",
+    "genericDesc": "The AI teammate acts with your {name} account.",
     "tabOverview": "Overview",
     "tabFiles": "Writable files",
     "tabCreated": "Created ({count})",
@@ -906,12 +920,13 @@
     "oauthUnrequested": "The OAuth response does not include the requested service permission. Try again, or disconnect the other Google connection if they share the same OAuth app.",
     "usageCapableOne": "{list} has the required tool permission.",
     "usageCapableMany": "{list} have the required tool permission.",
-    "usageCapableCount": "{count} active agents have the required tool permission.",
-    "usageMissingCapability": "The account is connected, but the assigned agents are missing the required tool permission.",
-    "usageUnassigned": "The account is connected, but it is not assigned to an agent yet.",
+    "usageCapableCount": "{count} active teammates have the required tool permission.",
+    "usageMissingCapability": "The account is connected, but the assigned teammates are missing the required tool permission.",
+    "usageUnassigned": "The account is connected, but it is not assigned to a teammate yet.",
     "and": "and",
     "folder": "folder",
-    "file": "file"
+    "file": "file",
+    "driveOutputAccount": "Which Drive account should the folder come from?"
   },
   "DrivePicker": {
     "folder": "folder",

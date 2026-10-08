@@ -339,7 +339,7 @@
     },
     "account": {
       "title": "Kapcsolt fiókok",
-      "body": "Itt tudod a meglévő alkalmazásaidban lévő adatokat az AI számára elérhetővé tenni."
+      "body": "Itt kötöd a saját Gmail- és Drive-fiókjaidat az AI munkatárshoz. Több fiókot is bekötetsz — például magánt és cégeset —, és elnevezed őket, hogy a munkatárs tudja, melyiket használja."
     },
     "operations": {
       "eyebrow": "Teendők",
@@ -872,9 +872,23 @@
     "availableBody": "Kösd össze azokat a szolgáltatásokat, amelyeket használni szeretnél.",
     "availableEmpty": "Minden jelenleg elérhető fiók össze van kötve.",
     "account": "Fiók",
-    "gmailDesc": "AI munkatárs a te Gmail-fiókoddal olvas és ír — csak a te engedélyeddel, a te nevedben.",
-    "driveDesc": "Az AI munkatárs a te engedélyeddel kereshet és olvashat Drive-fájlokat. Ha írási profilt választasz, a jóváhagyási szabályok szerint létrehozhat vagy módosíthat fájlokat is.",
-    "genericDesc": "Az agent a te {name} fiókoddal jár el.",
+    "nicknameLabel": "Elnevezés",
+    "nicknamePlaceholder": "pl. magán vagy céges",
+    "nicknameHint": "Ezen a néven különbözteti meg az AI munkatárs a fiókokat — például magán vagy céges.",
+    "nicknamePersonal": "Magán",
+    "nicknameWork": "Céges",
+    "nicknameRequiredAdd": "A második fiókhoz adj elnevezést (Magán vagy Céges), mielőtt összekötöd.",
+    "statusActive": "aktív",
+    "statusRevoked": "bontva",
+    "addAccount": "Másik fiók hozzáadása",
+    "accountsCount": "{count} fiók · {names}",
+    "saveNickname": "Mentés",
+    "nicknameSaved": "Elnevezés mentve.",
+    "nicknameTaken": "Ez az elnevezés már foglalt ennél a szolgáltatásnál.",
+    "invalidNickname": "Az elnevezés túl hosszú vagy érvénytelen.",
+    "gmailDesc": "AI munkatárs a te Gmail-fiókoddal olvas és ír — csak a te engedélyeddel, a te nevedben. Több fiókot is bekötetsz (magán, céges); a munkatárs a név alapján választ.",
+    "driveDesc": "Az AI munkatárs a te engedélyeddel kereshet és olvashat Drive-fájlokat. Több Drive-fiókot is bekötetsz (magán, céges). Ha írási profilt választasz, a jóváhagyási szabályok szerint létrehozhat vagy módosíthat fájlokat is.",
+    "genericDesc": "Az AI munkatárs a te {name} fiókoddal jár el.",
     "tabOverview": "Áttekintés",
     "tabFiles": "Írható fájlok",
     "tabCreated": "Létrehozott ({count})",
@@ -906,12 +920,13 @@
     "oauthUnrequested": "Az OAuth válasz nem tartalmazza a kért szolgáltatás jogosultságát. Próbáld újra, vagy bontsd a másik Google-összekötést, ha ugyanazt az OAuth appot használják.",
     "usageCapableOne": "{list} rendelkezik a szükséges eszközjoggal.",
     "usageCapableMany": "{list} rendelkeznek a szükséges eszközjoggal.",
-    "usageCapableCount": "{count} aktív agent rendelkezik a szükséges eszközjoggal.",
-    "usageMissingCapability": "A fiók össze van kötve, de a hozzárendelt agenteknél hiányzik a szükséges eszközjog.",
-    "usageUnassigned": "A fiók össze van kötve, de még nincs agenthez rendelve.",
+    "usageCapableCount": "{count} aktív munkatárs rendelkezik a szükséges eszközjoggal.",
+    "usageMissingCapability": "A fiók össze van kötve, de a hozzárendelt munkatársaknál hiányzik a szükséges eszközjog.",
+    "usageUnassigned": "A fiók össze van kötve, de még nincs munkatárshoz rendelve.",
     "and": "és",
     "folder": "mappa",
-    "file": "fájl"
+    "file": "fájl",
+    "driveOutputAccount": "Melyik Drive-fiókból választasz mappát?"
   },
   "DrivePicker": {
     "folder": "mappa",

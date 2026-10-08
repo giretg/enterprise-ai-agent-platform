@@ -36,6 +36,10 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'This account has not been connected yet',
+  account_required:
+    'Several linked accounts match; pass account (nickname or email from platform.whoami linkedAccounts, see accounts in the error payload)',
+  unknown_account:
+    'No linked account matches that account nickname or email; pass one from platform.whoami linkedAccounts (see accounts in the error payload)',
   connector_id_required:
     'Multiple HTTP API connectors match; pass connectorName (from connectors[].name in the published definition), connectorId, or a path that appears on only one connector\'s endpoint list (see connectors in the error payload)',
   acting_user_required: 'This tool requires a delegated user grant',

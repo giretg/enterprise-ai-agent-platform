@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { updateAgentOutputFolder } from '@/app/actions/platform'
 import { GoogleDriveFolderPickerButton } from '@/components/account/google-drive-folder-picker-button'
 
@@ -11,16 +12,19 @@ export function UpdateOutputFolderForm({
   agentId,
   outputDriveFolderId,
   driveGrantId,
+  driveGrants = [],
   drivePickerConfigured,
   canEdit = true,
 }: {
   agentId: string
   outputDriveFolderId: string | null
-  driveGrantId: string | null
+  driveGrantId?: string | null
+  driveGrants?: Array<{ id: string; label: string }>
   drivePickerConfigured: boolean
   canEdit?: boolean
 }) {
   const router = useRouter()
+  const tAccount = useTranslations('Account')
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
@@ -28,6 +32,12 @@ export function UpdateOutputFolderForm({
   const [folderLabel, setFolderLabel] = useState<string | null>(
     outputDriveFolderId ? outputDriveFolderId : null,
   )
+  const grants = driveGrants.length > 0
+    ? driveGrants
+    : driveGrantId
+      ? [{ id: driveGrantId, label: driveGrantId }]
+      : []
+  const [selectedGrantId, setSelectedGrantId] = useState<string | null>(grants[0]?.id ?? null)
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- sync when agent props refresh after save
@@ -35,11 +45,17 @@ export function UpdateOutputFolderForm({
     setFolderLabel(outputDriveFolderId ?? null)
   }, [outputDriveFolderId])
 
+  useEffect(() => {
+    if (selectedGrantId && grants.some((grant) => grant.id === selectedGrantId)) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- keep selection on a live grant
+    setSelectedGrantId(grants[0]?.id ?? null)
+  }, [grants, selectedGrantId])
+
   if (!canEdit) {
     return (
       <p className="text-sm text-ink-soft">
         {outputDriveFolderId
-          ? `Output-mappa: ${outputDriveFolderId} — ide az agent jóváhagyás nélkül tölt fel.`
+          ? `Output-mappa: ${outputDriveFolderId} — ide a munkatárs jóváhagyás nélkül tölt fel.`
           : 'Nincs output-mappa — minden Drive-feltöltés jóváhagyást kér.'}
       </p>
     )
@@ -53,7 +69,7 @@ export function UpdateOutputFolderForm({
       if (res.success) {
         setDone(
           nextId
-            ? 'Mentve. Ebbe a mappába az agent jóváhagyás nélkül tölt fel.'
+            ? 'Mentve. Ebbe a mappába a munkatárs jóváhagyás nélkül tölt fel.'
             : 'Törölve. Mostantól minden Drive-feltöltés jóváhagyást kér.',
         )
         router.refresh()
@@ -66,7 +82,7 @@ export function UpdateOutputFolderForm({
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink-soft">
-        Válassz egy Drive-mappát, ahová az agent jóváhagyás nélkül is feltölthet. Ha üresen marad,
+        Válassz egy Drive-mappát, ahová a munkatárs jóváhagyás nélkül is feltölthet. Ha üresen marad,
         minden feltöltés jóváhagyást kér.
       </p>
 
@@ -80,9 +96,26 @@ export function UpdateOutputFolderForm({
         <p className="text-sm italic text-ink-faint">Még nincs output-mappa beállítva.</p>
       )}
 
+      {grants.length > 1 ? (
+        <label className="block text-sm text-ink-soft">
+          {tAccount('driveOutputAccount')}
+          <select
+            value={selectedGrantId ?? ''}
+            className="mt-1 w-full max-w-sm rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
+            onChange={(event) => setSelectedGrantId(event.target.value || null)}
+          >
+            {grants.map((grant) => (
+              <option key={grant.id} value={grant.id}>
+                {grant.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-3">
         <GoogleDriveFolderPickerButton
-          grantId={driveGrantId}
+          grantId={selectedGrantId}
           pickerConfigured={drivePickerConfigured}
           disabled={pending}
           onPicked={(folder) => {
@@ -108,7 +141,7 @@ export function UpdateOutputFolderForm({
         ) : null}
       </div>
 
-      {!driveGrantId ? (
+      {!selectedGrantId ? (
         <p className="text-xs text-honey">
           A böngészéshez kösd be a Google Drive-ot a{' '}
           <Link href="/control-plane/account" className="font-semibold text-coral-deep underline">

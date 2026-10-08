@@ -26,6 +26,10 @@ export type OAuthStatePayload = {
   expiresAt: number
   /** Chat/ticket/MCP folytatás OAuth után — csak kind (+ uuid), nem nyers URL. */
   returnTo?: OAuthReturnTo
+  /** Felhasználói becenév (pl. magán, céges) a kapcsolt fiókhoz. */
+  nickname?: string
+  /** Új fiók hozzáadása: ne uniózzuk egy másik Google-fiók scope-jait. */
+  addAccount?: boolean
 }
 
 function signPayload(payload: string): string {
@@ -86,6 +90,8 @@ export function createOAuthState(params: {
   tenantId: string | null
   requestedScopes?: string[]
   returnTo?: OAuthReturnTo
+  nickname?: string
+  addAccount?: boolean
 }): { state: string; codeVerifier: string } {
   const codeVerifier = randomBytes(32).toString('base64url')
   const payload: OAuthStatePayload = {
@@ -96,6 +102,8 @@ export function createOAuthState(params: {
     codeVerifier,
     expiresAt: Date.now() + STATE_TTL_MS,
     ...(params.returnTo && isSafeOAuthReturnTo(params.returnTo) ? { returnTo: params.returnTo } : {}),
+    ...(params.nickname ? { nickname: params.nickname } : {}),
+    ...(params.addAccount ? { addAccount: true } : {}),
   }
   return { state: encodeJson(payload), codeVerifier }
 }

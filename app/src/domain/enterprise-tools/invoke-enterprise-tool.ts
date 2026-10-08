@@ -342,6 +342,7 @@ async function tryDirectOutputFolderWrite(
     return errorResult(authorized.reason, {
       ...extra,
       ...(authorized.connectorChoices?.length ? { connectors: authorized.connectorChoices } : {}),
+      ...(authorized.accountChoices?.length ? { accounts: authorized.accountChoices } : {}),
     })
   }
   const connector = authorized.connector
@@ -523,6 +524,7 @@ export async function invokeEnterpriseTool(
       ...(authorized.connectorChoices?.length
         ? { connectors: authorized.connectorChoices }
         : {}),
+      ...(authorized.accountChoices?.length ? { accounts: authorized.accountChoices } : {}),
     })
   }
 
