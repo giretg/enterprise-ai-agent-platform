@@ -8,6 +8,7 @@
 - Javítás: memóriaolvasás és írás csak `enterprise.tool.ok` audit után számít; skill-olvasás csak tényleges `skill://…/SKILL.md` resource-olvasás után. A session-kulcs a hitelesített `actorId`-t is tartalmazza; az azonosító nélküli sorok külön számláltak, nem számítanak munkamenetnek. A lekérdezés a legújabb 5000 eseményt vizsgálja, és a felület figyelmeztet, ha ez csak minta. A szöveg pontosan megnevezi, hogy a definíciómutató jelenleg a *kérést* méri, mert a definíció sikeres visszaadására nincs külön audit-esemény.
 - Üzleti hatás: az admin nem lát mesterségesen javuló minőségi arányt az elutasított AI-eszközhívásoktól, és nagy forgalomnál nem téveszti össze a mintát a teljes időszakkal. Ez megbízhatóbb alap a kliens- és agent-utasítások javításához. A riport továbbra sem igazolja önmagában, hogy az agent a skill tartalmát követte; az csak külön evallal mérhető.
 - Ellenőrzés: `test:mcp-parity`, `test:mcp-parity-eval`, `test:mcp-http`, célzott ESLint, Prisma-generate utáni teljes `tsc --noEmit`, `git diff --check` zöld. Regresszió fedi az elutasított/megkísérelt műveletet, a két felhasználó azonos session-fejlécét, az azonosító nélküli sort és a friss eseményeket előnyben részesítő mintavételt.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/822 (`codex`, `codex-automation`, `bug`).
 
 ## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
 
