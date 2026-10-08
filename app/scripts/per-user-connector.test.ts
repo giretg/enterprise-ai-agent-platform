@@ -78,6 +78,7 @@ function grant(overrides: Partial<ConnectorGrant> = {}): ConnectorGrant {
     scopes: [GMAIL_SCOPES.readonly],
     tokenRef: 'tenant/tenant-A/user/user-Y/connector/conn-gmail',
     accountLabel: 'y@example.com',
+    nickname: null,
     grantedAt: new Date('2026-06-10T00:00:00.000Z'),
     expiresAt: null,
     lastRefreshedAt: null,
@@ -160,7 +161,14 @@ function buildGrantService(initialGrant: ConnectorGrant | null = grant()) {
       return currentGrant
     },
     findActiveGrant: async () => (currentGrant?.status === 'active' ? currentGrant : null),
-    findByUser: async () => [],
+    findActiveGrants: async () =>
+      currentGrant?.status === 'active' ? [currentGrant] : [],
+    findByUser: async () => (currentGrant ? [{ ...currentGrant, connector: { id: currentGrant.connectorId, name: 'Gmail', type: 'gmail', lifecycleState: 'active' as const } }] : []),
+    updateNickname: async (id: string, nickname: string | null) => {
+      assert.equal(currentGrant?.id, id)
+      currentGrant = { ...currentGrant, nickname } as ConnectorGrant
+      return currentGrant
+    },
     create: async (data: {
       tenantId: string | null
       connectorId: string
@@ -168,6 +176,7 @@ function buildGrantService(initialGrant: ConnectorGrant | null = grant()) {
       scopes: unknown
       tokenRef: string
       accountLabel?: string | null
+      nickname?: string | null
       expiresAt?: Date | null
     }) => {
       created.push({
@@ -176,8 +185,12 @@ function buildGrantService(initialGrant: ConnectorGrant | null = grant()) {
         connectorId: data.connectorId,
         userId: data.userId,
       })
+      const sameAccount =
+        currentGrant &&
+        data.accountLabel &&
+        currentGrant.accountLabel?.toLowerCase() === data.accountLabel.toLowerCase()
       currentGrant = {
-        id: currentGrant?.id ?? 'grant-created',
+        id: sameAccount ? currentGrant.id : (currentGrant && !data.accountLabel ? currentGrant.id : 'grant-created'),
         tenantId: data.tenantId,
         connectorId: data.connectorId,
         userId: data.userId,
@@ -185,6 +198,7 @@ function buildGrantService(initialGrant: ConnectorGrant | null = grant()) {
         scopes: data.scopes as ConnectorGrant['scopes'],
         tokenRef: data.tokenRef,
         accountLabel: data.accountLabel ?? null,
+        nickname: data.nickname ?? (sameAccount ? currentGrant?.nickname : null) ?? null,
         grantedAt: new Date(),
         expiresAt: data.expiresAt ?? null,
         lastRefreshedAt: null,
@@ -471,7 +485,7 @@ await test('buildAuthorizationUrl: generikus provider a config.oauth-ot használ
   assert.equal(parsed.searchParams.get('access_type'), null)
   assert.equal(parsed.searchParams.get('include_granted_scopes'), null)
   assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256')
-  assert.equal(parsed.searchParams.get('prompt'), 'consent')
+  assert.equal(parsed.searchParams.get('prompt'), 'select_account consent')
   assert.ok(parsed.searchParams.get('redirect_uri')?.endsWith('/api/connectors/oauth/callback'))
 })
 
@@ -670,6 +684,7 @@ await test('completeOAuthCallback: újra-consent uniózza a meglévő grant scop
   try {
     const existing = grant({
       scopes: [GMAIL_SCOPES.readonly, GMAIL_SCOPES.modify],
+      accountLabel: 'stub-user@example.com',
     })
     const { service, created, getGrant } = buildGrantService(existing)
     const connector = gmailConnector({

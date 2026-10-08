@@ -215,6 +215,12 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     origin?: string
     confirm?: WriteConfirmInput
   }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
+  listLinkedAccounts?: (input: {
+    userId: string
+    tenantId: string
+  }) => Promise<
+    Array<{ type: string; account: string; email: string | null; nickname: string | null }>
+  >
   /** HMAC key for the write-confirmation `requestState` (#618); missing → link only. */
   requestStateKey?: string
   getGatewayOperation: (input: {
@@ -359,6 +365,21 @@ export function productionMcpDeps(): McpRuntimeDeps {
       }))
     },
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
+    listLinkedAccounts: async ({ userId, tenantId }) => {
+      const grants = await services.connectorGrants.listForUser(userId, tenantId)
+      return grants
+        .filter((grant) => grant.status === 'active')
+        .filter(
+          (grant) =>
+            grant.connector.type === 'gmail' || grant.connector.type === 'google_drive',
+        )
+        .map((grant) => ({
+          type: grant.connector.type,
+          account: grant.nickname?.trim() || grant.accountLabel?.trim() || grant.id,
+          email: grant.accountLabel,
+          nickname: grant.nickname,
+        }))
+    },
     requestStateKey: process.env.MCP_REQUEST_STATE_KEY,
     getGatewayOperation: async (input) =>
       services.gatewayOperations.toMcpGet(
@@ -418,6 +439,12 @@ function forbiddenResponse(failure: McpPrincipalFailure): Response {
 function whoamiPayload(
   principal: McpPrincipal,
   tenantContext: ReturnType<typeof buildTenantContextPayload>,
+  linkedAccounts: Array<{
+    type: string
+    account: string
+    email: string | null
+    nickname: string | null
+  }> = [],
 ) {
   return {
     userId: principal.userId,
@@ -430,6 +457,7 @@ function whoamiPayload(
     organizationLabel: tenantContext.organizationLabel,
     mcpIntro: tenantContext.mcpIntro,
     coworkers: tenantContext.coworkers,
+    linkedAccounts,
   }
 }
 
@@ -494,8 +522,13 @@ async function loadTenantContext(principal: McpPrincipal, deps: McpRuntimeDeps) 
 async function whoamiToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
   await auditMcpAuthOk(deps, principal)
   await auditMcpToolCall(deps, principal, MCP_WHOAMI_TOOL)
-  const { context } = await loadTenantContext(principal, deps)
-  return textResult(whoamiPayload(principal, context))
+  const [{ context }, linkedAccounts] = await Promise.all([
+    loadTenantContext(principal, deps),
+    deps.listLinkedAccounts
+      ? deps.listLinkedAccounts({ userId: principal.userId, tenantId: principal.tenantId })
+      : Promise.resolve([]),
+  ])
+  return textResult(whoamiPayload(principal, context, linkedAccounts))
 }
 
 async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
@@ -1184,7 +1217,7 @@ async function createMcpResourceHandler(
         {
           title: 'Who am I',
           description:
-            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
+            'Return the authenticated MCP principal, tenant organization context, visible coworkers, and linkedAccounts (Gmail/Drive nicknames such as magán or céges). Pass linkedAccounts[].account on Gmail and Drive tools when more than one account is listed. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => whoamiToolResult(principal, deps),
@@ -1422,7 +1455,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search Google Drive',
           description:
-            'List or search Google Drive files. Returns file id, name, mimeType. Call this to get a fileId before google_drive_read_file. Pass definitionId from platform.agent.get_definition. Omit query to list recent files. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'List or search Google Drive files. Returns file id, name, mimeType. Call this to get a fileId before google_drive_read_file. Pass definitionId from platform.agent.get_definition. Omit query to list recent files. If platform.whoami lists several linkedAccounts of type google_drive, pass account (nickname or email, e.g. magán / céges). If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1483,7 +1516,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search Gmail',
           description:
-            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If platform.whoami lists several linkedAccounts of type gmail, pass account (nickname or email, e.g. magán / céges). If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },

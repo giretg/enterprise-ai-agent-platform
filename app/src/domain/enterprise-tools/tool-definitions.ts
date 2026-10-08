@@ -174,6 +174,13 @@ const optionalConnectorName = z
   .describe(
     'Human connector name from the published agent definition (connectors[].name). Prefer this over connectorId when several HTTP APIs are bound.',
   )
+const optionalLinkedAccount = z
+  .string()
+  .max(80)
+  .optional()
+  .describe(
+    'Nickname or email of the linked Gmail/Drive account from platform.whoami linkedAccounts (e.g. magán, céges). Required when the user has more than one.',
+  )
 const scalarMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
 const callerHeaders = z
   .record(z.string(), z.string())
@@ -189,6 +196,7 @@ export const googleDriveSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     query: z
       .string()
       .max(1000)
@@ -212,6 +220,7 @@ export const googleDriveReadFileInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     fileId: z.string().min(1).max(200).describe('Drive file id from google_drive_search.'),
     maxBytes: z
       .number()
@@ -229,6 +238,7 @@ export const googleDriveCreateFolderInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     name: z.string().min(1).max(500),
     parentFolderId: z.string().max(200).optional(),
     idempotencyKey: z.string().min(1).max(200),
@@ -239,6 +249,7 @@ export const googleDriveUploadFileInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     name: z.string().min(1).max(500),
     textContent: z
       .string()
@@ -265,6 +276,7 @@ export const googleDriveUpdateFileInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     fileId: z.string().min(1).max(200).describe('Drive file id from google_drive_search.'),
     textContent: z
       .string()
@@ -286,6 +298,7 @@ export const googleSheetsWriteRangeInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     fileId: z.string().min(1).max(200),
     range: z.string().min(1).max(200).describe('A1 range, e.g. Sheet1!A1'),
     // ponytail: JSON string not unknown[][] — Claude.ai drops advertised array schemas
@@ -303,6 +316,7 @@ export const gmailSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     query: z
       .string()
       .min(1)
@@ -316,6 +330,7 @@ export const gmailGetMessageInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     id: z.string().min(1).max(200).describe('Gmail message id from gmail_search'),
   })
   .passthrough()
@@ -324,6 +339,7 @@ export const gmailGetThreadInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     threadId: z.string().min(1).max(200).describe('Gmail threadId from gmail_search or gmail_get_message'),
   })
   .passthrough()
@@ -332,6 +348,7 @@ export const gmailListLabelsInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
   })
   .passthrough()
 
@@ -339,6 +356,7 @@ export const gmailListDraftsInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     maxResults: z.number().int().min(1).max(25).optional(),
   })
   .passthrough()
@@ -350,6 +368,7 @@ const emailList = (what: string) =>
 const composeFields = {
   definitionId,
   agentId: optionalAgentId,
+  account: optionalLinkedAccount,
   to: emailList('Recipients. Omit when replying — defaults to the original sender (all participants with replyAll)'),
   cc: emailList('Cc'),
   bcc: emailList('Bcc'),
@@ -395,6 +414,7 @@ export const gmailCreateDraftInputSchema = gmailCreateDraftObject.superRefine((a
 const messageOrThread = {
   definitionId,
   agentId: optionalAgentId,
+  account: optionalLinkedAccount,
   messageId: z.string().max(200).optional().describe('One Gmail message id'),
   threadId: z.string().max(200).optional().describe('Whole thread id (use instead of messageId)'),
   idempotencyKey: z.string().min(1).max(200),

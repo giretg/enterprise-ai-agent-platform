@@ -9,7 +9,11 @@ import { services } from '@/domain/gateway-services'
 import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
-import { connectorGrantIdSchema, startConnectorOAuthSchema } from '@/lib/validators/actions'
+import {
+  connectorGrantIdSchema,
+  startConnectorOAuthSchema,
+  updateConnectorGrantNicknameSchema,
+} from '@/lib/validators/actions'
 import { navSoftwareSchema } from '@/lib/nav-online-invoice-software'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
 import { agentDisplayName } from '@/lib/agent-persona'
@@ -614,11 +618,14 @@ export async function startConnectorOAuth(input: {
   scopes?: string[]
   /** A grant-hiányon elakadt eszköz — ebből jön a legkisebb szükséges scope. */
   toolName?: string
+  nickname?: string
+  addAccount?: boolean
   returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string; originPath?: string }
 }) {
   try {
     const ctx = await requireTenantRole('viewer')
-    const { connectorId, scopes, toolName, returnTo } = startConnectorOAuthSchema.parse(input)
+    const { connectorId, scopes, toolName, returnTo, nickname, addAccount } =
+      startConnectorOAuthSchema.parse(input)
     const connector = await prisma.connector.findUnique({ where: { id: connectorId } })
     if (!connector) return fail('Connector not found')
     if (connector.authMode !== 'user_delegated') return fail('Connector is not user_delegated')
@@ -634,10 +641,39 @@ export async function startConnectorOAuth(input: {
       ...(toolName ? { toolName } : {}),
       ...(scopes ? { requestedScopes: scopes } : {}),
       ...(returnTo ? { returnTo } : {}),
+      ...(nickname ? { nickname } : {}),
+      ...(addAccount ? { addAccount: true } : {}),
     })
     return ok(started)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to start OAuth')
+  }
+}
+
+export async function updateConnectorGrantNickname(input: {
+  grantId: string
+  nickname: string | null
+}) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const { grantId, nickname } = updateConnectorGrantNicknameSchema.parse(input)
+    const grant = await prisma.connectorGrant.findUnique({ where: { id: grantId } })
+    if (!grant) return fail('Grant not found')
+    if (grant.userId !== ctx.user.id) return fail('Forbidden')
+    if (grant.tenantId !== ctx.activeTenantId) return fail('Forbidden')
+    await services.connectorGrants.updateNickname({
+      grantId,
+      nickname,
+      actorId: ctx.user.id,
+      expectedUserId: ctx.user.id,
+      expectedTenantId: ctx.activeTenantId,
+    })
+    return ok({ saved: true })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to save nickname'
+    if (message === 'nickname_taken') return fail('nickname_taken')
+    if (message === 'invalid_nickname') return fail('invalid_nickname')
+    return fail(message)
   }
 }
 

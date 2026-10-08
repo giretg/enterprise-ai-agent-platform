@@ -191,6 +191,8 @@ const sharedToolLookups = {
   findConnector: (id: string) => repositories.connectors.findById(id),
   findActiveGrant: (input: { tenantId: string; connectorId: string; userId: string }) =>
     repositories.connectorGrants.findActiveGrant(input),
+  findActiveGrants: (input: { tenantId: string; connectorId: string; userId: string }) =>
+    repositories.connectorGrants.findActiveGrants(input),
   async resolveActingUser(input: { userId: string }) {
     const user = await repositories.users.findById(input.userId)
     return user ? { id: user.id, email: user.email } : null

@@ -743,6 +743,7 @@ model ConnectorGrant {
   scopes          Json                 @default("[]")
   tokenRef        String               @unique @map("token_ref")
   accountLabel    String?              @map("account_label")
+  nickname        String?              @map("nickname")
   grantedAt       DateTime             @default(now()) @map("granted_at") @db.Timestamptz
   expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
   lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
@@ -753,7 +754,7 @@ model ConnectorGrant {
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, connectorId, userId])
+  @@index([tenantId, connectorId, userId, status])
   @@map("connector_grants")
 }
 

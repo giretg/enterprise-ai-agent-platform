@@ -216,6 +216,7 @@ function runtimeDeps(overrides: {
   skills?: McpSkillPackage[]
   requestStateKey?: string
   driveCalls?: unknown[]
+  listLinkedAccounts?: McpRuntimeDeps['listLinkedAccounts']
 } = {}): {
   deps: McpRuntimeDeps
   audit: Array<Record<string, unknown>>
@@ -369,6 +370,7 @@ function runtimeDeps(overrides: {
         return []
       },
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
+      listLinkedAccounts: overrides.listLinkedAccounts,
       requestStateKey: overrides.requestStateKey,
       getGatewayOperation: async (input) =>
         getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
@@ -805,6 +807,7 @@ async function main() {
     const search = tools.find((tool) => tool.name === GOOGLE_DRIVE_SEARCH_TOOL)
     assert.ok(search, 'google_drive_search missing from tools/list')
     assert.match(search.description ?? '', /fileId/i)
+    assert.equal(search.inputSchema?.properties?.account?.type, 'string')
     const schemaJson = JSON.stringify(search.inputSchema ?? {})
     assert.ok(schemaJson.length <= 16384, `search schema ${schemaJson.length} bytes exceeds Claude.ai drop limit`)
     for (const tool of tools) {
@@ -852,9 +855,39 @@ async function main() {
       organizationLabel: 'Acme',
       mcpIntro: null,
       coworkers: [PUBLISHED_LIST_ITEM],
+      linkedAccounts: [],
     })
     assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 1)
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
+  })
+
+  await check('platform.whoami lists linked Gmail/Drive nicknames', async () => {
+    const linked = [
+      { type: 'gmail', account: 'magán', email: 'anna@gmail.com', nickname: 'magán' },
+      { type: 'gmail', account: 'céges', email: 'anna@ceg.hu', nickname: 'céges' },
+    ]
+    const { deps } = runtimeDeps({
+      grantedAgentIds: new Set([AGENT_ID]),
+      listLinkedAccounts: async () => linked,
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 32,
+        method: 'tools/call',
+        params: { name: MCP_WHOAMI_TOOL, arguments: {} },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { content?: Array<{ type: string; text: string }>; isError?: boolean }
+    }
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { linkedAccounts?: unknown }
+    assert.deepEqual(payload.linkedAccounts, linked)
   })
 
   await check('#666 mcp-session-id + user-agent pecsét az audit-sorra', async () => {

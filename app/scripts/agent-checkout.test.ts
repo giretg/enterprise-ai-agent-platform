@@ -259,6 +259,7 @@ async function main() {
     assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
     assert.match(briefing, /WHERE TO SAVE WHAT/)
     assert.match(briefing, /platform\.work_file\.write/)
+    assert.match(briefing, /platform\.whoami → linkedAccounts/)
     assert.match(
       briefing,
       /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/,

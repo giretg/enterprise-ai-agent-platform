@@ -365,8 +365,10 @@ export function renderAgentBriefing(input: {
 
   const tools = mcpToolNames(snapshot.capabilities)
   if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
-  if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
-    lines.push('- Google Drive connector: use the Drive MCP tools by name.')
+  if (snapshot.connectors.some((row) => row.type === 'google_drive' || row.type === 'gmail')) {
+    lines.push(
+      '- Linked Gmail/Drive accounts: call platform.whoami → linkedAccounts. When more than one account is listed, pass account (nickname or email, e.g. magán / céges) on Gmail and Drive tools.',
+    )
   }
   if (httpApis.length > 0) {
     lines.push(

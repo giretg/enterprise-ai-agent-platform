@@ -861,13 +861,7 @@ async function executeApprovedOperation(
   if (!authorized.allowed) return fail(authorized.reason)
 
   const delegated = authorized.connector.authMode === 'user_delegated'
-  const grant = delegated
-    ? await deps.findActiveGrant({
-        tenantId: operation.tenantId,
-        connectorId: authorized.connectorId,
-        userId: operation.principalUserId,
-      })
-    : null
+  const grant = delegated ? authorized.grant ?? null : null
   if (delegated && !grant) return fail('connector_grant_missing')
 
   if (grant && isEnterpriseDriveWriteTool(operation.toolName)) {

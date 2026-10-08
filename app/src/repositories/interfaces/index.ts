@@ -235,6 +235,11 @@ export interface ConnectorGrantRepository {
     connectorId: string
     userId: string
   }): Promise<ConnectorGrant | null>
+  findActiveGrants(params: {
+    tenantId: string
+    connectorId: string
+    userId: string
+  }): Promise<ConnectorGrant[]>
   findActiveByConnector(connectorId: string): Promise<ConnectorGrant[]>
   findActiveForInactiveConnectors(userId: string, tenantId?: string): Promise<ConnectorGrant[]>
   findByUser(
@@ -259,6 +264,7 @@ export interface ConnectorGrantRepository {
     scopes: Prisma.JsonValue
     tokenRef: string
     accountLabel?: string | null
+    nickname?: string | null
     expiresAt?: Date | null
   }): Promise<ConnectorGrant>
   updateStatus(
@@ -269,6 +275,7 @@ export interface ConnectorGrantRepository {
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<ConnectorGrant | null>
   updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
+  updateNickname(id: string, nickname: string | null): Promise<ConnectorGrant>
 }
 
 export type ConnectorDraftWithConnector = ConnectorDraft & {
