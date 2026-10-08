@@ -56,6 +56,8 @@ export type McpParityReport = {
   sessions: number
   cells: McpParityCell[]
   trend: McpParityTrendPoint[]
+  limited?: boolean
+  unattributedEvents?: number
 }
 
 const DEFINITION_TOOLS = new Set([
@@ -66,13 +68,7 @@ const DEFINITION_TOOLS = new Set([
 
 const MEMORY_READ_TOOLS = new Set([
   'platform.project_memory.read',
-  'platform.agent.get_working_set',
-  'platform.agent.checkout',
 ])
-
-const SKILL_READ_ACTIONS = new Set(['mcp.prompts.get', 'mcp.resources.read'])
-
-const SKILL_READ_TOOLS = new Set(['platform.skills.read'])
 
 const SEARCH_TOOLS = new Set([
   'kb_search',
@@ -110,24 +106,22 @@ function isSearchTool(tool: string): boolean {
 }
 
 function isSkillRead(e: McpParityEvent): boolean {
-  if (SKILL_READ_ACTIONS.has(e.action)) return true
-  return SKILL_READ_TOOLS.has(toolOf(e))
+  return e.action === 'mcp.resources.read' &&
+    /^skill:\/\/[^/]+\/SKILL\.md$/.test(e.inputRef ?? '')
 }
 
 function isLogWrite(e: McpParityEvent): boolean {
-  if (e.action === 'project.work_file.write') return true
-  return LOG_WRITE_TOOLS.has(toolOf(e))
+  return e.action === 'enterprise.tool.ok' && LOG_WRITE_TOOLS.has(toolOf(e))
 }
 
 function isMemoryWrite(e: McpParityEvent): boolean {
-  if (e.action === 'project.project_memory.write') return true
-  return MEMORY_WRITE_TOOLS.has(toolOf(e))
+  return e.action === 'enterprise.tool.ok' && MEMORY_WRITE_TOOLS.has(toolOf(e))
 }
 
 export function sessionKeyOf(e: McpParityEvent): string {
   const m = e.metadata ?? {}
   const s = typeof m.sessionId === 'string' && m.sessionId ? m.sessionId : ''
-  return s || 'unknown'
+  return s ? `${e.actorId ?? 'unknown'}\t${s}` : 'unknown'
 }
 
 export function agentOf(e: McpParityEvent): string {
@@ -183,7 +177,7 @@ export function computeSessionMetrics(sessionId: string, events: McpParityEvent[
     if (definitionIdx < 0 && (DEFINITION_TOOLS.has(t) || e.action === 'mcp.prompts.get')) {
       definitionIdx = i
     }
-    if (memoryIdx < 0 && MEMORY_READ_TOOLS.has(t)) memoryIdx = i
+    if (memoryIdx < 0 && e.action === 'enterprise.tool.ok' && MEMORY_READ_TOOLS.has(t)) memoryIdx = i
     if (!skill && isSkillRead(e)) skill = true
     if (!log && isLogWrite(e)) log = true
     if (!memWrite && isMemoryWrite(e)) memWrite = true

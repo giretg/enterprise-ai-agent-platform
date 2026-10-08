@@ -51,17 +51,16 @@ function ev(
 
 const DEF = 'platform.agent.get_definition'
 const MEM = 'platform.project_memory.read'
-const SKILL = 'platform.skills.read'
 const SEARCH = 'kb_search'
 const WRITE = 'platform.work_file.write'
 
 function goodSession(id = 's-good'): McpParityEvent[] {
   return [
     ev('mcp.tools.call', DEF, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
-    ev('mcp.tools.call', MEM, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
-    ev('mcp.tools.call', SKILL, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
+    ev('enterprise.tool.ok', MEM, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
+    ev('mcp.resources.read', 'skill://kati/SKILL.md', { sessionId: id, agentId: 'kati', clientName: 'claude' }),
     ev('mcp.tools.call', SEARCH, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
-    ev('mcp.tools.call', WRITE, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
+    ev('enterprise.tool.ok', WRITE, { sessionId: id, agentId: 'kati', clientName: 'claude' }),
   ]
 }
 
@@ -91,7 +90,7 @@ async function main() {
     const m = computeSessionMetrics('s', [
       ev('mcp.tools.call', DEF, { sessionId: 's' }),
       ev('mcp.tools.call', SEARCH, { sessionId: 's' }),
-      ev('mcp.tools.call', MEM, { sessionId: 's' }),
+      ev('enterprise.tool.ok', MEM, { sessionId: 's' }),
     ])
     assert.equal(m.definitionBeforeSearch, true)
     assert.equal(m.memoryBeforeSearch, false)
@@ -230,10 +229,10 @@ async function main() {
   await check('szótár = valódi MCP tool-nevek (get_definition + memory.read + skills.read + kb_search)', () => {
     const m = computeSessionMetrics('s', [
       ev('mcp.tools.call', 'platform.agent.get_definition', { sessionId: 's' }),
-      ev('mcp.tools.call', 'platform.project_memory.read', { sessionId: 's' }),
-      ev('mcp.tools.call', 'platform.skills.read', { sessionId: 's' }),
+      ev('enterprise.tool.ok', 'platform.project_memory.read', { sessionId: 's' }),
+      ev('mcp.resources.read', 'skill://kati/SKILL.md', { sessionId: 's' }),
       ev('mcp.tools.call', 'kb_list_index', { sessionId: 's' }),
-      ev('mcp.tools.call', 'platform.work_file.write', { sessionId: 's' }),
+      ev('enterprise.tool.ok', 'platform.work_file.write', { sessionId: 's' }),
     ])
     assert.equal(m.definitionBeforeSearch, true)
     assert.equal(m.memoryBeforeSearch, true)
@@ -256,6 +255,29 @@ async function main() {
       ev('mcp.tools.call', SEARCH, { sessionId: 's' }),
     ])
     assert.equal(m.entrySkillRead, false)
+  })
+
+  await check('sikertelen vagy csak megkísérelt olvasás/írás nem javítja a riportot', () => {
+    const m = computeSessionMetrics('s', [
+      ev('mcp.tools.call', MEM, { sessionId: 's' }),
+      ev('enterprise.tool.denied', MEM, { sessionId: 's', reasonCode: 'agent_stale' }),
+      ev('mcp.tools.call', 'platform.skills.read', { sessionId: 's' }),
+      ev('mcp.resources.read', 'skill://kati/helper.py', { sessionId: 's' }),
+      ev('mcp.tools.call', WRITE, { sessionId: 's' }),
+      ev('enterprise.tool.denied', WRITE, { sessionId: 's', reasonCode: 'quota_exceeded' }),
+      ev('mcp.tools.call', SEARCH, { sessionId: 's' }),
+    ])
+    assert.equal(m.memoryBeforeSearch, false)
+    assert.equal(m.entrySkillRead, false)
+    assert.equal(m.logWritten, false)
+  })
+
+  await check('azonos session fejléc két embernél külön munkamenet', () => {
+    const groups = groupMcpSessions([
+      ev('mcp.tools.call', DEF, { sessionId: 'shared' }, { actorId: 'user-1' }),
+      ev('mcp.tools.call', SEARCH, { sessionId: 'shared' }, { actorId: 'user-2' }),
+    ])
+    assert.equal(groups.length, 2)
   })
 
   await check('scoped sink: session+kliens minden sorba, meglévőt nem ír felül', async () => {
