@@ -22,11 +22,10 @@ export default async function McpParityPage() {
           Jól használja a külső AI az agentet?
         </h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Munkamenetenként mérjük: betöltötte-e a definíciót és a memóriát az első keresés
-          előtt, elolvasta-e a belépő skillt, írt-e naplót vagy memóriát a végén — és hány
-          hibája volt. A munkamenetet a kliens által küldött <code>mcp-session-id</code>{' '}
-          fejléc határolja; fejléc nélkül a sorok &bdquo;unknown&rdquo; munkamenetbe
-          kerülnek.
+          Az azonosítható munkamenetekben mérjük a definíció keresés előtti kérését,
+          a sikeres memóriaolvasást, a skill olvasását, a sikeres napló- vagy memóriaírást
+          és a hibákat.
+          Ehhez a kliensnek <code>mcp-session-id</code> fejlécet kell küldenie.
         </p>
       </div>
 
@@ -37,13 +36,27 @@ export default async function McpParityPage() {
       ) : res.data.sessions === 0 ? (
         <Card>
           <p className="py-8 text-center text-ink-faint">
-            Még nincs mérhető MCP-forgalom az elmúlt 30 napban. Amint egy kliens
+            Nincs azonosítható MCP-munkamenet az elmúlt 30 napban. Amint egy kliens
             (Claude Desktop, Cursor, Codex) <code>mcp-session-id</code> fejlécet küld,
             itt megjelennek az arányok.
           </p>
+          {res.data.limited ? (
+            <p className="text-sm text-coral-deep">Csak a legutóbbi 5000 eseményt vizsgáltuk.</p>
+          ) : null}
+          {res.data.unattributedEvents > 0 ? (
+            <p className="text-sm text-ink-soft">{res.data.unattributedEvents} eseményhez nem érkezett munkamenet-azonosító.</p>
+          ) : null}
         </Card>
       ) : (
         <>
+          {res.data.limited ? (
+            <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+              Nagy a forgalom: az arányok csak a legutóbbi 5000 eseményből készültek, nem a teljes 30 napból.
+            </p>
+          ) : null}
+          {res.data.unattributedEvents > 0 ? (
+            <p className="text-sm text-ink-soft">{res.data.unattributedEvents} esemény munkamenet-azonosító nélkül kimaradt az arányokból.</p>
+          ) : null}
           <Card>
             <p className="mb-3 text-sm text-ink-soft">
               Munkamenetek: <strong>{res.data.sessions}</strong>
@@ -55,7 +68,7 @@ export default async function McpParityPage() {
                     <th className="pb-2 pr-4 text-xs">Agent</th>
                     <th className="pb-2 pr-4 text-xs">Kliens</th>
                     <th className="pb-2 pr-4 text-xs">Munkamenet</th>
-                    <th className="pb-2 pr-4 text-xs">Definíció időben</th>
+                    <th className="pb-2 pr-4 text-xs">Definíció kérve időben</th>
                     <th className="pb-2 pr-4 text-xs">Memória időben</th>
                     <th className="pb-2 pr-4 text-xs">Skill olvasva</th>
                     <th className="pb-2 pr-4 text-xs">Napló/memória írva</th>
@@ -112,7 +125,7 @@ export default async function McpParityPage() {
               </table>
             </div>
             <p className="mt-2 text-xs text-ink-faint">
-              Jó munkamenet: belépő skill olvasva és napló vagy memória írva a végén.
+              Jó munkamenet: egy skill leírása olvasva és napló vagy memória sikeresen írva.
             </p>
           </Card>
         </>
