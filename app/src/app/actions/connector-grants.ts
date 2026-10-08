@@ -175,12 +175,16 @@ export async function getMyGoogleDriveGrantForPicker() {
       ctx.user.id,
     )
     const grants = await services.connectorGrants.listForUser(ctx.user.id, ctx.activeTenantId)
-    const driveGrant = grants.find(
-      (g) => g.status === 'active' && g.connector?.type === 'google_drive',
-    )
+    const driveGrants = grants
+      .filter((g) => g.status === 'active' && g.connector?.type === 'google_drive')
+      .map((g) => ({
+        id: g.id,
+        label: g.nickname?.trim() || g.accountLabel?.trim() || g.id,
+      }))
     const pickerConfig = await services.platformSettings.getGoogleDrivePickerConfig()
     return ok({
-      grantId: driveGrant?.id ?? null,
+      grants: driveGrants,
+      grantId: driveGrants[0]?.id ?? null,
       pickerConfigured: Boolean(pickerConfig),
     })
   } catch (e) {
@@ -646,7 +650,9 @@ export async function startConnectorOAuth(input: {
     })
     return ok(started)
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to start OAuth')
+    const message = e instanceof Error ? e.message : 'Failed to start OAuth'
+    if (message === 'nickname_taken') return fail('nickname_taken')
+    return fail(message)
   }
 }
 

@@ -200,15 +200,19 @@ function NicknameField({
   disabled,
   t,
   onChange,
+  onPreset,
+  showHint = true,
 }: {
   value: string
   disabled: boolean
   t: (key: string) => string
   onChange: (value: string) => void
+  onPreset?: (value: string) => void
+  showHint?: boolean
 }) {
   const presets = [t('nicknamePersonal'), t('nicknameWork')]
   return (
-    <div className="flex min-w-[12rem] flex-col gap-1">
+    <div className="flex min-w-[12rem] flex-col gap-1.5">
       <label className="text-[11px] font-semibold text-ink-soft">
         {t('nicknameLabel')}
         <input
@@ -216,19 +220,24 @@ function NicknameField({
           disabled={disabled}
           maxLength={40}
           placeholder={t('nicknamePlaceholder')}
-          title={t('nicknameHint')}
           className="mt-1 w-full rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
           onChange={(event) => onChange(event.target.value)}
         />
       </label>
-      <div className="flex flex-wrap gap-1">
+      {showHint ? (
+        <p className="text-[11px] font-normal leading-4 text-ink-faint">{t('nicknameHint')}</p>
+      ) : null}
+      <div className="flex flex-wrap gap-1.5">
         {presets.map((preset) => (
           <button
             key={preset}
             type="button"
             disabled={disabled}
-            className="rounded-full border border-line px-2 py-0.5 text-[10px] font-semibold text-ink-soft hover:bg-ink/5 disabled:opacity-50"
-            onClick={() => onChange(preset)}
+            className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-ink/5 disabled:opacity-50"
+            onClick={() => {
+              onChange(preset)
+              onPreset?.(preset)
+            }}
           >
             {preset}
           </button>
@@ -332,7 +341,11 @@ export function ConnectorConnectionCard({
       }
     })
 
-  const connect = (addAccount: boolean) =>
+  const connect = (addAccount: boolean) => {
+    if (addAccount && isGoogle && !nickname.trim()) {
+      setMessage({ ok: false, text: t('nicknameRequiredAdd') })
+      return
+    }
     startTransition(async () => {
       const res = await startConnectorOAuth({
         connectorId: connector.id,
@@ -347,10 +360,25 @@ export function ConnectorConnectionCard({
         } else {
           navigateToOAuth(res.data.url)
         }
+      } else if (res.error === 'nickname_taken') {
+        setMessage({ ok: false, text: t('nicknameTaken') })
       } else {
         setMessage({ ok: false, text: res.error })
       }
     })
+  }
+
+  const startAdding = () => {
+    setOpen(true)
+    setTab('overview')
+    setAdding(true)
+  }
+
+  const grantStatusLabel = (status: string) => {
+    if (status === 'active') return t('statusActive')
+    if (status === 'revoked') return t('statusRevoked')
+    return status
+  }
 
   const scopeSelect = (
     <select
@@ -396,24 +424,20 @@ export function ConnectorConnectionCard({
         provider={connector.type}
         iconDataUrl={connector.iconDataUrl}
         summary={<span title={hint ?? undefined}>{connectorDescription(connector, t)}</span>}
-        actions={
-          <>
-            {isGoogle && scopeSelect}
-            <button
-              type="button"
-              disabled={pending}
-              className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
-              onClick={() => connect(false)}
-            >
-              {t('connect')}
-            </button>
-          </>
-        }
+        actions={isGoogle ? scopeSelect : undefined}
       >
         <div className="space-y-3">
           {isGoogle ? (
             <NicknameField value={nickname} disabled={pending} t={t} onChange={setNickname} />
           ) : null}
+          <button
+            type="button"
+            disabled={pending}
+            className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+            onClick={() => connect(false)}
+          >
+            {t('connect')}
+          </button>
           {messageBox}
         </div>
       </ConnectionCard>
@@ -432,20 +456,27 @@ export function ConnectorConnectionCard({
       }
       summary={connectedGrantSummary(connector, activeGrants, t)}
       actions={
-        <button
-          type="button"
-          aria-expanded={open}
-          className={pillButton}
-          onClick={() => setOpen((v) => !v)}
-        >
-          {t('details')}
-          <span
-            aria-hidden="true"
-            className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-180' : ''}`}
+        <>
+          {isGoogle ? (
+            <button type="button" className={pillButton} onClick={startAdding}>
+              {t('addAccount')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-expanded={open}
+            className={pillButton}
+            onClick={() => setOpen((v) => !v)}
           >
-            ▾
-          </span>
-        </button>
+            {t('details')}
+            <span
+              aria-hidden="true"
+              className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-180' : ''}`}
+            >
+              ▾
+            </span>
+          </button>
+        </>
       }
     >
       {open || message ? (
@@ -475,6 +506,7 @@ export function ConnectorConnectionCard({
             <div className="space-y-3 text-xs leading-5 text-ink-soft">
               <p>{connectorDescription(connector, t)}</p>
               <p className={usage.usable ? 'text-sage' : 'text-honey'}>{usage.text}</p>
+              <p>{t('changeLevelHint')}</p>
               <ul className="divide-y divide-line/50">
                 {activeGrants.map((grant) => (
                   <li key={grant.id} className="space-y-2 py-2">
@@ -487,11 +519,13 @@ export function ConnectorConnectionCard({
                         value={grant.nickname ?? ''}
                         disabled={pending}
                         t={t}
+                        showHint={false}
                         onChange={(value) =>
                           setLocalGrants((prev) =>
                             prev.map((row) => (row.id === grant.id ? { ...row, nickname: value } : row)),
                           )
                         }
+                        onPreset={(value) => saveNickname(grant.id, value)}
                       />
                     ) : null}
                     <div className="flex flex-wrap justify-end gap-2">
@@ -525,7 +559,7 @@ export function ConnectorConnectionCard({
                       {scopeSelect}
                       <button
                         type="button"
-                        disabled={pending}
+                        disabled={pending || !nickname.trim()}
                         className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm disabled:opacity-50"
                         onClick={() => connect(true)}
                       >
@@ -534,7 +568,7 @@ export function ConnectorConnectionCard({
                     </div>
                   </div>
                 ) : (
-                  <button type="button" className={pillButton} onClick={() => setAdding(true)}>
+                  <button type="button" className={pillButton} onClick={startAdding}>
                     {t('addAccount')}
                   </button>
                 )
@@ -573,7 +607,7 @@ export function ConnectorConnectionCard({
               {history.map((grant) => (
                 <li key={grant.id} className="flex flex-wrap justify-between gap-x-3 py-1.5">
                   <span>
-                    {grantDisplayName(grant, t)} ({grant.status})
+                    {grantDisplayName(grant, t)} ({grantStatusLabel(grant.status)})
                   </span>
                   <span>{formatDateTime(grant.grantedAt, locale)}</span>
                 </li>

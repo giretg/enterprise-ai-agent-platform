@@ -17,6 +17,7 @@ import { repositories } from '@/repositories/postgres'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
+import { linkedAccountHandle } from '@/domain/connector-grant/linked-account'
 import {
   AgentDefinitionService,
   canReadPublishedAgent,
@@ -375,7 +376,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
         )
         .map((grant) => ({
           type: grant.connector.type,
-          account: grant.nickname?.trim() || grant.accountLabel?.trim() || grant.id,
+          account: linkedAccountHandle(grant),
           email: grant.accountLabel,
           nickname: grant.nickname,
         }))

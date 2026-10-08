@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   linkedAccountHandle,
+  nicknameTakenByPeer,
   normalizeNickname,
   resolveLinkedAccountGrant,
 } from '../src/domain/connector-grant/linked-account'
@@ -76,5 +77,9 @@ assert.equal(linkedAccountHandle({ id: 'g3', accountLabel: 'x@y.hu', nickname: n
   assert.equal(unknown.ok, false)
   if (!unknown.ok) assert.equal(unknown.reason, 'unknown_account')
 }
+
+assert.equal(nicknameTakenByPeer([personal, work], 'Magán'), true)
+assert.equal(nicknameTakenByPeer([personal, work], 'magán', personal.id), false)
+assert.equal(nicknameTakenByPeer([personal], 'céges'), false)
 
 console.log('✅ linked-account picker: egy fiók, magán/céges, e-mail')

@@ -70,7 +70,7 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     expiresAt?: Date | null
   }) {
     const accountLabel = data.accountLabel?.trim() || null
-    const existing = accountLabel
+    const existingByLabel = accountLabel
       ? await prisma.connectorGrant.findFirst({
           where: {
             tenantId: data.tenantId,
@@ -81,6 +81,16 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
           orderBy: [{ grantedAt: 'desc' }],
         })
       : null
+    const existing =
+      existingByLabel ??
+      (await prisma.connectorGrant.findFirst({
+        where: {
+          tenantId: data.tenantId,
+          connectorId: data.connectorId,
+          userId: data.userId,
+          tokenRef: data.tokenRef,
+        },
+      }))
 
     const payload = {
       scopes: data.scopes as Prisma.InputJsonValue,

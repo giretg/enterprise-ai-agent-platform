@@ -278,6 +278,7 @@ export default async function AgentDetailPage({
               agentId={agent.id}
               outputDriveFolderId={agent.outputDriveFolderId ?? null}
               driveGrantId={drivePickerCtx?.grantId ?? null}
+              driveGrants={drivePickerCtx?.grants ?? []}
               drivePickerConfigured={drivePickerCtx?.pickerConfigured ?? false}
               canEdit={canManage}
             />

@@ -57,6 +57,21 @@ function matchesHandle(grant: LinkedAccountGrant, query: string): 'nickname' | '
   return null
 }
 
+export function nicknameTakenByPeer(
+  grants: Array<{ id: string; nickname: string | null; status?: string }>,
+  nickname: string,
+  exceptId?: string,
+): boolean {
+  const query = nickname.trim().toLowerCase()
+  if (!query) return false
+  return grants.some(
+    (grant) =>
+      grant.id !== exceptId &&
+      (grant.status == null || grant.status === 'active') &&
+      grant.nickname?.trim().toLowerCase() === query,
+  )
+}
+
 export function resolveLinkedAccountGrant<T extends LinkedAccountGrant>(
   grants: T[],
   account: unknown,

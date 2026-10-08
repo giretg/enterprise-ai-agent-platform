@@ -11,14 +11,14 @@ import {
   type GoogleOAuthService,
 } from '@/lib/platform-google-oauth-config'
 import {
-  accountKeyFromEmail,
+  uniqueAccountKey,
   buildGrantTokenRef,
   createGrantTokenStore,
   GrantTokenMissingError,
   isAccessTokenExpired,
   type ConnectorGrantTokens,
 } from './grant-token-vault'
-import { normalizeNickname } from './linked-account'
+import { nicknameTakenByPeer, normalizeNickname } from './linked-account'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
 import {
   CONNECTOR_GRANT_NEEDED_REASONS,
@@ -525,6 +525,9 @@ export class ConnectorGrantService {
     const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
     const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
     const nickname = normalizeNickname(params.nickname)
+    if (nickname && nicknameTakenByPeer(existingGrants, nickname, existingGrant?.id)) {
+      throw new Error('nickname_taken')
+    }
 
     if (
       params.connector.type === 'google_drive' &&
@@ -618,6 +621,10 @@ export class ConnectorGrantService {
         ? sameConnector.find((grant) => grant.status === 'active')
         : undefined
 
+    if (nickname && nicknameTakenByPeer(sameConnector, nickname, existing?.id)) {
+      throw new Error('nickname_taken')
+    }
+
     // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
     // ne törölje a korábban megadott jogosultságokat a DB-ből. Másik fiók
     // hozzáadásakor nem keverjük a scope-okat.
@@ -636,20 +643,10 @@ export class ConnectorGrantService {
         tenantId: statePayload.tenantId,
         userId: statePayload.userId,
         connectorId: params.connector.id,
-        ...(email ? { accountKey: accountKeyFromEmail(email) } : {}),
+        accountKey: uniqueAccountKey(),
       })
     const store = createGrantTokenStore(tokenRef)
     await store.save(tokensToStore)
-
-    const nicknameTaken = Boolean(
-      nickname &&
-        sameConnector.some(
-          (grant) =>
-            grant.status === 'active' &&
-            grant.id !== existing?.id &&
-            grant.nickname?.trim().toLowerCase() === nickname.toLowerCase(),
-        ),
-    )
 
     const grant = await this.grants.create({
       tenantId: statePayload.tenantId,
@@ -658,7 +655,7 @@ export class ConnectorGrantService {
       scopes: mergedScopes as Prisma.JsonValue,
       tokenRef,
       accountLabel: tokensToStore.accountEmail ?? existing?.accountLabel ?? null,
-      ...(nickname && !nicknameTaken ? { nickname } : {}),
+      ...(nickname ? { nickname } : {}),
       expiresAt: tokensToStore.expiresAt ? new Date(tokensToStore.expiresAt) : null,
     })
 
@@ -690,11 +687,7 @@ export class ConnectorGrantService {
         connectorId: grant.connectorId,
         userId: grant.userId,
       })
-      const taken = peers.some(
-        (peer) =>
-          peer.id !== grant.id && peer.nickname?.trim().toLowerCase() === nickname.toLowerCase(),
-      )
-      if (taken) throw new Error('nickname_taken')
+      if (nicknameTakenByPeer(peers, nickname, grant.id)) throw new Error('nickname_taken')
     }
     return this.grants.updateNickname(grant.id, nickname)
   }
