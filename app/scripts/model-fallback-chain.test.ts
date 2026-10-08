@@ -103,6 +103,24 @@ check('NEM váltó hiba-osztályok: auth, tartalom, blokk, keret, quota, ismeret
   assert.equal(classifyProviderError(new Error('401 Unauthorized')), 'auth_error')
 })
 
+check('OpenRouter 402 / credits: keret-blokk, nem provider_unavailable (ne váltson tartalékra)', () => {
+  const cases = [
+    'openrouter provider failed: 402 {"error":{"message":"Payment Required"}}',
+    'openrouter provider failed:  Insufficient credits',
+    'openrouter provider failed: insufficient_credits',
+    'openrouter provider failed: 402 Payment Required — out of credits',
+  ]
+  for (const msg of cases) {
+    assert.equal(classifyProviderError(new Error(msg)), 'blocked', msg)
+    assert.equal(shouldFallback({ error: new Error(msg), firstTokenEmitted: false }), false, msg)
+  }
+  // 5xx továbbra is válthat; a "provider failed" catch-all nem nyelje el a 402-t.
+  assert.equal(
+    classifyProviderError(new Error('openrouter provider failed: 503 Service Unavailable')),
+    'provider_unavailable',
+  )
+})
+
 check('első token után hiba nem vált', () => {
   assert.equal(shouldFallback({ error: new Error('503 Service Unavailable'), firstTokenEmitted: true }), false)
 })
