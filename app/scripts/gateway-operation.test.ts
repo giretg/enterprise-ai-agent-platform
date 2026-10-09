@@ -35,6 +35,7 @@ const DEFINITION_ID = '44444444-4444-4444-8444-444444444444'
 const STALE_DEFINITION_ID = '88888888-8888-4888-8888-888888888888'
 const CONNECTOR_ID = '55555555-5555-4555-8555-555555555555'
 const GRANT_ID = '66666666-6666-4666-8666-666666666666'
+const WORK_GRANT_ID = '77777777-7777-4777-8777-777777777777'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -199,6 +200,54 @@ const FOLDER_ARGS = {
   definitionId: DEFINITION_ID,
   name: 'Q3 reports',
   idempotencyKey: 'idem-1',
+}
+
+/**
+ * Két kapcsolt fiók (magán=grants[0], céges) ugyanazon a connectoron (#816).
+ * A végrehajtáskor feloldott (grantId, tokenRef) párokat gyűjti, így a teszt
+ * láthatja, MELYIK fiók tokenjével futott a jóváhagyott művelet. `setGrants`-szal
+ * a jóváhagyás előtti fiók-csere (visszavonás) is modellezhető.
+ */
+function multiAccountDeps() {
+  const personal = grant({
+    id: GRANT_ID,
+    tokenRef: 'token-personal',
+    accountLabel: 'anna@gmail.com',
+    nickname: 'magán',
+  })
+  const work = grant({
+    id: WORK_GRANT_ID,
+    tokenRef: 'token-work',
+    accountLabel: 'anna@ceg.hu',
+    nickname: 'céges',
+  })
+  const resolved: Array<{ grantId: string; tokenRef: string }> = []
+  let grantsNow = [personal, work]
+  const base = deps()
+  const testDeps: GatewayOperationServiceDeps = {
+    ...base.deps,
+    // grants[0] (legrégebbi) szándékosan a magán fiók — ha a confused-deputy
+    // visszatér (findActiveGrant/grants[0] út), a teszt ezt a tokenRef-et látná.
+    async findActiveGrant() {
+      return grantsNow[0] ?? null
+    },
+    async findActiveGrants() {
+      return grantsNow
+    },
+    async resolveAccessToken(input) {
+      resolved.push({ grantId: input.grantId, tokenRef: input.tokenRef })
+      return 'stub-token'
+    },
+  }
+  return {
+    testDeps,
+    resolved,
+    personal,
+    work,
+    setGrants(next: LiveGrantRow[]) {
+      grantsNow = next
+    },
+  }
 }
 
 async function main() {
@@ -1089,6 +1138,66 @@ async function main() {
       args: { definitionId: DEFINITION_ID, name: 'Q3 reports' },
     })
     assert.deepEqual(result, { ok: false, code: 'idempotency_key_required' })
+  })
+
+  // #816: a felhasználónak több kapcsolt fiókja (magán/céges) lehet ugyanazon a
+  // connectoron. A jóváhagyott írás a KIVÁLASZTOTT fiók grantját használja a
+  // végrehajtáskor — nem a legrégebbit. Regresszió-védelem a confused-deputy ellen:
+  // ha a végrehajtó valaha visszaállna a findActiveGrant (grants[0]) útra, egy
+  // jóváhagyott művelet a rossz postafiókból/meghajtóból futna.
+  await check('approved delegated write runs against the selected account grant', async () => {
+    const { testDeps, resolved } = multiAccountDeps()
+
+    const enqueued = await enqueueGatewayOperation(testDeps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, account: 'céges' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    assert.equal(enqueued.view.status, 'awaiting_approval')
+
+    const approved = await approveGatewayOperation(testDeps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ userId: APPROVER_ID, role: 'admin' }),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal(resolved.length, 1)
+    assert.equal(resolved[0]?.grantId, WORK_GRANT_ID)
+    assert.equal(resolved[0]?.tokenRef, 'token-work')
+  })
+
+  // Fiók-csere a jóváhagyás előtt: ha a kiválasztott (céges) grantot visszavonják,
+  // a végrehajtó NEM eshet vissza némán a megmaradt magán fiókra — fail-closed.
+  await check('approved write fails closed when the selected account is revoked before approval', async () => {
+    const { testDeps, resolved, personal, setGrants } = multiAccountDeps()
+
+    const enqueued = await enqueueGatewayOperation(testDeps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, account: 'céges' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+
+    // A céges fiókot visszavonják a jóváhagyás előtt — csak a magán marad.
+    setGrants([personal])
+
+    const approved = await approveGatewayOperation(testDeps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ userId: APPROVER_ID, role: 'admin' }),
+    })
+    // A jóváhagyás feldolgozódik, de a végrehajtás fail-closed: a művelet hibás
+    // (unknown_account), és a magán fiók tokenjét SOHA nem oldjuk fel.
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'failed')
+    assert.equal(approved.view.errorCode, 'unknown_account')
+    assert.equal(resolved.length, 0)
   })
 
   console.log(`\n${failures === 0 ? 'gateway-operation: ok' : `gateway-operation: ${failures} failed`}`)
