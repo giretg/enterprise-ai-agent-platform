@@ -37,6 +37,11 @@ import {
   type GatewayOperationServiceDeps,
 } from './gateway-operation-service'
 import { resolveWriteConfirmOffer } from './write-confirm-branch'
+import {
+  gmailComposeConfirmTarget,
+  gmailItemConfirmTarget,
+  linkedAccountConfirmSuffix,
+} from './linked-account-confirm'
 import { formatScalarQuery } from './pending-args-summary'
 import type { GatewayOperationView } from './types'
 
@@ -95,24 +100,6 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-function gmailComposeTarget(args: Record<string, unknown>): string {
-  if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
-  const parts = [
-    str(args.replyToMessageId)
-      ? `Gmail válasz a(z) ${str(args.replyToMessageId)} levélre${args.replyAll === true ? ' (mindenkinek)' : ''}`
-      : 'Gmail új levél',
-    str(args.to) ? `címzett: ${str(args.to)}` : str(args.replyToMessageId) ? 'címzett: az eredeti feladó' : '',
-    str(args.cc) ? `másolat: ${str(args.cc)}` : '',
-    str(args.bcc) ? `titkos másolat: ${str(args.bcc)}` : '',
-    str(args.subject) ? `tárgy: ${str(args.subject)}` : '',
-  ]
-  return parts.filter(Boolean).join(', ')
-}
-
-function gmailItemTarget(args: Record<string, unknown>): string {
-  return str(args.threadId) ? `Gmail levélváltás ${str(args.threadId)}` : `Gmail levél ${str(args.messageId)}`
-}
-
 async function confirmMessage(
   deps: GatewayOperationServiceDeps,
   tenantId: string,
@@ -134,30 +121,41 @@ async function confirmMessage(
     target = `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
     content = str(args.body)
   } else if (view.toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) {
-    target = `Google Drive mappa: ${str(args.name)}`
+    target = [`Google Drive mappa: ${str(args.name)}`, linkedAccountConfirmSuffix(args)]
+      .filter(Boolean)
+      .join(', ')
   } else if (view.toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) {
-    target = `Google Drive fájl: ${str(args.name)}`
+    target = [`Google Drive fájl: ${str(args.name)}`, linkedAccountConfirmSuffix(args)]
+      .filter(Boolean)
+      .join(', ')
     content = str(args.textContent)
   } else if (view.toolName === GOOGLE_DRIVE_UPDATE_FILE_TOOL) {
-    target = `Google Drive fájl felülírása: ${str(args.fileId)}`
+    target = [`Google Drive fájl felülírása: ${str(args.fileId)}`, linkedAccountConfirmSuffix(args)]
+      .filter(Boolean)
+      .join(', ')
     content = str(args.textContent)
   } else if (view.toolName === GMAIL_SEND_TOOL || view.toolName === GMAIL_CREATE_DRAFT_TOOL) {
-    target = gmailComposeTarget(args)
+    target = gmailComposeConfirmTarget(args)
     // draftId send ignores compose fields at execute time — never surface args.body as "Tartalom"
     // or a decoy body would be what the human approves while a different draft is sent (#668).
     content = view.toolName === GMAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
   } else if (view.toolName === GMAIL_MODIFY_LABELS_TOOL) {
     target = [
-      gmailItemTarget(args),
+      gmailItemConfirmTarget(args),
       str(args.addLabelIds) ? `hozzáad: ${str(args.addLabelIds)}` : '',
       str(args.removeLabelIds) ? `levesz: ${str(args.removeLabelIds)}` : '',
     ]
       .filter(Boolean)
       .join(', ')
   } else if (view.toolName === GMAIL_TRASH_TOOL) {
-    target = `${gmailItemTarget(args)} → kuka`
+    target = `${gmailItemConfirmTarget(args)} → kuka`
   } else if (view.toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) {
-    target = `Táblázat: ${str(args.fileId)}, tartomány: ${str(args.range)}`
+    target = [
+      `Táblázat: ${str(args.fileId)}, tartomány: ${str(args.range)}`,
+      linkedAccountConfirmSuffix(args),
+    ]
+      .filter(Boolean)
+      .join(', ')
     content = str(args.values)
   }
 

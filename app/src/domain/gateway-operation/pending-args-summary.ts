@@ -23,6 +23,12 @@ function clip(text: string): string {
   return `${text.slice(0, CONTENT_PREVIEW)}\n…(${text.length} chars)`
 }
 
+/** Linked Gmail/Drive account handle from args — execute uses this grant. */
+function accountLine(args: Record<string, unknown>): string | null {
+  const account = str(args.account).trim()
+  return account ? `account: ${account}` : null
+}
+
 /** Stable, human-readable query string from a scalar map (order: key sorted). */
 export function formatScalarQuery(query: unknown): string {
   if (!query || typeof query !== 'object' || Array.isArray(query)) return ''
@@ -35,6 +41,8 @@ export function formatScalarQuery(query: unknown): string {
 
 function gmailComposeLines(args: Record<string, unknown>): string[] {
   const lines: string[] = []
+  const account = accountLine(args)
+  if (account) lines.push(account)
   if (str(args.draftId)) {
     lines.push(`draftId: ${str(args.draftId)}`)
     return lines
@@ -56,6 +64,8 @@ function gmailComposeLines(args: Record<string, unknown>): string[] {
 
 function gmailItemLines(args: Record<string, unknown>): string[] {
   const lines: string[] = []
+  const account = accountLine(args)
+  if (account) lines.push(account)
   if (str(args.threadId)) lines.push(`threadId: ${str(args.threadId)}`)
   if (str(args.messageId)) lines.push(`messageId: ${str(args.messageId)}`)
   return lines
@@ -76,18 +86,25 @@ export function pendingOperationHeadline(
     return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
   }
   if (toolName === 'google_drive_upload_file') {
-    return `Google Drive fájl: ${str(args.name) || '—'}`
+    const account = str(args.account).trim()
+    return `Google Drive fájl: ${str(args.name) || '—'}${account ? ` (${account})` : ''}`
   }
   if (toolName === 'google_drive_create_folder') {
-    return `Google Drive mappa: ${str(args.name) || '—'}`
+    const account = str(args.account).trim()
+    return `Google Drive mappa: ${str(args.name) || '—'}${account ? ` (${account})` : ''}`
   }
   if (toolName === 'google_drive_update_file') {
-    return `Google Drive fájl felülírása: ${str(args.fileId) || '—'}`
+    const account = str(args.account).trim()
+    return `Google Drive fájl felülírása: ${str(args.fileId) || '—'}${account ? ` (${account})` : ''}`
   }
   if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
-    if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+    const account = str(args.account).trim()
+    if (str(args.draftId)) {
+      return `Gmail piszkozat elküldése: ${str(args.draftId)}${account ? ` (${account})` : ''}`
+    }
     const parts = [
       str(args.replyToMessageId) ? `Gmail válasz` : 'Gmail új levél',
+      account ? `fiók: ${account}` : '',
       str(args.subject) ? `tárgy: ${str(args.subject)}` : '',
     ].filter(Boolean)
     return parts.join(', ')
@@ -135,14 +152,20 @@ export function pendingArgsSummary(
   }
 
   if (toolName === 'google_sheets_write_range' || typeof args.range === 'string') {
-    const lines = [`${str(args.fileId) || '—'} · ${str(args.range)}`]
+    const lines: string[] = []
+    const account = accountLine(args)
+    if (account) lines.push(account)
+    lines.push(`${str(args.fileId) || '—'} · ${str(args.range)}`)
     if (str(args.values)) lines.push(clip(str(args.values)))
     if (str(args.mode)) lines.push(`mode: ${str(args.mode)}`)
     return lines.join('\n')
   }
 
   if (toolName === 'google_drive_update_file') {
-    const lines = [`${str(args.fileId) || '—'} (teljes tartalom felülírása)`]
+    const lines: string[] = []
+    const account = accountLine(args)
+    if (account) lines.push(account)
+    lines.push(`${str(args.fileId) || '—'} (teljes tartalom felülírása)`)
     if (str(args.textContent)) lines.push(clip(str(args.textContent)))
     return lines.join('\n')
   }
@@ -152,7 +175,10 @@ export function pendingArgsSummary(
       str(args.parentFolderId)
         ? labels.parentFolder(str(args.parentFolderId))
         : labels.parentRoot
-    const lines = [`${str(args.name) || '—'} (${parent})`]
+    const lines: string[] = []
+    const account = accountLine(args)
+    if (account) lines.push(account)
+    lines.push(`${str(args.name) || '—'} (${parent})`)
     if (str(args.textContent)) lines.push(clip(str(args.textContent)))
     if (str(args.contentBase64)) lines.push(`[base64 tartalom, ${str(args.contentBase64).length} karakter]`)
     return lines.join('\n')
@@ -163,7 +189,9 @@ export function pendingArgsSummary(
       str(args.parentFolderId)
         ? labels.parentFolder(str(args.parentFolderId))
         : labels.parentRoot
-    return `${str(args.name) || '—'} (${parent})`
+    const account = accountLine(args)
+    const lines = [account, `${str(args.name) || '—'} (${parent})`].filter(Boolean) as string[]
+    return lines.join('\n')
   }
 
   // Last resort: never invent Drive-root chrome for unknown tools.
