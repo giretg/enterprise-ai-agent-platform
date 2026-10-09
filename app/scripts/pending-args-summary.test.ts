@@ -41,6 +41,15 @@ check('gmail_send never falls through to Drive root chrome', () => {
   assert.ok(!text.includes('root'))
 })
 
+check('gmail_send surfaces linked account when multi-mailbox', () => {
+  const text = pendingArgsSummary(
+    'gmail_send',
+    { account: 'magán', to: 'a@b.c', subject: 'Hi', body: 'Hello' },
+    labels,
+  )
+  assert.match(text, /^account: magán\nnew message\nto: a@b\.c\nsubject: Hi\nHello$/)
+})
+
 check('gmail_send draftId omits decoy body', () => {
   const text = pendingArgsSummary(
     'gmail_send',
@@ -48,6 +57,24 @@ check('gmail_send draftId omits decoy body', () => {
     labels,
   )
   assert.equal(text, 'draftId: dr1')
+})
+
+check('gmail_send draftId still surfaces account', () => {
+  const text = pendingArgsSummary(
+    'gmail_send',
+    { account: 'céges', draftId: 'dr1', body: 'benign looking' },
+    labels,
+  )
+  assert.equal(text, 'account: céges\ndraftId: dr1')
+})
+
+check('google_drive_upload_file surfaces linked account', () => {
+  const text = pendingArgsSummary(
+    'google_drive_upload_file',
+    { account: 'céges', name: 'report.pdf', parentFolderId: 'folder-1', textContent: 'x' },
+    labels,
+  )
+  assert.match(text, /^account: céges\nreport\.pdf \(parent: folder-1\)\nx$/)
 })
 
 check('project_memory.write surfaces body + replaceId + mergeIds', () => {
