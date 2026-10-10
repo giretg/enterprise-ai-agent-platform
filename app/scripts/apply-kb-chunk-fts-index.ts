@@ -7,7 +7,7 @@
  * karakterre egyező kifejezésre él; a `kb_search` (`searchChunks`) csoportonként
  * pontosan ezeket a kifejezéseket kérdezi. A `hungarian`/`english` snowball
  * config beépített (extension nélkül megy Neonon): szótövez és az adott nyelv
- * töltelékszavait kiszűri. Ugyanez a 0011 + 0019 migráció.
+ * töltelékszavait kiszűri. Ugyanez a 0011 + 0028 migráció.
  *
  * Futtatás: npm run db:apply-kb-fts        (DATABASE_URL — dev)
  *           npm run db:apply-kb-fts:test   (DATABASE_URL_TEST)

@@ -34,7 +34,7 @@ export function toKbTsQuery(query: string): string {
  * `kb-language` registry allowlistjéből interpolálódik (`kbRegconfig`).
  * Kívülről jövő string sose kerül SQL-be — ismeretlen érték `simple`-re esik.
  * A GIN expression-index csak karakterre egyező kifejezésre él, ezért
- * nyelvenként külön index van (0011 hu + 0019 en/simple), és csoportonként
+ * nyelvenként külön index van (0011 hu + 0028 en/simple), és csoportonként
  * külön SQL fut a csoport nyelvének megfelelő kifejezéssel.
  */
 
