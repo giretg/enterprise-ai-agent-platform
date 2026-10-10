@@ -361,6 +361,7 @@ async function loadAuthorizedWrite(
       ok: true
       definition: AgentDefinition
       connectorId: string | null
+      grantId: string | null
       parsedArgs: Record<string, unknown>
     }
 > {
@@ -421,6 +422,7 @@ async function loadAuthorizedWrite(
       ok: true,
       definition,
       connectorId: null,
+      grantId: null,
       parsedArgs: { ...parsedArgs, withUserId: principal.userId },
     }
   }
@@ -439,6 +441,7 @@ async function loadAuthorizedWrite(
     ok: true,
     definition,
     connectorId: authorized.connectorId,
+    grantId: authorized.grantId ?? null,
     parsedArgs,
   }
 }
@@ -545,6 +548,7 @@ export async function enqueueGatewayOperation(
     argsJson: authorized.parsedArgs,
     idempotencyKey,
     connectorId: authorized.connectorId,
+    grantId: authorized.grantId,
     designatedApproverUserId: designated?.userId ?? null,
     designatedApproverName: designated?.name ?? null,
   })
@@ -863,6 +867,17 @@ async function executeApprovedOperation(
   const delegated = authorized.connector.authMode === 'user_delegated'
   const grant = delegated ? authorized.grant ?? null : null
   if (delegated && !grant) return fail('connector_grant_missing')
+
+  // #816 confused-deputy kapu: a művelet lepecsételte a beküldéskor feloldott
+  // kapcsolt-fiók grantot (amit a jóváhagyó látott). Több fiók/felhasználó esetén
+  // a fiók-azonosítót (becenév/e-mail) itt újra feloldjuk; egy átnevezés vagy
+  // visszavonás+újrakapcsolás a jóváhagyási ablakban más postafiókra/Drive-ra
+  // irányíthatná a jóváhagyott írást. Ha az azonosító most más grantra oldódik,
+  // fail-closed: nem futtatjuk a nem jóváhagyott fiók ellen. (A #816 előtti sorok
+  // és a nem-delegált műveletek nincsenek lepecsételve, a régi viselkedést tartják.)
+  if (delegated && operation.grantId && grant && grant.id !== operation.grantId) {
+    return fail('grant_changed')
+  }
 
   if (grant && isEnterpriseDriveWriteTool(operation.toolName)) {
     try {

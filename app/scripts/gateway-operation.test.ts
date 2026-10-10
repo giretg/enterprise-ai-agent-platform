@@ -1091,6 +1091,100 @@ async function main() {
     assert.deepEqual(result, { ok: false, code: 'idempotency_key_required' })
   })
 
+  // #816 confused-deputy: a felhasználónak több kapcsolt fiókja van ugyanazon a
+  // connectoron (magán/céges). A jóváhagyott írásnak AZZAL a fiókkal kell futnia,
+  // amit a jóváhagyó látott — nem azzal, amire a fiók-becenevet a jóváhagyási
+  // ablakban átirányították. Enqueue 'céges' → a céges grant lepecsételődik;
+  // végrehajtás előtt a 'céges' becenevet áthelyezik a magán grantra (a cégeset
+  // visszavonják). A végrehajtó a lepecsételt granthoz képest eltérést lát →
+  // fail-closed, és a magán fiók tokenjét SOHA nem oldja fel.
+  await check('approved write fails closed when the account handle is remapped to another grant', async () => {
+    const WORK_GRANT_ID = '77777777-7777-4777-8777-777777777777'
+    const resolved: Array<{ grantId: string; tokenRef: string }> = []
+    const work = grant({ id: WORK_GRANT_ID, tokenRef: 'token-work', accountLabel: 'anna@ceg.hu', nickname: 'céges' })
+    const personal = grant({ id: GRANT_ID, tokenRef: 'token-personal', accountLabel: 'anna@gmail.com', nickname: 'magán' })
+    // Enqueue-kor mindkét fiók aktív; a 'céges' egyértelműen a work grant.
+    let grantsNow: LiveGrantRow[] = [personal, work]
+    const base = deps()
+    const testDeps: GatewayOperationServiceDeps = {
+      ...base.deps,
+      async findActiveGrant() {
+        return grantsNow[0] ?? null
+      },
+      async findActiveGrants() {
+        return grantsNow
+      },
+      async resolveAccessToken(input) {
+        resolved.push({ grantId: input.grantId, tokenRef: input.tokenRef })
+        return 'stub-token'
+      },
+    }
+
+    const enqueued = await enqueueGatewayOperation(testDeps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, account: 'céges' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+    assert.equal(enqueued.view.status, 'awaiting_approval')
+
+    // Fiók-csere a jóváhagyás előtt: a cégeset visszavonják, a magánt átnevezik 'céges'-re.
+    grantsNow = [grant({ id: GRANT_ID, tokenRef: 'token-personal', accountLabel: 'anna@gmail.com', nickname: 'céges' })]
+
+    const approved = await approveGatewayOperation(testDeps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ userId: APPROVER_ID, role: 'admin' }),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    // A 'céges' most a magán grantra oldódna — de az nem a lepecsételt grant.
+    assert.equal(approved.view.status, 'failed')
+    assert.equal(approved.view.errorCode, 'grant_changed')
+    assert.equal(resolved.length, 0)
+  })
+
+  // Kontroll: ha semmi nem változik, a jóváhagyott írás a lepecsételt (kiválasztott)
+  // fiók grantjával fut — a pecsét nem töri el a normál utat.
+  await check('approved write runs against the pinned selected grant when unchanged', async () => {
+    const WORK_GRANT_ID = '77777777-7777-4777-8777-777777777777'
+    const resolved: Array<{ grantId: string; tokenRef: string }> = []
+    const work = grant({ id: WORK_GRANT_ID, tokenRef: 'token-work', accountLabel: 'anna@ceg.hu', nickname: 'céges' })
+    const personal = grant({ id: GRANT_ID, tokenRef: 'token-personal', accountLabel: 'anna@gmail.com', nickname: 'magán' })
+    const base = deps()
+    const testDeps: GatewayOperationServiceDeps = {
+      ...base.deps,
+      async findActiveGrants() {
+        return [personal, work]
+      },
+      async resolveAccessToken(input) {
+        resolved.push({ grantId: input.grantId, tokenRef: input.tokenRef })
+        return 'stub-token'
+      },
+    }
+
+    const enqueued = await enqueueGatewayOperation(testDeps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, account: 'céges' },
+    })
+    assert.equal(enqueued.ok, true)
+    if (!enqueued.ok) return
+
+    const approved = await approveGatewayOperation(testDeps, {
+      tenantId: TENANT_ID,
+      operationId: enqueued.view.operationId,
+      actor: principal({ userId: APPROVER_ID, role: 'admin' }),
+    })
+    assert.equal(approved.ok, true)
+    if (!approved.ok) return
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal(resolved.length, 1)
+    assert.equal(resolved[0]?.grantId, WORK_GRANT_ID)
+    assert.equal(resolved[0]?.tokenRef, 'token-work')
+  })
+
   console.log(`\n${failures === 0 ? 'gateway-operation: ok' : `gateway-operation: ${failures} failed`}`)
   if (failures > 0) process.exit(1)
 }
