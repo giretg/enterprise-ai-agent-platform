@@ -37,10 +37,17 @@ export class PostgresTenantRepository implements TenantRepository {
     })
   }
 
+  async countSelfServiceByCreator(userId: string) {
+    return prisma.tenant.count({
+      where: { createdById: userId, selfService: true, status: { not: 'archived' } },
+    })
+  }
+
   async create(data: {
     slug: string
     displayName: string
     legalName?: string | null
+    taxId?: string | null
     domainAllowlist?: string[]
     settings?: Prisma.InputJsonValue
     createdById?: string | null
@@ -50,6 +57,7 @@ export class PostgresTenantRepository implements TenantRepository {
         slug: data.slug,
         displayName: data.displayName,
         legalName: data.legalName ?? null,
+        taxId: data.taxId ?? null,
         domainAllowlist: (data.domainAllowlist ?? []) as Prisma.InputJsonValue,
         ...(data.settings !== undefined ? { settings: data.settings } : {}),
         createdById: data.createdById ?? null,
@@ -62,6 +70,7 @@ export class PostgresTenantRepository implements TenantRepository {
     data: Partial<{
       displayName: string
       legalName: string | null
+      taxId: string | null
       status: TenantStatus
       domainAllowlist: string[]
       settings: Prisma.InputJsonValue
@@ -72,6 +81,7 @@ export class PostgresTenantRepository implements TenantRepository {
       data: {
         ...(data.displayName !== undefined ? { displayName: data.displayName } : {}),
         ...(data.legalName !== undefined ? { legalName: data.legalName } : {}),
+        ...(data.taxId !== undefined ? { taxId: data.taxId } : {}),
         ...(data.status !== undefined ? { status: data.status } : {}),
         ...(data.domainAllowlist !== undefined
           ? { domainAllowlist: data.domainAllowlist as Prisma.InputJsonValue }

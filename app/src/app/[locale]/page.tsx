@@ -112,11 +112,14 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
           </h1>
           <p data-reveal className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">{t('heroBody')}</p>
           <div data-reveal className="mt-8 flex flex-wrap items-center gap-3">
-            <NextLink href="/sign-in" className={btnPrimary}>
-              {t('ctaSignIn')}
+            <NextLink href="/sign-up" className={btnPrimary}>
+              {t('ctaSignUp')}
               <span aria-hidden className="rounded-sm border border-current px-1.5 font-mono text-[11px] opacity-70">↵</span>
             </NextLink>
-            <a href="#how" className={btnGhost}>
+            <NextLink href="/sign-in" className={btnGhost}>
+              {t('ctaSignIn')}
+            </NextLink>
+            <a href="#how" className="px-2 py-3.5 text-sm font-semibold text-ink-soft underline-offset-4 hover:text-ink hover:underline">
               {t('ctaHow')}
             </a>
           </div>

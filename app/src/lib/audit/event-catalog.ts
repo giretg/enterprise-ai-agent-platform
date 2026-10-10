@@ -56,6 +56,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tenant.member.suspend',
   'tenant.member.invite_accept',
 
+  // #830: ÁSZF + adatkezelés elfogadása a self-service cégindításkor.
+  'legal.terms.accept',
+
   'agent.create',
   'agent.activated',
   'agent.version',

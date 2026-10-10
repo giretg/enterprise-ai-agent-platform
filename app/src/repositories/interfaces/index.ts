@@ -481,6 +481,8 @@ export interface InvitationRepository {
     offset?: number
     unbounded?: boolean
   }): Promise<Invitation[]>
+  /** Az e-mailre szóló, még beváltható (pending, nem lejárt) meghívók — #830 D8. */
+  findPendingByEmail(email: string, now: Date): Promise<Invitation[]>
   claimPendingRedemption(id: string, email: string, now: Date): Promise<Invitation | null>
   revokePending(id: string, revokedAt: Date): Promise<Invitation | null>
   create(data: {
@@ -514,10 +516,13 @@ export interface TenantRepository {
   findByIds(ids: string[]): Promise<Tenant[]>
   findBySlug(slug: string): Promise<Tenant | null>
   findMany(filter?: { status?: TenantStatus }): Promise<Tenant[]>
+  /** #830: a user által self-service indított, nem archivált cégek száma (cég-limit). */
+  countSelfServiceByCreator(userId: string): Promise<number>
   create(data: {
     slug: string
     displayName: string
     legalName?: string | null
+    taxId?: string | null
     domainAllowlist?: string[]
     settings?: Prisma.InputJsonValue
     createdById?: string | null
@@ -527,6 +532,7 @@ export interface TenantRepository {
     data: Partial<{
       displayName: string
       legalName: string | null
+      taxId: string | null
       status: TenantStatus
       domainAllowlist: string[]
       settings: Prisma.InputJsonValue

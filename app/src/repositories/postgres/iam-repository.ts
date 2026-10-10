@@ -172,6 +172,18 @@ export class PostgresInvitationRepository implements InvitationRepository {
     return toListPage(rows, pageLimit, offset).items
   }
 
+  async findPendingByEmail(email: string, now: Date) {
+    return prisma.invitation.findMany({
+      where: {
+        email: { equals: email.trim().toLowerCase(), mode: 'insensitive' },
+        status: 'pending',
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    })
+  }
+
   async claimPendingRedemption(id: string, email: string, now: Date) {
     const claimed = await prisma.invitation.updateMany({
       where: {

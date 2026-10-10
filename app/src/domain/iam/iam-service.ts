@@ -363,7 +363,7 @@ export class IamService {
    * activate exactly the locally-issued invitation id copied into Clerk's
    * server-only public metadata, after local email/status/expiry checks.
    */
-  async redeemClerkInvitation(params: { invitationId: string; user: User }) {
+  async redeemClerkInvitation(params: { invitationId: string; user: User; source?: 'clerk' | 'session' }) {
     const invitation = await this.invitations.findById(params.invitationId)
     if (!invitation) throw new Error('invitation: not found')
 
@@ -398,14 +398,33 @@ export class IamService {
       activatedAt: new Date(),
       invitedById: invitation.createdById,
     })
-    await this.completeInvitationRedemption(claimed, user, 'clerk')
+    await this.completeInvitationRedemption(claimed, user, params.source ?? 'clerk')
     return user
+  }
+
+  /**
+   * #830 D8: a belépett (Clerk-igazolt e-mailű) user saját e-mailjére szóló, még
+   * beváltható meghívók. Csak cég-meghívó számít (a legacy tenant nélküli nem).
+   */
+  async listPendingInvitationsForEmail(email: string) {
+    const rows = await this.invitations.findPendingByEmail(email, new Date())
+    return rows.filter((row) => row.tenantId !== null)
+  }
+
+  /**
+   * #830 D8 „Csatlakozom": a belépett user a saját e-mailjére szóló meghívót váltja be.
+   * Ugyanaz a helyi ellenőrzés (e-mail egyezés, státusz, lejárat), mint a Clerk-ticketes
+   * útnál; felfüggesztett fiókot nem aktivál.
+   */
+  async acceptInvitationForSignedInUser(params: { invitationId: string; user: User }) {
+    if (params.user.status === 'suspended') throw new Error('user: suspended')
+    return this.redeemClerkInvitation({ ...params, source: 'session' })
   }
 
   private async completeInvitationRedemption(
     invitation: Invitation,
     user: User,
-    source: 'token' | 'clerk',
+    source: 'token' | 'clerk' | 'session',
   ) {
     if (invitation.tenantId) {
       if (!this.memberships) throw new Error('invitation: tenant membership repository unavailable')

@@ -45,6 +45,7 @@ import { SelfUpdatingConnectorService } from '@/domain/connector-self-update/sel
 import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
 import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
+import { selfServiceTenantStore } from '@/repositories/postgres/self-service-tenant-store'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
@@ -76,6 +77,7 @@ const tenantService = new TenantService(
   repositories.tenantMemberships,
   repositories.platformMemberships,
   repositories.audit,
+  selfServiceTenantStore,
 )
 
 const skillService = new SkillService(repositories.skills, repositories.agents, {

@@ -16,6 +16,7 @@
     "terms": "ÁSZF",
     "contact": "Kapcsolat",
     "signIn": "Bejelentkezés",
+    "signUp": "Regisztráció",
     "signInShort": "Belépés",
     "tagline": "Vállalati MCP-szerver"
   },
@@ -79,6 +80,7 @@
     "heroLine2": "A cég irányít.",
     "heroBody": "Alkalmazz AI munkatársakat, akik segítenek a valódi kollégáidnak. Biztosíts hozzáférést céges adataidhoz az AI munkatársak számára egy biztonságos, auditálható felületen keresztül! Döntsd el, hogy mely kollégáid dolgozhatnak az AI munkatársakkal és milyen feladatokat végezetnek együtt!",
     "ctaSignIn": "Belépés",
+    "ctaSignUp": "Regisztráció",
     "ctaHow": "Hogyan működik?",
     "trustApproval": "Emberi jóváhagyás",
     "trustAudit": "Teljes audit-napló",
@@ -267,21 +269,11 @@
       "admin_ai-client-policy": "Hermes céges kontroll"
     },
     "pending": {
-      "titleNoMembership": "Nincs szervezet-tagságod",
-      "titleAwaiting": "Admin-jóváhagyásra vár",
-      "bodyNoMembership": "A fiókod ({email}) aktív, de még nincs szervezethez rendelve. Egy adminisztrátornak tenanthoz kell adnia, mielőtt a munkatársakat látnád.",
-      "bodyAwaitingKnown": "A fiókod ({email}) regisztrálva van, de még nincs hozzá szerepkör kiosztva. Egy adminisztrátornak jóvá kell hagynia a hozzáférést, mielőtt bármit láthatnál a Control Plane-en.",
-      "bodyAwaitingUnknown": "A fiókod regisztrálva van, de még nincs hozzá szerepkör kiosztva. Egy adminisztrátornak jóvá kell hagynia a hozzáférést, mielőtt bármit láthatnál a Control Plane-en.",
-      "suspended": "A fiókod fel van függesztve.",
+      "titleSuspended": "A fiókod fel van függesztve",
+      "bodySuspended": "A fiókodhoz ({email}) jelenleg nem tartozik hozzáférés, mert felfüggesztették. Ebben az állapotban új céget sem indíthatsz.",
+      "titleNoAccount": "Még nem tudunk beengedni",
+      "bodyNoAccount": "Be vagy jelentkezve, de a fiókodhoz még nem tartozik hozzáférés. Ellenőrizd, hogy megerősítetted-e az e-mail-címedet, majd jelentkezz be újra.",
       "hint": "Ha úgy gondolod, hogy ez tévedés, keresd meg a rendszergazdát."
-    },
-    "signupNotice": {
-      "eyebrow": "Regisztráció érkezett",
-      "title": "Jelenleg csak meghívóval lehet regisztrálni",
-      "body": "Köszönjük, hogy regisztráltál. A platformra jelenleg csak meghívóval lehet belépni, ezért a fiókod hozzáférés nélkül marad, amíg egy adminisztrátor nem rendeli hozzá a megfelelő szervezetet és szerepkört.",
-      "help": "Ha szeretnél csatlakozni, vedd fel velünk a kapcsolatot — szívesen segítünk.",
-      "contact": "Kapcsolatfelvétel",
-      "close": "Rendben"
     },
     "agents": {
       "eyebrow": "Munkatársak",
@@ -769,10 +761,11 @@
   },
   "TenantSwitcher": {
     "platform": "Platform",
-    "noTenant": "Nincs tenant",
-    "pick": "Tenant kiválasztása",
-    "empty": "Nincs elérhető tenant-tagságod.",
-    "exitPlatform": "← Kilépés platform-módba"
+    "noTenant": "Nincs cég",
+    "pick": "Cég kiválasztása",
+    "empty": "Nincs elérhető céged.",
+    "exitPlatform": "← Kilépés platform-módba",
+    "newCompany": "+ Új cég indítása"
   },
   "Confirm": {
     "cancel": "Mégse",
@@ -1906,5 +1899,80 @@
     "filterLimits": "Adatvédelem: az első verzió az ismert mintákat ismeri fel, az e-mailt és az e-mail-fejlécből megismert személynevet képes visszaállíthatóan kitakarni. Más felismert adattípus kitakarás helyett blokkolódik. A cégnév és tetszőleges személynév automatikus felismerése még nincs bekötve.",
     "noFileHelp": "Helyi fájlokat nem olvashat és nem írhat.",
     "noApprovalHelp": "Ez a beállítás nem kér külön jóváhagyást; a többi műveleti korlát érvényes."
+  },
+  "Onboarding": {
+    "metaTitle": "Cég indítása",
+    "steps": {
+      "account": "Fiók",
+      "company": "Cég",
+      "team": "Munkatársak",
+      "start": "Kezdés"
+    },
+    "stepsAria": "Haladás",
+    "companyEyebrow": "Saját tér",
+    "companyTitle": "Indítsd el a cégedet",
+    "companyTitleAnother": "Új cég indítása",
+    "companyBody": "Pár adat, és máris használhatod a saját teredet. Te leszel a cég első adminisztrátora.",
+    "displayName": "Cégnév",
+    "displayNameHint": "Így jelenik meg a felületen és a meghívókban.",
+    "displayNamePlaceholder": "pl. Őstermelő Kft.",
+    "legalName": "Hivatalos cégnév",
+    "legalNamePlaceholder": "pl. Őstermelő Korlátolt Felelősségű Társaság",
+    "taxId": "Adószám",
+    "taxIdHelp": "A későbbi számlázáshoz kérjük. Most nem kötelező, később is megadhatod.",
+    "taxIdPlaceholder": "pl. 12345678-2-42",
+    "optional": "nem kötelező",
+    "terms": "Elfogadom az <gtc>Általános Szerződési Feltételeket</gtc> és az <privacy>Adatkezelési tájékoztatót</privacy>.",
+    "submit": "Cég létrehozása",
+    "submitting": "Létrehozás…",
+    "capReachedTitle": "Elérted a saját cégek számát",
+    "capReachedBody": "Egy fiókkal legfeljebb {cap} saját céget indíthatsz. Ha újat szeretnél, egy korábbit le kell zárni — ebben szívesen segítünk.",
+    "contact": "Kapcsolatfelvétel",
+    "backToWorkspace": "Vissza a munkatérbe",
+    "assumedTitle": "Más cég nevében vagy belépve",
+    "assumedBody": "Platform-felügyeleti módban nem indíthatsz saját céget. Lépj ki platform-módba, majd onnan indítsd.",
+    "inviteChoiceEyebrow": "Meghívód van",
+    "inviteChoiceTitle": "Csatlakozol a(z) {company} céghez?",
+    "inviteChoiceTitleMany": "Több cég is meghívott",
+    "inviteChoiceBody": "A(z) {email} címre meghívó érkezett. Ha ide tartozol, csatlakozz — így a kollégáiddal közös térben dolgozol.",
+    "inviteRole": "Szerepköröd: {role}",
+    "joinCompany": "Csatlakozom",
+    "joining": "Csatlakozás…",
+    "startOwnInstead": "Inkább saját céget indítok",
+    "teamEyebrow": "Munkatársak",
+    "teamTitle": "Hívd meg a kollégáidat",
+    "teamBody": "A(z) {company} elkészült. Küldj meghívót a munkatársaidnak — e-mailben kapják meg a belépési linket. Ezt később is megteheted.",
+    "inviteEmail": "E-mail-cím",
+    "inviteEmailPlaceholder": "kollega@ceged.hu",
+    "inviteRoleLabel": "Szerepkör",
+    "inviteRoleHelp": "Operátor: AI-munkatársakkal dolgozik. Jóváhagyó: ezen felül jóváhagyja a kényes műveleteket. Megtekintő: csak olvas. Adminisztrátor: mindent beállíthat.",
+    "sendInvite": "Meghívó küldése",
+    "sending": "Küldés…",
+    "inviteSent": "Meghívó elküldve: {email}",
+    "inviteCreated": "Meghívó létrehozva: {email}",
+    "skip": "Most kihagyom",
+    "continue": "Tovább a kezdéshez",
+    "help": "Mit jelent ez?",
+    "roles": {
+      "admin": "Adminisztrátor",
+      "approver": "Jóváhagyó",
+      "operator": "Operátor",
+      "viewer": "Megtekintő"
+    },
+    "errors": {
+      "terms_required": "A folytatáshoz fogadd el az ÁSZF-et és az adatkezelési tájékoztatót.",
+      "name_required": "Add meg a cég nevét.",
+      "name_too_long": "A cégnév túl hosszú.",
+      "tax_id_too_long": "Az adószám legfeljebb 32 karakter lehet.",
+      "user_not_found": "A fiókodat nem találjuk. Jelentkezz be újra.",
+      "user_suspended": "Felfüggesztett fiókkal nem indíthatsz céget.",
+      "assumed_context": "Platform-felügyeleti módban nem indíthatsz saját céget.",
+      "cap_reached": "Elérted a saját cégek számát (legfeljebb {cap}).",
+      "slug_exhausted": "Ezzel a névvel most nem sikerült létrehozni a céget. Próbálj egy kicsit eltérő nevet.",
+      "unavailable": "A cégindítás most nem érhető el. Próbáld újra később.",
+      "invitation": "Ez a meghívó már nem érvényes (lejárt, visszavonták vagy már felhasználták).",
+      "invalid_email": "Adj meg egy érvényes e-mail-címet.",
+      "generic": "Valami hiba történt. Próbáld újra."
+    }
   }
 }

@@ -16,6 +16,7 @@
     "terms": "Terms",
     "contact": "Contact",
     "signIn": "Sign in",
+    "signUp": "Sign up",
     "signInShort": "Sign in",
     "tagline": "Enterprise MCP server"
   },
@@ -79,6 +80,7 @@
     "heroLine2": "Your company stays in control.",
     "heroBody": "Excellence AI is an enterprise MCP server: the secure, standard connection between AI tools and company systems. Your team keeps its familiar tools; you control access, approvals, and the audit trail.",
     "ctaSignIn": "Sign in",
+    "ctaSignUp": "Sign up",
     "ctaHow": "How it works",
     "trustApproval": "Human approval",
     "trustAudit": "Full audit log",
@@ -267,21 +269,11 @@
       "admin_ai-client-policy": "Hermes company controls"
     },
     "pending": {
-      "titleNoMembership": "You have no workspace membership",
-      "titleAwaiting": "Waiting for admin approval",
-      "bodyNoMembership": "Your account ({email}) is active, but it is not assigned to a workspace yet. An administrator needs to add you to a workspace before you can see teammates.",
-      "bodyAwaitingKnown": "Your account ({email}) is registered, but it has no role yet. An administrator must approve access before you can see anything on the control plane.",
-      "bodyAwaitingUnknown": "Your account is registered, but it has no role yet. An administrator must approve access before you can see anything on the control plane.",
-      "suspended": "Your account is suspended.",
+      "titleSuspended": "Your account is suspended",
+      "bodySuspended": "Your account ({email}) currently has no access because it was suspended. While suspended you can’t start a new company either.",
+      "titleNoAccount": "We can’t let you in yet",
+      "bodyNoAccount": "You are signed in, but your account has no access yet. Check that you have confirmed your email address, then sign in again.",
       "hint": "If this looks wrong, contact your administrator."
-    },
-    "signupNotice": {
-      "eyebrow": "Registration received",
-      "title": "Registration currently requires an invitation",
-      "body": "Thanks for registering. The platform is currently invite-only, so your account won’t have access until an administrator assigns it to an organization and gives it a role.",
-      "help": "If you’d like to join, get in touch with us — we’ll be happy to help.",
-      "contact": "Contact us",
-      "close": "Got it"
     },
     "agents": {
       "eyebrow": "Teammates",
@@ -769,10 +761,11 @@
   },
   "TenantSwitcher": {
     "platform": "Platform",
-    "noTenant": "No workspace",
-    "pick": "Choose workspace",
-    "empty": "You have no workspace memberships.",
-    "exitPlatform": "← Exit to platform mode"
+    "noTenant": "No company",
+    "pick": "Choose a company",
+    "empty": "You have no available company.",
+    "exitPlatform": "← Exit to platform mode",
+    "newCompany": "+ Start a new company"
   },
   "Confirm": {
     "cancel": "Cancel",
@@ -1906,5 +1899,80 @@
     "filterLimits": "Data protection: this version detects known patterns and restores email and person names learned from email headers. Other detected types are blocked instead of tokenized. Automatic company-name and arbitrary person-name detection is not connected yet.",
     "noFileHelp": "Local files cannot be read or written.",
     "noApprovalHelp": "This setting requires no additional approval; other operation limits apply."
+  },
+  "Onboarding": {
+    "metaTitle": "Start your company",
+    "steps": {
+      "account": "Account",
+      "company": "Company",
+      "team": "Team",
+      "start": "Get started"
+    },
+    "stepsAria": "Progress",
+    "companyEyebrow": "Your workspace",
+    "companyTitle": "Start your company",
+    "companyTitleAnother": "Start a new company",
+    "companyBody": "A few details and your own workspace is ready. You will be the company’s first administrator.",
+    "displayName": "Company name",
+    "displayNameHint": "This is how it appears in the app and in invitations.",
+    "displayNamePlaceholder": "e.g. Acme Ltd.",
+    "legalName": "Registered company name",
+    "legalNamePlaceholder": "e.g. Acme Limited",
+    "taxId": "Tax number",
+    "taxIdHelp": "Needed for invoicing later. Not required now — you can add it any time.",
+    "taxIdPlaceholder": "e.g. 12345678-2-42",
+    "optional": "optional",
+    "terms": "I accept the <gtc>Terms and Conditions</gtc> and the <privacy>Privacy Notice</privacy>.",
+    "submit": "Create company",
+    "submitting": "Creating…",
+    "capReachedTitle": "You have reached the company limit",
+    "capReachedBody": "One account can start at most {cap} companies of its own. To start a new one, an earlier one has to be closed — we are happy to help.",
+    "contact": "Contact us",
+    "backToWorkspace": "Back to the workspace",
+    "assumedTitle": "You are acting inside another company",
+    "assumedBody": "You can’t start your own company in platform supervision mode. Exit to platform mode and start it from there.",
+    "inviteChoiceEyebrow": "You have an invitation",
+    "inviteChoiceTitle": "Join {company}?",
+    "inviteChoiceTitleMany": "Several companies invited you",
+    "inviteChoiceBody": "An invitation was sent to {email}. If you belong there, join — you’ll work in the same space as your colleagues.",
+    "inviteRole": "Your role: {role}",
+    "joinCompany": "Join",
+    "joining": "Joining…",
+    "startOwnInstead": "Start my own company instead",
+    "teamEyebrow": "Team",
+    "teamTitle": "Invite your colleagues",
+    "teamBody": "{company} is ready. Send invitations to your colleagues — they get a sign-in link by email. You can also do this later.",
+    "inviteEmail": "Email address",
+    "inviteEmailPlaceholder": "colleague@company.com",
+    "inviteRoleLabel": "Role",
+    "inviteRoleHelp": "Operator: works with AI colleagues. Approver: also approves sensitive actions. Viewer: read-only. Administrator: can configure everything.",
+    "sendInvite": "Send invitation",
+    "sending": "Sending…",
+    "inviteSent": "Invitation sent: {email}",
+    "inviteCreated": "Invitation created: {email}",
+    "skip": "Skip for now",
+    "continue": "Continue",
+    "help": "What does this mean?",
+    "roles": {
+      "admin": "Administrator",
+      "approver": "Approver",
+      "operator": "Operator",
+      "viewer": "Viewer"
+    },
+    "errors": {
+      "terms_required": "Please accept the Terms and the Privacy Notice to continue.",
+      "name_required": "Please enter the company name.",
+      "name_too_long": "The company name is too long.",
+      "tax_id_too_long": "The tax number can be at most 32 characters.",
+      "user_not_found": "We can’t find your account. Please sign in again.",
+      "user_suspended": "A suspended account can’t start a company.",
+      "assumed_context": "You can’t start your own company in platform supervision mode.",
+      "cap_reached": "You have reached the company limit (at most {cap}).",
+      "slug_exhausted": "We couldn’t create the company with this name right now. Try a slightly different name.",
+      "unavailable": "Starting a company is not available right now. Please try again later.",
+      "invitation": "This invitation is no longer valid (expired, revoked or already used).",
+      "invalid_email": "Please enter a valid email address.",
+      "generic": "Something went wrong. Please try again."
+    }
   }
 }

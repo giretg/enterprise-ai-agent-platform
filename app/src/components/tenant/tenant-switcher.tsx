@@ -10,6 +10,8 @@ import { getTenantSwitcherState, switchTenant, exitTenant } from '@/app/actions/
  * `OSTOROSBOR` feliratot: az aktív tenant nevét mutatja, és — több tenant vagy
  * superadmin esetén — legördülőből lehet váltani. A superadmin "assumed"
  * kontextusát külön jelöli, és van "kilépés" (→ platform-mód) művelete.
+ * #830 D9: „Új cég" (→ onboarding), ameddig a saját cég-limit engedi — ilyenkor
+ * egyetlen cégnél is látszik a váltó.
  */
 
 type TenantOption = {
@@ -25,6 +27,7 @@ type SwitcherState = {
   assumed: boolean
   kind: 'tenant' | 'platform' | 'none'
   isSuperadmin: boolean
+  canCreateCompany: boolean
   tenants: TenantOption[]
 }
 
@@ -61,11 +64,12 @@ export function TenantSwitcher() {
 
   const active = state.tenants.find((t) => t.id === state.activeTenantId) ?? null
   const label = active?.displayName ?? (state.kind === 'platform' ? t('platform') : t('noTenant'))
-  // A tenant selector only adds value when there is actually another tenant
-  // to switch to. Keep the header quiet for the common single-tenant case.
-  if (state.tenants.length < 2) return null
+  // A tenant selector only adds value when there is another tenant to switch
+  // to, or a new company can be started. Otherwise keep the header quiet.
+  if (state.tenants.length < 2 && !state.canCreateCompany) return null
 
-  const interactive = state.isSuperadmin || state.tenants.length > 1 || state.assumed
+  const interactive =
+    state.isSuperadmin || state.tenants.length > 1 || state.assumed || state.canCreateCompany
 
   const doSwitch = (tenantId: string) => {
     if (tenantId === state.activeTenantId && !state.assumed) {
@@ -172,6 +176,24 @@ export function TenantSwitcher() {
                 </button>
               )
             })}
+
+            {state.canCreateCompany && (
+              <>
+                <div className="my-1 border-t border-line/60" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={pending}
+                  onClick={() => {
+                    setOpen(false)
+                    router.push('/onboarding')
+                  }}
+                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-coral-deep transition-colors hover:bg-coral/8 disabled:opacity-60"
+                >
+                  {t('newCompany')}
+                </button>
+              </>
+            )}
 
             {(state.assumed || state.kind === 'platform') && state.isSuperadmin && (
               <>
