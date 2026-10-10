@@ -132,7 +132,7 @@ function main() {
       ),
     )
     const details = html.match(/<details\b[^>]*>/g) ?? []
-    assert.equal(details.length, 10)
+    assert.equal(details.length, 11)
     assert.equal(details.some((tag) => /\sopen(?:\s|=|>|"")/.test(tag)), false)
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
     assert.match(html, /hermes:\/\/mcp\/install\?name=excellence/)
@@ -143,15 +143,34 @@ function main() {
     for (const client of ['hermes', 'codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
       assert.match(html, new RegExp(`/mcp-clients/${client}\\.svg`))
     }
-    assert.match(html, /hermes-company-controls/)
-    assert.match(html, /Teljes céges kontroll beállítása/)
-    assert.match(html, /sudo \.\/install-managed\.sh floor\.json/)
-    assert.match(html, /\/control-plane\/ai-client-policy/)
-    assert.match(html, /Telepítőcsomag letöltése/)
     assert.match(html, /Goose Desktop/)
     assert.match(html, /Streamable HTTP/)
     assert.match(html, /Extensions → Add custom extension/)
     assert.match(html, /https:\/\/app\.example\.com\/api\/mcp\/acme/)
+  })
+
+  check('admin Enterprise telepítő: munkatárs-választó, egy letöltés, egy parancs', () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        NextIntlClientProvider,
+        { locale: 'hu', timeZone: 'Europe/Budapest', messages: huMessages },
+        createElement(McpSetupLanding, {
+          setup,
+          continueHref: '/control-plane',
+          hermesAdmin: {
+            modelKeyConfigured: true,
+            members: [{ userId: '22222222-2222-4222-8222-222222222222', name: 'Kovács Anna', email: 'anna@example.com' }],
+            defaultUserId: '22222222-2222-4222-8222-222222222222',
+          },
+        }),
+      ),
+    )
+    assert.match(html, /\/control-plane\/ai-client-policy/)
+    assert.match(html, /Kovács Anna \(anna@example.com\)/)
+    assert.match(html, /Telepítő letöltése/)
+    assert.match(html, /sudo bash excellence-telepito\.sh/)
+    assert.doesNotMatch(html, /github\.com\/giretg\/enterprise-ai-agent-platform\/archive/)
+    assert.doesNotMatch(html, /install-managed\.sh floor\.json/)
   })
 
   if (failures > 0) {

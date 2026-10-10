@@ -11,11 +11,26 @@ import { repositories } from '@/repositories/postgres'
 export const dynamic = 'force-dynamic'
 
 /** Ugyanaz a feloldás, mint a Model Gateway-en: tenant-kulcs, különben platform env. */
-async function hermesAdminSetup(tenantId: string): Promise<HermesAdminSetup> {
+async function hermesAdminSetup(tenantId: string, currentUserId: string): Promise<HermesAdminSetup> {
+  let modelKeyConfigured: boolean | null
   try {
-    return { modelKeyConfigured: Boolean(await resolveOpenRouterApiKey(tenantId, loadOpenRouterTenantKey)) }
+    modelKeyConfigured = Boolean(await resolveOpenRouterApiKey(tenantId, loadOpenRouterTenantKey))
   } catch {
-    return { modelKeyConfigured: null }
+    modelKeyConfigured = null
+  }
+  const rows = await repositories.tenantMemberships.findByTenantWithUsers(tenantId)
+  const members = rows
+    .filter((row) => row.status === 'active')
+    .map((row) => ({
+      userId: row.userId,
+      name: row.userName.trim() || row.userEmail,
+      email: row.userEmail,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  return {
+    modelKeyConfigured,
+    members,
+    defaultUserId: members.some((row) => row.userId === currentUserId) ? currentUserId : members[0]?.userId,
   }
 }
 
@@ -23,7 +38,9 @@ export default async function GetStartedPage() {
   const ctx = await requireControlPlaneTenantViewer()
   const tenant = await repositories.tenants.findById(ctx.activeTenantId)
   if (!tenant) redirect(DEFAULT_AGENT_WORKSPACE_FALLBACK)
-  const hermesAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin') ? await hermesAdminSetup(tenant.id) : undefined
+  const hermesAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin')
+    ? await hermesAdminSetup(tenant.id, ctx.user.id)
+    : undefined
 
   return (
     <McpSetupLanding

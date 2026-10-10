@@ -2,37 +2,50 @@
 
 A munkatárs gépére kerülő, rendszergazdai Hermes-beállítás. A munkatárs a saját Hermes-konfigjából nem tudja kikapcsolni a céges modell-utat és a Guardot. A finomabb, asszisztensenkénti engedélyt a Guard dönti el; ide csak az kerül, ami a munkatárs egyik asszisztensénél sem engedett.
 
+## Telepítés (ez kell az adminnak)
+
+1. A Control Plane **Első lépések** oldalán, a Hermes Desktop Enterprise kártyán válaszd ki a munkatársat.
+2. Kattints a **Telepítő letöltése** gombra. Egyetlen kis fájl jön (`excellence-telepito.sh`), benne a gép beállítása és a Guard.
+3. Másold a fájlt a munkatárs Macjére, nyisd meg a Terminált a fájl mappájában, és futtasd:
+
+```
+sudo bash excellence-telepito.sh
+```
+
+4. Indítsd újra a Hermest. A munkatárs az Első lépések további pontjai szerint köti be a Botokat.
+
+Ugyanez a gomb a **Hermes céges kontroll** oldalon a munkatárs sorában is ott van. A telepítő újrafuttatható: engedélybővítés után töltsd le újra, és futtasd megint. Az `installId` ugyanaz marad.
+
+Adj a munkatársnak hozzáférést legalább egy éles AI-munkatárshoz, mielőtt telepítesz; üres hozzáférésnél a gép minden helyi műveletet tilt.
+
 ## Céges kontroll az adminfelületről
 
 1. **Adminisztráció → Hermes céges kontroll**: céges alap (Kötött pálya / Standard / Szabad), munkatársi preset és képességenkénti kivételek. A céges alapnál lazább kivételhez külön megerősítés és auditbejegyzés kell.
 2. Az **AI-munkatárs adatlap → Eszközök** részen állíts képesség-plafont. A tényleges jog a munkatárs engedélyének és az agent plafonjának metszete.
-3. Adj a munkatársnak hozzáférést legalább egy éles agenthez; az admin a munkatárs sorából letölti a gépi JSON-csomagot.
-4. Az informatikus telepíti a csomagot, majd a munkatárs újraindítja a Hermest, bejelentkezik az Excellence MCP-kapcsolatra és Botot választ.
+3. Töltsd le és futtasd a telepítőt (fent).
+4. A munkatárs újraindítja a Hermest, bejelentkezik az Excellence MCP-kapcsolatra és Botot választ.
 5. Ellenőrizzétek az alábbi átvételi eseteket, utána terítsétek a gépi csomagot központilag.
 
 Mentéskor verzió nő, és a beállítás az auditnaplóval egy tranzakcióban kerül mentésre. Más admin közben történt módosítását a szerver nem írja felül. Visszavonás a következő kérésnél, engedélybővítés legkésőbb a következő sessionben érvényes. Ha a korábbi gépi csomag letiltotta a most engedélyezett funkciót, új csomag telepítése is kell. A letöltés új elvárt hash-t adhat: a régi, eltérő csomag ezután nem kap céges modellválaszt a telepítésig.
 
 Szerveroldalon szükséges a `MODEL_GATEWAY_JWT_KEY` (külön, legalább 32 véletlen karakteres Secret Manager kulcs) és a kapcsolódó adatbázis-migrációk: lásd [DEPLOY.md](../../DEPLOY.md). Kulcs nélkül a token-csere elutasít.
 
-## Letöltés
+## Fejlesztői letöltés
 
 Admin, a szervezetben:
 
 ```
 GET /api/client-policy/machine-floor?userId=<a munkatárs azonosítója>
+GET /api/client-policy/machine-floor?userId=<id>&format=installer
 ```
 
-A válaszban benne van a `config.yaml`, a `.env`, az `excellence-install-id` és a `managedDirHash`. Mentsd `floor.json` néven.
+A JSON válaszban benne van a `config.yaml`, a `.env`, az `excellence-install-id` és a `managedDirHash`. Az `installer` formátum egy futtatható scriptet ad, padlóval és Guarddal együtt.
 
-## Telepítés
-
-A munkatárs gépén, a `clients/hermes-guard` mappából (sudo):
+Ha a scriptet erről a mappáról futtatod (sudo):
 
 ```
 sudo ./install-managed.sh floor.json
 ```
-
-A szkript újrafuttatható: policy-bővítés után töltsd le újra a csomagot, és futtasd megint. Az `installId` ugyanaz marad.
 
 Amit feltesz:
 

@@ -62,12 +62,12 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
     setPending(true)
     setMessage('')
     try {
-      const response = await fetch(`/api/client-policy/machine-floor?userId=${encodeURIComponent(scopeId)}`)
+      const response = await fetch(`/api/client-policy/machine-floor?userId=${encodeURIComponent(scopeId)}&format=installer`)
       if (!response.ok) throw new Error('download_failed')
       const url = URL.createObjectURL(await response.blob())
       const link = document.createElement('a')
       link.href = url
-      link.download = `hermes-floor-${scopeId}.json`
+      link.download = 'excellence-telepito.sh'
       link.click()
       URL.revokeObjectURL(url)
     } catch { setMessage(t('downloadFailed')) }

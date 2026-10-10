@@ -48,6 +48,7 @@
     "test:client-policy": "tsx scripts/client-policy-resolve.test.ts",
     "test:client-install": "tsx scripts/client-install.test.ts",
     "test:machine-floor": "tsx scripts/machine-floor.test.ts",
+    "test:hermes-installer": "tsx scripts/hermes-installer.test.ts",
     "test:model-gateway-proxy": "tsx scripts/model-gateway-proxy.test.ts",
     "test:openrouter-tenant-key": "tsx scripts/openrouter-tenant-key.test.ts",
     "test:model-gateway-jwt-key": "tsx scripts/model-gateway-jwt-key.test.ts",
