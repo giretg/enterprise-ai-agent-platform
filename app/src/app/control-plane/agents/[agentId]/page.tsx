@@ -28,6 +28,7 @@ import {
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
+import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
@@ -164,12 +165,21 @@ export default async function AgentDetailPage({
             content: (
               <div className="space-y-4">
                 <Card title={sectionLabel('profil')}>
-                  <UpdateAgentProfileForm
-                    agentId={agent.id}
-                    name={agent.name}
-                    description={agent.description}
-                    bare
-                  />
+                  <div className="space-y-6">
+                    <AgentAvatarUpload
+                      agentId={agent.id}
+                      name={agent.name}
+                      status={agent.status}
+                      avatarUrl={agent.avatarUrl}
+                      bare
+                    />
+                    <UpdateAgentProfileForm
+                      agentId={agent.id}
+                      name={agent.name}
+                      description={agent.description}
+                      bare
+                    />
+                  </div>
                 </Card>
                 <Card title={t('sections.localRoots')}>
                   <UpdateLocalRootsForm agentId={agent.id} localRoots={agent.localRoots} bare />

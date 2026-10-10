@@ -70,9 +70,19 @@ export const setAgentUserAccessSchema = z.object({
   accessLevel: z.enum(['view', 'operate', 'none']),
 })
 
+/** 256px webp/jpeg data URL felső korlátja (a feltöltő ennyire kicsinyít). */
+export const AGENT_AVATAR_MAX_CHARS = 160_000
+
+function isAllowedAgentAvatar(value: string): boolean {
+  if (value === '') return true
+  if (/^data:image\/(webp|jpeg|png);base64,/.test(value)) return true
+  if (value.startsWith('https://') && value.length <= 2000) return true
+  return false
+}
+
 export const updateAgentAvatarSchema = z.object({
   agentId: z.string().uuid(),
-  avatarUrl: z.string().trim().max(2000),
+  avatarUrl: z.string().trim().max(AGENT_AVATAR_MAX_CHARS).refine(isAllowedAgentAvatar, 'invalid_avatar'),
 })
 
 export const suspendAgentSchema = z.object({
