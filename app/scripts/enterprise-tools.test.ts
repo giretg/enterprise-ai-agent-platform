@@ -1272,7 +1272,7 @@ async function main() {
             authMode: 'service',
             secretAlias: null,
             config: {
-              baseUrl: 'https://crm.example.test',
+              baseUrl: 'https://example.com',
               auth: { scheme: 'none' },
               requestHeaders: { 'X-Agent-Id': '{{agent.id}}' },
               endpoints: [{ method: 'GET', path: '/orders' }],

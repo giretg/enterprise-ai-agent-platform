@@ -10,7 +10,7 @@ import type { Connector, ConnectorGrant } from '@prisma/client'
 import { ConnectorGrantService } from '../src/domain/connector-grant/connector-grant-service'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
 import { createOAuthState } from '../src/lib/crypto/oauth-state'
-import type { AuditRepository, ConnectorGrantRepository } from '../src/repositories/interfaces'
+import type { ConnectorGrantRepository } from '../src/repositories/interfaces'
 
 process.env.DATABASE_URL ??= 'postgresql://stub:stub@127.0.0.1:5432/stub'
 
@@ -120,8 +120,7 @@ function buildGrantService(initial: ConnectorGrant | null) {
     },
     revokeAllForUser: async () => 0,
   } as unknown as ConnectorGrantRepository
-  const audit = { append: async (event: unknown) => event } as unknown as AuditRepository
-  return { service: new ConnectorGrantService(grants, audit), created, getGrant: () => currentGrant }
+  return { service: new ConnectorGrantService(grants), created, getGrant: () => currentGrant }
 }
 
 async function withGoogleTokenResponse<T>(scope: string, fn: () => Promise<T>): Promise<T> {

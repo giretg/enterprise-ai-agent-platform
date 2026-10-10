@@ -199,10 +199,10 @@ export function allowlistForOAuthEndpoint(params: {
   url: string
   tenantAllowlist: string[] | null
 }): string[] {
-  const host = new URL(params.url).hostname
+  const host = new URL(params.url).hostname.toLowerCase()
   const platformGoogle = params.connectorType === 'gmail' || params.connectorType === 'google_drive'
   if (platformGoogle || params.tenantAllowlist == null) return [host]
-  return params.tenantAllowlist
+  return params.tenantAllowlist.map((item) => item.toLowerCase())
 }
 
 export type EgressGuardInput = {
