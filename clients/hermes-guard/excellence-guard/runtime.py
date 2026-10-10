@@ -28,7 +28,15 @@ QUEUE_FILE = ("excellence-guard", "audit-queue.jsonl")
 MANAGED_FILES = ("config.yaml", ".env", "excellence-install-id")
 HASH_VERSION = "excellence-managed-dir-v1"
 MAX_CONTENT_CHARS = 200_000
-TOKEN_HELPER_PATH = "/opt/excellence/bin/exc-token"
+# Windowson nincs natív managed hely a Hermesben (U3): a telepítő ide tesz mindent,
+# és gépszintű HERMES_MANAGED_DIR-t állít (#755).
+WINDOWS_ROOT = r"C:\ProgramData\Excellence"
+if os.name == "nt":
+    DEFAULT_MANAGED_DIR = WINDOWS_ROOT + r"\hermes"
+    TOKEN_HELPER_PATH = WINDOWS_ROOT + r"\bin\exc-token"
+else:
+    DEFAULT_MANAGED_DIR = "/etc/hermes"
+    TOKEN_HELPER_PATH = "/opt/excellence/bin/exc-token"
 _lock = threading.Lock()
 
 
@@ -63,7 +71,14 @@ def config_hash(home):
 
 
 def managed_dir():
-    return os.environ.get("HERMES_MANAGED_DIR") or "/etc/hermes"
+    return os.environ.get("HERMES_MANAGED_DIR") or DEFAULT_MANAGED_DIR
+
+
+def default_home():
+    """A Hermes alapértelmezett profilja: Windowson %LOCALAPPDATA%\\hermes, máshol ~/.hermes."""
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"), "hermes")
+    return os.path.expanduser("~/.hermes")
 
 
 def _under(home, parts):

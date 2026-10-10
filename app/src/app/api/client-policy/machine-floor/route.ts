@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { machineFloorDeps } from '@/auth/machine-floor-deps'
-import { issueMachineFloor, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
+import { issueMachineFloor, MACHINE_PLATFORMS, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { writeAudit } from '@/lib/audit/types'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
@@ -9,11 +9,11 @@ import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 
-const querySchema = z.object({ userId: z.string().uuid() })
+const querySchema = z.object({ userId: z.string().uuid(), platform: z.enum(MACHINE_PLATFORMS).default('posix') })
 
 /**
  * #771: admin letölti egy munkatárs gép-padlóját (config.yaml, .env, installId).
- * A csomagot az `install-managed.sh` teszi fel a gépre. A kiadás auditált.
+ * A csomagot az `install-managed.sh` (Windowson `install-managed.ps1`, `platform=windows`) teszi fel a gépre. A kiadás auditált.
  */
 export async function GET(request: Request): Promise<Response> {
   const auth = await requireTenantApiUser('admin')
@@ -33,6 +33,7 @@ export async function GET(request: Request): Promise<Response> {
     tenantId: user.activeTenantId,
     userId: parsed.data.userId,
     gatewayBaseUrl,
+    platform: parsed.data.platform,
   })
 
   await writeAudit(repositories.audit, {
@@ -44,6 +45,7 @@ export async function GET(request: Request): Promise<Response> {
     policyDecision: 'allowed',
     metadata: {
       installId: pkg.installId,
+      platform: pkg.platform,
       managedDirHash: pkg.managedDirHash,
       disabledToolsets: pkg.disabledToolsets,
       agentCount: pkg.agentIds.length,

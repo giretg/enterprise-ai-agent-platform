@@ -106,6 +106,17 @@ async function main() {
     assert.equal(files['excellence-install-id'], 'inst-1\n')
   })
 
+  await check('Windows-csomag: a hook és a key_cmd a ProgramData alatti .cmd wrapper', () => {
+    const posix = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: [], installId: 'inst-1' })
+    const win = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: [], installId: 'inst-1', platform: 'windows' })
+    const yaml = win.files['config.yaml']
+    assert.match(yaml, /key_cmd: "C:\\\\ProgramData\\\\Excellence\\\\bin\\\\exc-token\.cmd model"/)
+    assert.match(yaml, /command: "C:\\\\ProgramData\\\\Excellence\\\\bin\\\\exc-guard\.cmd"\n {6}timeout: 30\n {6}fail_closed: true/)
+    assert.doesNotMatch(yaml, /\/opt\/excellence/)
+    assert.notEqual(win.managedDirHash, posix.managedDirHash)
+    assert.equal(win.files['.env'], posix.files['.env'])
+  })
+
   await check('ugyanaz a bemenet ugyanaz a hash; a toolset-lista változtatja', () => {
     const a = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: ['terminal'], installId: 'inst-1' })
     const b = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: ['terminal'], installId: 'inst-1' })
