@@ -14,7 +14,12 @@ import {
 } from '@/components/onboarding/onboarding-ui'
 import { services } from '@/domain/gateway-services'
 import { CONTROL_PLANE_PENDING_PATH } from '@/lib/control-plane-entry'
-import { SELF_SERVICE_TENANT_CAP, selfServiceCapReached } from '@/lib/tenant-policy'
+import {
+  SELF_SERVICE_TENANT_CAP,
+  canStartSelfServiceTenant,
+  resolveOnboardingTeamTenantId,
+  selfServiceCapReached,
+} from '@/lib/tenant-policy'
 import { repositories } from '@/repositories/postgres'
 
 export async function generateMetadata() {
@@ -22,7 +27,7 @@ export async function generateMetadata() {
   return { title: t('metaTitle') }
 }
 
-/** #830 D8: a user e-mailjére szóló, még beváltható meghívók olyan cégbe, ahol még nem tag. */
+/** Még beváltható meghívók olyan cégbe, ahol a user még nem tag. */
 async function pendingInvitationsFor(ctx: AuthContext): Promise<PendingInvitationView[]> {
   const memberOf = new Set(ctx.memberships.filter((m) => m.status === 'active').map((m) => m.tenantId))
   const invitations = (await services.iam.listPendingInvitationsForEmail(ctx.user.email)).filter(
@@ -37,21 +42,17 @@ async function pendingInvitationsFor(ctx: AuthContext): Promise<PendingInvitatio
   })
 }
 
-/**
- * Self-service cégindító varázsló (#830). Clerk-session kell (a proxy védi); a fiók-lépés
- * (Clerk SignUp + e-mail-igazolás) itt már kész. 2. lépés: cég (vagy D8 meghívó-elfogadás),
- * 3. lépés (`?step=team`): munkatárs-meghívók, 4.: a meglévő „kezdd el" oldal.
- */
+/** Cégindító varázsló: cégadatok / meghívó, majd opcionális munkatárs-meghívó. */
 export default async function OnboardingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ step?: string }>
+  searchParams: Promise<{ step?: string; tenant?: string }>
 }) {
   const ctx = await getAuthContext()
   // Nincs belső fiók (nem igazolt e-mail / nem engedett domain) vagy felfüggesztett ⇒ várakozó képernyő.
   if (!ctx || ctx.user.status === 'suspended') redirect(CONTROL_PLANE_PENDING_PATH)
 
-  const { step } = await searchParams
+  const { step, tenant: requestedTenantId } = await searchParams
   const t = await getTranslations('Onboarding')
   const shell = (current: 'company' | 'team', content: ReactNode) => (
     <AuthLocaleShell headerExtra={<OnboardingAccountButton />}>
@@ -74,14 +75,24 @@ export default async function OnboardingPage({
     )
   }
 
-  if (step === 'team' && ctx.kind === 'tenant' && ctx.activeTenantRole === 'admin') {
-    const tenant = await repositories.tenants.findById(ctx.activeTenantId!)
-    if (tenant) return shell('team', <TeamStep companyName={tenant.displayName} />)
+  const teamTenantId = resolveOnboardingTeamTenantId({
+    step,
+    requestedTenantId,
+    memberships: ctx.memberships,
+  })
+  if (teamTenantId) {
+    const tenant = await repositories.tenants.findById(teamTenantId)
+    if (tenant) return shell('team', <TeamStep companyName={tenant.displayName} tenantId={teamTenantId} />)
   }
 
   const owned = await repositories.tenants.countSelfServiceByCreator(ctx.user.id)
   const invitations = await pendingInvitationsFor(ctx)
   const hasWorkspace = ctx.kind !== 'none'
+  const canCreate = canStartSelfServiceTenant({
+    userStatus: ctx.user.status,
+    assumed: ctx.assumed,
+    ownedSelfServiceCount: owned,
+  })
 
   if (selfServiceCapReached(owned) && invitations.length === 0) {
     return shell(
@@ -112,6 +123,7 @@ export default async function OnboardingPage({
       hasWorkspace={hasWorkspace}
       invitations={invitations}
       cap={SELF_SERVICE_TENANT_CAP}
+      canCreate={canCreate}
     />,
   )
 }

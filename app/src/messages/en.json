@@ -272,7 +272,7 @@
       "titleSuspended": "Your account is suspended",
       "bodySuspended": "Your account ({email}) currently has no access because it was suspended. While suspended you can’t start a new company either.",
       "titleNoAccount": "We can’t let you in yet",
-      "bodyNoAccount": "You are signed in, but your account has no access yet. Check that you have confirmed your email address, then sign in again.",
+      "bodyNoAccount": "You are signed in, but we don’t have an internal account for you yet. Confirm your email if you haven’t, then sign in again. If this organisation only allows certain email domains, you may need an invitation.",
       "hint": "If this looks wrong, contact your administrator."
     },
     "agents": {

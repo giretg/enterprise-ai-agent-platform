@@ -127,15 +127,8 @@ export class TenantService {
   }
 
   /**
-   * Self-service cégindítás (#830 §5, §7). NINCS platform- vagy tenant-szerep kapu:
-   * a meghívó nélküli, `pending` + szerep nélküli fiók is indíthat saját céget —
-   * ez maga a nyitás. Kapuk: ÁSZF elfogadva, nem felfüggesztett user, nem
-   * superadmin-assume kontextus, legfeljebb `SELF_SERVICE_TENANT_CAP` saját cég.
-   *
-   * Egy tranzakcióban: tenant (`active`, üres domain-allowlist) + admin/active/default
-   * membership + (ha kell) user-aktiválás + audit (`tenant.create` source=self_service,
-   * `tenant.member.add`, `legal.terms.accept`). A superadmin `createTenant` útja
-   * változatlan, és nem számít bele a limitbe (`selfService=false`).
+   * Saját cég indítása szerep-kapu nélkül: ÁSZF, felfüggesztés, assume és kvóta
+   * itt dől el. A superadmin `createTenant` nem számít a limitbe.
    */
   async provisionSelfService(params: {
     userId: string

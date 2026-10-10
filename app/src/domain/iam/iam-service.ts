@@ -392,29 +392,37 @@ export class IamService {
       }
       throw new Error('invitation: already_redeemed_or_unavailable')
     }
-    const user = await this.users.update(params.user.id, {
-      role: invitation.role,
-      status: 'active',
-      activatedAt: new Date(),
-      invitedById: invitation.createdById,
-    })
+    const patch: {
+      role?: UserRole
+      status: 'active'
+      activatedAt?: Date
+      invitedById?: string
+    } = { status: 'active' }
+    // A tenant-szerep a membershipen él. A globális User.role-t csak üresen
+    // állítjuk, vagy ROLE_RANK szerint emeljük — soha nem minősítjük le.
+    if (!params.user.role) {
+      patch.role = invitation.role
+    } else if (ROLE_RANK[invitation.role] > ROLE_RANK[params.user.role]) {
+      patch.role = invitation.role
+    }
+    if (params.user.status !== 'active') {
+      patch.activatedAt = new Date()
+      if (!params.user.invitedById) patch.invitedById = invitation.createdById
+    }
+    const user = await this.users.update(params.user.id, patch)
     await this.completeInvitationRedemption(claimed, user, params.source ?? 'clerk')
     return user
   }
 
-  /**
-   * #830 D8: a belépett (Clerk-igazolt e-mailű) user saját e-mailjére szóló, még
-   * beváltható meghívók. Csak cég-meghívó számít (a legacy tenant nélküli nem).
-   */
+  /** A user e-mailjére szóló, még beváltható cég-meghívók. */
   async listPendingInvitationsForEmail(email: string) {
     const rows = await this.invitations.findPendingByEmail(email, new Date())
     return rows.filter((row) => row.tenantId !== null)
   }
 
   /**
-   * #830 D8 „Csatlakozom": a belépett user a saját e-mailjére szóló meghívót váltja be.
-   * Ugyanaz a helyi ellenőrzés (e-mail egyezés, státusz, lejárat), mint a Clerk-ticketes
-   * útnál; felfüggesztett fiókot nem aktivál.
+   * Belépett user saját e-mailes meghívóját váltja be. Felfüggesztett fiókot
+   * nem aktivál; a globális User.role-t a redeem soha nem minősíti le.
    */
   async acceptInvitationForSignedInUser(params: { invitationId: string; user: User }) {
     if (params.user.status === 'suspended') throw new Error('user: suspended')

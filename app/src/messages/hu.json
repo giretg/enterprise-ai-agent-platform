@@ -272,7 +272,7 @@
       "titleSuspended": "A fiókod fel van függesztve",
       "bodySuspended": "A fiókodhoz ({email}) jelenleg nem tartozik hozzáférés, mert felfüggesztették. Ebben az állapotban új céget sem indíthatsz.",
       "titleNoAccount": "Még nem tudunk beengedni",
-      "bodyNoAccount": "Be vagy jelentkezve, de a fiókodhoz még nem tartozik hozzáférés. Ellenőrizd, hogy megerősítetted-e az e-mail-címedet, majd jelentkezz be újra.",
+      "bodyNoAccount": "Be vagy jelentkezve, de még nincs belső fiókod. Ha még nem erősítetted meg az e-mail-címedet, tedd meg, majd jelentkezz be újra. Ha a szervezet csak bizonyos e-mail-domaineket enged, meghívó kellhet.",
       "hint": "Ha úgy gondolod, hogy ez tévedés, keresd meg a rendszergazdát."
     },
     "agents": {

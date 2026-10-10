@@ -10,14 +10,7 @@ import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 import { TAX_ID_MAX_LENGTH } from '@/lib/tenant-policy'
 
-/**
- * #830 Self-service cégindítás — a varázsló server actionjei.
- *
- * Szándékosan NINCS `requireTenantRole` / `requirePlatformRole`: a meghívó nélküli,
- * `pending` fiók is indíthat saját céget (D1+D6). A kapukat (ÁSZF, felfüggesztés,
- * assume, 5-ös limit) a `TenantService.provisionSelfService` kényszeríti ki.
- * A hibák `self_service:<kód>` alakúak — a UI üzleti szövegre fordítja.
- */
+/** Saját cég indítása szerep-kapu nélkül; a domain-kapukat a service kényszeríti ki. */
 
 const createSelfServiceTenantSchema = z.object({
   displayName: z.string().max(200),

@@ -23,6 +23,7 @@ import {
   SELF_SERVICE_TENANT_CAP,
   canStartSelfServiceTenant,
   isValidTenantSlug,
+  resolveOnboardingTeamTenantId,
   normalizeTaxId,
   selfServiceFallbackSlug,
   selfServiceSlugBase,
@@ -268,6 +269,31 @@ async function main() {
     assert.equal(canStartSelfServiceTenant({ userStatus: 'active', assumed: false, ownedSelfServiceCount: 5 }), false)
     assert.equal(canStartSelfServiceTenant({ userStatus: 'suspended', assumed: false, ownedSelfServiceCount: 0 }), false)
     assert.equal(canStartSelfServiceTenant({ userStatus: 'active', assumed: true, ownedSelfServiceCount: 0 }), false)
+  })
+
+  await check('SS-5d team-lépés csak a URL-beli, admin membershipes tenantra megy', () => {
+    const memberships = [
+      { tenantId: 'old', role: 'admin' as const, status: 'active' as const, isDefault: false },
+      { tenantId: 'new', role: 'admin' as const, status: 'active' as const, isDefault: true },
+    ]
+    assert.equal(
+      resolveOnboardingTeamTenantId({ step: 'team', requestedTenantId: 'new', memberships }),
+      'new',
+    )
+    assert.equal(
+      resolveOnboardingTeamTenantId({ step: 'team', requestedTenantId: 'old', memberships }),
+      'old',
+    )
+    assert.equal(resolveOnboardingTeamTenantId({ step: 'team', requestedTenantId: undefined, memberships }), null)
+    assert.equal(resolveOnboardingTeamTenantId({ step: 'company', requestedTenantId: 'new', memberships }), null)
+    assert.equal(
+      resolveOnboardingTeamTenantId({
+        step: 'team',
+        requestedTenantId: 'new',
+        memberships: [{ tenantId: 'new', role: 'operator', status: 'active', isDefault: true }],
+      }),
+      null,
+    )
   })
 
   // ── SS-6 ─────────────────────────────────────────────────────────────────

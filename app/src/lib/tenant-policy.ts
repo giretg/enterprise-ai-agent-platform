@@ -293,3 +293,19 @@ export function canStartSelfServiceTenant(params: {
   if (params.assumed) return false
   return !selfServiceCapReached(params.ownedSelfServiceCount)
 }
+
+/**
+ * A team-lépés csak a URL-ben kért cégre megy, és csak ha a user ott aktív admin.
+ * Így a „második cég" nem a süti szerinti régi tenantba hív meg munkatársat.
+ */
+export function resolveOnboardingTeamTenantId(params: {
+  step?: string | null
+  requestedTenantId?: string | null
+  memberships: ReadonlyArray<{ tenantId: string; role: UserRole; status: TenantMembershipStatus }>
+}): string | null {
+  if (params.step !== 'team' || !params.requestedTenantId) return null
+  const ok = params.memberships.some(
+    (row) => row.tenantId === params.requestedTenantId && row.status === 'active' && row.role === 'admin',
+  )
+  return ok ? params.requestedTenantId : null
+}

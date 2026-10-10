@@ -31,12 +31,14 @@ export function CompanyStep({
   hasWorkspace,
   invitations,
   cap,
+  canCreate,
 }: {
   email: string
   /** Van már legalább egy cége (a váltóból „Új cég" érkezett). */
   hasWorkspace: boolean
   invitations: PendingInvitationView[]
   cap: number
+  canCreate: boolean
 }) {
   const t = useTranslations('Onboarding')
   const router = useRouter()
@@ -91,17 +93,19 @@ export function CompanyStep({
             </div>
           ))}
           <ErrorNotice message={error} />
-          <button
-            type="button"
-            disabled={pending}
-            className={secondaryButtonClass}
-            onClick={() => {
-              setError(null)
-              setMode('company')
-            }}
-          >
-            {t('startOwnInstead')}
-          </button>
+          {canCreate && (
+            <button
+              type="button"
+              disabled={pending}
+              className={secondaryButtonClass}
+              onClick={() => {
+                setError(null)
+                setMode('company')
+              }}
+            >
+              {t('startOwnInstead')}
+            </button>
+          )}
         </div>
       </OnboardingCard>
     )
@@ -117,7 +121,7 @@ export function CompanyStep({
         termsAccepted,
       })
       if (!res.success) return showError(res.error)
-      router.replace('/onboarding?step=team')
+      router.replace(`/onboarding?step=team&tenant=${res.data.tenantId}`)
       router.refresh()
     })
   }

@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { inviteUser } from '@/app/actions/platform'
+import { switchTenant } from '@/app/actions/tenant'
 import {
   ErrorNotice,
   HelpHint,
@@ -18,12 +19,8 @@ type InviteRole = (typeof INVITE_ROLES)[number]
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-/**
- * 3. lépés: munkatárs-meghívó, átugorható. A meglévő `inviteUser` actiont hívja
- * (Clerk-levél az aktív, frissen indított cégbe). Alap szerep: operátor — az
- * alapító marad az egyetlen admin, amíg szándékosan mást nem hív meg (#830 §7).
- */
-export function TeamStep({ companyName }: { companyName: string }) {
+/** Átugorható munkatárs-meghívó a frissen indított cégbe. */
+export function TeamStep({ companyName, tenantId }: { companyName: string; tenantId: string }) {
   const t = useTranslations('Onboarding')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -31,11 +28,25 @@ export function TeamStep({ companyName }: { companyName: string }) {
   const [role, setRole] = useState<InviteRole>('operator')
   const [sent, setSent] = useState<{ email: string; mailed: boolean }[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [entered, setEntered] = useState(false)
+
+  const enterFoundedTenant = async () => {
+    if (entered) return true
+    const switched = await switchTenant({ tenantId })
+    if (!switched.success) {
+      setError(t('errors.generic'))
+      return false
+    }
+    setEntered(true)
+    return true
+  }
 
   const finish = () => {
-    // A gyökér dönt: első belépésnél a meglévő „kezdd el" (MCP) oldalra visz.
-    router.replace('/control-plane')
-    router.refresh()
+    startTransition(async () => {
+      if (!(await enterFoundedTenant())) return
+      router.replace('/control-plane')
+      router.refresh()
+    })
   }
 
   const send = () => {
@@ -46,6 +57,7 @@ export function TeamStep({ companyName }: { companyName: string }) {
     }
     setError(null)
     startTransition(async () => {
+      if (!(await enterFoundedTenant())) return
       const res = await inviteUser({ email: target, role })
       if (!res.success) {
         setError(t('errors.generic'))
