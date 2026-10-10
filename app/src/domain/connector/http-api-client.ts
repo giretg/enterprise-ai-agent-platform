@@ -10,7 +10,6 @@
  * eszközzel hív; az endpoint-katalógus (config.endpoints + config.description)
  * a tool loopban kerül a modell elé.
  */
-import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
@@ -1182,8 +1181,7 @@ const oauth2TokenCache = new Map<string, CachedOAuth2Token>()
 const OAUTH2_EXPIRY_SKEW_MS = 60_000
 
 function oauth2CacheKey(auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>, refreshToken: string): string {
-  // codeql[js/insufficient-password-hash] In-memory cache fingerprint, not password storage.
-  return createHash('sha256').update(`${auth.tokenUrl}::${auth.clientId}::${refreshToken}`).digest('hex')
+  return `${auth.tokenUrl}\0${auth.clientId}\0${refreshToken}`
 }
 
 /**
