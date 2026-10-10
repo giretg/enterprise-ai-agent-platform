@@ -72,6 +72,23 @@ class Policy(unittest.TestCase):
         self.assertEqual(blocked.action, "block")
         self.assertIn("tiltja", blocked.message)
 
+    def test_tool_allow_cannot_exceed_agent_ceiling(self):
+        rules = ({"pattern": "*", "action": "allow", "source": "user"},)
+        limited = snap(p.FREE, rules)
+        limited["agentCeilings"] = {"code_execution": "denied", "mcp_servers": "company_only", "human_approval": "always"}
+        self.assertEqual(p.decide(limited, "terminal").action, "block")
+        self.assertEqual(p.decide(limited, "mcp__github__search").action, "block")
+        self.assertEqual(p.decide(limited, "read_file").action, "approve")
+        approved = snap(p.FREE, ({"pattern": "mcp__github__*", "action": "allow", "source": "user"},))
+        approved["agentCeilings"] = {"mcp_servers": "plus_approved"}
+        self.assertEqual(p.decide(approved, "mcp__github__search").action, "allow")
+
+    def test_old_cached_snapshot_cannot_authorize_tool_exception(self):
+        old = snap(p.BOUND, ({"pattern": "terminal", "action": "allow", "source": "user"},))
+        del old["agentCeilings"]
+        cached = p.interpret_cache({"cachedAt": 1000, "snapshot": old}, 1010)
+        self.assertEqual(p.decide_interpreted(cached, "terminal").action, "block")
+
     def test_unknown_mcp_server_is_blocked_company_server_is_not(self):
         bound = snap(p.BOUND)
         unknown = p.decide(bound, "mcp__github__search")
