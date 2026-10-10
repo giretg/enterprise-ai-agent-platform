@@ -78,8 +78,29 @@ assert.equal(linkedAccountHandle({ id: 'g3', accountLabel: 'x@y.hu', nickname: n
   if (!unknown.ok) assert.equal(unknown.reason, 'unknown_account')
 }
 
+{
+  // Magán beceneve = céges e-mail → whoami mindkettőre ugyanazt az `account`
+  // stringet adná; a picker fail-closed (ne a magán fiókra essen a céges cím).
+  const collided = {
+    id: 'g1',
+    accountLabel: 'anna@gmail.com',
+    nickname: 'anna@ceg.hu',
+  }
+  const ambiguous = resolveLinkedAccountGrant([collided, work], 'anna@ceg.hu')
+  assert.equal(ambiguous.ok, false)
+  if (!ambiguous.ok) assert.equal(ambiguous.reason, 'account_required')
+}
+
+{
+  const byId = resolveLinkedAccountGrant([personal, work], work.id)
+  assert.equal(byId.ok, true)
+  if (byId.ok) assert.equal(byId.grant.id, 'g2')
+}
+
 assert.equal(nicknameTakenByPeer([personal, work], 'Magán'), true)
 assert.equal(nicknameTakenByPeer([personal, work], 'magán', personal.id), false)
 assert.equal(nicknameTakenByPeer([personal], 'céges'), false)
+assert.equal(nicknameTakenByPeer([personal, work], 'anna@ceg.hu', personal.id), true)
+assert.equal(nicknameTakenByPeer([personal, work], 'anna@gmail.com', personal.id), false)
 
 console.log('✅ linked-account picker: egy fiók, magán/céges, e-mail')
