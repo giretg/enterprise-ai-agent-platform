@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Connector, ConnectorGrant } from '@prisma/client'
 import { ConnectorGrantService } from '../src/domain/connector-grant/connector-grant-service'
+import { createGrantTokenStore } from '../src/domain/connector-grant/grant-token-vault'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
 import { createOAuthState } from '../src/lib/crypto/oauth-state'
 import type { ConnectorGrantRepository } from '../src/repositories/interfaces'
@@ -57,12 +58,20 @@ function grant(overrides: Partial<ConnectorGrant> = {}): ConnectorGrant {
   } as ConnectorGrant
 }
 
-function buildGrantService(initial: ConnectorGrant | null) {
+function buildGrantService(
+  initial: ConnectorGrant | null,
+  resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>,
+) {
   let currentGrant: ConnectorGrant | null = initial
   const created: Array<{ tokenRef: string; nickname: string | null; accountLabel: string | null }> = []
+  const statusUpdates: Array<{ id: string; status: ConnectorGrant['status'] }> = []
   const grants = {
     findById: async (id: string) => (currentGrant?.id === id ? currentGrant : null),
-    updateStatus: async () => currentGrant as ConnectorGrant,
+    updateStatus: async (id: string, status: ConnectorGrant['status']) => {
+      statusUpdates.push({ id, status })
+      if (currentGrant?.id === id) currentGrant = { ...currentGrant, status }
+      return currentGrant as ConnectorGrant
+    },
     findActiveGrant: async () => (currentGrant?.status === 'active' ? currentGrant : null),
     findActiveGrants: async () => (currentGrant?.status === 'active' ? [currentGrant] : []),
     findByUser: async () =>
@@ -120,7 +129,12 @@ function buildGrantService(initial: ConnectorGrant | null) {
     },
     revokeAllForUser: async () => 0,
   } as unknown as ConnectorGrantRepository
-  return { service: new ConnectorGrantService(grants), created, getGrant: () => currentGrant }
+  return {
+    service: new ConnectorGrantService(grants, resolveEgressAllowlist),
+    created,
+    getGrant: () => currentGrant,
+    statusUpdates,
+  }
 }
 
 async function withGoogleTokenResponse<T>(scope: string, fn: () => Promise<T>): Promise<T> {
@@ -267,7 +281,82 @@ async function main() {
   assert.equal(getGrant()?.id, 'grant-created')
 }
 
-console.log('✅ linked-account oauth: nickname_taken, re-consent, unique token-ref')
+{
+  const prevStub = process.env.CONNECTOR_OAUTH_STUB
+  const prevGmailStub = process.env.GMAIL_OAUTH_STUB
+  const prevSecret = process.env.CRM_OAUTH
+  const prevFetch = globalThis.fetch
+  delete process.env.CONNECTOR_OAUTH_STUB
+  delete process.env.GMAIL_OAUTH_STUB
+  process.env.CRM_OAUTH = 'crm-client-secret'
+  let fetched = 0
+  globalThis.fetch = (async () => {
+    fetched += 1
+    throw new Error('OAuth fetch must not run when egress denies the token host')
+  }) as typeof fetch
+  try {
+    const tokenRef = 'tenant/tenant-A/user/user-Y/connector/conn-crm'
+    const existing = grant({
+      id: 'grant-crm',
+      connectorId: 'conn-crm',
+      tokenRef,
+    })
+    const { service, getGrant, statusUpdates } = buildGrantService(existing, async () => [])
+    await createGrantTokenStore(tokenRef).save({
+      accessToken: 'expired-access',
+      refreshToken: 'refresh-token',
+      expiresAt: new Date(Date.now() - 120_000).toISOString(),
+    })
+    const connector = {
+      id: 'conn-crm',
+      type: 'http_api',
+      name: 'CRM',
+      authMode: 'user_delegated',
+      lifecycleState: 'active',
+      scope: 'tenant',
+      secretAlias: 'crm_oauth',
+      version: 1,
+      config: {
+        provider: 'google-calendar',
+        oauth: {
+          authUrl: 'https://example.com/oauth/authorize',
+          tokenUrl: 'https://example.com/oauth/token',
+          clientId: 'crm-client',
+          scopes: ['read'],
+        },
+      },
+      tenantId: 'tenant-A',
+      createdAt: new Date('2026-06-01T00:00:00.000Z'),
+    } as Connector
+    await assert.rejects(
+      () =>
+        service.resolveAccessToken({
+          connector,
+          grantId: existing.id,
+          tokenRef,
+          actingUserId: 'user-Y',
+          tenantId: 'tenant-A',
+        }),
+      /OAuth endpoint blocked by egress policy/,
+    )
+    assert.equal(fetched, 0)
+    assert.equal(getGrant()?.status, 'active')
+    assert.equal(
+      statusUpdates.some((update) => update.status === 'expired'),
+      false,
+    )
+  } finally {
+    globalThis.fetch = prevFetch
+    if (prevStub === undefined) delete process.env.CONNECTOR_OAUTH_STUB
+    else process.env.CONNECTOR_OAUTH_STUB = prevStub
+    if (prevGmailStub === undefined) delete process.env.GMAIL_OAUTH_STUB
+    else process.env.GMAIL_OAUTH_STUB = prevGmailStub
+    if (prevSecret === undefined) delete process.env.CRM_OAUTH
+    else process.env.CRM_OAUTH = prevSecret
+  }
+}
+
+console.log('✅ linked-account oauth: nickname_taken, re-consent, unique token-ref, egress does not expire grant')
 }
 
 void main()

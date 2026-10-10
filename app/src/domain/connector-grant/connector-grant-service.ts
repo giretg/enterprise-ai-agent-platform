@@ -39,7 +39,8 @@ import {
 } from './delegated-oauth-registry'
 import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
-import { isPlatformGoogleApiConnectorProvider } from '@/lib/platform-google-api-connectors'
+import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
+import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { lookup } from 'node:dns/promises'
 import { allowlistForOAuthEndpoint, guardEgressUrl } from '@/domain/net/egress-guard'
 
@@ -285,8 +286,7 @@ type OAuthEgressPolicy = {
 
 function pinsOAuthToEndpointHost(connector: Connector): boolean {
   if (connector.type === 'gmail' || connector.type === 'google_drive') return true
-  const config = (connector.config ?? {}) as ConnectorOAuthConfig
-  return isPlatformGoogleApiConnectorProvider(config.provider ?? '')
+  return isPlatformGoogleApiConnectorTemplateKey(provenanceTemplateKey(connector.config))
 }
 
 function oauthEgressPolicy(connector: Connector, tenantAllowlist: string[] | null): OAuthEgressPolicy {
@@ -887,11 +887,12 @@ export class ConnectorGrantService {
     }
 
     if (isAccessTokenExpired(tokens.expiresAt)) {
+      const tenantAllowlist = await this.tenantAllowlistOrNull(params.connector)
       try {
         tokens = await refreshGrantTokens(
           params.connector,
           tokens,
-          await this.tenantAllowlistOrNull(params.connector),
+          tenantAllowlist,
         )
         await store.save(tokens)
         await this.grants.updateStatus(params.grantId, 'active', {
