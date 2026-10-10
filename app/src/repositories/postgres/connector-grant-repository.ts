@@ -8,7 +8,16 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     connectorId: string
     userId: string
   }): Promise<ConnectorGrant | null> {
-    return prisma.connectorGrant.findFirst({
+    const grants = await this.findActiveGrants(params)
+    return grants[0] ?? null
+  }
+
+  async findActiveGrants(params: {
+    tenantId: string
+    connectorId: string
+    userId: string
+  }): Promise<ConnectorGrant[]> {
+    return prisma.connectorGrant.findMany({
       where: {
         tenantId: params.tenantId,
         connectorId: params.connectorId,
@@ -16,6 +25,7 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
         status: 'active',
         connector: { lifecycleState: 'active' },
       },
+      orderBy: { grantedAt: 'asc' },
     })
   }
 
@@ -56,20 +66,37 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     scopes: Prisma.JsonValue
     tokenRef: string
     accountLabel?: string | null
+    nickname?: string | null
     expiresAt?: Date | null
   }) {
-    const existing = await prisma.connectorGrant.findFirst({
-      where: {
-        tenantId: data.tenantId,
-        connectorId: data.connectorId,
-        userId: data.userId,
-      },
-    })
+    const accountLabel = data.accountLabel?.trim() || null
+    const existingByLabel = accountLabel
+      ? await prisma.connectorGrant.findFirst({
+          where: {
+            tenantId: data.tenantId,
+            connectorId: data.connectorId,
+            userId: data.userId,
+            accountLabel: { equals: accountLabel, mode: 'insensitive' },
+          },
+          orderBy: [{ grantedAt: 'desc' }],
+        })
+      : null
+    const existing =
+      existingByLabel ??
+      (await prisma.connectorGrant.findFirst({
+        where: {
+          tenantId: data.tenantId,
+          connectorId: data.connectorId,
+          userId: data.userId,
+          tokenRef: data.tokenRef,
+        },
+      }))
 
     const payload = {
       scopes: data.scopes as Prisma.InputJsonValue,
       tokenRef: data.tokenRef,
-      accountLabel: data.accountLabel ?? null,
+      accountLabel,
+      nickname: data.nickname ?? existing?.nickname ?? null,
       expiresAt: data.expiresAt ?? null,
       status: 'active' as const,
       revokedAt: null,
@@ -119,6 +146,13 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     return prisma.connectorGrant.update({
       where: { id },
       data: { metadata },
+    })
+  }
+
+  async updateNickname(id: string, nickname: string | null) {
+    return prisma.connectorGrant.update({
+      where: { id },
+      data: { nickname },
     })
   }
 }

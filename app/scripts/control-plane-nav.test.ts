@@ -49,6 +49,7 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/get-started'))
     assert.ok(hrefs.includes('/control-plane/projects'))
     assert.ok(!hrefs.includes('/control-plane/connectors'))
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/provisioning'))
     assert.ok(!hrefs.includes('/control-plane/system'))
@@ -70,6 +71,7 @@ function main() {
     const hrefs = flattenNavHrefs(
       buildControlPlaneNav({ tenantRole: 'admin', platformRoles: [] }),
     )
+    assert.ok(hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(hrefs.includes('/control-plane/iam'))
     assert.ok(hrefs.includes('/control-plane/settings'))
     assert.ok(hrefs.includes('/control-plane/menu-access'))
@@ -90,6 +92,7 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/mcp-parity'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/operations'))
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(!hrefs.includes('/control-plane/system'))
   })
@@ -166,6 +169,7 @@ function main() {
       }),
     )
     assert.ok(hrefs.includes('/control-plane/account'))
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
   })
 
@@ -218,6 +222,7 @@ function main() {
         navVisibility: policyWith({ viewer: ['board'] }),
       }),
     )
+    assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
     assert.ok(hrefs.includes('/control-plane/agents'))
   })
@@ -232,6 +237,7 @@ function main() {
     })
     const hrefs = flattenNavHrefs(nav)
     assert.ok(hrefs.includes('/control-plane/menu-access'))
+    assert.ok(hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
   })
 
@@ -245,6 +251,31 @@ function main() {
     assert.deepEqual(policy.admin, ['admin.system'])
     assert.deepEqual(policy.operator, [])
     assert.deepEqual(policy.approver, [])
+  })
+
+  check('admin cannot hide Hermes company controls', () => {
+    const hrefs = flattenNavHrefs(
+      buildControlPlaneNav({
+        tenantRole: 'admin',
+        platformRoles: [],
+        navVisibility: sanitizeNavVisibilityPolicy({ admin: ['admin.ai-client-policy'] }),
+      }),
+    )
+    assert.ok(hrefs.includes('/control-plane/ai-client-policy'))
+  })
+
+  check('every catalog key has a ControlPlane.nav message in hu and en', () => {
+    const hu = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'hu.json'), 'utf8'),
+    ) as { ControlPlane: { nav: Record<string, string> } }
+    const en = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'en.json'), 'utf8'),
+    ) as { ControlPlane: { nav: Record<string, string> } }
+    for (const key of allNavKeys()) {
+      const msgKey = key.replaceAll('.', '_')
+      assert.equal(typeof hu.ControlPlane.nav[msgKey], 'string', `hu missing ${msgKey}`)
+      assert.equal(typeof en.ControlPlane.nav[msgKey], 'string', `en missing ${msgKey}`)
+    }
   })
 
   check('settings round-trip keeps other tenant settings intact', () => {

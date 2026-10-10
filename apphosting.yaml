@@ -41,6 +41,11 @@ env:
     availability:
       - BUILD
       - RUNTIME
+  # Hermes Managed Client: gateway-JWT, rövid életű céges modellhozzáférés.
+  - variable: MODEL_GATEWAY_JWT_KEY
+    secret: MODEL_GATEWAY_JWT_KEY
+    availability:
+      - RUNTIME
   - variable: GEMINI_API_KEY
     secret: GEMINI_API_KEY
   - variable: OPENROUTER_API_KEY
@@ -62,7 +67,8 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
-  # Cloud Scheduler → POST /api/v1/internal/dispatch-cycle (x-dispatcher-token).
+  # Cloud Scheduler → POST /api/v1/internal/dispatch-cycle és
+  # POST /api/v1/internal/ai-audit-retention (x-dispatcher-token).
   - variable: DISPATCHER_CONTROL_TOKEN
     secret: DISPATCHER_CONTROL_TOKEN
     availability:

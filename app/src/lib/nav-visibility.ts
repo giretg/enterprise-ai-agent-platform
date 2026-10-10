@@ -35,7 +35,11 @@ export type NavVisibilityPolicy = Record<UserRole, string[]>
  * szerkesztő. Enélkül egyetlen mentéssel ki lehetne zárni a tenantot ebből a
  * beállításból — a policy visszavonhatatlanná válna.
  */
-export const NAV_KEYS_LOCKED_FOR_ADMIN: readonly string[] = ['admin', 'admin.menu-access']
+export const NAV_KEYS_LOCKED_FOR_ADMIN: readonly string[] = [
+  'admin',
+  'admin.menu-access',
+  'admin.ai-client-policy',
+]
 
 export function emptyNavVisibilityPolicy(): NavVisibilityPolicy {
   return { viewer: [], operator: [], approver: [], admin: [] }

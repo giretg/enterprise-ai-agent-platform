@@ -15,9 +15,10 @@ import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
-import { modesFromAgentRow } from '@/domain/agent/write-approval-modes'
+import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
+import { linkedAccountHandle } from '@/domain/connector-grant/linked-account'
 import {
   AgentDefinitionService,
   canReadPublishedAgent,
@@ -60,6 +61,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
   HTTP_API_GET_ALL_TOOL,
@@ -80,6 +82,7 @@ import {
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
+  googleDriveUpdateFileInputSchema,
   googleDriveUploadFileInputSchema,
   googleSheetsWriteRangeInputSchema,
   httpApiGetAllInputSchema,
@@ -209,7 +212,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   loadAgentWriteModes?: (input: {
     tenantId: string
     agentId: string
-  }) => Promise<import('@/domain/agent/write-approval-modes').AgentWriteApprovalModes | null>
+  }) => Promise<import('@/lib/write-approval-modes').AgentWriteApprovalModes | null>
   loadSkillVersions: (versionIds: string[]) => Promise<McpCheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
@@ -218,6 +221,12 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     origin?: string
     confirm?: WriteConfirmInput
   }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
+  listLinkedAccounts?: (input: {
+    userId: string
+    tenantId: string
+  }) => Promise<
+    Array<{ type: string; account: string; email: string | null; nickname: string | null }>
+  >
   /** HMAC key for the write-confirmation `requestState` (#618); missing → link only. */
   requestStateKey?: string
   getGatewayOperation: (input: {
@@ -270,7 +279,7 @@ export async function verifyClerkOAuthToken(bearerToken: string): Promise<Verifi
   }
 }
 
-async function canViewAgent(input: {
+export async function canViewAgent(input: {
   tenantId: string
   userId: string
   role: McpPrincipal['role']
@@ -366,6 +375,21 @@ export function productionMcpDeps(): McpRuntimeDeps {
       }))
     },
     invokeEnterpriseTool: (input) => services.enterpriseTools.invoke(input),
+    listLinkedAccounts: async ({ userId, tenantId }) => {
+      const grants = await services.connectorGrants.listForUser(userId, tenantId)
+      return grants
+        .filter((grant) => grant.status === 'active')
+        .filter(
+          (grant) =>
+            grant.connector.type === 'gmail' || grant.connector.type === 'google_drive',
+        )
+        .map((grant) => ({
+          type: grant.connector.type,
+          account: linkedAccountHandle(grant),
+          email: grant.accountLabel,
+          nickname: grant.nickname,
+        }))
+    },
     requestStateKey: process.env.MCP_REQUEST_STATE_KEY,
     getGatewayOperation: async (input) =>
       services.gatewayOperations.toMcpGet(
@@ -425,6 +449,12 @@ function forbiddenResponse(failure: McpPrincipalFailure): Response {
 function whoamiPayload(
   principal: McpPrincipal,
   tenantContext: ReturnType<typeof buildTenantContextPayload>,
+  linkedAccounts: Array<{
+    type: string
+    account: string
+    email: string | null
+    nickname: string | null
+  }> = [],
 ) {
   return {
     userId: principal.userId,
@@ -437,6 +467,7 @@ function whoamiPayload(
     organizationLabel: tenantContext.organizationLabel,
     mcpIntro: tenantContext.mcpIntro,
     coworkers: tenantContext.coworkers,
+    linkedAccounts,
   }
 }
 
@@ -501,8 +532,13 @@ async function loadTenantContext(principal: McpPrincipal, deps: McpRuntimeDeps) 
 async function whoamiToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
   await auditMcpAuthOk(deps, principal)
   await auditMcpToolCall(deps, principal, MCP_WHOAMI_TOOL)
-  const { context } = await loadTenantContext(principal, deps)
-  return textResult(whoamiPayload(principal, context))
+  const [{ context }, linkedAccounts] = await Promise.all([
+    loadTenantContext(principal, deps),
+    deps.listLinkedAccounts
+      ? deps.listLinkedAccounts({ userId: principal.userId, tenantId: principal.tenantId })
+      : Promise.resolve([]),
+  ])
+  return textResult(whoamiPayload(principal, context, linkedAccounts))
 }
 
 async function listAgentsToolResult(principal: McpPrincipal, deps: McpRuntimeDeps) {
@@ -1196,7 +1232,7 @@ async function createMcpResourceHandler(
         {
           title: 'Who am I',
           description:
-            'Return the authenticated MCP principal, tenant organization context, and visible coworkers for this tenant URL. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
+            'Return the authenticated MCP principal, tenant organization context, visible coworkers, and linkedAccounts (Gmail/Drive nicknames such as magán or céges). Pass linkedAccounts[].account on Gmail and Drive tools when more than one account is listed. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => whoamiToolResult(principal, deps),
@@ -1414,7 +1450,7 @@ async function createMcpResourceHandler(
         {
           title: 'Hand off work',
           description:
-            'Hand off a task outside this agent\'s responsibility to another AI coworker or a human. Agent recipient: pass toAgentId (from platform.agents.list) — the task lands as an open_task in their memory and in their next get_definition briefing ("Handed-off work"). Human recipient: pass toUserId — they see it in the Control Plane inbox. Pass definitionId from platform.agent.get_definition, a short title, summary (what, why, expected outcome), optional projectKey (defaults to __general__), and optional links as a comma-separated string ("label | work_file:/path, label | https://…"). Exactly one of toAgentId / toUserId.',
+            'Hand off a task outside this agent\'s responsibility to another AI coworker or a human. Agent recipient: pass toAgentId (from platform.agents.list) — the task lands as an open_task in their memory and in their next get_definition briefing ("Handed-off work"). Human recipient: pass toUserId, or toUserEmail (an active member of this tenant, resolved on the server) — they see it in the Control Plane inbox. Pass definitionId from platform.agent.get_definition, a short title, summary (what, why, expected outcome), optional projectKey (defaults to __general__), and optional links as a comma-separated string ("label | work_file:/path, label | https://…"). Exactly one of toAgentId / toUserId.',
           inputSchema: handoffInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_HANDOFF_TOOL, args, deps),
@@ -1434,7 +1470,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search Google Drive',
           description:
-            'List or search Google Drive files. Returns file id, name, mimeType. Call this to get a fileId before google_drive_read_file. Pass definitionId from platform.agent.get_definition. Omit query to list recent files. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'List or search Google Drive files. Returns file id, name, mimeType. Call this to get a fileId before google_drive_read_file. Pass definitionId from platform.agent.get_definition. Omit query to list recent files. If platform.whoami lists several linkedAccounts of type google_drive, pass account (nickname or email, e.g. magán / céges). If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: googleDriveSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1471,6 +1507,16 @@ async function createMcpResourceHandler(
         async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPLOAD_FILE_TOOL, args, deps),
       )
       server.registerTool(
+        GOOGLE_DRIVE_UPDATE_FILE_TOOL,
+        {
+          title: 'Overwrite Google Drive file',
+          description:
+            'Request replacing the whole text of an existing Drive text file (Markdown, plain text, JSON, CSV) — for example a wiki page or log. Not for native Google Docs/Sheets. Read the file first with google_drive_read_file and pass its file.modifiedTime as expectedModifiedTime so a concurrent edit is never overwritten. textContent is the complete new text. Pass definitionId from platform.agent.get_definition. Does not call Google until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+          inputSchema: googleDriveUpdateFileInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, GOOGLE_DRIVE_UPDATE_FILE_TOOL, args, deps),
+      )
+      server.registerTool(
         GOOGLE_SHEETS_WRITE_RANGE_TOOL,
         {
           title: 'Write Google Sheet range',
@@ -1485,7 +1531,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search Gmail',
           description:
-            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If platform.whoami lists several linkedAccounts of type gmail, pass account (nickname or email, e.g. magán / céges). If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1583,7 +1629,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
+            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. The result includes the response etag when the API sends one. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1605,7 +1651,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers. If this agent requires approval, returns awaiting_approval and an approvalUrl — show that link, do not poll. Direct-write agents run the call immediately.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers; pass only caller headers the endpoint declares, such as If-Match (the etag of your last read). body is at most 200000 characters. If this agent requires approval, returns awaiting_approval and an approvalUrl — show that link, do not poll. Direct-write agents run the call immediately.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
@@ -1666,7 +1712,7 @@ async function createMcpResourceHandler(
         {
           title: 'Run pinned skill script',
           description:
-            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox. Pass skillVersionId and entry from snapshot.skills. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/. Credentials stay on the server.',
+            'Run a Python script that belongs to a skill pinned on this published agent, inside the platform sandbox (no network, no credentials). Pass skillVersionId and entry from snapshot.skills. Optional inputs: comma-separated work-file paths from this project; they appear at /work/in/<path>. Do not run skill code on this machine. Outputs are written to work files under sandbox-output/.',
           inputSchema: sandboxRunInputSchema,
         },
         async (args) => enterpriseToolResult(principal, SANDBOX_RUN_TOOL, args, deps),

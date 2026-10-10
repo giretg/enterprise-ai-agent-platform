@@ -342,6 +342,40 @@ async function main() {
     assert.deepEqual(parseHandoffLinks(null), [])
   })
 
+  await check('Kati → ember e-mail-címmel: a szerver feloldja a tenant aktív tagjára', async () => {
+    const { handoffs, invokeArgs } = deps({
+      findTenantMemberByEmail: async (input: { tenantId: string; email: string }) =>
+        input.tenantId === TENANT && input.email === 'csilla.szabo@excellencepay.com' ? { userId: ZOLI } : null,
+    })
+    const call = (args: Record<string, unknown>) =>
+      invokeProjectWork(invokeArgs, {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.handoff',
+        args: { definitionId: KATI_DEF, title: 'Frissítés kész', summary: 'Nézd meg.', idempotencyKey: 'h-mail', ...args },
+      })
+    const ok = parsePayload(await call({ toUserEmail: ' Csilla.Szabo@ExcellencePay.com ' }))
+    assert.equal(ok.ok, true)
+    assert.equal((await handoffs.findById(ok.handoffId as string))?.toUserId, ZOLI)
+    assert.equal(ok.notified, 'inbox')
+
+    const unknown = await call({ toUserEmail: 'kivul.allo@example.com' })
+    assert.equal(unknown.isError, true)
+    assert.equal(parsePayload(unknown).error ?? parsePayload(unknown).code, 'agent_access_denied')
+
+    const both = await call({ toUserEmail: 'csilla.szabo@excellencepay.com', toUserId: ZOLI })
+    assert.equal(both.isError, true)
+  })
+
+  await check('toUserEmail feloldó nélkül nem csendes siker', async () => {
+    const { invokeArgs } = deps()
+    const result = await invokeProjectWork(invokeArgs, {
+      principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+      toolName: 'platform.handoff',
+      args: { definitionId: KATI_DEF, toUserEmail: 'csilla.szabo@excellencepay.com', title: 'T', summary: 'S', idempotencyKey: 'h-no-resolver' },
+    })
+    assert.equal(result.isError, true)
+  })
+
   if (failures > 0) {
     console.log(`\n${failures} kudarc`)
     process.exit(1)

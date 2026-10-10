@@ -129,6 +129,7 @@ function invokeDeps(opts?: {
   executeKbTool?: EnterpriseToolDeps['executeKbTool']
   loadSkillVersion?: EnterpriseToolDeps['loadSkillVersion']
   executeSandboxRun?: EnterpriseToolDeps['executeSandboxRun']
+  readWorkFile?: EnterpriseToolDeps['readWorkFile']
   writeWorkFile?: EnterpriseToolDeps['writeWorkFile']
   resolveActingUser?: EnterpriseToolDeps['resolveActingUser']
   resolveError?: Error
@@ -168,6 +169,7 @@ function invokeDeps(opts?: {
     executeKbTool: opts?.executeKbTool,
     loadSkillVersion: opts?.loadSkillVersion,
     executeSandboxRun: opts?.executeSandboxRun,
+    readWorkFile: opts?.readWorkFile,
     writeWorkFile: opts?.writeWorkFile,
     resolveActingUser: opts?.resolveActingUser,
   }
@@ -207,6 +209,7 @@ async function main() {
       connector: connector(),
       grantId: GRANT_ID,
       tokenRef: 'stub-drive-token',
+      grant: grant(),
     })
   })
 
@@ -922,6 +925,65 @@ async function main() {
     }
   })
 
+  await check('gmail search with two grants requires account', async () => {
+    const personal = grant({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountLabel: 'anna@gmail.com',
+      nickname: 'magán',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const work = grant({
+      id: '22222222-2222-4222-8222-222222222222',
+      tokenRef: 'stub-gmail-work',
+      accountLabel: 'anna@ceg.hu',
+      nickname: 'céges',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const deps: AuthorizeToolCallDeps = {
+      async findConnector() {
+        return connector({ type: 'gmail' })
+      },
+      async findActiveGrant() {
+        return personal
+      },
+      async findActiveGrants() {
+        return [personal, work]
+      },
+    }
+    const input = {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Mail',
+          roleInstruction: 'Read mail',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'read' }],
+          capabilities: [{ toolName: GMAIL_SEARCH_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GMAIL_SEARCH_TOOL,
+      args: { query: 'is:unread' },
+    }
+    const missing = await authorizeToolCall(deps, input)
+    assert.equal(missing.allowed, false)
+    if (!missing.allowed) {
+      assert.equal(missing.reason, 'account_required')
+      assert.deepEqual(
+        missing.accountChoices?.map((row) => row.account),
+        ['magán', 'céges'],
+      )
+    }
+    const picked = await authorizeToolCall(deps, {
+      ...input,
+      args: { query: 'is:unread', account: 'céges' },
+    })
+    assert.equal(picked.allowed, true)
+    if (picked.allowed) {
+      assert.equal(picked.grantId, work.id)
+      assert.equal(picked.tokenRef, 'stub-gmail-work')
+    }
+  })
+
   await check('gmail search without grant is connector_grant_missing', async () => {
     const result = await authorizeToolCall(authorizeDeps({ connector: connector({ type: 'gmail' }), grant: null }), {
       principal: principal(),
@@ -1522,6 +1584,141 @@ async function main() {
     assert.equal(payload.scriptSha256, 'abc123')
     assert.deepEqual(payload.outputs, ['sandbox-output/napi-riport/report.html'])
     assert.deepEqual(written, ['sandbox-output/napi-riport/report.html'])
+  })
+
+  await check('sandbox_run copies work-file inputs to /work/in/', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        readWorkFile: async ({ path, projectKey }) => {
+          assert.equal(projectKey, 'kampany')
+          if (path === 'sales.csv') return { path: 'sales.csv', content: '10,20,30\n' }
+          return null
+        },
+        executeSandboxRun: async (input) => {
+          const mounted = input.files.find((file) => file.sandboxPath === '/work/in/sales.csv')
+          assert.ok(mounted)
+          assert.equal(Buffer.from(mounted.bytes).toString('utf8'), '10,20,30\n')
+          return {
+            exitCode: 0,
+            stdout: '60',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            outputFiles: [],
+            metrics: {
+              provider: 'cloud_run',
+              region: 'europe-west1',
+              provisionMs: 1,
+              execMs: 1,
+              totalMs: 2,
+              cpuProfile: '1',
+              memoryProfile: '512Mi',
+              inputBytes: 20,
+              outputBytes: 0,
+              egressBytes: 0,
+              coldStart: false,
+              exitStatus: 0,
+            },
+          }
+        },
+        writeWorkFile: async (input) => ({ path: input.path }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          inputs: 'sales.csv',
+          projectKey: 'kampany',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    const payload = parsePayload(result)
+    assert.equal(payload.stdout, '60')
+    assert.deepEqual(payload.inputs, [{ path: 'sales.csv', sandboxPath: '/work/in/sales.csv' }])
+  })
+
+  await check('sandbox_run missing work-file input is denied', async () => {
+    let ran = false
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        readWorkFile: async () => null,
+        executeSandboxRun: async () => {
+          ran = true
+          throw new Error('must not run')
+        },
+        writeWorkFile: async () => ({ path: 'nope' }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          inputs: 'missing.csv',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'file_not_found')
+    assert.equal(ran, false)
+  })
+
+  await check('sandbox_run rejects work-file path traversal', async () => {
+    let read = false
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        readWorkFile: async () => {
+          read = true
+          return { path: 'x', content: 'nope' }
+        },
+        executeSandboxRun: async () => {
+          throw new Error('must not run')
+        },
+        writeWorkFile: async () => ({ path: 'nope' }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          inputs: '../secret.csv',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'invalid_args')
+    assert.equal(read, false)
   })
 
   await check('sandbox_run missing connector is loud', async () => {

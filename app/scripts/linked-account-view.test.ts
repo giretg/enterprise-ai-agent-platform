@@ -6,7 +6,7 @@ import {
 
 assert.deepEqual(connectorUsageStatus({ assignedAgentCount: 0, capableAgentCount: 0 }), {
   usable: false,
-  text: 'A fiók össze van kötve, de még nincs agenthez rendelve.',
+  text: 'A fiók össze van kötve, de még nincs munkatárshoz rendelve.',
 })
 assert.equal(
   connectorUsageStatus({ assignedAgentCount: 2, capableAgentCount: 0 }).usable,

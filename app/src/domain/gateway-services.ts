@@ -32,7 +32,7 @@ import {
   type GatewayOperationHistoryRow,
 } from '@/domain/gateway-operation'
 import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
-import { modesFromAgentRow } from '@/domain/agent/write-approval-modes'
+import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { iconDataUrlByTemplateKey, resolveConnectorIcon } from '@/lib/connector-template-icon-map'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { hasMinimumRole } from '@/lib/iam-policy'
@@ -193,6 +193,8 @@ const sharedToolLookups = {
   findConnector: (id: string) => repositories.connectors.findById(id),
   findActiveGrant: (input: { tenantId: string; connectorId: string; userId: string }) =>
     repositories.connectorGrants.findActiveGrant(input),
+  findActiveGrants: (input: { tenantId: string; connectorId: string; userId: string }) =>
+    repositories.connectorGrants.findActiveGrants(input),
   async resolveActingUser(input: { userId: string }) {
     const user = await repositories.users.findById(input.userId)
     return user ? { id: user.id, email: user.email } : null
@@ -447,6 +449,14 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     }
   },
   executeSandboxRun,
+  readWorkFile: async (input) => {
+    const found = await projectWorkService.readFile(input)
+    if (!found.ok) {
+      if (found.code === 'file_not_found') return null
+      throw new Error(found.code)
+    }
+    return { path: found.file.path, content: found.file.content }
+  },
   writeWorkFile: async (input) => {
     const written = await projectWorkService.writeFile(input)
     if (!written.ok) throw new Error(written.code) // quota_exceeded | file_too_large | invalid_path
@@ -486,6 +496,14 @@ export const services = {
               lookup.userId,
             )
             return membership?.status === 'active'
+          },
+          findTenantMemberByEmail: async (lookup) => {
+            const candidates = await repositories.users.findManyByEmail(lookup.email.trim().toLowerCase())
+            for (const user of candidates) {
+              const membership = await repositories.tenantMemberships.findByTenantAndUser(lookup.tenantId, user.id)
+              if (membership?.status === 'active') return { userId: user.id }
+            }
+            return null
           },
           projectWork: projectWorkService,
           handoffs: handoffRepository,

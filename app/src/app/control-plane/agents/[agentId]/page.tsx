@@ -1,3 +1,6 @@
+import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
+import { adminPolicyView } from '@/domain/client-policy/admin-policy'
+import { prisma } from '@/lib/db'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
@@ -11,6 +14,7 @@ import {
   listKbDocuments,
   listKnowledgeCatalog,
 } from '@/app/actions/platform'
+import { getAgentModelSettings } from '@/app/actions/model-config'
 import { listWorkProjectsAction } from '@/app/actions/project-work'
 import { getMyGoogleDriveGrantForPicker } from '@/app/actions/connector-grants'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
@@ -26,6 +30,7 @@ import { SettingsSectionShell } from '@/app/control-plane/system/system-settings
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
+import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateWriteApprovalForm } from '@/components/agents/update-write-approval-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
@@ -44,6 +49,7 @@ export const dynamic = 'force-dynamic'
 
 const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   elesites: 'elesitesDesc',
+  modell: 'modellDesc',
   kapcsolatok: 'kapcsolatokDesc',
   tudasbazis: 'tudasbazisDesc',
   eszkozok: 'eszkozokDesc',
@@ -83,6 +89,7 @@ export default async function AgentDetailPage({
     publishRes,
     projectsRes,
     drivePickerCtxRes,
+    modelRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -95,6 +102,7 @@ export default async function AgentDetailPage({
     getAgentPublishStatus({ agentId }),
     listWorkProjectsAction(),
     getMyGoogleDriveGrantForPicker(),
+    getAgentModelSettings({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -113,6 +121,7 @@ export default async function AgentDetailPage({
     connectors.map((row) => row.connector.id),
   )
   const canManage = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const hermesPolicy = canManage ? await prisma.clientPolicy.findUnique({ where: { tenantId_scope_scopeId: { tenantId: ctx.activeTenantId, scope: 'agent', scopeId: agent.id } } }) : null
   const drivePickerCtx = drivePickerCtxRes.success ? drivePickerCtxRes.data : null
   const canEditMemory = hasMinimumRole(ctx.activeTenantRole, 'approver')
   const canDelete = isSuperadmin(ctx.platformRoles)
@@ -179,6 +188,26 @@ export default async function AgentDetailPage({
         </Card>
       ),
     },
+    ...(modelRes.success
+      ? [
+          {
+            id: 'modell' as const,
+            label: sectionLabel('modell'),
+            description: sectionDesc('modell'),
+            content: (
+              <UpdateModelConfigForm
+                agentId={agent.id}
+                policy={modelRes.data.policy}
+                globalChain={modelRes.data.globalChain}
+                config={modelRes.data.config}
+                effectivePrimary={modelRes.data.effectivePrimary}
+                maxAttempts={modelRes.data.maxAttempts}
+                canEdit={canManage}
+              />
+            ),
+          },
+        ]
+      : []),
     {
       id: 'kapcsolatok',
       label: sectionLabel('kapcsolatok'),
@@ -210,7 +239,9 @@ export default async function AgentDetailPage({
       id: 'eszkozok',
       label: sectionLabel('eszkozok'),
       description: sectionDesc('eszkozok'),
-      content: <AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />,
+      content: <div className="space-y-4"><AgentCapabilitiesPanel agentId={agent.id} currentCapabilities={capabilities} />
+        {canManage ? <Card title={t('hermesControlTitle')}><ClientPolicyForm key={agent.id} scope="agent" scopeId={agent.id} policy={adminPolicyView(hermesPolicy)} tenantPolicy={null} /></Card> : null}
+      </div>,
     },
     {
       id: 'skillek',
@@ -250,6 +281,7 @@ export default async function AgentDetailPage({
               agentId={agent.id}
               outputDriveFolderId={agent.outputDriveFolderId ?? null}
               driveGrantId={drivePickerCtx?.grantId ?? null}
+              driveGrants={drivePickerCtx?.grants ?? []}
               drivePickerConfigured={drivePickerCtx?.pickerConfigured ?? false}
               canEdit={canManage}
             />

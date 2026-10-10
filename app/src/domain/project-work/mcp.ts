@@ -233,7 +233,14 @@ export const handoffInputSchema = z
     definitionId,
     projectKey,
     toAgentId: z.string().uuid().optional().describe('Recipient agent id (from platform.agents.list). Exactly one of toAgentId / toUserId.'),
-    toUserId: z.string().uuid().optional().describe('Recipient human user id. Exactly one of toAgentId / toUserId.'),
+    toUserId: z.string().uuid().optional().describe('Recipient human user id. Exactly one of toAgentId / toUserId / toUserEmail.'),
+    toUserEmail: z
+      .string()
+      .trim()
+      .email()
+      .max(320)
+      .optional()
+      .describe('Recipient human by e-mail address instead of toUserId. Resolved on the server to an active member of this tenant; any other address is refused.'),
     title: z.string().min(1).max(200),
     summary: z.string().min(1).max(8_000),
     // ponytail: string not string[] — Claude.ai drops MCP tools whose advertised schema has arrays
@@ -271,6 +278,8 @@ export type ProjectWorkMcpDeps = DefinitionPinDeps & {
   canViewAgent?: (input: { tenantId: string; userId: string; role: string; agentId: string }) => Promise<boolean>
   findUserById?: (userId: string) => Promise<{ id: string; tenantId?: string } | null>
   isTenantMember?: (input: { tenantId: string; userId: string }) => Promise<boolean>
+  /** Active member of the tenant with this e-mail address (handoff toUserEmail). */
+  findTenantMemberByEmail?: (input: { tenantId: string; email: string }) => Promise<{ userId: string } | null>
   projectWork: ProjectWorkService
   handoffs?: {
     insert(input: {
@@ -588,9 +597,25 @@ async function invokeHandoff(
   const { validateHandoffInput, normalizeHandoffProjectKey, formatHandoffMemoryBody } = await import(
     '@/domain/handoff/handoff-service'
   )
+  const toUserEmail = typeof parsed.toUserEmail === 'string' ? parsed.toUserEmail.trim().toLowerCase() : ''
+  let resolvedToUserId: unknown = parsed.toUserId
+  if (toUserEmail) {
+    if (parsed.toUserId || parsed.toAgentId || !deps.findTenantMemberByEmail) {
+      const code = deps.findTenantMemberByEmail ? 'handoff_target_required' : 'tool_not_configured'
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, code, definition.definitionId, definition.agentId)
+      return errorResult(code)
+    }
+    const member = await deps.findTenantMemberByEmail({ tenantId: principal.tenantId, email: toUserEmail })
+    if (!member) {
+      // Same answer as a non-member userId: the tool must not reveal who exists outside the tenant.
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'agent_access_denied', definition.definitionId, definition.agentId)
+      return errorResult('agent_access_denied')
+    }
+    resolvedToUserId = member.userId
+  }
   const validated = validateHandoffInput({
     toAgentId: parsed.toAgentId,
-    toUserId: parsed.toUserId,
+    toUserId: resolvedToUserId,
     title: parsed.title,
     summary: parsed.summary,
     links: parsed.links,
@@ -600,7 +625,7 @@ async function invokeHandoff(
     return errorResult(validated.code)
   }
   const toAgentId = typeof parsed.toAgentId === 'string' && parsed.toAgentId.trim() ? parsed.toAgentId.trim() : null
-  const toUserId = typeof parsed.toUserId === 'string' && parsed.toUserId.trim() ? parsed.toUserId.trim() : null
+  const toUserId = typeof resolvedToUserId === 'string' && resolvedToUserId.trim() ? resolvedToUserId.trim() : null
   const projectKey = normalizeHandoffProjectKey(parsed.projectKey)
 
   if (toAgentId) {

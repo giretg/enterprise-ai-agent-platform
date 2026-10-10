@@ -1,14 +1,22 @@
 import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
+import { getOpenRouterKeyStatus, getTenantModelPolicy } from '@/app/actions/model-config'
+import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { getTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
+import { OpenRouterKeyPanel } from './openrouter-key-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 
 export default async function TenantSettingsPage() {
   await requireTenantRole('admin')
-  const [language, mcpIntro] = await Promise.all([getTenantLanguage(), getTenantMcpIntro()])
+  const [language, mcpIntro, modelPolicy, openRouterKey] = await Promise.all([
+    getTenantLanguage(),
+    getTenantMcpIntro(),
+    getTenantModelPolicy(),
+    getOpenRouterKeyStatus(),
+  ])
   const t = await getTranslations('ControlPlane.settings')
 
   return (
@@ -28,6 +36,24 @@ export default async function TenantSettingsPage() {
               <TenantMcpIntroPanel initialIntro={mcpIntro.data.mcpIntro} canEdit />
             ) : (
               <p className="text-sm text-coral-deep">{mcpIntro.error}</p>
+            ),
+          },
+          {
+            id: 'models',
+            label: t('models'),
+            content: modelPolicy.success ? (
+              <ModelPolicyPanel initial={modelPolicy.data} canEdit />
+            ) : (
+              <p className="text-sm text-coral-deep">{t('modelsLoadFailed')}</p>
+            ),
+          },
+          {
+            id: 'openrouter',
+            label: t('openrouter'),
+            content: openRouterKey.success ? (
+              <OpenRouterKeyPanel configured={openRouterKey.data.configured} canEdit />
+            ) : (
+              <p className="text-sm text-coral-deep">{t('openrouterLoadFailed')}</p>
             ),
           },
           {

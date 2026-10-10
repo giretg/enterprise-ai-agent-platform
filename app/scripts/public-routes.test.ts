@@ -74,6 +74,7 @@ check('a saját hitelesítésű gépi belépők publikusak (token/aláírás a h
   assertPublic('/api/v1/gateway/messages')
   assertPublic('/api/v1/harness/complete')
   assertPublic('/api/v1/internal/dispatch-cycle')
+  assertPublic('/api/v1/internal/ai-audit-retention')
   assertPublic('/api/webhooks/clerk')
 })
 
@@ -133,6 +134,9 @@ check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/control-plane/iam')
   assertProtected('/api/agents')
   assertProtected('/api/v1/internal/other-endpoint')
+  assertProtected('/api/v1/internal/ai-audit-retention-admin')
+  assertProtected('/api/ai-audit/content-unlock')
+  assertProtected('/api/ai-audit/content-unlock/approve')
 })
 
 check('a delegált OAuth callback és az MCP done page publikus (signed state, nincs Clerk-süti)', () => {
@@ -151,6 +155,19 @@ check('az MCP resource URL és az OAuth well-known discovery publikus (Clerk-kap
   assertPublic('/.well-known/oauth-protected-resource/api/mcp')
   assertPublic('/.well-known/oauth-protected-resource/api/mcp/acme')
   assertPublic('/.well-known/oauth-authorization-server')
+})
+
+check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer), a testvér-route-ok nem', () => {
+  assertPublic('/api/model-gateway/token')
+  assertPublic('/api/client-policy/snapshot')
+  assertPublic('/api/client-policy/heartbeat')
+  assertPublic('/api/model-gateway/v1/chat/completions')
+  assertPublic('/api/ai-audit/events')
+  assertProtected('/api/ai-audit')
+  assertProtected('/api/model-gateway/token/admin')
+  assertProtected('/api/model-gateway/admin')
+  assertProtected('/api/client-policy')
+  assertProtected('/api/client-policy/machine-floor')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

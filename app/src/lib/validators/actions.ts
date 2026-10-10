@@ -134,6 +134,8 @@ export const startConnectorOAuthSchema = z.object({
   connectorId: z.string().uuid(),
   scopes: z.array(z.string()).optional(),
   toolName: z.string().optional(),
+  nickname: z.string().max(40).optional(),
+  addAccount: z.boolean().optional(),
   returnTo: z
     .object({
       kind: z.enum(['conversation', 'ticket']),
@@ -142,6 +144,11 @@ export const startConnectorOAuthSchema = z.object({
       originPath: z.string().optional(),
     })
     .optional(),
+})
+
+export const updateConnectorGrantNicknameSchema = z.object({
+  grantId: z.string().uuid(),
+  nickname: z.string().max(40).nullable(),
 })
 
 const navVisibilityKeyList = z.array(z.string().min(1).max(120)).max(200)

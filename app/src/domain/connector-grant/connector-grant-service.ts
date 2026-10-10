@@ -11,12 +11,14 @@ import {
   type GoogleOAuthService,
 } from '@/lib/platform-google-oauth-config'
 import {
+  uniqueAccountKey,
   buildGrantTokenRef,
   createGrantTokenStore,
   GrantTokenMissingError,
   isAccessTokenExpired,
   type ConnectorGrantTokens,
 } from './grant-token-vault'
+import { nicknameTakenByPeer, normalizeNickname } from './linked-account'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
 import {
   CONNECTOR_GRANT_NEEDED_REASONS,
@@ -430,6 +432,8 @@ export class ConnectorGrantService {
     tenantId: string | null
     requestedScopes?: string[]
     returnTo?: import('./connector-grant-needed').OAuthReturnTo
+    nickname?: string
+    addAccount?: boolean
   }): Promise<{ url: string; state: string }> {
     if (params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
@@ -445,6 +449,8 @@ export class ConnectorGrantService {
       tenantId: params.tenantId,
       requestedScopes: scopes,
       ...(params.returnTo ? { returnTo: params.returnTo } : {}),
+      ...(params.nickname ? { nickname: params.nickname } : {}),
+      ...(params.addAccount ? { addAccount: true } : {}),
     })
 
     const url = new URL(oauth.authUrl)
@@ -458,7 +464,8 @@ export class ConnectorGrantService {
     // Nem include_granted_scopes: ugyanazon Google OAuth kliensnél (pl. Gmail+Drive)
     // ez a korábbi szolgáltatás scope-jait húzná be a callbackbe. A startUserAuthorization
     // már uniózza a meglévő grant scope-jait a kérésbe — elég explicit scope param.
-    url.searchParams.set('prompt', 'consent')
+    // select_account: több Google-fiók közül lehessen választani.
+    url.searchParams.set('prompt', 'select_account consent')
     url.searchParams.set('state', state)
     url.searchParams.set('code_challenge', pkceChallenge(codeVerifier))
     url.searchParams.set('code_challenge_method', 'S256')
@@ -475,6 +482,8 @@ export class ConnectorGrantService {
     toolName?: string
     requestedScopes?: string[]
     returnTo?: import('./connector-grant-needed').OAuthReturnTo
+    nickname?: string
+    addAccount?: boolean
   }): Promise<{ url: string; stub?: true }> {
     if (params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
@@ -494,11 +503,16 @@ export class ConnectorGrantService {
         })
       : params.requestedScopes
 
-    const existingGrant = await this.grants.findActiveGrant({
+    const existingGrants = await this.grants.findActiveGrants({
       tenantId: params.connector.tenantId ?? params.tenantId,
       connectorId: params.connector.id,
       userId: params.userId,
     })
+    const existingGrant = params.addAccount
+      ? null
+      : existingGrants.length === 1
+        ? existingGrants[0]
+        : null
     const configured = new Set(
       resolveGrantOAuthScopes({
         connectorType: params.connector.type,
@@ -510,6 +524,10 @@ export class ConnectorGrantService {
     )
     const mergedRequested = [...new Set([...(requestedScopes ?? []), ...existingScopes])]
     const effectiveScopes = mergedRequested.length > 0 ? mergedRequested : undefined
+    const nickname = normalizeNickname(params.nickname)
+    if (nickname && nicknameTakenByPeer(existingGrants, nickname, existingGrant?.id)) {
+      throw new Error('nickname_taken')
+    }
 
     if (
       params.connector.type === 'google_drive' &&
@@ -533,6 +551,8 @@ export class ConnectorGrantService {
         tenantId: params.tenantId,
         requestedScopes: effectiveScopes,
         ...(params.returnTo ? { returnTo: params.returnTo } : {}),
+        ...(nickname ? { nickname } : {}),
+        ...(params.addAccount ? { addAccount: true } : {}),
       })
       await this.completeOAuthCallback({
         code: 'stub-auth-code',
@@ -549,6 +569,8 @@ export class ConnectorGrantService {
       tenantId: params.tenantId,
       requestedScopes: effectiveScopes,
       ...(params.returnTo ? { returnTo: params.returnTo } : {}),
+      ...(nickname ? { nickname } : {}),
+      ...(params.addAccount ? { addAccount: true } : {}),
     })
     return { url }
   }
@@ -573,51 +595,101 @@ export class ConnectorGrantService {
       throw new Error('oauth_state: user mismatch')
     }
 
-    const tokens = await exchangeCodeForTokens({
+    let tokens = await exchangeCodeForTokens({
       connector: params.connector,
       code: params.code,
       codeVerifier: statePayload.codeVerifier,
       requestedScopes: statePayload.requestedScopes,
     })
 
-    // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
-    // ne törölje a korábban megadott jogosultságokat a DB-ből.
     if (!statePayload.tenantId) throw new Error('tenant required')
-    const existing = await this.grants.findActiveGrant({
-      tenantId: statePayload.tenantId,
-      connectorId: params.connector.id,
-      userId: statePayload.userId,
-    })
+    const nickname = normalizeNickname(statePayload.nickname)
+    if (isDelegatedOAuthStubEnabled() && statePayload.addAccount) {
+      const slug = (nickname ?? `user-${Date.now().toString(36)}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+      tokens = { ...tokens, accountEmail: `stub-${slug || 'user'}@example.com` }
+    }
+
+    const peers = await this.grants.findByUser(statePayload.userId, statePayload.tenantId)
+    const sameConnector = peers.filter((grant) => grant.connectorId === params.connector.id)
+    const email = tokens.accountEmail?.trim().toLowerCase() ?? null
+    const existing = email
+      ? sameConnector.find((grant) => grant.accountLabel?.trim().toLowerCase() === email)
+      : !statePayload.addAccount && sameConnector.filter((grant) => grant.status === 'active').length === 1
+        ? sameConnector.find((grant) => grant.status === 'active')
+        : undefined
+
+    if (nickname && nicknameTakenByPeer(sameConnector, nickname, existing?.id)) {
+      throw new Error('nickname_taken')
+    }
+
+    // Meglévő aktív grant scope-jait uniózzuk — a least-privilege újra-consent
+    // ne törölje a korábban megadott jogosultságokat a DB-ből. Másik fiók
+    // hozzáadásakor nem keverjük a scope-okat.
     const normalize = scopeNormalizerFor(params.connector)
     const mergedScopes = [
       ...new Set([
-        ...parseDelegatedGrantScopes(existing?.scopes).map(normalize),
+        ...(existing ? parseDelegatedGrantScopes(existing.scopes).map(normalize) : []),
         ...(tokens.scopes ?? []).map(normalize),
       ]),
     ]
     const tokensToStore: ConnectorGrantTokens = { ...tokens, scopes: mergedScopes }
 
-    const tokenRef = buildGrantTokenRef({
-      tenantId: statePayload.tenantId as string,
-      userId: statePayload.userId,
-      connectorId: params.connector.id,
-    })
+    const tokenRef =
+      existing?.tokenRef ??
+      buildGrantTokenRef({
+        tenantId: statePayload.tenantId,
+        userId: statePayload.userId,
+        connectorId: params.connector.id,
+        accountKey: uniqueAccountKey(),
+      })
     const store = createGrantTokenStore(tokenRef)
     await store.save(tokensToStore)
 
     const grant = await this.grants.create({
-      tenantId: statePayload.tenantId as string,
+      tenantId: statePayload.tenantId,
       connectorId: params.connector.id,
       userId: statePayload.userId,
       scopes: mergedScopes as Prisma.JsonValue,
       tokenRef,
-      accountLabel: tokensToStore.accountEmail ?? null,
+      accountLabel: tokensToStore.accountEmail ?? existing?.accountLabel ?? null,
+      ...(nickname ? { nickname } : {}),
       expiresAt: tokensToStore.expiresAt ? new Date(tokensToStore.expiresAt) : null,
     })
 
-
-
     return grant
+  }
+
+  async updateNickname(params: {
+    grantId: string
+    nickname: string | null
+    actorId: string
+    expectedUserId?: string
+    expectedTenantId?: string | null
+  }) {
+    const grant = await this.loadGrantForAccess({
+      grantId: params.grantId,
+      expectedUserId: params.expectedUserId,
+      expectedTenantId: params.expectedTenantId,
+    })
+    const nickname =
+      params.nickname == null || params.nickname.trim() === ''
+        ? null
+        : normalizeNickname(params.nickname)
+    if (params.nickname != null && params.nickname.trim() !== '' && !nickname) {
+      throw new Error('invalid_nickname')
+    }
+    if (nickname) {
+      const peers = await this.grants.findActiveGrants({
+        tenantId: grant.tenantId,
+        connectorId: grant.connectorId,
+        userId: grant.userId,
+      })
+      if (nicknameTakenByPeer(peers, nickname, grant.id)) throw new Error('nickname_taken')
+    }
+    return this.grants.updateNickname(grant.id, nickname)
   }
 
   async revokeGrant(params: {

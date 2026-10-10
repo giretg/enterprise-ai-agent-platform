@@ -40,6 +40,15 @@ function scalarQuery(value: unknown): HttpApiPaginateQuery | undefined {
   return Object.keys(query).length > 0 ? query : undefined
 }
 
+function stringMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') out[key] = entry
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 function parseBody(value: unknown): unknown {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   try {
@@ -188,6 +197,7 @@ export async function executeHttpApiTool(
       method: 'GET',
       path,
       query: scalarQuery(args.query),
+      headers: stringMap(args.headers),
       context,
     })
   }
@@ -196,6 +206,7 @@ export async function executeHttpApiTool(
     method: optionalString(args.method) ?? 'POST',
     path,
     query: scalarQuery(args.query),
+    headers: stringMap(args.headers),
     body: parseBody(args.body),
     context,
   })

@@ -8,7 +8,7 @@ import {
   modesFromAgentRow,
   skipsWriteApproval,
   writeKindForTool,
-} from '../src/domain/agent/write-approval-modes'
+} from '../src/lib/write-approval-modes'
 
 const allDirect = {
   memory: 'direct',
@@ -20,6 +20,7 @@ const allDirect = {
 assert.equal(writeKindForTool('http_api_request'), 'httpApi')
 assert.equal(writeKindForTool('gmail_send'), 'gmail')
 assert.equal(writeKindForTool('google_drive_upload_file'), 'drive')
+assert.equal(writeKindForTool('google_drive_update_file'), 'drive')
 assert.equal(writeKindForTool('google_sheets_write_range'), 'drive')
 assert.equal(writeKindForTool('platform.project_memory.write'), 'memory')
 assert.equal(writeKindForTool('http_api_get'), null)
@@ -29,6 +30,7 @@ assert.equal(skipsWriteApproval('http_api_request', { ...DEFAULT_WRITE_APPROVAL_
 assert.equal(skipsWriteApproval('gmail_send', { ...DEFAULT_WRITE_APPROVAL_MODES, httpApi: 'direct' }), false)
 assert.equal(skipsWriteApproval('gmail_send', { ...DEFAULT_WRITE_APPROVAL_MODES, gmail: 'direct' }), true)
 assert.equal(skipsWriteApproval('google_drive_create_folder', allDirect), true)
+assert.equal(skipsWriteApproval('google_drive_update_file', { ...DEFAULT_WRITE_APPROVAL_MODES, drive: 'direct' }), true)
 assert.equal(skipsWriteApproval('http_api_get', allDirect), false)
 assert.equal(skipsWriteApproval('http_api_request', null), false)
 

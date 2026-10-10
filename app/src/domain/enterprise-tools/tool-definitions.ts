@@ -4,6 +4,7 @@ export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
 export const GOOGLE_DRIVE_READ_FILE_TOOL = 'google_drive_read_file'
 export const GOOGLE_DRIVE_CREATE_FOLDER_TOOL = 'google_drive_create_folder'
 export const GOOGLE_DRIVE_UPLOAD_FILE_TOOL = 'google_drive_upload_file'
+export const GOOGLE_DRIVE_UPDATE_FILE_TOOL = 'google_drive_update_file'
 export const GOOGLE_SHEETS_WRITE_RANGE_TOOL = 'google_sheets_write_range'
 
 export const GMAIL_SEARCH_TOOL = 'gmail_search'
@@ -23,6 +24,7 @@ export const HTTP_API_REQUEST_TOOL = 'http_api_request'
 export const ENTERPRISE_DRIVE_WRITE_TOOLS = [
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
 ] as const
 
@@ -172,12 +174,29 @@ const optionalConnectorName = z
   .describe(
     'Human connector name from the published agent definition (connectors[].name). Prefer this over connectorId when several HTTP APIs are bound.',
   )
+const optionalLinkedAccount = z
+  .string()
+  .max(80)
+  .optional()
+  .describe(
+    'Nickname or email of the linked Gmail/Drive account from platform.whoami linkedAccounts (e.g. magán, céges). Required when the user has more than one.',
+  )
 const scalarMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+const callerHeaders = z
+  .record(z.string(), z.string())
+  .optional()
+  .describe(
+    'Only headers the endpoint declares (get_definition → endpoints[].headers), for example If-Match with the version you read. Never credentials or trace headers; undeclared headers are rejected (header_not_allowed).',
+  )
+
+/** Largest JSON body the model may send in one http_api_request (characters). */
+export const HTTP_API_REQUEST_BODY_MAX_CHARS = 200_000
 
 export const googleDriveSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     query: z
       .string()
       .max(1000)
@@ -201,6 +220,7 @@ export const googleDriveReadFileInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     fileId: z.string().min(1).max(200).describe('Drive file id from google_drive_search.'),
     maxBytes: z
       .number()
@@ -218,6 +238,7 @@ export const googleDriveCreateFolderInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     name: z.string().min(1).max(500),
     parentFolderId: z.string().max(200).optional(),
     idempotencyKey: z.string().min(1).max(200),
@@ -228,6 +249,7 @@ export const googleDriveUploadFileInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     name: z.string().min(1).max(500),
     textContent: z
       .string()
@@ -250,10 +272,33 @@ export const googleDriveUploadFileInputSchema = z
   })
   .passthrough()
 
+export const googleDriveUpdateFileInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    account: optionalLinkedAccount,
+    fileId: z.string().min(1).max(200).describe('Drive file id from google_drive_search.'),
+    textContent: z
+      .string()
+      .min(1)
+      .max(200_000)
+      .describe('The complete new text of the file. It replaces the whole current content.'),
+    expectedModifiedTime: z
+      .string()
+      .max(40)
+      .optional()
+      .describe(
+        'modifiedTime of the file as you last read it (google_drive_read_file → file.modifiedTime). If the file changed since, nothing is written (drive_file_modified). Always pass it when you read the file first.',
+      ),
+    idempotencyKey: z.string().min(1).max(200),
+  })
+  .passthrough()
+
 export const googleSheetsWriteRangeInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     fileId: z.string().min(1).max(200),
     range: z.string().min(1).max(200).describe('A1 range, e.g. Sheet1!A1'),
     // ponytail: JSON string not unknown[][] — Claude.ai drops advertised array schemas
@@ -271,6 +316,7 @@ export const gmailSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     query: z
       .string()
       .min(1)
@@ -284,6 +330,7 @@ export const gmailGetMessageInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     id: z.string().min(1).max(200).describe('Gmail message id from gmail_search'),
   })
   .passthrough()
@@ -292,6 +339,7 @@ export const gmailGetThreadInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     threadId: z.string().min(1).max(200).describe('Gmail threadId from gmail_search or gmail_get_message'),
   })
   .passthrough()
@@ -300,6 +348,7 @@ export const gmailListLabelsInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
   })
   .passthrough()
 
@@ -307,6 +356,7 @@ export const gmailListDraftsInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    account: optionalLinkedAccount,
     maxResults: z.number().int().min(1).max(25).optional(),
   })
   .passthrough()
@@ -318,6 +368,7 @@ const emailList = (what: string) =>
 const composeFields = {
   definitionId,
   agentId: optionalAgentId,
+  account: optionalLinkedAccount,
   to: emailList('Recipients. Omit when replying — defaults to the original sender (all participants with replyAll)'),
   cc: emailList('Cc'),
   bcc: emailList('Bcc'),
@@ -363,6 +414,7 @@ export const gmailCreateDraftInputSchema = gmailCreateDraftObject.superRefine((a
 const messageOrThread = {
   definitionId,
   agentId: optionalAgentId,
+  account: optionalLinkedAccount,
   messageId: z.string().max(200).optional().describe('One Gmail message id'),
   threadId: z.string().max(200).optional().describe('Whole thread id (use instead of messageId)'),
   idempotencyKey: z.string().min(1).max(200),
@@ -421,6 +473,7 @@ export const httpApiGetInputSchema = z
       .max(1000)
       .describe('Path relative to the connector baseUrl. Auth and host come from the connector.'),
     query: scalarMap.optional().describe('Query params documented on the connector endpoint'),
+    headers: callerHeaders,
   })
   .passthrough()
 
@@ -448,9 +501,12 @@ export const httpApiRequestInputSchema = z
     query: scalarMap.optional(),
     body: z
       .string()
-      .max(50_000)
+      .max(HTTP_API_REQUEST_BODY_MAX_CHARS)
       .optional()
-      .describe('JSON request body as a string. Required for POST/PUT/PATCH when the endpoint expects a body.'),
+      .describe(
+        `JSON request body as a string (compact, at most ${HTTP_API_REQUEST_BODY_MAX_CHARS} characters). Required for POST/PUT/PATCH when the endpoint expects a body.`,
+      ),
+    headers: callerHeaders,
     idempotencyKey: z.string().min(1).max(200),
   })
   .passthrough()
@@ -459,6 +515,7 @@ export function schemaForEnterpriseDriveTool(toolName: EnterpriseDriveTool) {
   if (toolName === GOOGLE_DRIVE_READ_FILE_TOOL) return googleDriveReadFileInputSchema
   if (toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) return googleDriveCreateFolderInputSchema
   if (toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) return googleDriveUploadFileInputSchema
+  if (toolName === GOOGLE_DRIVE_UPDATE_FILE_TOOL) return googleDriveUpdateFileInputSchema
   if (toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) return googleSheetsWriteRangeInputSchema
   return googleDriveSearchInputSchema
 }
@@ -540,11 +597,18 @@ export const sandboxRunInputSchema = z
       .max(2000)
       .optional()
       .describe('Whitespace-separated argv for the script. Do not put credentials here.'),
+    inputs: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe(
+        'Comma-separated work-file paths from this project (platform.work_file.list). Copied to /work/in/<path>. The sandbox has no network and no credentials. Do not pass local machine paths.',
+      ),
     projectKey: z
       .string()
       .max(120)
       .optional()
-      .describe('Work-file project for outputs. Omit for __general__.'),
+      .describe('Work-file project for outputs and for inputs. Omit for __general__.'),
   })
   .passthrough()
 

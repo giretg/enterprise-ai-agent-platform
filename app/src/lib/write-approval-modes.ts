@@ -3,7 +3,8 @@
  * A kliensek még nem tudják jól a chatben jóváhagyni — ezért kapcsolható ki.
  *
  * A tool-név listák szándékosan másolatok a tool-definitions WRITE halmazairól,
- * hogy ez a modul ne húzza be az enterprise-tools kört.
+ * hogy ez a modul ne húzza be az enterprise-tools kört. A gateway/MCP target
+ * graph a `@/domain/agent/*` importot tiltja, ezért ez a lib alatt él.
  */
 
 export const WRITE_APPROVAL_MODES = ['approval', 'direct'] as const
@@ -29,6 +30,7 @@ const GMAIL_WRITE_TOOLS = new Set([
 const DRIVE_WRITE_TOOLS = new Set([
   'google_drive_create_folder',
   'google_drive_upload_file',
+  'google_drive_update_file',
   'google_sheets_write_range',
 ])
 

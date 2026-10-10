@@ -862,13 +862,7 @@ async function executeApprovedOperation(
   if (!authorized.allowed) return fail(authorized.reason)
 
   const delegated = authorized.connector.authMode === 'user_delegated'
-  const grant = delegated
-    ? await deps.findActiveGrant({
-        tenantId: operation.tenantId,
-        connectorId: authorized.connectorId,
-        userId: operation.principalUserId,
-      })
-    : null
+  const grant = delegated ? authorized.grant ?? null : null
   if (delegated && !grant) return fail('connector_grant_missing')
 
   if (grant && isEnterpriseDriveWriteTool(operation.toolName)) {
@@ -969,7 +963,9 @@ async function executeApprovedOperation(
 function mapWriteError(error: unknown): string {
   if (error instanceof GoogleDriveWriteAccessError) return 'drive_write_not_allowed'
   if (error instanceof GoogleDriveApiAuthError) return 'google_drive_auth_failed'
-  if (error instanceof GoogleDriveApiError) return 'google_drive_api_error'
+  if (error instanceof GoogleDriveApiError) {
+    return error.code === 'file_modified' ? 'drive_file_modified' : 'google_drive_api_error'
+  }
   if (error instanceof GmailApiAuthError) return 'gmail_auth_failed'
   if (error instanceof GmailApiError) return 'gmail_api_error'
   if (error instanceof HttpApiError) return error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error'

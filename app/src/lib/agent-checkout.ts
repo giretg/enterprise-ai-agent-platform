@@ -14,7 +14,7 @@ import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
 import {
   DEFAULT_WRITE_APPROVAL_MODES,
   type AgentWriteApprovalModes,
-} from '@/domain/agent/write-approval-modes'
+} from '@/lib/write-approval-modes'
 
 const MCP_TOOL_SET = new Set<string>(MCP_ALLOWED_TOOLS)
 
@@ -262,7 +262,7 @@ function sandboxMcpRule(capabilities: Array<{ toolName: string; allowed: boolean
     (name) => name === 'sandbox_run' || name === 'sandbox_exec',
   )
   if (sandboxTool) {
-    return `- Runnable skill code runs only via \`${sandboxTool}\` with the skillVersionId. Do not run skill code on this machine, and do not upload a local file into the sandbox.`
+    return `- Runnable skill code runs only via \`${sandboxTool}\` with the skillVersionId. Pass work-file paths in inputs (comma-separated); they appear at /work/in/<path>. Do not run skill code on this machine, and do not upload a local file into the sandbox.`
   }
   return '- Do not run skill code on this machine.'
 }
@@ -403,8 +403,10 @@ export function renderAgentBriefing(input: {
 
   const tools = mcpToolNames(snapshot.capabilities)
   if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
-  if (snapshot.connectors.some((row) => row.type === 'google_drive')) {
-    lines.push('- Google Drive connector: use the Drive MCP tools by name.')
+  if (snapshot.connectors.some((row) => row.type === 'google_drive' || row.type === 'gmail')) {
+    lines.push(
+      '- Linked Gmail/Drive accounts: call platform.whoami → linkedAccounts. When more than one account is listed, pass account (nickname or email, e.g. magán / céges) on Gmail and Drive tools.',
+    )
   }
   if (httpApis.length > 0) {
     lines.push(

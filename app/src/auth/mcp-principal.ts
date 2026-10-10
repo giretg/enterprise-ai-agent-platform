@@ -81,7 +81,7 @@ export type VerifiedOAuthToken = {
 
 export type McpPrincipalDeps = {
   verifyOAuthToken: (bearerToken: string) => Promise<VerifiedOAuthToken | null>
-  users: Pick<UserRepository, 'findByExternalAuthId'>
+  users: Pick<UserRepository, 'findByExternalAuthId' | 'findById'>
   tenants: Pick<TenantRepository, 'findBySlug' | 'findById'>
   memberships: Pick<TenantMembershipRepository, 'findByTenantAndUser'>
   platformMemberships: Pick<PlatformMembershipRepository, 'findByUser'>
@@ -244,14 +244,26 @@ export async function resolveMcpPrincipal(
   }
 
   const user = await deps.users.findByExternalAuthId(verified.clerkUserId)
+  return resolvePrincipalForUser(user, input.tenantSlug, deps)
+}
+
+/**
+ * A token-ellenőrzés utáni rész: user/tenant/tagság → principal. A Model Gateway token
+ * (#772) minden híváskor ezen át ellenőrzi újra, hogy a user még elérhet-e a tenantot.
+ */
+export async function resolvePrincipalForUser(
+  user: { id: string; status: string } | null,
+  tenantSlug: string,
+  deps: McpPrincipalDeps,
+): Promise<McpPrincipalResult> {
   if (!user || user.status !== 'active') {
-    return deny(deps, fail('user_inactive'), input.tenantSlug)
+    return deny(deps, fail('user_inactive'), tenantSlug)
   }
 
-  const slug = normalizeTenantSlug(input.tenantSlug)
+  const slug = normalizeTenantSlug(tenantSlug)
   const tenant = slug ? await deps.tenants.findBySlug(slug) : null
   if (!tenant) {
-    return deny(deps, fail('tenant_unavailable', { userId: user.id }), input.tenantSlug)
+    return deny(deps, fail('tenant_unavailable', { userId: user.id }), tenantSlug)
   }
 
   if (!tenantStatusAllowsOperations(tenant.status)) {

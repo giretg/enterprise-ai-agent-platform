@@ -6,6 +6,10 @@ import {
   parseDelegatedGrantScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { TOOL_REQUIREMENTS } from '@/domain/connector-grant/tool-connector-requirements'
+import {
+  resolveLinkedAccountGrant,
+  type LinkedAccountChoice,
+} from '@/domain/connector-grant/linked-account'
 import { asUuid } from './tool-error-messages'
 import {
   HTTP_API_GET_ALL_TOOL,
@@ -56,6 +60,8 @@ export type AuthorizeToolCallDenied = {
   connectorId?: string
   /** Több http_api kötés esetén, ha path alapján nem egyértelmű. */
   connectorChoices?: HttpApiConnectorChoice[]
+  /** Több kapcsolt Gmail/Drive fiók esetén, ha az `account` argumentum hiányzik vagy ismeretlen. */
+  accountChoices?: LinkedAccountChoice[]
 }
 
 export type AuthorizeToolCallAllowed = {
@@ -64,6 +70,7 @@ export type AuthorizeToolCallAllowed = {
   connector: LiveConnectorRow
   grantId?: string | null
   tokenRef?: string | null
+  grant?: LiveGrantRow | null
 }
 
 export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
@@ -74,6 +81,8 @@ export type LiveGrantRow = {
   scopes: unknown
   status: string
   metadata?: unknown
+  accountLabel?: string | null
+  nickname?: string | null
 }
 
 export type AuthorizeToolCallDeps = {
@@ -83,6 +92,20 @@ export type AuthorizeToolCallDeps = {
     connectorId: string
     userId: string
   }) => Promise<LiveGrantRow | null>
+  findActiveGrants?: (input: {
+    tenantId: string
+    connectorId: string
+    userId: string
+  }) => Promise<LiveGrantRow[]>
+}
+
+async function loadActiveGrants(
+  deps: AuthorizeToolCallDeps,
+  input: { tenantId: string; connectorId: string; userId: string },
+): Promise<LiveGrantRow[]> {
+  if (deps.findActiveGrants) return deps.findActiveGrants(input)
+  const one = await deps.findActiveGrant(input)
+  return one ? [one] : []
 }
 
 function missingConnectorReason(connectorType: string, accessMode: string): string {
@@ -266,14 +289,28 @@ export async function authorizeToolCall(
     }
   }
 
-  const grant = await deps.findActiveGrant({
+  const grants = await loadActiveGrants(deps, {
     tenantId: input.principal.tenantId,
     connectorId: connector.id,
     userId: input.principal.userId,
   })
-  if (!grant) {
-    return { allowed: false, reason: 'connector_grant_missing', connectorId: connector.id }
+  const pickedGrant = resolveLinkedAccountGrant(
+    grants.map((grant) => ({
+      ...grant,
+      accountLabel: grant.accountLabel ?? null,
+      nickname: grant.nickname ?? null,
+    })),
+    input.args.account,
+  )
+  if (!pickedGrant.ok) {
+    return {
+      allowed: false,
+      reason: pickedGrant.reason,
+      connectorId: connector.id,
+      ...(pickedGrant.accounts.length > 0 ? { accountChoices: pickedGrant.accounts } : {}),
+    }
   }
+  const grant = grants.find((row) => row.id === pickedGrant.grant.id) ?? pickedGrant.grant
 
   const scopes = parseDelegatedGrantScopes(grant.scopes)
   if (
@@ -297,5 +334,6 @@ export async function authorizeToolCall(
     connector,
     grantId: grant.id,
     tokenRef: grant.tokenRef,
+    grant,
   }
 }

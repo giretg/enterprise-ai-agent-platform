@@ -7,6 +7,9 @@ import {
   getPlatformGoogleDrivePickerConfig,
   getPlatformNavSoftware,
 } from '@/app/actions/connector-grants'
+import { getGlobalFallbackChain, getModelGatewayJwtKeyStatus } from '@/app/actions/model-config'
+import { FallbackChainPanel } from '@/app/control-plane/system/fallback-chain-panel'
+import { ModelGatewayJwtKeyPanel } from '@/app/control-plane/system/model-gateway-jwt-key-panel'
 import { NavOnlineInvoiceControlPanel } from '@/app/control-plane/system/nav-online-invoice-control-panel'
 import { GoogleOAuthControlPanel } from '@/app/control-plane/system/google-oauth-control-panel'
 import { GoogleDriveOAuthControlPanel } from '@/app/control-plane/system/google-drive-oauth-control-panel'
@@ -18,12 +21,15 @@ import { hasMinimumPlatformRole } from '@/lib/tenant-policy'
 export default async function PlatformSettingsPage() {
   const ctx = await getAuthContext()
   const canEdit = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'platform_operator')
-  const [gmail, drive, googleApi, picker, nav] = await Promise.all([
+  const canEditChain = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'superadmin')
+  const [gmail, drive, googleApi, picker, nav, fallbackChain, jwtKey] = await Promise.all([
     getPlatformGoogleOAuth(),
     getPlatformGoogleDriveOAuthConfig(),
     getPlatformGoogleApiOAuth(),
     getPlatformGoogleDrivePickerConfig(),
     getPlatformNavSoftware(),
+    getGlobalFallbackChain(),
+    getModelGatewayJwtKeyStatus(),
   ])
 
   const t = await getTranslations('ControlPlane.platformSettings')
@@ -80,6 +86,24 @@ export default async function PlatformSettingsPage() {
               <NavOnlineInvoiceControlPanel initial={nav.data} canEdit={canEdit} />
             ) : (
               <p className="text-sm text-coral-deep">{nav.error}</p>
+            ),
+          },
+          {
+            id: 'fallback-chain',
+            label: t('fallbackChain'),
+            content: fallbackChain.success ? (
+              <FallbackChainPanel initial={fallbackChain.data} canEdit={canEditChain} />
+            ) : (
+              <p className="text-sm text-coral-deep">{t('fallbackLoadFailed')}</p>
+            ),
+          },
+          {
+            id: 'gateway-jwt',
+            label: t('jwt'),
+            content: jwtKey.success ? (
+              <ModelGatewayJwtKeyPanel configured={jwtKey.data.configured} canEdit={canEditChain} />
+            ) : (
+              <p className="text-sm text-coral-deep">{t('jwtLoadFailed')}</p>
             ),
           },
         ]}

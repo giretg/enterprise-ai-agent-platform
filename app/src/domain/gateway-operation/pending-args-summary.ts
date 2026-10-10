@@ -92,6 +92,9 @@ export function pendingOperationHeadline(
   if (toolName === 'google_drive_create_folder') {
     return `Google Drive mappa: ${str(args.name) || '—'}`
   }
+  if (toolName === 'google_drive_update_file') {
+    return `Google Drive fájl felülírása: ${str(args.fileId) || '—'}`
+  }
   if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
     if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
     const parts = [
@@ -150,6 +153,12 @@ export function pendingArgsSummary(
     const lines = [`${str(args.fileId) || '—'} · ${str(args.range)}`]
     if (str(args.values)) lines.push(clip(str(args.values)))
     if (str(args.mode)) lines.push(`mode: ${str(args.mode)}`)
+    return lines.join('\n')
+  }
+
+  if (toolName === 'google_drive_update_file') {
+    const lines = [`${str(args.fileId) || '—'} (teljes tartalom felülírása)`]
+    if (str(args.textContent)) lines.push(clip(str(args.textContent)))
     return lines.join('\n')
   }
 

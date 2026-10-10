@@ -6,8 +6,8 @@ import { getPathname } from './navigation'
 export async function publicPageMetadata(input: {
   locale: AppLocale
   pathname: PublicPathname
-  titleKey: 'homeTitle' | 'privacyTitle' | 'gtcTitle'
-  descriptionKey: 'homeDescription' | 'privacyDescription' | 'gtcDescription'
+  titleKey: 'homeTitle' | 'privacyTitle' | 'gtcTitle' | 'contactTitle'
+  descriptionKey: 'homeDescription' | 'privacyDescription' | 'gtcDescription' | 'contactDescription'
   absoluteTitle?: boolean
 }): Promise<Metadata> {
   const t = await getTranslations({ locale: input.locale, namespace: 'Metadata' })

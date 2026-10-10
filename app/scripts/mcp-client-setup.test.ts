@@ -127,12 +127,12 @@ function main() {
     const html = renderToStaticMarkup(
       createElement(
         NextIntlClientProvider,
-        { locale: 'hu', messages: huMessages },
+        { locale: 'hu', timeZone: 'Europe/Budapest', messages: huMessages },
         createElement(McpSetupLanding, { setup, continueHref: '/control-plane' }),
       ),
     )
     const details = html.match(/<details\b[^>]*>/g) ?? []
-    assert.equal(details.length, 9)
+    assert.equal(details.length, 10)
     assert.equal(details.some((tag) => /\sopen(?:\s|=|>|"")/.test(tag)), false)
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
     assert.match(html, /hermes:\/\/mcp\/install\?name=excellence/)
@@ -143,6 +143,11 @@ function main() {
     for (const client of ['hermes', 'codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
       assert.match(html, new RegExp(`/mcp-clients/${client}\\.svg`))
     }
+    assert.match(html, /hermes-company-controls/)
+    assert.match(html, /Teljes céges kontroll beállítása/)
+    assert.match(html, /sudo \.\/install-managed\.sh floor\.json/)
+    assert.match(html, /\/control-plane\/ai-client-policy/)
+    assert.match(html, /Telepítőcsomag letöltése/)
     assert.match(html, /Goose Desktop/)
     assert.match(html, /Streamable HTTP/)
     assert.match(html, /Extensions → Add custom extension/)

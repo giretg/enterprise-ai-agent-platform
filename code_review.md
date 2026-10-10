@@ -1,5 +1,25 @@
 # Enterprise code review log
 
+## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
+
+- Áttekintett komponens: a `sandbox_run` **bemeneti** határa — az `inputs` mező validálása, a munkafájl olvasása és a `/work/in/<path>` alá másolás. A 2026-10-01 bejegyzés a kimeneti/átirányítási ágat, a #794 merge pedig a hibakód-leképezést és a Control Plane-feliratot fedte; ez a bejegyzés azt a rést zárja, amit egyik sem ért.
+- Rendben talált kontrollok: a munkafájl olvasása tenant- és projektszinten zárt (`ProjectWorkService.readFile`); a `../`, az abszolút útvonal és a vezérlő karakter elutasított; a duplikátum-ellenőrzés a normalizált útvonalon fut; a sandbox nem kap hálózatot vagy credentialt; hiányzó fájl esetén a script nem indul el.
+- **Lelet (magas, governance):** a pinnelt skill-fa ütközésvédelme kis- és nagybetűre érzékeny volt. A `Skill/run.py` átment a validáláson, és `/work/in/Skill/run.py` alá került. Ahol a sandbox fájlrendszere kisbetűtelen (a gVisor/Cloud Run képek egy része ilyen), ez felülírhatta a jóváhagyott entry scriptet vagy annak helperét: azt a kódot futtatva, amit az üzlet nem látott jóvá.
+- Javítás: az ütközés-ellenőrzés az útvonal első szegmensét kisbetűre normalizálja, így `skill/`, `Skill/`, `SKILL/` egyaránt elutasított, a `sub/skill/` pedig veszélytelenül `/work/in/sub/skill/` alá kerül. Nincs új policy vagy konfiguráció.
+- Másodlagos: a sandbox fájlszám- és méret-korlát hibakódjai (`sandbox_file_count_limit_exceeded`, `sandbox_input_total_size_exceeded`, `sandbox_input_file_too_large`) nem voltak a felhasználói szövegtárban, így a 16 munkafájl + skill-fa együtt fellépő méretkorlát „Tool call denied" üzenettel jött vissza, jogosultsági hibának látszva. Mindhárom magyar magyarázatot kapott.
+- Üzleti hatás: a munkatárs által megadott fájl nem írhatja felül azt a jóváhagyott scriptet, amelyet az üzlet engedélyezett; a méret- és darabszám-korlát pedig érthető magyarázattal tér vissza.
+- Ellenőrzés: `test:sandbox-run` (kisbetűs `Skill/` és `SKILL/` elutasítás, `sales.csv/` duplikum, fájlszám-korlát regresszió), `test:enterprise-tools`, `test:agent-checkout` zöld; `tsc --noEmit`, célzott ESLint és `git diff --check` zöld.
+
+## 2026-10-01 - MCP `sandbox_run`: átirányítással továbbítható volt a jóváhagyott script
+
+- Áttekintett, korábban itt külön nem naplózott komponens: az aktív **MCP `sandbox_run` végrehajtási út** — publikált agent-definition és jogosultság ellenőrzése, élő skill-verzió és mellékletek feloldása, sandbox connector, HTTP provider, kimeneti fájlok visszaírása és audit. A korábbi `sandbox_exec` Cloud Run runner a `legacy/` fában van; annak izolációját és telepítését ez a kör nem minősíti.
+- Rendben talált kontrollok: csak aktív agent és definíció, megfelelő connector és aktív, a definícióban rögzített skill-verzió futtatható; a sandbox hálózati hozzáférés nélkül indul; a fájlok száma és mérete korlátozott; a kimeneti munkafájl tenant szerint elkülönített és kvótázott.
+- **Lelet (magas, bizalmas adat):** a provider `fetch` hívása követte a HTTP 307/308 átirányítást. Egy hibásan konfigurált vagy kompromittált sandbox-végpont így a POST teljes törzsét — benne a jóváhagyott scriptet és segédfájlokat — másik szerverre továbbíthatta, a vállalati adatrezidencia- és titokvédelmi elvárásokat megkerülve.
+- Javítás: a közös sandbox HTTP-hívás átirányításkor hibával leáll. Az eredeti végpont hibája látható marad, de a platform nem küldi tovább a munkacsomagot ismeretlen címre. Nem került új függőség vagy konfiguráció a rendszerbe.
+- Üzleti hatás: a munkatárs által elindított, jóváhagyott skill kódja és mellékletei a beállított sandbox-szolgáltatóhoz kötöttek; egy átirányítás nem viheti át őket más szolgáltatóhoz vagy régióba.
+- Ellenőrzés: valós helyi HTTP-szerverekkel végzett regresszió a javítás előtt bizonyította a továbbítást, utána a céloldal nem kapott kérést. `test:sandbox-run`, `test:enterprise-tools`, célzott ESLint és `git diff --check` zöld. A teljes `tsc --noEmit` a már meglévő `localRoots` Prisma-kliens eltérésen áll meg, nem az érintett sandbox-fájlokban.
+- PR: https://github.com/giretg/enterprise-ai-agent-platform/pull/761 (`codex`, `codex-automation`, `security`).
+
 ## 2026-09-29 - MCP Gateway Operation jóváhagyás: visszavont vagy lecserélt agent még végrehajthatott függő külső írást
 
 - Áttekintett, korábban külön nem naplózott komponens: az **MCP Gateway Operation írási-jóváhagyási út** — a külső MCP írási kérés szerveroldali azonosítása, a definition-pin, agent- és connector-jogosultság, az idempotens várólista, a form- és Control Plane-jóváhagyás, a PostgreSQL-lockos egyszeri döntés, majd a Drive/Gmail/HTTP API tényleges végrehajtása és auditja. Ez a rendszer utolsó kapuja, mielőtt egy AI-kérés külső rendszerben változást okozhat.

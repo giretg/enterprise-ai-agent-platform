@@ -122,6 +122,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         label: 'Konnektorok',
         requires: { tenantRole: 'admin' },
       },
+      {
+        key: 'admin.ai-client-policy',
+        href: '/control-plane/ai-client-policy',
+        label: 'Hermes céges kontroll',
+        requires: { tenantRole: 'admin' },
+      },
       { key: 'admin.iam', href: '/control-plane/iam', label: 'IAM', requires: { tenantRole: 'admin' } },
       {
         key: 'admin.settings',
@@ -145,6 +151,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         key: 'admin.platform-iam',
         href: '/control-plane/platform/iam',
         label: 'Platform · IAM',
+        requires: { platformRole: 'platform_auditor' },
+      },
+      {
+        key: 'admin.platform-contact',
+        href: '/control-plane/platform/contact',
+        label: 'Platform · Kapcsolatfelvételek',
         requires: { platformRole: 'platform_auditor' },
       },
       {

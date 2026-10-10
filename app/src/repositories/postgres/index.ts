@@ -30,6 +30,7 @@ import {
   PostgresWorkFileRepository,
   PostgresWorkProjectRepository,
 } from './project-work-repository'
+import { PostgresContactInquiryRepository } from './contact-inquiry-repository'
 
 export const repositories = {
   users: new PostgresUserRepository(),
@@ -56,4 +57,5 @@ export const repositories = {
   workProjects: new PostgresWorkProjectRepository(),
   workFiles: new PostgresWorkFileRepository(),
   projectMemory: new PostgresProjectMemoryRepository(),
+  contactInquiries: new PostgresContactInquiryRepository(),
 }

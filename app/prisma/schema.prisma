@@ -252,6 +252,13 @@ enum ConversationSkillProposalStatus {
   @@map("conversation_skill_proposal_status")
 }
 
+enum ContactInquiryStatus {
+  new
+  reviewed
+
+  @@map("contact_inquiry_status")
+}
+
 enum GatewayOperationStatus {
   requested
   awaiting_approval
@@ -308,6 +315,7 @@ model User {
   projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
   handoffsCreated             Handoff[]             @relation("HandoffCreatedBy")
   handoffsReceived            Handoff[]             @relation("HandoffToUser")
+  reviewedContactInquiries     ContactInquiry[]       @relation("ContactInquiryReviewedBy")
 
   @@index([status])
   @@map("users")
@@ -332,6 +340,23 @@ model Invitation {
 
   @@index([tenantId, status])
   @@map("invitations")
+}
+
+model ContactInquiry {
+  id           String               @id @default(uuid()) @db.Uuid
+  name         String
+  phone        String
+  email        String
+  message      String               @db.Text
+  status       ContactInquiryStatus @default(new)
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  reviewedAt   DateTime?            @map("reviewed_at") @db.Timestamptz
+  reviewedById String?              @map("reviewed_by_id") @db.Uuid
+
+  reviewedBy User? @relation("ContactInquiryReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@map("contact_inquiries")
 }
 
 model Tenant {
@@ -364,6 +389,11 @@ model Tenant {
   workFiles         WorkFile[]
   projectMemoryItems ProjectMemoryItem[]
   handoffs          Handoff[]
+  clientPolicies    ClientPolicy[]
+  clientInstalls    ClientInstall[]
+  clientMachineFloors ClientMachineFloor[]
+  aiInteractionEvents AiInteractionEvent[]
+  gatewaySurrogates GatewaySurrogate[]
 
   @@index([status])
   @@map("tenants")
@@ -462,6 +492,8 @@ model Agent {
   outputDriveFolderId        String?         @map("output_drive_folder_id")
   /** Helyi kódmappa-hint (#729): soronként egy jelölt ~/… vagy abszolút path (több gép); publikáláskor a snapshotba. */
   localRoots                 String          @default("") @map("local_roots")
+  /** Admin által beállított modell (#768): provider/model/modelType/temperature/maxTokens/fallbackModels. NEM kerül az MCP-snapshotba. */
+  modelConfig                Json?           @map("model_config")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
@@ -717,6 +749,7 @@ model ConnectorGrant {
   scopes          Json                 @default("[]")
   tokenRef        String               @unique @map("token_ref")
   accountLabel    String?              @map("account_label")
+  nickname        String?              @map("nickname")
   grantedAt       DateTime             @default(now()) @map("granted_at") @db.Timestamptz
   expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
   lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
@@ -727,7 +760,7 @@ model ConnectorGrant {
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, connectorId, userId])
+  @@index([tenantId, connectorId, userId, status])
   @@map("connector_grants")
 }
 
@@ -939,6 +972,32 @@ model PlatformSetting {
   @@map("platform_settings")
 }
 
+/// Hermes Managed Client (#746 V1-5): nagy volumenű AI-használati napló (a `content` AES-GCM-mel titkosított).
+model AiInteractionEvent {
+  id            String   @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  agentId       String   @map("agent_id") @db.Uuid
+  installId     String   @map("install_id")
+  sessionId     String?  @map("session_id")
+  turnId        String?  @map("turn_id")
+  kind          String
+  source        String
+  content       String?
+  meta          Json     @default("{}")
+  policyVersion String   @map("policy_version")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, id])
+  @@index([tenantId, sessionId])
+  @@index([tenantId, userId, createdAt])
+  @@index([expiresAt])
+  @@map("ai_interaction_events")
+}
+
 model AuditLog {
   id             String         @id @default(uuid()) @db.Uuid
   seq            BigInt         @unique @default(autoincrement())
@@ -993,4 +1052,102 @@ model Handoff {
   @@index([tenantId, toAgentId, status])
   @@index([tenantId, toUserId, status])
   @@map("handoffs")
+}
+
+/// Hermes Managed Client policy (#746 V1-1): a tenant/user/agent szintű paraméterezés forrás-igazsága.
+/// `scopeId` polimorf (tenant → tenantId, user → users.id, agent → agents.id), ezért nincs rá FK.
+model ClientPolicy {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  scope         String
+  scopeId       String   @map("scope_id") @db.Uuid
+  preset        String?
+  capabilities  Json     @default("{}")
+  toolOverrides Json     @default("{}") @map("tool_overrides")
+  version       Int      @default(1)
+  updatedById   String?  @map("updated_by_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scope, scopeId])
+  @@map("client_policies")
+}
+
+/// Hermes Managed Client heartbeat-regiszter (#746 V1-7, R8): a Guard jelenléte és a gép állapota.
+/// Egy user egy telepítése = egy sor; az `installId` kliens-oldali (a gateway-JWT-ben utazik), ezért a
+/// kulcs a (tenant, user, installId) hármas — idegen user vagy tenant nem hivatkozhat rá.
+model ClientInstall {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  installId       String   @map("install_id")
+  lastHeartbeatAt DateTime @map("last_heartbeat_at") @db.Timestamptz
+  configHash      String   @map("config_hash")
+  managedDirHash  String   @map("managed_dir_hash")
+  policyVersion   String   @map("policy_version")
+  guardVersion    String   @map("guard_version")
+  hermesVersion   String   @map("hermes_version")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions ClientInstallSession[]
+
+  @@unique([tenantId, userId, installId])
+  @@map("client_installs")
+}
+
+/// A Guard által regisztrált Hermes-session; a Model Gateway csak ilyen sessionnek ad céges modellt.
+model ClientInstallSession {
+  id              String   @id @default(uuid()) @db.Uuid
+  clientInstallId String   @map("client_install_id") @db.Uuid
+  sessionId       String   @map("session_id")
+  agentId         String   @map("agent_id") @db.Uuid
+  lastSeenAt      DateTime @map("last_seen_at") @db.Timestamptz
+
+  install ClientInstall @relation(fields: [clientInstallId], references: [id], onDelete: Cascade)
+
+  @@unique([clientInstallId, sessionId, agentId], map: "client_install_sessions_client_install_id_session_id_agent__key")
+  @@map("client_install_sessions")
+}
+
+/// A user gép-padlója (#771): stabil installId és a heartbeat által várt managed-dir hash.
+/// Userenként egy (a gép a user legbővebb engedélyét követi; az eszközkötés #758).
+model ClientMachineFloor {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  installId      String   @map("install_id")
+  managedDirHash String   @map("managed_dir_hash")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@map("client_machine_floors")
+}
+
+/// Model Gateway álnév-vault (#746 V1-4): `hermes_session` hatókörű e-mail/név → álnév leképezés.
+/// Az érték AES-GCM-mel titkosított; a HMAC a sort köti a hatókörhöz (manipuláció-felismerés).
+/// Fizikai törlés (retenció) a követő #747-ben.
+model GatewaySurrogate {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  scopeType      String   @map("scope_type")
+  scopeId        String   @map("scope_id")
+  entityType     String   @map("entity_type")
+  fingerprint    String
+  surrogate      String
+  hmac           String
+  encryptedValue String   @map("encrypted_value")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, scopeType, scopeId, entityType, fingerprint], map: "gateway_surrogates_scope_fingerprint_key")
+  @@unique([tenantId, scopeType, scopeId, surrogate], map: "gateway_surrogates_scope_surrogate_key")
+  @@index([createdAt])
+  @@map("gateway_surrogates")
 }

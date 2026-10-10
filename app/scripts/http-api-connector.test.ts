@@ -7,6 +7,7 @@
  * egy befecskendezett fetch-fake-kel.
  */
 import assert from 'node:assert/strict'
+import { executeHttpApiTool } from '../src/domain/enterprise-tools/handlers/http-api'
 import {
   HttpApiClient,
   HttpApiError,
@@ -368,6 +369,79 @@ async function main() {
       assert.equal(res.ok, false)
       assert.equal(res.status, 404)
       assert.equal((res.body as { error: { code: string } }).error.code, 'NOT_FOUND')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: nem-idempotens POST NEM ismétel 5xx-et (nincs dupla írás)', async () => {
+    let calls = 0
+    const fakeFetch: typeof fetch = async () => {
+      calls += 1
+      return new Response('bad gateway', { status: 502 })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      const res = await client.request({
+        method: 'POST',
+        path: '/banks/507f1f77bcf86cd799439011/contacts',
+        body: { name: 'X' },
+      })
+      assert.equal(res.ok, false)
+      assert.equal(res.status, 502)
+      assert.equal(calls, 1, 'az író POST pontosan egyszer menjen ki 5xx-en (nincs retry-duplikátum)')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: nem-idempotens POST tovább ismétli a 429-et (elutasított = fel nem dolgozott)', async () => {
+    let calls = 0
+    const fakeFetch: typeof fetch = async () => {
+      calls += 1
+      return calls < 2
+        ? new Response('rate limited', { status: 429 })
+        : new Response(JSON.stringify({ success: true, data: {} }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      const res = await client.request({
+        method: 'POST',
+        path: '/banks/507f1f77bcf86cd799439011/contacts',
+        body: { name: 'X' },
+      })
+      assert.equal(res.ok, true)
+      assert.equal(calls, 2, 'az író 429 biztonságosan ismételhető (nincs dupla, csak újra-próbálkozás)')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: olvasó GET tovább ismétli az átmeneti 5xx-et', async () => {
+    let calls = 0
+    const fakeFetch: typeof fetch = async () => {
+      calls += 1
+      return calls < 3
+        ? new Response('bad gateway', { status: 502 })
+        : new Response(JSON.stringify({ success: true, data: { banks: [] } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      const res = await client.request({ method: 'GET', path: '/banks' })
+      assert.equal(res.ok, true)
+      assert.equal(calls, 3, 'az olvasás megtartja az 5xx-retryt')
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -1025,6 +1099,126 @@ async function main() {
         client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
         (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
       )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('If-Match: a deklarált hívói fejléc továbbmegy, az ETag látszik a válaszban', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://posnavigator.eu/api/v1',
+      auth: { scheme: 'header', header: 'X-Api-Key' },
+      endpoints: [
+        { method: 'GET', path: '/banks/:bankId/research' },
+        {
+          method: 'PATCH',
+          path: '/banks/:bankId/research/playbook',
+          parameters: [{ name: 'If-Match', in: 'header', required: true }],
+        },
+      ],
+      restrictToEndpoints: true,
+    })
+    const calls: Array<{ init: RequestInit }> = []
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      calls.push({ init: init ?? {} })
+      return new Response(JSON.stringify({ data: { version: 4 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"4"' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(config, 'pn_live_key')
+      const read = await client.request({ method: 'GET', path: '/banks/abc/research' })
+      assert.equal(read.etag, '"4"')
+      const patched = await client.request({
+        method: 'PATCH',
+        path: '/banks/abc/research/playbook',
+        headers: { 'If-Match': '"4"' },
+        body: { notes: 'x' },
+      })
+      assert.equal(patched.etag, '"4"')
+      const sent = calls[1]!.init.headers as Record<string, string>
+      assert.equal(sent['If-Match'], '"4"')
+      assert.equal(sent['X-Api-Key'], 'pn_live_key')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('If-Match: nem deklarált vagy védett fejlécet a platform elutasít', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://posnavigator.eu/api/v1',
+      auth: { scheme: 'header', header: 'X-Api-Key' },
+      endpoints: [{ method: 'GET', path: '/banks' }],
+      restrictToEndpoints: true,
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response('{}', { status: 200 })) as typeof fetch
+    try {
+      const client = new HttpApiClient(config, 'pn_live_key')
+      await assert.rejects(
+        () => client.request({ method: 'GET', path: '/banks', headers: { 'If-Match': '"1"' } }),
+        (error: unknown) => error instanceof HttpApiError && error.code === 'header_not_allowed',
+      )
+      await assert.rejects(
+        () => client.request({ method: 'GET', path: '/banks', headers: { 'X-Api-Key': 'mas' } }),
+        (error: unknown) => error instanceof HttpApiError,
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('MCP http_api_request: a headers argumentum eljut a connectorig (If-Match), az ETag visszajön', async () => {
+    const connector = {
+      id: 'c1',
+      tenantId: 't1',
+      type: 'http_api',
+      authMode: 'api_key',
+      lifecycleState: 'active',
+      name: 'POSnavigator',
+      config: {
+        baseUrl: 'https://posnavigator.eu/api/v1',
+        auth: { scheme: 'header', header: 'X-Api-Key' },
+        endpoints: [
+          {
+            method: 'PATCH',
+            path: '/banks/:bankId/research/playbook',
+            parameters: [{ name: 'If-Match', in: 'header', required: true }],
+          },
+        ],
+        restrictToEndpoints: true,
+      },
+    }
+    const calls: Array<{ init: RequestInit }> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ init: init ?? {} })
+      return new Response(JSON.stringify({ data: { version: 5 } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"5"' },
+      })
+    }) as typeof fetch
+    try {
+      const result = (await executeHttpApiTool(
+        'http_api_request',
+        {
+          method: 'PATCH',
+          path: '/banks/abc/research/playbook',
+          headers: { 'If-Match': '"4"' },
+          body: '{"notes":"x"}',
+          idempotencyKey: 'k1',
+        },
+        connector,
+        'pn_live_key',
+        null,
+        { id: 'agent-1' },
+      )) as { status: number; etag?: string }
+      assert.equal(result.status, 200)
+      assert.equal(result.etag, '"5"')
+      assert.equal((calls[0]!.init.headers as Record<string, string>)['If-Match'], '"4"')
     } finally {
       globalThis.fetch = originalFetch
     }

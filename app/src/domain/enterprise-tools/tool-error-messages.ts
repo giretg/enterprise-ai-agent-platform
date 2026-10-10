@@ -36,6 +36,10 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   tenant_isolation: 'Connector does not belong to this tenant',
   connector_not_active: 'Connector is not active',
   connector_grant_missing: 'This account has not been connected yet',
+  account_required:
+    'Several linked accounts match; pass account (nickname or email from platform.whoami linkedAccounts, see accounts in the error payload)',
+  unknown_account:
+    'No linked account matches that account nickname or email; pass one from platform.whoami linkedAccounts (see accounts in the error payload)',
   connector_id_required:
     'Multiple HTTP API connectors match; pass connectorName (from connectors[].name in the published definition), connectorId, or a path that appears on only one connector\'s endpoint list (see connectors in the error payload)',
   acting_user_required: 'This tool requires a delegated user grant',
@@ -47,13 +51,20 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'idempotencyKey is already used by a different principal, tool, or arguments',
   google_drive_auth_failed: 'Google Drive authentication failed',
   google_drive_api_error: 'Google Drive request failed',
+  drive_file_modified: 'The Drive file changed since it was read; read it again and retry',
   gmail_auth_failed: 'Gmail authentication failed',
   gmail_api_error: 'Gmail request failed',
   http_api_error: 'HTTP API request failed',
   missing_api_key: 'HTTP API connector has no credential',
   file_too_large: 'File is too large',
+  file_not_found: 'Work file not found',
+  unknown_project: 'Unknown projectKey — call platform.projects.create first, or use __general__',
+  invalid_project_key: 'Invalid projectKey',
   quota_exceeded: 'Work-file quota exceeded',
   invalid_path: 'Invalid work-file path',
+  sandbox_file_count_limit_exceeded: 'Too many input files for the sandbox — pass fewer inputs',
+  sandbox_input_total_size_exceeded: 'Input files are too large in total for the sandbox',
+  sandbox_input_file_too_large: 'An input file is too large for the sandbox',
   tool_execution_failed: 'Tool execution failed',
 }
 

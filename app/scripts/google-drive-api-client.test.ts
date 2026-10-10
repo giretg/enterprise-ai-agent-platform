@@ -110,6 +110,66 @@ async function main() {
     }
   })
 
+  // --- 5xx retry-duplikátum regresszió (nem-idempotens create-POST nem ismételhető) ---
+  async function withLiveFetch<T>(
+    responder: (calls: number) => Response,
+    run: (live: GoogleDriveApiClient, getCalls: () => number) => Promise<T>,
+  ): Promise<T> {
+    const realFetch = globalThis.fetch
+    const realStub = process.env.GOOGLE_DRIVE_API_STUB
+    delete process.env.GOOGLE_DRIVE_API_STUB
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls += 1
+      return responder(calls)
+    }) as typeof fetch
+    try {
+      // A GoogleDriveApiClient stubnak tekint minden `stub-` prefixű tokent → live token.
+      return await run(new GoogleDriveApiClient('live-token'), () => calls)
+    } finally {
+      globalThis.fetch = realFetch
+      process.env.GOOGLE_DRIVE_API_STUB = realStub
+    }
+  }
+
+  await test('upload_file does NOT replay a 5xx — no duplicate file', async () => {
+    await withLiveFetch(
+      () => new Response('bad gateway', { status: 502 }),
+      async (live, getCalls) => {
+        await assert.rejects(
+          () => live.uploadFile({ name: 'r.html', textContent: '<h1>ok</h1>' }),
+          /google_drive\.upload_file failed: 502/,
+        )
+        assert.equal(getCalls(), 1, 'upload POST must be sent exactly once on a 5xx')
+      },
+    )
+  })
+
+  await test('create_folder does NOT replay a 5xx — no duplicate folder', async () => {
+    await withLiveFetch(
+      () => new Response('bad gateway', { status: 502 }),
+      async (live, getCalls) => {
+        await assert.rejects(
+          () => live.createFolder({ name: 'M' }),
+          /google_drive\.create_folder failed: 502/,
+        )
+        assert.equal(getCalls(), 1, 'create_folder POST must be sent exactly once on a 5xx')
+      },
+    )
+  })
+
+  await test('search (read) still retries a transient 5xx then succeeds', async () => {
+    await withLiveFetch(
+      (calls) =>
+        calls < 3 ? new Response('bad gateway', { status: 502 }) : Response.json({ files: [] }),
+      async (live, getCalls) => {
+        const res = await live.search({ query: 'x' })
+        assert.equal(res.files.length, 0)
+        assert.equal(getCalls(), 3, 'reads keep the 5xx retry')
+      },
+    )
+  })
+
   console.log('\nAll google-drive-api-client tests passed.')
 }
 

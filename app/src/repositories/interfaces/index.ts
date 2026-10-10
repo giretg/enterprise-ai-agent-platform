@@ -16,6 +16,8 @@ import type {
   ConnectorTemplate,
   ConnectorTemplateOrigin,
   ConnectorTemplateStatus,
+  ContactInquiry,
+  ContactInquiryStatus,
   ConnectorType,
   Document,
   DocumentStatus,
@@ -35,7 +37,6 @@ import type {
   SkillRiskTier,
   SkillSourceType,
   SkillVersion,
-  SkillVersionStatus,
   Tenant,
   TenantMembership,
   TenantMembershipStatus,
@@ -45,7 +46,6 @@ import type {
   UserStatus,
   KnowledgeArtifact,
   KnowledgeArtifactStatus,
-  KnowledgeChunk,
   KnowledgeProcessingMode,
 } from '@prisma/client'
 import type { ListPageResult } from '@/lib/list-pagination'
@@ -96,6 +96,7 @@ export interface AgentRepository {
   }): Promise<Agent>
   updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent>
   updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent>
+  updateModelConfig(input: { agentId: string; modelConfig: Prisma.InputJsonValue }): Promise<Agent>
   updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
@@ -241,6 +242,11 @@ export interface ConnectorGrantRepository {
     connectorId: string
     userId: string
   }): Promise<ConnectorGrant | null>
+  findActiveGrants(params: {
+    tenantId: string
+    connectorId: string
+    userId: string
+  }): Promise<ConnectorGrant[]>
   findActiveByConnector(connectorId: string): Promise<ConnectorGrant[]>
   findActiveForInactiveConnectors(userId: string, tenantId?: string): Promise<ConnectorGrant[]>
   findByUser(
@@ -265,6 +271,7 @@ export interface ConnectorGrantRepository {
     scopes: Prisma.JsonValue
     tokenRef: string
     accountLabel?: string | null
+    nickname?: string | null
     expiresAt?: Date | null
   }): Promise<ConnectorGrant>
   updateStatus(
@@ -275,6 +282,7 @@ export interface ConnectorGrantRepository {
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<ConnectorGrant | null>
   updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
+  updateNickname(id: string, nickname: string | null): Promise<ConnectorGrant>
 }
 
 export type ConnectorDraftWithConnector = ConnectorDraft & {
@@ -406,7 +414,7 @@ export interface UserRepository {
   findMany(filter?: {
     tenantId?: string
     status?: UserStatus
-    role?: UserRole
+    role?: UserRole | null
     limit?: number
     offset?: number
     unbounded?: boolean
@@ -452,6 +460,15 @@ export interface UserRepository {
       invitedById: string | null
     }>
   }): Promise<User>
+}
+
+export interface ContactInquiryRepository {
+  create(data: { name: string; phone: string; email: string; message: string }): Promise<ContactInquiry>
+  findMany(filter?: {
+    status?: ContactInquiryStatus
+    limit?: number
+  }): Promise<ContactInquiry[]>
+  markReviewed(id: string, reviewedById: string): Promise<ContactInquiry>
 }
 
 export interface InvitationRepository {

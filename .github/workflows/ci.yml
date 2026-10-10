@@ -58,6 +58,15 @@ jobs:
       - name: Import-boundary guard
         run: npm run test:import-boundary
 
+      - name: Hermes Guard helper tests (Python)
+        run: |
+          python3 ../clients/hermes-guard/test_exc_token.py
+          python3 ../clients/hermes-guard/test_install_managed.py
+          python3 ../clients/hermes-guard/test_guard_policy.py
+          python3 ../clients/hermes-guard/test_guard_runtime.py
+          python3 ../clients/hermes-guard/test_exc_guard.py
+          python3 ../clients/hermes-guard/test_guard_smoke.py
+
       - name: KEEP stub-DB tests
         run: |
           npm run test:iam-policy
@@ -79,13 +88,28 @@ jobs:
           npm run test:conversation-skill
           npm run test:agent-checkout
           npm run test:agent-local-roots
+          npm run test:client-policy
+          npm run test:client-policy-admin
+          npm run test:client-install
+          npm run test:machine-floor
+          npm run test:model-gateway-token
+          npm run test:model-fallback-chain
+          npm run test:model-gateway-proxy
+          npm run test:openrouter-tenant-key
+          npm run test:model-gateway-jwt-key
+          npm run test:model-gateway-content-filter
+          npm run test:ai-audit
           npm run test:enterprise-tools
           npm run test:write-approval-modes
           npm run test:write-approval-ui
           npm run test:pending-args-summary
           npm run test:connector-template-icon-map
+          npm run test:linked-account
+          npm run test:drive-update-file
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
+          npm run test:google-drive-api-client
+          npm run test:google-workspace-api-client
           npm run test:agentmail-connector
           npm run test:kb-gate
           npm run test:kb-retrieval

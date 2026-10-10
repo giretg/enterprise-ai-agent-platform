@@ -13,6 +13,7 @@ import {
   GMAIL_SEND_TOOL,
   GMAIL_TRASH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
   HTTP_API_REQUEST_TOOL,
@@ -152,6 +153,9 @@ async function confirmMessage(
     target = `Google Drive mappa: ${str(args.name)}`
   } else if (view.toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) {
     target = `Google Drive fájl: ${str(args.name)}`
+    content = str(args.textContent)
+  } else if (view.toolName === GOOGLE_DRIVE_UPDATE_FILE_TOOL) {
+    target = `Google Drive fájl felülírása: ${str(args.fileId)}`
     content = str(args.textContent)
   } else if (view.toolName === GMAIL_SEND_TOOL || view.toolName === GMAIL_CREATE_DRAFT_TOOL) {
     target = gmailComposeTarget(args)

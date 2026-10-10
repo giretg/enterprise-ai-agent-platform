@@ -125,6 +125,34 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'handoff.created',
   'handoff.acknowledged',
+
+  'model_gateway.token.issued',
+  'model_gateway.token.deny',
+  'model_gateway.token.revoked',
+  // Model Gateway proxy (#769): történelmi AuditLog-sorok. A tartalom-napló V1-5-től AiInteractionEvent.
+  'model_call',
+  // Admin GET /api/ai-audit/events?includeContent=true — maga a visszafejtés auditált (#770).
+  'ai_audit.content_read',
+  // #759: négy szem a tartalomolvasáshoz + a retenciós sweep élő hívója.
+  'ai_audit.content_unlock.request',
+  'ai_audit.content_unlock.approve',
+  'ai_audit.retention_sweep',
+  // Agent modell-konfig + tenant policy + globális tartalék-lánc (#768).
+  // Regisztráció nélkül az admin mentés UnregisteredAuditActionError-t dobna
+  // (a beállítás már elment, a UI hibát jelezne).
+  'model_policy.set',
+  'model_fallback_chain.set',
+  'agent.model_config',
+  'model.openrouter_key.set',
+  'model.gateway_jwt_key.set',
+  // Client Policy heartbeat-regiszter (#774): Guard-eltérés (nincs/lejárt heartbeat, nem regisztrált session).
+  'client_policy.deviation',
+  // Admin letöltötte egy munkatárs gép-padló csomagját (#771).
+  'client_policy.machine_floor.export',
+  // Admin policy mentés és a tenantnál tágabb, kifejezetten jóváhagyott user-kivétel (#776).
+  'client_policy.save',
+  'client_policy.user_exception',
+  'client_policy.content_warning',
 ])
 
 export class UnregisteredAuditActionError extends Error {

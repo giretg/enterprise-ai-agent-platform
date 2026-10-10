@@ -6,7 +6,7 @@ import {
   listApproverCandidates,
   updateAgentWriteApprovalModes,
 } from '@/app/actions/platform'
-import type { WriteApprovalMode } from '@/domain/agent/write-approval-modes'
+import type { WriteApprovalMode } from '@/lib/write-approval-modes'
 
 type Candidate = { id: string; name: string; email: string; role: string | null }
 

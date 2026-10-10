@@ -259,6 +259,7 @@ async function main() {
     assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
     assert.match(briefing, /WHERE TO SAVE WHAT/)
     assert.match(briefing, /platform\.work_file\.write/)
+    assert.match(briefing, /platform\.whoami → linkedAccounts/)
     assert.match(
       briefing,
       /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/,
@@ -412,6 +413,8 @@ async function main() {
       }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
     assert.match(agents, /sandbox_run/)
     assert.match(agents, /skillVersionId/)
+    assert.match(agents, /inputs/)
+    assert.match(agents, /\/work\/in\//)
     assert.doesNotMatch(agents, /sandbox_exec/)
   })
 
