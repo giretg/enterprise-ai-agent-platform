@@ -198,9 +198,14 @@ export function allowlistForOAuthEndpoint(params: {
   connectorType: string
   url: string
   tenantAllowlist: string[] | null
+  /** Platform Google OAuth (Gmail/Drive/Calendar/Sheets/…): pin a végpont hostjára. */
+  pinToEndpointHost?: boolean
 }): string[] {
   const host = new URL(params.url).hostname.toLowerCase()
-  const platformGoogle = params.connectorType === 'gmail' || params.connectorType === 'google_drive'
+  const platformGoogle =
+    params.pinToEndpointHost === true ||
+    params.connectorType === 'gmail' ||
+    params.connectorType === 'google_drive'
   if (platformGoogle || params.tenantAllowlist == null) return [host]
   return params.tenantAllowlist.map((item) => item.toLowerCase())
 }

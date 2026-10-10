@@ -1057,6 +1057,20 @@ async function run() {
     assert.equal(r.status, 'failed')
   })
 
+  await test('Validátor: tokenUrl portja nem kerül az egress-hostba (hostname, mint a guard)', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      auth: {
+        type: 'oauth2',
+        tokenUrl: 'https://api.acme-crm.example:8443/oauth/token',
+        clientId: 'x',
+        secretAliasSuggested: 'env:ACME_OAUTH',
+      },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.egressAllowlist, 'passed')
+  })
+
   await test('Validátor: banki preset → ismeretlen host failed (allowlist-only)', () => {
     const cfg = normalizeConnectorConfig({ ...cleanConfig(), egressHosts: ['api.other.example'] })
     const warned = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST, bankPreset: false })

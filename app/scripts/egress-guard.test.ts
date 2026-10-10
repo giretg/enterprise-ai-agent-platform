@@ -207,6 +207,27 @@ async function main() {
     )
   })
 
+  await test('OAuth: pinToEndpointHost pineli a platform Google API http_api-t üres listánál is', () => {
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'http_api',
+        url: 'https://oauth2.googleapis.com/token',
+        tenantAllowlist: [],
+        pinToEndpointHost: true,
+      }),
+      ['oauth2.googleapis.com'],
+    )
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'http_api',
+        url: 'https://oauth2.googleapis.com/token',
+        tenantAllowlist: ['api.crm.example'],
+        pinToEndpointHost: false,
+      }),
+      ['api.crm.example'],
+    )
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} egress-guard teszt elbukott.`)
     process.exit(1)

@@ -39,8 +39,16 @@ import {
 } from './delegated-oauth-registry'
 import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
+import { isPlatformGoogleApiConnectorProvider } from '@/lib/platform-google-api-connectors'
 import { lookup } from 'node:dns/promises'
 import { allowlistForOAuthEndpoint, guardEgressUrl } from '@/domain/net/egress-guard'
+
+class OAuthEgressBlockedError extends Error {
+  constructor(message = 'OAuth endpoint blocked by egress policy') {
+    super(message)
+    this.name = 'OAuthEgressBlockedError'
+  }
+}
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -272,6 +280,21 @@ async function resolveClientSecret(connector: Connector): Promise<string> {
 type OAuthEgressPolicy = {
   connectorType: string
   tenantAllowlist: string[] | null
+  pinToEndpointHost: boolean
+}
+
+function pinsOAuthToEndpointHost(connector: Connector): boolean {
+  if (connector.type === 'gmail' || connector.type === 'google_drive') return true
+  const config = (connector.config ?? {}) as ConnectorOAuthConfig
+  return isPlatformGoogleApiConnectorProvider(config.provider ?? '')
+}
+
+function oauthEgressPolicy(connector: Connector, tenantAllowlist: string[] | null): OAuthEgressPolicy {
+  return {
+    connectorType: connector.type,
+    tenantAllowlist,
+    pinToEndpointHost: pinsOAuthToEndpointHost(connector),
+  }
 }
 
 async function fetchOAuthEndpoint(
@@ -286,13 +309,14 @@ async function fetchOAuthEndpoint(
       connectorType: policy.connectorType,
       url,
       tenantAllowlist: policy.tenantAllowlist,
+      pinToEndpointHost: policy.pinToEndpointHost,
     }),
     resolveHostIps: async (name) => (await lookup(name, { all: true })).map((entry) => entry.address),
   })
-  if (!guard.ok || guard.host !== host) throw new Error('OAuth endpoint blocked by egress policy')
+  if (!guard.ok || guard.host !== host) throw new OAuthEgressBlockedError()
   const response = await fetch(guard.url, { ...init, redirect: 'manual' })
   if (response.status >= 300 && response.status < 400) {
-    throw new Error('OAuth endpoint redirect blocked by egress policy')
+    throw new OAuthEgressBlockedError('OAuth endpoint redirect blocked by egress policy')
   }
   return response
 }
@@ -327,10 +351,7 @@ async function exchangeCodeForTokens(params: {
     code_verifier: params.codeVerifier,
   })
 
-  const oauthPolicy: OAuthEgressPolicy = {
-    connectorType: params.connector.type,
-    tenantAllowlist: params.tenantAllowlist,
-  }
+  const oauthPolicy = oauthEgressPolicy(params.connector, params.tenantAllowlist)
   const res = await fetchOAuthEndpoint(oauth.tokenUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -414,7 +435,7 @@ async function refreshGrantTokens(
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
-  }, { connectorType: connector.type, tenantAllowlist })
+  }, oauthEgressPolicy(connector, tenantAllowlist))
   if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status}`)
   const data = (await res.json()) as { access_token?: string; expires_in?: number; refresh_token?: string }
   if (!data.access_token) throw new Error('OAuth refresh missing access_token')
@@ -878,7 +899,8 @@ export class ConnectorGrantService {
           expiresAt: tokens.expiresAt ? new Date(tokens.expiresAt) : null,
         })
 
-      } catch {
+      } catch (error) {
+        if (error instanceof OAuthEgressBlockedError) throw error
         await this.markGrantExpired({
           grantId: params.grantId,
           connectorId: params.connector.id,

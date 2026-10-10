@@ -52,7 +52,7 @@ export type ValidatorOptions = {
 
 function hostOf(url: string): string | null {
   try {
-    return new URL(url).host.toLowerCase()
+    return new URL(url).hostname.toLowerCase()
   } catch {
     return null
   }
