@@ -1,12 +1,13 @@
 /**
- * Postgres full-text (GIN) index a `knowledge_chunks` táblán (Knowledge-Base-v3-OKF-Spec
- * §8.4/§10). A `prisma db push` NEM hoz létre expression-alapú tsvector GIN indexet,
- * ezért — az audit append-only triggerhez hasonlóan — nyers SQL-ként telepítjük.
+ * Postgres full-text (GIN) indexek a `knowledge_chunks` táblán (Knowledge-Base-v3-OKF-Spec
+ * §8.4/§10, #717 A réteg). A `prisma db push` NEM hoz létre expression-alapú tsvector
+ * GIN indexet, ezért — az audit append-only triggerhez hasonlóan — nyers SQL-ként telepítjük.
  *
- * Az index a `to_tsvector('hungarian', title || ' ' || text)` kifejezésre épül; a
- * `kb_search` (`searchChunks`) pontosan ezt a kifejezést kérdezi. A `hungarian`
- * snowball config beépített (extension nélkül megy Neonon): szótövez és a magyar
- * töltelékszavakat kiszűri. Ugyanez a 0011_kb_hungarian_fts migráció.
+ * Nyelvenként külön index (`hu`/`en`/`simple`), mert a GIN expression-index csak
+ * karakterre egyező kifejezésre él; a `kb_search` (`searchChunks`) csoportonként
+ * pontosan ezeket a kifejezéseket kérdezi. A `hungarian`/`english` snowball
+ * config beépített (extension nélkül megy Neonon): szótövez és az adott nyelv
+ * töltelékszavait kiszűri. Ugyanez a 0011 + 0028 migráció.
  *
  * Futtatás: npm run db:apply-kb-fts        (DATABASE_URL — dev)
  *           npm run db:apply-kb-fts:test   (DATABASE_URL_TEST)
@@ -27,6 +28,16 @@ CREATE INDEX IF NOT EXISTS knowledge_chunks_fts_hu_idx
   ON knowledge_chunks
   USING GIN (to_tsvector('hungarian'::regconfig, coalesce(title, '') || ' ' || text));
 `,
+  `
+CREATE INDEX IF NOT EXISTS knowledge_chunks_fts_en_idx
+  ON knowledge_chunks
+  USING GIN (to_tsvector('english'::regconfig, coalesce(title, '') || ' ' || text));
+`,
+  `
+CREATE INDEX IF NOT EXISTS knowledge_chunks_fts_simple_idx
+  ON knowledge_chunks
+  USING GIN (to_tsvector('simple'::regconfig, coalesce(title, '') || ' ' || text));
+`,
 ]
 
 async function apply(databaseUrl: string, label: string) {
@@ -35,7 +46,7 @@ async function apply(databaseUrl: string, label: string) {
     for (const statement of KB_CHUNK_FTS_STATEMENTS) {
       await prisma.$executeRawUnsafe(statement)
     }
-    console.log(`  ✓ [${label}] knowledge_chunks_fts_hu_idx GIN index telepítve`)
+    console.log(`  ✓ [${label}] knowledge_chunks FTS GIN indexek telepítve (hu/en/simple)`)
   } finally {
     await prisma.$disconnect()
   }

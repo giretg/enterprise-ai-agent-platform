@@ -6,6 +6,7 @@
  */
 import type { ExtractedBlock } from './kb-v3'
 import { readExtractionBlocks } from './kb-extraction'
+import type { TenantLanguage } from './tenant-language'
 
 export const DOCUMENT_READ_DEFAULT_MAX_CHARS = 8_000
 export const DOCUMENT_READ_HARD_MAX_CHARS = 40_000
@@ -92,6 +93,7 @@ export function parseDocumentPageRange(
 export function blocksFromDocument(
   metadata: unknown,
   extractedText: string | null,
+  language: TenantLanguage = 'hu',
 ): ExtractedBlock[] {
   const fromMeta = readExtractionBlocks(metadata)
   if (fromMeta && fromMeta.length > 0) return fromMeta
@@ -102,7 +104,8 @@ export function blocksFromDocument(
   const pageBlocks = splitMarkdownPageHeadings(text)
   if (pageBlocks.length > 0) return pageBlocks
 
-  return [{ heading: 'Dokumentum', text, sourceRef: { section: 'Dokumentum' } }]
+  const heading = language === 'en' ? 'Document' : 'Dokumentum'
+  return [{ heading, text, sourceRef: { section: heading } }]
 }
 
 function splitMarkdownPageHeadings(text: string): ExtractedBlock[] {
@@ -176,7 +179,11 @@ export function readDocumentPages(input: {
   query?: string
   maxChars?: number
   maxMatches?: number
+  /** #717 B réteg: a modellnek szóló hint nyelve. Alapértelmezés `hu` = mai szöveg. */
+  language?: TenantLanguage
 }): DocumentReadResult {
+  const language: TenantLanguage = input.language ?? 'hu'
+  const en = language === 'en'
   const maxChars = clampDocumentReadMaxChars(input.maxChars)
   const maxMatches = clampDocumentReadMaxMatches(input.maxMatches)
   const totalPages = input.blocks.length
@@ -188,7 +195,7 @@ export function readDocumentPages(input: {
       totalPages: 0,
       pages: [],
       truncated: false,
-      hint: 'A dokumentumból nincs kinyert szöveg.',
+      hint: en ? 'No extracted text in this document.' : 'A dokumentumból nincs kinyert szöveg.',
     }
   }
 
@@ -210,9 +217,13 @@ export function readDocumentPages(input: {
     matchCount = hits.length
     selected = hits.slice(0, maxMatches)
     if (hits.length === 0) {
-      hint = `Nincs találat a keresésre: "${input.query.trim()}". Próbálj más kulcsszót, vagy pages:"1-2"-vel nézd az elejét.`
+      hint = en
+        ? `No hits for query: "${input.query.trim()}". Try another keyword, or pages:"1-2" for the start.`
+        : `Nincs találat a keresésre: "${input.query.trim()}". Próbálj más kulcsszót, vagy pages:"1-2"-vel nézd az elejét.`
     } else if (hits.length > maxMatches) {
-      hint = `${hits.length} találat, ebből ${maxMatches} oldal. Szűkítsd a query-t vagy emeld a maxMatches-t.`
+      hint = en
+        ? `${hits.length} hits, showing ${maxMatches} pages. Narrow the query or raise maxMatches.`
+        : `${hits.length} találat, ebből ${maxMatches} oldal. Szűkítsd a query-t vagy emeld a maxMatches-t.`
     }
   }
 
@@ -225,7 +236,9 @@ export function readDocumentPages(input: {
         totalPages,
         pages: [],
         truncated: false,
-        hint: `Érvénytelen pages: ${range.error}. Példa: "1-3" vagy "5" (összesen ${totalPages} oldal).`,
+        hint: en
+          ? `Invalid pages: ${range.error}. Example: "1-3" or "5" (${totalPages} pages total).`
+          : `Érvénytelen pages: ${range.error}. Példa: "1-3" vagy "5" (összesen ${totalPages} oldal).`,
       }
     }
     const inRange = new Set(
@@ -241,14 +254,18 @@ export function readDocumentPages(input: {
     selected = indexed.slice(0, DOCUMENT_READ_HARD_MAX_PAGES)
     hint =
       hint ??
-      `Nem adtál meg pages/query-t — az elejét adom vissza (max ${maxChars} kar). Célzottan: pages:"1-3" vagy query:"kulcsszó".`
+      (en
+        ? `No pages/query given — returning the start (max ${maxChars} chars). Targeted: pages:"1-3" or query:"keyword".`
+        : `Nem adtál meg pages/query-t — az elejét adom vissza (max ${maxChars} kar). Célzottan: pages:"1-3" vagy query:"kulcsszó".`)
   }
 
   if (selected.length > DOCUMENT_READ_HARD_MAX_PAGES) {
     selected = selected.slice(0, DOCUMENT_READ_HARD_MAX_PAGES)
     hint =
       (hint ? `${hint} ` : '') +
-      `Egyszerre legfeljebb ${DOCUMENT_READ_HARD_MAX_PAGES} oldal; szűkítsd a tartományt.`
+      (en
+        ? `At most ${DOCUMENT_READ_HARD_MAX_PAGES} pages at once; narrow the range.`
+        : `Egyszerre legfeljebb ${DOCUMENT_READ_HARD_MAX_PAGES} oldal; szűkítsd a tartományt.`)
   }
 
   const mapped: DocumentReadPage[] = selected.map(({ block, page }) => ({
@@ -259,7 +276,9 @@ export function readDocumentPages(input: {
 
   const { pages, truncated } = truncateToBudget(mapped, maxChars)
   if (truncated && !hint) {
-    hint = `Szöveg csonkítva (${maxChars} kar plafon). Kérj kisebb oldaltartományt vagy query-t.`
+    hint = en
+      ? `Text truncated (${maxChars} char cap). Ask for a smaller page range or a query.`
+      : `Szöveg csonkítva (${maxChars} kar plafon). Kérj kisebb oldaltartományt vagy query-t.`
   }
 
   return {

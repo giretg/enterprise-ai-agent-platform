@@ -1,5 +1,6 @@
 import { Prisma, type Document, type KnowledgeArtifact, type KnowledgeArtifactStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { isKbLanguage, kbPgConfig, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import { KB_SECTION_SPLIT_SQL, kbSectionForSegment, readKbPurpose, snippet } from '@/lib/kb-retrieval'
 import type {
   DocumentListItem,
@@ -29,24 +30,92 @@ export function toKbTsQuery(query: string): string {
 }
 
 /**
- * Magyar szótövezés + stopszó-szűrés (Postgres `hungarian` snowball): a
- * „színkódot" a „színkód"-ot is megtalálja, a „hogyan/az/milyen" kiesik. A
- * `knowledge_chunks_fts_hu_idx` ugyanerre a kifejezésre épül.
+ * #717 A réteg: a `regconfig` nem paraméterezhető, ezért kizárólag a
+ * `kb-language` registry allowlistjéből interpolálódik (`kbRegconfig`).
+ * Kívülről jövő string sose kerül SQL-be — ismeretlen érték `simple`-re esik.
+ * A GIN expression-index csak karakterre egyező kifejezésre él, ezért
+ * nyelvenként külön index van (0011 hu + 0028 en/simple), és csoportonként
+ * külön SQL fut a csoport nyelvének megfelelő kifejezéssel.
  */
-const KB_FTS_CONFIG = Prisma.sql`'hungarian'::regconfig`
+
+/**
+ * Allowlist-interpolált `regconfig` fragment. Kívülről jövő string SOSE
+ * kerül bele közvetlenül — csak a registryből vagy a `simple` fallback.
+ * (SQL-injection védelem: a hívó csak `KbLanguage`-et vagy ismeretlen
+ * értéket adhat át, az ismeretlen `simple`-re esik.)
+ */
+export function kbRegconfig(language: unknown): Prisma.Sql {
+  const pg = kbPgConfig(language)
+  // ponytail: Prisma.raw, mert a regconfig nem paraméterezhető;
+  // az érték a fenti allowlistből jön, nem a hívótól.
+  return Prisma.raw(`'${pg}'::regconfig`)
+}
 
 /** A kérdésszavak közül azok, amelyek a szakaszban szerepelnek (IDF-újrarangsoroláshoz). */
-function kbMatchedTermsSql(vector: Prisma.Sql, terms: string[]): Prisma.Sql {
+function kbMatchedTermsSql(vector: Prisma.Sql, terms: string[], reg: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`ARRAY(
     SELECT t.term FROM unnest(${terms}::text[]) AS t(term)
-    WHERE ${vector} @@ to_tsquery(${KB_FTS_CONFIG}, t.term || ':*')
+    WHERE ${vector} @@ to_tsquery(${reg}, t.term || ':*')
   )`
 }
 
 /** Jelölt-sorrend: több fedett kérdésszó előbb, holtversenyben ts_rank. */
-function kbCandidateOrderSql(vector: Prisma.Sql, terms: string[], tsquery: string): Prisma.Sql {
-  return Prisma.sql`cardinality(${kbMatchedTermsSql(vector, terms)}) DESC,
-    ts_rank(${vector}, to_tsquery(${KB_FTS_CONFIG}, ${tsquery})) DESC`
+function kbCandidateOrderSql(
+  vector: Prisma.Sql,
+  terms: string[],
+  tsquery: string,
+  reg: Prisma.Sql,
+): Prisma.Sql {
+  return Prisma.sql`cardinality(${kbMatchedTermsSql(vector, terms, reg)}) DESC,
+    ts_rank(${vector}, to_tsquery(${reg}, ${tsquery})) DESC`
+}
+
+/**
+ * Connectorok KB-nyelve + a dokumentum-felülírásokból adódó nyelvi csoportok:
+ * nyelv → az adott nyelven keresendő connectorok. A feloldás itt szándékosan
+ * ugyanaz, amit a `regconfig`-ot kérő SQL lát:
+ * `COALESCE(d.kb_language_override, co.kb_language, 'hu') = <nyelv>`
+ * (a `regconfig` csoportonként konstans; az érték-predikátum kötött
+ * paraméter, nem interpolált SQL).
+ */
+async function kbLanguageGroups(
+  connectorIds: string[],
+): Promise<Array<{ language: KbLanguage; connectorIds: string[] }>> {
+  if (connectorIds.length === 0) return []
+  const connectors = await prisma.connector.findMany({
+    where: { id: { in: connectorIds } },
+    select: { id: true, kbLanguage: true },
+  })
+  // ponytail: nincs tenant-ág a feloldásban. A `kb_language` NOT NULL, és
+  // minden írási út registry-értéket ír bele (zod enum, DB-default `hu`,
+  // migrációs backfill csak `hu`/`en`), így a tenant-nyelv a connector
+  // létrehozásakor materializálódik (`createKbConnector`). Ha itt mégis
+  // tenant-nyelvet számolnánk, a JS és a SQL `COALESCE` eltérne, és a
+  // nem-registry értékű sorok csendben kimaradnának a keresésből — az
+  // egyetlen nyelv, amit a SQL lát, az `override ?? connector`.
+  const connectorLang = new Map(connectors.map((c) => [c.id, resolveKbLanguage(c.kbLanguage)]))
+  const overrides = await prisma.document.findMany({
+    where: { connectorId: { in: connectorIds }, kbLanguageOverride: { not: null } },
+    select: { connectorId: true, kbLanguageOverride: true },
+    distinct: ['connectorId', 'kbLanguageOverride'],
+  })
+  const langsPerConnector = new Map<string, Set<KbLanguage>>()
+  for (const id of connectorIds) {
+    langsPerConnector.set(id, new Set([connectorLang.get(id) ?? 'hu']))
+  }
+  for (const row of overrides) {
+    if (!row.connectorId || !isKbLanguage(row.kbLanguageOverride)) continue
+    langsPerConnector.get(row.connectorId)?.add(row.kbLanguageOverride)
+  }
+  const groups = new Map<KbLanguage, string[]>()
+  for (const [id, langs] of langsPerConnector) {
+    for (const lang of langs) {
+      const list = groups.get(lang) ?? []
+      list.push(id)
+      groups.set(lang, list)
+    }
+  }
+  return [...groups.entries()].map(([language, ids]) => ({ language, connectorIds: ids }))
 }
 
 export class PostgresDocumentRepository implements DocumentRepository {
@@ -90,6 +159,7 @@ export class PostgresDocumentRepository implements DocumentRepository {
         mimeType: true,
         createdAt: true,
         connectorId: true,
+        kbLanguageOverride: true,
         metadata: true,
       },
       orderBy: { createdAt: 'desc' },
@@ -130,49 +200,64 @@ export class PostgresDocumentRepository implements DocumentRepository {
     // Szakasz-szintű keresés: a raw fájl heading-szakaszai külön versenyeznek,
     // hogy egy hosszú fájl ne nyerjen pusztán a hossza miatt.
     // ponytail: sequential scan + futásidejű vágás; GIN/tárolt szakaszok, ha a raw korpusz nő.
-    const vector = Prisma.sql`to_tsvector(${KB_FTS_CONFIG}, s.body)`
-    const rows = await prisma.$queryRaw<
-      Array<{
-        id: string
-        filename: string
-        extracted_text: string
-        ord: bigint
-        snippet: string | null
-        score: number
-        matched: string[]
-      }>
-    >`
-      SELECT d.id, d.filename, d.extracted_text, s.ord,
-             ts_rank(${vector}, to_tsquery(${KB_FTS_CONFIG}, ${tsquery})) AS score,
-             ${kbMatchedTermsSql(vector, terms)} AS matched,
-             ts_headline(
-               ${KB_FTS_CONFIG},
-               s.body,
-               to_tsquery(${KB_FTS_CONFIG}, ${tsquery}),
-               'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
-             ) AS snippet
-      FROM documents d
-      CROSS JOIN LATERAL regexp_split_to_table(coalesce(d.extracted_text, ''), ${KB_SECTION_SPLIT_SQL})
-        WITH ORDINALITY AS s(body, ord)
-      WHERE d.connector_id = ${connectorId}::uuid
-        AND d.status = CAST('processed' AS "DocumentStatus")
-        AND NOT EXISTS (
-          SELECT 1 FROM knowledge_artifacts a
-          WHERE a.source_document_id = d.id
-            AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
-        )
-        AND ${vector} @@ to_tsquery(${KB_FTS_CONFIG}, ${tsquery})
-      ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery)}
-      LIMIT ${limit}
-    `
-    return rows.map((row) => ({
-      id: row.id,
-      filename: row.filename,
-      section: kbSectionForSegment(row.extracted_text, Number(row.ord) - 1),
-      snippet: snippet(row.snippet?.trim() || row.filename),
-      score: Number(row.score),
-      matched: row.matched,
-    }))
+    // #717: egy connector → jellemzően egy nyelv, dokumentum-felülírásnál több
+    // csoport; csoportonként külön SQL a csoport regconfigjával, majd összefésülés.
+    const groups = await kbLanguageGroups([connectorId])
+    const perGroup: KnowledgeRawHit[][] = await Promise.all(
+      groups.map(async ({ language, connectorIds: ids }) => {
+        const reg = kbRegconfig(language)
+        const vector = Prisma.sql`to_tsvector(${reg}, s.body)`
+        const rows = await prisma.$queryRaw<
+          Array<{
+            id: string
+            filename: string
+            extracted_text: string
+            ord: bigint
+            snippet: string | null
+            score: number
+            matched: string[]
+          }>
+        >`
+          SELECT d.id, d.filename, d.extracted_text, s.ord,
+                 ts_rank(${vector}, to_tsquery(${reg}, ${tsquery})) AS score,
+                 ${kbMatchedTermsSql(vector, terms, reg)} AS matched,
+                 ts_headline(
+                   ${reg},
+                   s.body,
+                   to_tsquery(${reg}, ${tsquery}),
+                   'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
+                 ) AS snippet
+          FROM documents d
+          INNER JOIN connectors co ON co.id = d.connector_id
+          CROSS JOIN LATERAL regexp_split_to_table(coalesce(d.extracted_text, ''), ${KB_SECTION_SPLIT_SQL})
+            WITH ORDINALITY AS s(body, ord)
+          WHERE d.connector_id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+            AND COALESCE(d.kb_language_override, co.kb_language, 'hu') = ${language}
+            AND d.status = CAST('processed' AS "DocumentStatus")
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_artifacts a
+              WHERE a.source_document_id = d.id
+                AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
+            )
+            AND ${vector} @@ to_tsquery(${reg}, ${tsquery})
+          ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery, reg)}
+          LIMIT ${limit}
+        `
+        return rows.map((row) => ({
+          id: row.id,
+          filename: row.filename,
+          section: kbSectionForSegment(row.extracted_text, Number(row.ord) - 1),
+          snippet: snippet(row.snippet?.trim() || row.filename),
+          score: Number(row.score),
+          matched: row.matched,
+        }))
+      }),
+    )
+    // Összefésülés a meglévő jelölt-sorrend szerint, limitig.
+    return perGroup
+      .flat()
+      .sort((a, b) => (b.matched?.length ?? 0) - (a.matched?.length ?? 0) || b.score - a.score)
+      .slice(0, limit)
   }
 
   async update(id: string, data: Parameters<DocumentRepository['update']>[1]): Promise<Document> {
@@ -246,40 +331,60 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
     const terms = kbQueryTerms(query)
     const tsquery = toKbTsQuery(query)
     if (!tsquery || connectorIds.length === 0 || limit <= 0) return []
-    const vector = Prisma.sql`to_tsvector(${KB_FTS_CONFIG}, coalesce(c.title, '') || ' ' || c.text)`
-    const rows = await prisma.$queryRaw<
-      Array<{
-        artifact_id: string
-        connector_id: string
-        path: string
-        title: string
-        type: string
-        section: string | null
-        text: string
-        source_ref: Prisma.JsonValue
-        score: number
-        matched: string[]
-      }>
-    >`
-      SELECT c.artifact_id, c.connector_id, c.path, c.title, c.type, c.section, c.text, c.source_ref,
-             ts_rank(${vector}, to_tsquery(${KB_FTS_CONFIG}, ${tsquery})) AS score,
-             ${kbMatchedTermsSql(vector, terms)} AS matched
-      FROM knowledge_chunks c
-      INNER JOIN knowledge_artifacts a ON a.id = c.artifact_id
-      WHERE c.connector_id IN (${Prisma.join(connectorIds.map((id) => Prisma.sql`${id}::uuid`))})
-        AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
-        AND ${vector} @@ to_tsquery(${KB_FTS_CONFIG}, ${tsquery})
-      ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery)}
-      LIMIT ${limit}
-    `
-    return rows.map((row) => ({
-      artifactId: row.artifact_id,
-      connectorId: row.connector_id,
-      path: row.path,
-      title: row.title,
-      type: row.type,
-      section: row.section,
-      text: row.text,
+    // #717: nyelvi csoportonként külön SQL (egy csoport = egy nyelv = egy élő
+    // GIN-index), majd összefésülés limitig. A csoport-kulcs = amit a
+    // `COALESCE(d.kb_language_override, co.kb_language, 'hu')` lát
+    // (lásd `kbLanguageGroups`).
+    const groups = await kbLanguageGroups(connectorIds)
+    const perGroup = await Promise.all(
+      groups.map(async ({ language, connectorIds: ids }) => {
+        const reg = kbRegconfig(language)
+        const vector = Prisma.sql`to_tsvector(${reg}, coalesce(c.title, '') || ' ' || c.text)`
+        return prisma.$queryRaw<
+          Array<{
+            artifact_id: string
+            connector_id: string
+            path: string
+            title: string
+            type: string
+            section: string | null
+            text: string
+            source_ref: Prisma.JsonValue
+            score: number
+            matched: string[]
+          }>
+        >`
+          SELECT c.artifact_id, c.connector_id, c.path, c.title, c.type, c.section, c.text, c.source_ref,
+                 ts_rank(${vector}, to_tsquery(${reg}, ${tsquery})) AS score,
+                 ${kbMatchedTermsSql(vector, terms, reg)} AS matched
+          FROM knowledge_chunks c
+          INNER JOIN knowledge_artifacts a ON a.id = c.artifact_id
+          INNER JOIN connectors co ON co.id = c.connector_id
+          LEFT JOIN documents d ON d.id = a.source_document_id
+          WHERE c.connector_id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+            AND COALESCE(d.kb_language_override, co.kb_language, 'hu') = ${language}
+            AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
+            AND ${vector} @@ to_tsquery(${reg}, ${tsquery})
+          ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery, reg)}
+          LIMIT ${limit}
+        `
+      }),
+    )
+    return perGroup
+      .flat()
+      .sort(
+        (a, b) =>
+          (b.matched?.length ?? 0) - (a.matched?.length ?? 0) || Number(b.score) - Number(a.score),
+      )
+      .slice(0, limit)
+      .map((row) => ({
+        artifactId: row.artifact_id,
+        connectorId: row.connector_id,
+        path: row.path,
+        title: row.title,
+        type: row.type,
+        section: row.section,
+        text: row.text,
       sourceRef: row.source_ref,
       score: Number(row.score),
       matched: row.matched,

@@ -35,6 +35,7 @@ import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { iconDataUrlByTemplateKey, resolveConnectorIcon } from '@/lib/connector-template-icon-map'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { readTenantLanguage } from '@/lib/tenant-language'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import type { UserRole } from '@prisma/client'
 import { IamService } from '@/domain/iam/iam-service'
@@ -143,6 +144,12 @@ const agentDefinitionService = new AgentDefinitionService({
   audit: repositories.audit,
 })
 
+/** #717: a modellnek szóló szövegek nyelve a tenant kimeneti nyelve — az UI-locale soha nem. */
+const resolveTenantLanguage = async (tenantId: string) => {
+  const tenant = await repositories.tenants.findById(tenantId)
+  return readTenantLanguage(tenant?.settings)
+}
+
 const knowledgeBaseService = new KnowledgeBaseService({
   documents: repositories.documents,
   artifacts: repositories.knowledgeArtifacts,
@@ -150,6 +157,7 @@ const knowledgeBaseService = new KnowledgeBaseService({
   agents: repositories.agents,
   connectors: repositories.connectors,
   audit: repositories.audit,
+  resolveTenantLanguage,
 })
 
 const projectWorkService = new ProjectWorkService(
@@ -199,6 +207,8 @@ const sharedToolLookups = {
     const user = await repositories.users.findById(input.userId)
     return user ? { id: user.id, email: user.email } : null
   },
+  // #717: briefing, KB-találat, http_api hintek — ugyanaz a feloldás.
+  resolveTenantLanguage,
   async resolveAccessToken(params: {
     connector: { id: string }
     grantId: string

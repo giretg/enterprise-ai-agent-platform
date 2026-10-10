@@ -26,6 +26,7 @@ import {
   type GitHubRepositoryAccess,
 } from './github-repository-access'
 import { decodeGitHubContentsBody } from './decode-github-contents-body'
+import type { TenantLanguage } from '@/lib/tenant-language'
 import {
   buildHttpApiClientErrorHint,
   buildHttpApiOversizedResponseHint,
@@ -692,10 +693,12 @@ function sleep(ms: number): Promise<void> {
 export class HttpApiClient {
   private defaultApiKey?: string
   private resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
+  private readonly language: TenantLanguage = 'hu'
 
   constructor(
     private config: HttpApiConfig,
     credentials: HttpApiCredentials,
+    options?: { language?: TenantLanguage },
   ) {
     if (typeof credentials === 'string') {
       this.defaultApiKey = credentials
@@ -703,6 +706,7 @@ export class HttpApiClient {
       this.defaultApiKey = credentials.defaultApiKey
       this.resolveProfileApiKey = credentials.resolveProfileApiKey
     }
+    if (options?.language) this.language = options.language
   }
 
   private isStub(): boolean {
@@ -945,6 +949,7 @@ export class HttpApiClient {
           oversizedSoftHint = buildHttpApiOversizedResponseHint({
             originalChars: effectiveChars,
             maxChars: max,
+            language: this.language,
           })
         }
       } catch {
@@ -954,6 +959,7 @@ export class HttpApiClient {
             originalChars: text.length,
             maxChars: max,
             preview: text.slice(0, max),
+            language: this.language,
           })
         } else {
           body = previewText
@@ -969,6 +975,7 @@ export class HttpApiClient {
             status: res.status,
             endpoint: endpoint ?? null,
             usedQueryKeys: params.query ? Object.keys(params.query) : [],
+            language: this.language,
           })
         : undefined
     const truncationHint =
@@ -981,6 +988,7 @@ export class HttpApiClient {
                 originalChars: text.length,
                 maxChars: max,
                 preview: text.slice(0, Math.min(max, text.length)),
+                language: this.language,
               }).hint
             : undefined
 

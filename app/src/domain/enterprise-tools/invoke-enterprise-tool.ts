@@ -22,6 +22,7 @@ import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
+import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
@@ -141,7 +142,11 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     accessToken?: string,
     actingUser?: HttpApiActingUser,
     agent?: { id: string; version?: number },
+    /** #717: a modellnek szóló http_api hintek nyelve. */
+    language?: TenantLanguage,
   ) => Promise<unknown>
+  /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
+  resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   executeKbTool?: (
     toolName: EnterpriseKbTool,
@@ -721,6 +726,8 @@ async function dispatchTool(
   }
   if (isEnterpriseHttpTool(input.toolName)) {
     const execute = deps.executeHttpApiTool ?? executeHttpApiTool
+    // #717: a hintek/hibák a tenant nyelvén — angol tenant ne kapjon magyar szöveget.
+    const language = await tenantLanguageOrDefault(deps.resolveTenantLanguage, input.connector.tenantId)
     return execute(
       input.toolName,
       input.args,
@@ -728,6 +735,7 @@ async function dispatchTool(
       input.accessToken,
       input.actingUser,
       input.agent,
+      language,
     )
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
