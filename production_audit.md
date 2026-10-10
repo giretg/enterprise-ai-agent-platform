@@ -7,6 +7,90 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-10 — Jóváhagyott delegált írás fiók-pecsét (#816 confused-deputy, a 10-09 HIGH residual root-cause javítása)
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb
+**dokumentált, bizonyított, JAVÍTATLAN** kockázat a 10-09-i kör HIGH residualja volt: a
+több kapcsolt Gmail/Drive fiók (#816, MERGED 10-08) jóváhagyás-határon átívelő
+**confused-deputy**-je. A 10-09 kör ezt 9/10 konfidenciával azonosította, de a tiszta fixet
+(„sémamigrációt igényel") szándékosan **külön PR + human review**-ra halasztotta. A nyitott
+PR-ek (#825 HITL-UI megjelenítés, #826 becenév-ütközés, #823 csak-teszt) a tényleges pecsét-
+logikát **nem** implementálják → a rés nyitva volt. Kézi end-to-end trace-szel megerősítve a
+finding valódisága, majd root-cause javítás.
+
+**Coverage (teljes enqueue→approve→execute identitás-folyam):** `invokeEnterpriseTool`
+(write-ág → `enqueueWrite`), `enqueueWriteForMcp`/`retryRound` (write-confirm argsHash-kötés),
+`loadAuthorizedWrite` + `enqueueGatewayOperation` (enqueue-kori grant-feloldás),
+`executeApprovedOperation` (jóváhagyás utáni újra-feloldás), `authorizeToolCall` +
+`resolveLinkedAccountGrant` (becenév→e-mail precedencia), a `GatewayOperation` séma és a
+Postgres + in-memory store.
+
+### Bizonyított finding (security, confused-deputy) — javítva (PR **#828**)
+
+**Jóváhagyott delegált írás a jóváhagyottól ELTÉRŐ fiókból futhat le.** Az enqueue a
+`loadAuthorizedWrite`-ban feloldja a `account` (becenév/e-mail) → grantot, de a feloldott
+`grantId`-t **eldobja** (csak `connectorId` + `argsJson` tárolódik). Az `executeApprovedOperation`
+a jóváhagyás után **újra feloldja** a becenevet az **akkori** grantok ellen. Ha a jóváhagyási
+ablakban a becenevet átirányítják (átnevezés, vagy fiók visszavonása + egy másik átnevezése
+ugyanarra a névre), a jóváhagyott írás **más postafiókba/Drive-ba** fut, mint amit a jóváhagyó
+látott. A write-confirm `argsHash` csak az `account` **sztringet** köti, nem a feloldott
+identitást.
+
+- **Hatás:** SoD esetén a jóváhagyó mást engedélyez, mint ami lefut (pl. céges helyett magánból
+  megy ki a levél); compliance-/bizalomvesztés. **Súlyosság:** közepes (a támadó a **saját**
+  fiókjai közt; nincs cross-tenant/user). A #823 csak-teszt a **visszavonás→semmi** utat
+  (`unknown_account`, fail-closed) fedte; a **másik-grantra-irányítás** rést nem.
+
+### Javítás (root-cause, a határon)
+- `0027` migráció: `gateway_operations.grant_id` (**nullable** UUID, FK nélkül).
+- enqueue: a `loadAuthorizedWrite` visszaadja és a művelet **lepecsételi** a feloldott `grantId`-t.
+- execute: ha `operation.grantId` meg van adva és az újraфеloldott grant **más** →
+  `grant_changed`, **fail-closed a token-feloldás ELŐTT**. A revoke→semmi út `unknown_account`
+  marad (változatlan). Visszafelé kompatibilis: a #816 előtti sorok és a nem-delegált műveletek
+  `grant_id`-ja NULL → nincs kényszerítés.
+- **Drift-ellenállás** (kapcsolódik a visszatérő 🔴 „deploy nem migrál"-hoz): ha a `grant_id`
+  oszlop hiányzik (drift), az enqueue hibázik → **nincs** naplózatlan/rossz-fiókos írás
+  (fail-closed). A nullable-oszlop mintát a #663 `designatedApprover*` már precedálta ugyanezen
+  a hot-path táblán.
+
+### Ellenőrzések
+- `npm run test:gateway-operation` — **zöld**, 2 új regressziós teszt: (1) becenév-átirányítás
+  másik grantra → `grant_changed`, a token **SOHA** nem oldódik fel (`resolved.length === 0`);
+  (2) változatlan esetben a **lepecsételt** (kiválasztott) grant fut. A teszt a kapu nélkül
+  megbukna (a magán token oldódna fel).
+- `test:enterprise-tools`, `test:linked-account` — zöld. (`per-user-connector.test.ts` továbbra is
+  **halott** — pre-existing hiányzó `tool-broker-service` modul, nincs CI; nem e kör.)
+- `tsc --noEmit` + `eslint` tiszta a módosított fájlokra.
+- **Kötelező scoped security scan** (discovery sub-agent + FP-szűrés): **0 high-confidence
+  finding** — a kapu az **egyetlen** végrehajtási út, a confused-deputy teljesen zárt (a
+  becenév→e-mail precedencia-eset is), nincs cross-tenant/leak (`grantId` ugyanazon principal
+  enqueue-feloldásából, a view nem adja ki), a migráció statikus DDL.
+- Független **/code-review** (Matt Pocock, 2 párhuzamos tengely): **Standards** — 1 actionable
+  (angol kapu-komment → **magyarra átvezetve**; a többi a meglévő store-plumbing mintát követi).
+  **Spec** — cél teljesül, nincs scope-creep, nincs blokkoló hiba (egyetlen végrehajtási út,
+  fail-closed, visszafelé kompatibilis, retry/idempotencia megőrzi a pecsétet).
+
+### PR
+- **#828** — `fix(gateway): pin selected linked account on approved delegated writes`
+  (branch `fix/gateway-op-grant-pin-approval`, `main`-ről). **Sémamigrációt tartalmaz** → a
+  10-09 kör előírása szerint **human review + gondos éles migráció** szükséges (nem auto-merge).
+
+### Residual risk / következő audithoz
+- **🟡 A pecsét grant-identitás (`grant.id`), nem token/e-mail pillanatkép.** A `tokenRef`
+  végrehajtáskor frissen olvasódik; egy azonos grant-id melletti token-csere a #816
+  fenyegetésmodellen **kívül** esik (a modell a becenév másik grantra irányítása). Dokumentált,
+  nem hiba.
+- **🟡 Egy-fiókos → több-fiókos a jóváhagyási ablakban:** egy visszafelé-kompatibilis (nincs
+  `account`) beküldést egy MÁSODIK fiók kapcsolása többértelművé tesz → `account_required` →
+  **fail-closed** (a már jóváhagyott művelet hibázik, nem rossz fiókba ír). Ritka, fail-safe,
+  eddig dokumentálatlan.
+- **A #825/#826 nyitott (UI-megjelenítés + becenév-ütközés)** kiegészítő védelem: a jóváhagyási
+  kártyán a konkrét postafiók (e-mail) megjelenítése + a becenév-egyediség szigorítása tovább
+  csökkenti a megtévesztés felületét. Érdemes a #828 mellé élesíteni.
+- A jóváhagyás-lifecycle **többi** tengelye (SoD designated-approver CAS, idempotencia-replay
+  konfliktus-szemantika, a `getGatewayOperation` tenant-szivárgás) e körben csak érintőlegesen
+  verifikált — önálló mély audit-scope lehet.
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
