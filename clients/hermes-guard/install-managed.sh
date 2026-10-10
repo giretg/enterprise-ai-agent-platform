@@ -16,8 +16,12 @@ if [ "${1:-}" = "--prefix" ]; then
   shift 2
 fi
 
-PKG="${1:?Használat: install-managed.sh [--prefix DIR] floor.json}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PKG="${1:-$SCRIPT_DIR/floor.json}"
+if [ ! -f "$PKG" ]; then
+  echo "Használat: install-managed.sh [--prefix DIR] [floor.json]" >&2
+  exit 1
+fi
 
 if [ -n "$PREFIX" ]; then
   MANAGED="$PREFIX/etc/hermes"

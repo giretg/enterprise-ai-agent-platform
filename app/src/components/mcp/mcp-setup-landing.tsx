@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
@@ -189,8 +189,85 @@ function HermesFooter() {
   )
 }
 
+export type HermesAdminMember = { userId: string; name: string; email: string }
+
 /** Csak adminnak: `modelKeyConfigured` null, ha a kulcs állapota nem olvasható. */
-export type HermesAdminSetup = { modelKeyConfigured: boolean | null }
+export type HermesAdminSetup = {
+  modelKeyConfigured: boolean | null
+  members: HermesAdminMember[]
+  defaultUserId?: string
+}
+
+function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup }) {
+  const t = useTranslations('GetStarted')
+  const id = useId()
+  const firstId = admin.defaultUserId && admin.members.some((m) => m.userId === admin.defaultUserId)
+    ? admin.defaultUserId
+    : admin.members[0]?.userId ?? ''
+  const [userId, setUserId] = useState(firstId)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+
+  async function download() {
+    if (!userId) return
+    setPending(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/client-policy/machine-floor?userId=${encodeURIComponent(userId)}&format=installer`)
+      if (!response.ok) throw new Error('download_failed')
+      const url = URL.createObjectURL(await response.blob())
+      const link = document.createElement('a')
+      link.href = url
+      link.download = t('hermesEntInstallerFile')
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError(t('hermesEntDownloadFailed'))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <HermesStep n={n} title={t('hermesEntInstallTitle')}>
+      <p>{t('hermesEntInstallBody')}</p>
+      {admin.members.length === 0 ? (
+        <p className="font-semibold text-coral-deep">{t('hermesEntNoMembers')}</p>
+      ) : (
+        <>
+          <label className="block text-sm" htmlFor={id}>
+            <span className="font-semibold text-ink">{t('hermesEntPickUser')}</span>
+            <select
+              id={id}
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              className="mt-1 block w-full rounded-lg border border-line bg-card px-3 py-2 text-ink"
+            >
+              {admin.members.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.name} ({member.email})
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => void download()}
+            disabled={pending || !userId}
+            className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep disabled:opacity-50"
+          >
+            {t(pending ? 'hermesEntDownloading' : 'hermesEntDownloadInstaller')}
+          </button>
+          {error ? <p role="status" className="text-sm text-coral-deep">{error}</p> : null}
+          <p>{t('hermesEntInstallRun')}</p>
+          <CodeBlock value={t('hermesEntInstallCommand')} copyLabel={t('copyCommand')} />
+          <p className="text-xs text-ink-faint">{t('hermesEntInstallHint')}</p>
+          <p className="text-xs text-ink-faint">{t('hermesEntInstallWindows')}</p>
+        </>
+      )}
+    </HermesStep>
+  )
+}
 
 export function McpSetupLanding({
   setup,
@@ -256,21 +333,11 @@ export function McpSetupLanding({
                       <p>{t('hermesEntPolicyBody')}</p>
                       <Link href="/control-plane/ai-client-policy" className="font-semibold text-coral-deep underline">{t('hermesManagedOpen')}</Link>
                     </HermesStep>
-                    <HermesStep n={3} title={t('hermesEntFloorTitle')}>
-                      <p>{t('hermesEntFloorBody')}</p>
-                    </HermesStep>
-                    <HermesStep n={4} title={t('hermesEntInstallTitle')}>
-                      <p>{t('hermesEntInstallBody')}</p>
-                      <CodeBlock value="sudo ./install-managed.sh floor.json" copyLabel={t('copyCommand')} />
-                      <div className="flex flex-wrap gap-3">
-                        <a href="https://github.com/giretg/enterprise-ai-agent-platform/archive/refs/heads/main.zip" className="font-semibold text-coral-deep underline">{t('hermesManagedPackage')}</a>
-                        <a href="https://github.com/giretg/enterprise-ai-agent-platform/tree/main/clients/hermes-guard" target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline">{t('hermesManagedDocs')} ↗</a>
-                      </div>
-                    </HermesStep>
-                    <HermesStep n={5} title={t('hermesEntSecurityTitle')}>
+                    <HermesInstallerStep n={3} admin={hermesAdmin} />
+                    <HermesStep n={4} title={t('hermesEntSecurityTitle')}>
                       <p>{t('hermesEntSecurityBody')}</p>
                     </HermesStep>
-                    <HermesStep n={6} title={t('hermesEntVerifyTitle')}>
+                    <HermesStep n={5} title={t('hermesEntVerifyTitle')}>
                       <p>{t('hermesEntVerifyBody')}</p>
                     </HermesStep>
                   </ol>
