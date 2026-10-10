@@ -44,6 +44,7 @@ export type GatewayOperationRecord = {
   idempotencyKey: string
   status: GatewayOperationStatus
   connectorId: string | null
+  grantId: string | null
   designatedApproverUserId: string | null
   designatedApproverName: string | null
   errorCode: string | null
@@ -68,6 +69,7 @@ export type GatewayOperationCreateInput = {
   argsJson: unknown
   idempotencyKey: string
   connectorId: string | null
+  grantId?: string | null
   designatedApproverUserId?: string | null
   designatedApproverName?: string | null
 }

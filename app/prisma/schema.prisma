@@ -923,6 +923,8 @@ model GatewayOperation {
   idempotencyKey            String                 @map("idempotency_key")
   status                    GatewayOperationStatus
   connectorId               String?                @map("connector_id") @db.Uuid
+  /** #816: enqueue-kori pillanatkép a kiválasztott kapcsolt fiók grantjáról. */
+  grantId                   String?                @map("grant_id") @db.Uuid
   /** #663: enqueue-kori pillanatkép a megnevezett jóváhagyóról (konnektor > agent). */
   designatedApproverUserId  String?                @map("designated_approver_user_id") @db.Uuid
   designatedApproverName    String?                @map("designated_approver_name")
