@@ -90,6 +90,14 @@ class ExcGuard(unittest.TestCase):
         self.assertEqual(broken.returncode, 2)
         self.assertIn("nem engedem", broken.stderr)
 
+    def test_user_owned_managed_config_is_rejected(self):
+        with tempfile.TemporaryDirectory() as managed:
+            with open(os.path.join(managed, "config.yaml"), "w") as fh:
+                fh.write('model:\n  base_url: "https://ai.example/api/model-gateway/v1"\n')
+            self.assertTrue(guard_script.user_can_change(os.path.join(managed, "config.yaml")))
+            with self.assertRaises(ValueError):
+                guard_script.managed_gateway_url(managed)
+
 
 if __name__ == "__main__":
     unittest.main()

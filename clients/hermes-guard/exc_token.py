@@ -19,6 +19,14 @@ from urllib.parse import urlparse
 LEEWAY = 60
 SERVER = os.environ.get("EXCELLENCE_MCP_SERVER", "excellence")
 CACHE_NAME = "excellence-gateway-token.json"
+MANAGED_DIR = r"C:\ProgramData\Excellence\hermes" if os.name == "nt" else "/etc/hermes"
+
+
+def default_home():
+    """A Hermes alapértelmezett profilja: Windowson %LOCALAPPDATA%\\hermes, máshol ~/.hermes."""
+    if os.name == "nt":
+        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"), "hermes")
+    return os.path.expanduser("~/.hermes")
 
 
 class Fail(Exception):
@@ -60,7 +68,7 @@ def install_id(home):
     env = os.environ.get("EXC_INSTALL_ID", "").strip()
     if env:
         return env
-    for path in ("/etc/hermes/excellence-install-id", os.path.join(home, "excellence-install-id")):
+    for path in (os.path.join(MANAGED_DIR, "excellence-install-id"), os.path.join(home, "excellence-install-id")):
         try:
             v = open(path).read().strip()
             if v:
@@ -130,7 +138,7 @@ def get_token(home, now=time.time, fetcher=fetch):
 
 
 def main():
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    home = os.environ.get("HERMES_HOME") or default_home()
     try:
         sys.stdout.write(get_token(home))
     except Fail as e:

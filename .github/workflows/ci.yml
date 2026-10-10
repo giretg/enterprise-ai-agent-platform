@@ -62,6 +62,7 @@ jobs:
         run: |
           python3 ../clients/hermes-guard/test_exc_token.py
           python3 ../clients/hermes-guard/test_install_managed.py
+          python3 ../clients/hermes-guard/test_install_managed_ps.py
           python3 ../clients/hermes-guard/test_guard_policy.py
           python3 ../clients/hermes-guard/test_guard_runtime.py
           python3 ../clients/hermes-guard/test_exc_guard.py
@@ -132,6 +133,21 @@ jobs:
           npm run test:clerk-invitation-membership
           npm run test:tenant-management
           npm run test:self-service-tenant
+
+  hermes-guard-windows:
+    # #755: a natív Windows telepítő élesben (ACL, gépszintű env, .cmd → python -I → exc-guard).
+    name: Hermes Guard Windows-telepítő
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: clients/hermes-guard
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install-managed.ps1 + exc-guard + exc-token
+        run: python test_install_managed_windows.py
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)

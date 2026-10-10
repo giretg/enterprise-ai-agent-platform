@@ -12,10 +12,37 @@ import os
 import sys
 
 
-def managed_gateway_url():
-    path = "/etc/hermes/config.yaml"
-    info = os.stat(path)
-    if info.st_uid != 0 or info.st_mode & 0o022:
+def user_can_change(path):
+    """Az aktuális user módosíthatja vagy törölheti-e a fájlt."""
+    if os.name != "nt":
+        info = os.stat(path)
+        return info.st_uid != 0 or bool(info.st_mode & 0o022)
+    # Windowson az st_uid mindig 0: a tényleges ACL-t kérdezzük meg egy írási megnyitással,
+    # ami a tartalmat nem módosítja. A könyvtárban a fájl cseréje is módosítás.
+    import ctypes
+    from ctypes import wintypes
+    create = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create.restype = wintypes.HANDLE
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    close = ctypes.windll.kernel32.CloseHandle
+    share, open_existing, backup_semantics = 7, 3, 0x02000000
+    checks = (
+        (path, 0x40000000 | 0x00010000, 0),  # GENERIC_WRITE | DELETE
+        (os.path.dirname(path), 0x2 | 0x40, backup_semantics),  # FILE_ADD_FILE | FILE_DELETE_CHILD
+    )
+    for target, access, flags in checks:
+        handle = create(target, access, share, None, open_existing, flags, None)
+        if handle not in (None, wintypes.HANDLE(-1).value):
+            close(handle)
+            return True
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    return False
+
+
+def managed_gateway_url(managed_dir):
+    path = os.path.join(managed_dir, "config.yaml")
+    if user_can_change(path):
         raise ValueError("A céges konfiguráció rendszergazdai tulajdont és írásvédelmet igényel")
     with open(path, encoding="utf-8") as fh:
         in_model = False
@@ -32,6 +59,7 @@ def plugin_dir():
     candidates = [
         os.path.join(here, "excellence-guard"),
         "/opt/excellence/hermes-plugins/excellence-guard",
+        r"C:\ProgramData\Excellence\hermes-plugins\excellence-guard",
     ]
     for path in candidates:
         if os.path.isfile(os.path.join(path, "policy.py")):
@@ -58,12 +86,12 @@ def main():
         payload = {}
     tool = payload.get("tool_name") or ""
     args = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    home = os.environ.get("HERMES_HOME") or runtime.default_home()
     try:
         token_helper = runtime.load_exc_token()
         origin = token_helper.read_profile(home)[0] if token_helper else None
         expected = origin + "/api/model-gateway/v1" if origin else None
-        if not policy.is_excellence_route("excellence", managed_gateway_url(), expected):
+        if not policy.is_excellence_route("excellence", managed_gateway_url(runtime.DEFAULT_MANAGED_DIR), expected):
             raise ValueError("A profil nem a céges modell-útvonalhoz tartozik")
         status, snapshot = runtime.fetch_snapshot(home)
     except Exception:

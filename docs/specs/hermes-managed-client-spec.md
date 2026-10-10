@@ -375,7 +375,7 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 |---|---|---|---|
 | **U1** | Nincs managed MCP-szerver allowlist | `mcp.allowed_servers` (managed pinelhető) | Guard tool-szinten |
 | **U2** | A `--safe-mode` kikapcsolja a managed pluginokat és hookokat | `security.safe_mode: deny`, vagy a managed-ből pinelt pluginok és hookok maradjanak | Model Gateway + Open mód |
-| **U3** | Natív macOS/Windows managed location, MDM-profil | `get_managed_dir()` seam (előkészítve) | `/etc/hermes` macOS-en működik (kimérve); Windows **[POC]** |
+| **U3** | Natív macOS/Windows managed location, MDM-profil | `get_managed_dir()` seam (előkészítve) | `/etc/hermes` macOS-en működik (kimérve); Windows: gépszintű `HERMES_MANAGED_DIR` → `C:\ProgramData\Excellence\hermes` (#755, K8) |
 | **U4** | A middleware fail-open | `fail_closed` az `llm_execution`-re | `pre_tool_call` + gateway |
 | **U5** | Nincs skill-allowlist vagy aláírás | `skills.allowed` vagy aláírt bundle | Manifest + észlelés |
 
@@ -408,7 +408,7 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 | K5 | Plugin-backend esetén a fájl-toolok is a sandboxban futnak-e? |
 | K6 | Látszik-e a `/skill` slash-injekció a Model Gateway kérésben? |
 | K7 | `key_cmd` token-lejárat és frissítés hosszú sessionben. |
-| K8 | Windows: managed dir és shell hook (natív és WSL). |
+| K8 | Windows: managed dir és shell hook (natív és WSL). **[forrás, 2026-10-10, Hermes `a62979dc`]:** natív Windowson a `get_managed_dir()` csak a `HERMES_MANAGED_DIR`-t vagy a `/etc/hermes`-t nézi (ez az aktuális meghajtó gyökeréhez relatív), natív hely nincs (U3). A Hermes-profil `%LOCALAPPDATA%\hermes`. A shell hook `shell=False`-szal, `split_command_line`-nal fut, a `.py`-t a Hermes saját Pythonjával indítja, a `.cmd` közvetlenül fut; a `key_cmd` `shell=True`. **Megoldás (#755):** `install-managed.ps1` → `C:\ProgramData\Excellence` (ACL: SYSTEM/Administrators írhat, Users olvas), gépszintű `HERMES_MANAGED_DIR`, `.cmd` wrapper gépszintű Pythonnal (`-I -X utf8`); a padló `?platform=windows` paraméterrel kérhető. WSL = Linux, ott az `install-managed.sh` fut. Windows CI-futtatón kimérve; élő Hermes Desktop-mérés Windowson még nincs. |
 | K9 | Le tudja-e kérdezni a Guard a session tényleges terminál-backendjét és effektív konfigját (profilonként)? |
 | K10 | Mi a Hermes system promptjának stabil (cache-elt) része, és mit kell mégis tokenizálni benne (memória, context-fájlok)? |
 | K11 | A `key_cmd` helper a kiszolgált Bot-profil `HERMES_HOME`-jával fut-e (Desktop multiplex módban is), és eléri-e a profil `mcp-tokens/` tokenjét? **[forrás]:** igen (`tools/environments/local.py` `served_profile_child_env`, `mcp_oauth.py` `HERMES_HOME/mcp-tokens/`), a `key_cmd` kérésenként fut (`runtime_provider_custom.py:567`) → a helpernek cache-elnie kell. Élőben mérendő. |

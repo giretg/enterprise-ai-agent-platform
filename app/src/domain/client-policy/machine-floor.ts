@@ -81,8 +81,19 @@ export const PINNED_EMPTY_ENV_KEYS = [
   'ZAI_API_KEY',
 ] as const
 
-export const EXC_TOKEN_KEY_CMD = '/opt/excellence/bin/exc-token model'
-export const EXC_GUARD_COMMAND = '/opt/excellence/bin/exc-guard'
+/**
+ * A telepítő ide teszi a token-segédet és a shell-hook tartalékot. Windowson a `.cmd` wrapper
+ * a telepítéskor rögzített, gépszintű Pythont indítja `-I` kapcsolóval (#755).
+ */
+export const MACHINE_PLATFORMS = ['posix', 'windows'] as const
+export type MachinePlatform = (typeof MACHINE_PLATFORMS)[number]
+export const CLIENT_COMMANDS: Record<MachinePlatform, { keyCmd: string; guard: string }> = {
+  posix: { keyCmd: '/opt/excellence/bin/exc-token model', guard: '/opt/excellence/bin/exc-guard' },
+  windows: {
+    keyCmd: 'C:\\ProgramData\\Excellence\\bin\\exc-token.cmd model',
+    guard: 'C:\\ProgramData\\Excellence\\bin\\exc-guard.cmd',
+  },
+}
 export const GUARD_PLUGIN_NAME = 'excellence-guard'
 
 /** A Guard heartbeatje ugyanezt a kanonikus hash-t küldi (V1-6). A fájltartalom bájtja számít, a sorrend fix. */
@@ -97,6 +108,7 @@ export type ManagedDirFiles = {
 
 export type MachineFloorPackage = {
   installId: string
+  platform: MachinePlatform
   managedDirHash: string
   gatewayBaseUrl: string
   agentIds: string[]
@@ -147,7 +159,12 @@ export function renderManagedEnv(): string {
   return lines.join('\n')
 }
 
-export function renderManagedConfig(input: { gatewayBaseUrl: string; disabledToolsets: readonly string[] }): string {
+export function renderManagedConfig(input: {
+  gatewayBaseUrl: string
+  disabledToolsets: readonly string[]
+  platform?: MachinePlatform
+}): string {
+  const commands = CLIENT_COMMANDS[input.platform ?? 'posix']
   const url = q(input.gatewayBaseUrl)
   const aux = AUXILIARY_TASKS.map(
     (task) =>
@@ -165,7 +182,7 @@ export function renderManagedConfig(input: { gatewayBaseUrl: string; disabledToo
     'providers:',
     '  excellence:',
     `    api: ${url}`,
-    `    key_cmd: ${q(EXC_TOKEN_KEY_CMD)}`,
+    `    key_cmd: ${q(commands.keyCmd)}`,
     '    session_affinity_header: "X-Excellence-Session"',
     'auxiliary:',
     aux,
@@ -176,7 +193,7 @@ export function renderManagedConfig(input: { gatewayBaseUrl: string; disabledToo
     '  disabled: []',
     'hooks:',
     '  pre_tool_call:',
-    `    - command: ${q(EXC_GUARD_COMMAND)}`,
+    `    - command: ${q(commands.guard)}`,
     '      timeout: 30',
     '      fail_closed: true',
     'hooks_auto_accept: true',
@@ -200,6 +217,7 @@ export function buildManagedFiles(input: {
   gatewayBaseUrl: string
   disabledToolsets: readonly string[]
   installId: string
+  platform?: MachinePlatform
 }): { files: ManagedDirFiles; managedDirHash: string } {
   const files: ManagedDirFiles = {
     'config.yaml': renderManagedConfig(input),
@@ -220,11 +238,12 @@ export async function resolveMachineFloor(
 
 export async function issueMachineFloor(
   deps: MachineFloorDeps,
-  input: { tenantId: string; userId: string; gatewayBaseUrl: string },
+  input: { tenantId: string; userId: string; gatewayBaseUrl: string; platform?: MachinePlatform },
 ): Promise<MachineFloorPackage> {
+  const platform = input.platform ?? 'posix'
   const { agentIds, disabledToolsets } = await resolveMachineFloor(deps, input)
   const installId = await deps.floors.getOrCreateInstallId({ ...input, installId: (deps.newInstallId ?? randomUUID)() })
-  const built = buildManagedFiles({ gatewayBaseUrl: input.gatewayBaseUrl, disabledToolsets, installId })
-  await deps.floors.save({ ...input, installId, managedDirHash: built.managedDirHash })
-  return { installId, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, ...built }
+  const built = buildManagedFiles({ gatewayBaseUrl: input.gatewayBaseUrl, disabledToolsets, installId, platform })
+  await deps.floors.save({ tenantId: input.tenantId, userId: input.userId, installId, managedDirHash: built.managedDirHash })
+  return { installId, platform, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, ...built }
 }
