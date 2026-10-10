@@ -262,6 +262,7 @@ function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup 
           <p>{t('hermesEntInstallRun')}</p>
           <CodeBlock value={t('hermesEntInstallCommand')} copyLabel={t('copyCommand')} />
           <p className="text-xs text-ink-faint">{t('hermesEntInstallHint')}</p>
+          <p className="text-xs text-ink-faint">{t('hermesEntInstallWindows')}</p>
         </>
       )}
     </HermesStep>

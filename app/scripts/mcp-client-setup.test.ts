@@ -169,6 +169,7 @@ function main() {
     assert.match(html, /Kovács Anna \(anna@example.com\)/)
     assert.match(html, /Telepítő letöltése/)
     assert.match(html, /sudo bash excellence-telepito\.sh/)
+    assert.match(html, /Windows: a natív Hermesben a céges telepítő még nincs kész/)
     assert.doesNotMatch(html, /github\.com\/giretg\/enterprise-ai-agent-platform\/archive/)
     assert.doesNotMatch(html, /install-managed\.sh floor\.json/)
   })

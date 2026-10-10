@@ -14,6 +14,8 @@ sudo bash excellence-telepito.sh
 
 4. Indítsd újra a Hermest. A munkatárs az Első lépések további pontjai szerint köti be a Botokat.
 
+Macen és Linuxon működik. A natív Windows Hermesnek még nincs céges telepítője (#755): a Hermes managed könyvtára POSIX-első, a padló Unix-útvonalakat hash-el.
+
 Ugyanez a gomb a **Hermes céges kontroll** oldalon a munkatárs sorában is ott van. A telepítő újrafuttatható: engedélybővítés után töltsd le újra, és futtasd megint. Az `installId` ugyanaz marad.
 
 Adj a munkatársnak hozzáférést legalább egy éles AI-munkatárshoz, mielőtt telepítesz; üres hozzáférésnél a gép minden helyi műveletet tilt.
