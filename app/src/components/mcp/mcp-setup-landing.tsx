@@ -115,7 +115,92 @@ function HermesTerminalFallback({ command }: { command: string }) {
   )
 }
 
-export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup; continueHref: string }) {
+function HermesDownloadButton() {
+  const t = useTranslations('GetStarted')
+  return (
+    <a href={HERMES_LINKS.download} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
+      {t('hermesDownload')} <span aria-hidden="true">↗</span>
+    </a>
+  )
+}
+
+function HermesConnectStep({ n, setup, children }: { n: number; setup: McpClientSetup; children?: ReactNode }) {
+  const t = useTranslations('GetStarted')
+  return (
+    <HermesStep n={n} title={t('hermesStep3Title')}>
+      <p>{t('hermesStep3Body')}</p>
+      <a href={setup.hermesInstallHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
+        {t('hermesInstall')} <span aria-hidden="true">→</span>
+      </a>
+      <p className="text-xs text-ink-faint">{t('hermesStep3Manual')}</p>
+      <HermesTerminalFallback command={setup.hermesCommand} />
+      <p className="text-xs text-ink-faint">{t('hermesStep3Hint')}</p>
+      {children}
+    </HermesStep>
+  )
+}
+
+/** A Botok létrehozása és használata: a két Hermes-útban azonos, csak a sorszám más. */
+function HermesBotSteps({ n, setup }: { n: number; setup: McpClientSetup }) {
+  const t = useTranslations('GetStarted')
+  return (
+    <>
+      <HermesStep n={n} title={t('hermesStep4Title')}>
+        <p>{t('hermesStep4Body')}</p>
+        <CodeBlock value={setup.hermesSyncPrompt} copyLabel={t('copyPrompt')} />
+        <p className="text-xs text-ink-faint">{t('hermesStep4Hint')}</p>
+      </HermesStep>
+      <HermesStep n={n + 1} title={t('hermesStep5Title')}>
+        <p>{t('hermesStep5Body')}</p>
+        <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
+      </HermesStep>
+    </>
+  )
+}
+
+function HermesFooter() {
+  const t = useTranslations('GetStarted')
+  return (
+    <>
+      <div className="rounded-xl border border-line bg-card p-3">
+        <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
+        <p className="mt-1">{t('hermesUpdateBody')}</p>
+      </div>
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('hermesLinksTitle')}</p>
+        <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          {(
+            [
+              ['hermesLinkDocs', HERMES_LINKS.docs],
+              ['hermesLinkBotMode', HERMES_LINKS.botMode],
+              ['hermesLinkMcp', HERMES_LINKS.mcp],
+              ['hermesLinkProfiles', HERMES_LINKS.profileDistributions],
+            ] as const
+          ).map(([key, href]) => (
+            <li key={key}>
+              <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline-offset-2 hover:underline">
+                {t(key)} ↗
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </>
+  )
+}
+
+/** Csak adminnak: `modelKeyConfigured` null, ha a kulcs állapota nem olvasható. */
+export type HermesAdminSetup = { modelKeyConfigured: boolean | null }
+
+export function McpSetupLanding({
+  setup,
+  continueHref,
+  hermesAdmin,
+}: {
+  setup: McpClientSetup
+  continueHref: string
+  hermesAdmin?: HermesAdminSetup
+}) {
   const t = useTranslations('GetStarted')
   useEffect(() => {
     markSetupSeen()
@@ -146,87 +231,93 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
 
         <div className="space-y-3">
           <ClientCard
-            name="Hermes Desktop"
-            description={t('hermesDesc')}
+            name="Hermes Desktop Enterprise"
+            description={t('hermesEntDesc')}
             logo="/mcp-clients/hermes.svg"
             logoBackground="bg-[#ececf2]"
             badge={t('hermesBadge')}
           >
+            <p>{t('hermesEntIntro')}</p>
+            <section className="space-y-3 rounded-xl border border-coral/30 bg-card p-3">
+              <p className="font-semibold text-ink">{t('hermesEntAdminTitle')}</p>
+              {hermesAdmin ? (
+                <>
+                  <ol className="space-y-4">
+                    <HermesStep n={1} title={t('hermesEntKeyTitle')}>
+                      <p>{t('hermesEntKeyBody')}</p>
+                      {hermesAdmin.modelKeyConfigured === null ? null : (
+                        <p className={hermesAdmin.modelKeyConfigured ? 'text-xs text-ink-faint' : 'font-semibold text-coral-deep'}>
+                          {t(hermesAdmin.modelKeyConfigured ? 'hermesEntKeyOk' : 'hermesEntKeyMissing')}
+                        </p>
+                      )}
+                      <Link href="/control-plane/settings" className="font-semibold text-coral-deep underline">{t('hermesEntKeyOpen')}</Link>
+                    </HermesStep>
+                    <HermesStep n={2} title={t('hermesEntPolicyTitle')}>
+                      <p>{t('hermesEntPolicyBody')}</p>
+                      <Link href="/control-plane/ai-client-policy" className="font-semibold text-coral-deep underline">{t('hermesManagedOpen')}</Link>
+                    </HermesStep>
+                    <HermesStep n={3} title={t('hermesEntFloorTitle')}>
+                      <p>{t('hermesEntFloorBody')}</p>
+                    </HermesStep>
+                    <HermesStep n={4} title={t('hermesEntInstallTitle')}>
+                      <p>{t('hermesEntInstallBody')}</p>
+                      <CodeBlock value="sudo ./install-managed.sh floor.json" copyLabel={t('copyCommand')} />
+                      <div className="flex flex-wrap gap-3">
+                        <a href="https://github.com/giretg/enterprise-ai-agent-platform/archive/refs/heads/main.zip" className="font-semibold text-coral-deep underline">{t('hermesManagedPackage')}</a>
+                        <a href="https://github.com/giretg/enterprise-ai-agent-platform/tree/main/clients/hermes-guard" target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline">{t('hermesManagedDocs')} ↗</a>
+                      </div>
+                    </HermesStep>
+                    <HermesStep n={5} title={t('hermesEntSecurityTitle')}>
+                      <p>{t('hermesEntSecurityBody')}</p>
+                    </HermesStep>
+                    <HermesStep n={6} title={t('hermesEntVerifyTitle')}>
+                      <p>{t('hermesEntVerifyBody')}</p>
+                    </HermesStep>
+                  </ol>
+                  <p className="text-xs text-ink-faint">{t('hermesManagedLimits')}</p>
+                </>
+              ) : (
+                <p>{t('hermesEntAdminNote')}</p>
+              )}
+            </section>
+            <section className="space-y-3">
+              <p className="font-semibold text-ink">{t('hermesEntUserTitle')}</p>
+              <ol className="space-y-4">
+                <HermesStep n={1} title={t('hermesStep1Title')}>
+                  <p>{t('hermesEntStep1Body')}</p>
+                  <HermesDownloadButton />
+                </HermesStep>
+                <HermesConnectStep n={2} setup={setup}>
+                  <p className="text-xs text-ink-faint">{t('hermesEntNoModel')}</p>
+                </HermesConnectStep>
+                <HermesBotSteps n={3} setup={setup} />
+              </ol>
+            </section>
+            <HermesFooter />
+          </ClientCard>
+
+          <ClientCard
+            name="Hermes Desktop"
+            description={t('hermesDesc')}
+            logo="/mcp-clients/hermes.svg"
+            logoBackground="bg-[#ececf2]"
+          >
             <p>{t('hermesIntro')}</p>
+            <p className="text-xs text-ink-faint">{t('hermesPersonalNote')}</p>
             <ol className="space-y-4">
               <HermesStep n={1} title={t('hermesStep1Title')}>
                 <p>{t('hermesStep1Body')}</p>
-                <a href={HERMES_LINKS.download} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
-                  {t('hermesDownload')} <span aria-hidden="true">↗</span>
-                </a>
+                <HermesDownloadButton />
               </HermesStep>
               <HermesStep n={2} title={t('hermesStep2Title')}>
                 <p>{t('hermesStep2Body')}</p>
                 <p className="text-xs text-ink-faint">{t('hermesStep2Hint')}</p>
                 <HermesTerminalFallback command="hermes model" />
               </HermesStep>
-              <HermesStep n={3} title={t('hermesStep3Title')}>
-                <p>{t('hermesStep3Body')}</p>
-                <a href={setup.hermesInstallHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
-                  {t('hermesInstall')} <span aria-hidden="true">→</span>
-                </a>
-                <p className="text-xs text-ink-faint">{t('hermesStep3Manual')}</p>
-                <HermesTerminalFallback command={setup.hermesCommand} />
-                <p className="text-xs text-ink-faint">{t('hermesStep3Hint')}</p>
-              </HermesStep>
-              <HermesStep n={4} title={t('hermesStep4Title')}>
-                <p>{t('hermesStep4Body')}</p>
-                <CodeBlock value={setup.hermesSyncPrompt} copyLabel={t('copyPrompt')} />
-                <p className="text-xs text-ink-faint">{t('hermesStep4Hint')}</p>
-              </HermesStep>
-              <HermesStep n={5} title={t('hermesStep5Title')}>
-                <p>{t('hermesStep5Body')}</p>
-                <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
-              </HermesStep>
+              <HermesConnectStep n={3} setup={setup} />
+              <HermesBotSteps n={4} setup={setup} />
             </ol>
-            <details id="hermes-company-controls" className="rounded-xl border border-coral/30 bg-card p-3">
-              <summary className="cursor-pointer font-semibold text-ink">{t('hermesManagedTitle')}</summary>
-              <div className="mt-3 space-y-3">
-                <p>{t('hermesManagedIntro')}</p>
-                <ol className="space-y-3">
-                  <li>{t('hermesManagedPolicy')}</li>
-                  <li>{t('hermesManagedDownload')}</li>
-                  <li>{t('hermesManagedInstall')}</li>
-                  <li><CodeBlock value="sudo ./install-managed.sh floor.json" copyLabel={t('copyCommand')} /></li>
-                  <li>{t('hermesManagedVerify')}</li>
-                  <li>{t('hermesManagedSecurity')}</li>
-                </ol>
-                <p className="text-xs text-ink-faint">{t('hermesManagedLimits')}</p>
-                <div className="flex flex-wrap gap-3">
-                  <Link href="/control-plane/ai-client-policy" className="font-semibold text-coral-deep underline">{t('hermesManagedOpen')}</Link>
-                  <a href="https://github.com/giretg/enterprise-ai-agent-platform/archive/refs/heads/main.zip" className="font-semibold text-coral-deep underline">{t('hermesManagedPackage')}</a>
-                  <a href="https://github.com/giretg/enterprise-ai-agent-platform/tree/main/clients/hermes-guard" target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline">{t('hermesManagedDocs')} ↗</a>
-                </div>
-              </div>
-            </details>
-            <div className="rounded-xl border border-line bg-card p-3">
-              <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
-              <p className="mt-1">{t('hermesUpdateBody')}</p>
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('hermesLinksTitle')}</p>
-              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                {(
-                  [
-                    ['hermesLinkDocs', HERMES_LINKS.docs],
-                    ['hermesLinkBotMode', HERMES_LINKS.botMode],
-                    ['hermesLinkMcp', HERMES_LINKS.mcp],
-                    ['hermesLinkProfiles', HERMES_LINKS.profileDistributions],
-                  ] as const
-                ).map(([key, href]) => (
-                  <li key={key}>
-                    <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline-offset-2 hover:underline">
-                      {t(key)} ↗
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <HermesFooter />
           </ClientCard>
 
           <ClientCard name="Codex" description={t('codexDesc')} logo="/mcp-clients/codex.svg" logoBackground="bg-[#e6eee9]">
