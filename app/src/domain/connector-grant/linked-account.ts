@@ -58,18 +58,27 @@ function matchesHandle(grant: LinkedAccountGrant, query: string): 'nickname' | '
 }
 
 export function nicknameTakenByPeer(
-  grants: Array<{ id: string; nickname: string | null; status?: string }>,
+  grants: Array<{
+    id: string
+    nickname: string | null
+    accountLabel?: string | null
+    status?: string
+  }>,
   nickname: string,
   exceptId?: string,
 ): boolean {
   const query = nickname.trim().toLowerCase()
   if (!query) return false
-  return grants.some(
-    (grant) =>
-      grant.id !== exceptId &&
-      (grant.status == null || grant.status === 'active') &&
-      grant.nickname?.trim().toLowerCase() === query,
-  )
+  return grants.some((grant) => {
+    if (grant.id === exceptId) return false
+    if (grant.status != null && grant.status !== 'active') return false
+    if (grant.nickname?.trim().toLowerCase() === query) return true
+    // Becenév ne ütközzön más aktív fiók e-mailjével: a whoami `account` mezője
+    // és a resolveLinkedAccountGrant különben két grantot is ugyanarra a
+    // stringre kötne, és a céges címre szánt írás a magán postafiókból mehetne.
+    if (grant.accountLabel?.trim().toLowerCase() === query) return true
+    return false
+  })
 }
 
 export function resolveLinkedAccountGrant<T extends LinkedAccountGrant>(
@@ -88,9 +97,20 @@ export function resolveLinkedAccountGrant<T extends LinkedAccountGrant>(
     return { ok: false, reason: 'account_required', accounts }
   }
 
-  const byNickname = active.filter((grant) => matchesHandle(grant, requested) === 'nickname')
-  if (byNickname.length === 1) return { ok: true, grant: byNickname[0] }
-  const byEmail = active.filter((grant) => matchesHandle(grant, requested) === 'email')
-  if (byEmail.length === 1) return { ok: true, grant: byEmail[0] }
+  // Egyezés becenév / e-mail / grant.id szerint. Ha több grant is találatot ad
+  // (pl. az egyik beceneve a másik e-mailje), fail-closed — ne válasszunk
+  // hallgatólag a becenév javára (rossz postafiók / Drive).
+  const matched = new Map<string, T>()
+  for (const grant of active) {
+    if (matchesHandle(grant, requested) || grant.id.toLowerCase() === requested) {
+      matched.set(grant.id, grant)
+    }
+  }
+  if (matched.size === 1) {
+    return { ok: true, grant: matched.values().next().value as T }
+  }
+  if (matched.size > 1) {
+    return { ok: false, reason: 'account_required', accounts }
+  }
   return { ok: false, reason: 'unknown_account', accounts }
 }
