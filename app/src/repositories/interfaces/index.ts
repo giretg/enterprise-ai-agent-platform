@@ -87,6 +87,13 @@ export interface AgentRepository {
     agentId: string
     memoryWriteMode: Agent['memoryWriteMode']
   }): Promise<Agent>
+  updateWriteApprovalModes(input: {
+    agentId: string
+    memoryWriteMode: Agent['memoryWriteMode']
+    httpApiWriteMode: Agent['httpApiWriteMode']
+    gmailWriteMode: Agent['gmailWriteMode']
+    driveWriteMode: Agent['driveWriteMode']
+  }): Promise<Agent>
   updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent>
   updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent>
   updateModelConfig(input: { agentId: string; modelConfig: Prisma.InputJsonValue }): Promise<Agent>

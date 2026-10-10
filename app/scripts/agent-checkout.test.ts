@@ -278,6 +278,16 @@ async function main() {
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
   })
 
+  await check('#739 briefing lists direct writes when approval is off', () => {
+    const briefing = renderAgentBriefing({
+      definition: definition(),
+      skills: [],
+      writeModes: { memory: 'direct', httpApi: 'direct', gmail: 'approval', drive: 'approval' },
+    })
+    assert.match(briefing, /These writes run immediately \(logged, no approval link\): memory, company HTTP APIs/)
+    assert.match(briefing, /These writes wait for a human: Gmail, Drive and Sheets/)
+  })
+
   await check('#660 briefing includes published rules in full with override hint (blog / Csilla eval)', () => {
     const csillaRule = 'Do not publish blog posts without Csilla approval.'
     const def = definition({

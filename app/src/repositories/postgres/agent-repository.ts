@@ -111,6 +111,24 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateWriteApprovalModes(input: {
+    agentId: string
+    memoryWriteMode: Agent['memoryWriteMode']
+    httpApiWriteMode: Agent['httpApiWriteMode']
+    gmailWriteMode: Agent['gmailWriteMode']
+    driveWriteMode: Agent['driveWriteMode']
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: {
+        memoryWriteMode: input.memoryWriteMode,
+        httpApiWriteMode: input.httpApiWriteMode,
+        gmailWriteMode: input.gmailWriteMode,
+        driveWriteMode: input.driveWriteMode,
+      },
+    })
+  }
+
   async updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },

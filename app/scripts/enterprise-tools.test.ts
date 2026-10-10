@@ -1308,6 +1308,101 @@ async function main() {
     assert.deepEqual(enqueued, [GOOGLE_DRIVE_UPLOAD_FILE_TOOL, HTTP_API_REQUEST_TOOL])
   })
 
+  await check('http_api_request direct mode executes without enqueue', async () => {
+    const enqueued: string[] = []
+    let executed = false
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          connector: connector({
+            type: 'http_api',
+            authMode: 'service',
+            config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+          }),
+          grant: null,
+          definition: definition({
+            snapshot: {
+              name: 'CRM',
+              roleInstruction: 'Write CRM',
+              skills: [],
+              connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write' }],
+              capabilities: [{ toolName: HTTP_API_REQUEST_TOOL, allowed: true }],
+            },
+          }),
+          executeHttpApiTool: async () => {
+            executed = true
+            return { ok: true, status: 200 }
+          },
+        }),
+        async findAgentWriteModes() {
+          return { memory: 'approval', httpApi: 'direct', gmail: 'approval', drive: 'approval' }
+        },
+        async enqueueWrite(input: { toolName: string }) {
+          enqueued.push(input.toolName)
+          return { content: [{ type: 'text' as const, text: '{}' }] }
+        },
+      },
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: HTTP_API_REQUEST_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          method: 'POST',
+          path: '/tasks',
+          body: '{"title":"x"}',
+          idempotencyKey: 'http-direct-1',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.equal(executed, true)
+    assert.deepEqual(enqueued, [])
+    assert.equal(parsePayload(result).ok, true)
+  })
+
+  await check('gmail stays queued when only HTTP API is direct', async () => {
+    const enqueued: string[] = []
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          definition: definition({
+            snapshot: {
+              name: 'Mailer',
+              roleInstruction: 'Mail',
+              skills: [],
+              connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'write' }],
+              capabilities: [{ toolName: 'gmail_send', allowed: true }],
+            },
+          }),
+          connector: connector({ type: 'gmail' }),
+        }),
+        async findAgentWriteModes() {
+          return { memory: 'approval', httpApi: 'direct', gmail: 'approval', drive: 'approval' }
+        },
+        async enqueueWrite(input: { toolName: string }) {
+          enqueued.push(input.toolName)
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ status: 'awaiting_approval' }) }],
+          }
+        },
+      },
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: 'gmail_send',
+        args: {
+          definitionId: DEFINITION_ID,
+          to: 'a@b.c',
+          subject: 'Hi',
+          body: 'Hello',
+          idempotencyKey: 'gmail-1',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(enqueued, ['gmail_send'])
+    assert.equal(parsePayload(result).status, 'awaiting_approval')
+  })
+
   await check('kb_ingest requires write binding', async () => {
     const result = await authorizeToolCall(
       authorizeDeps({ connector: kbConnector }),

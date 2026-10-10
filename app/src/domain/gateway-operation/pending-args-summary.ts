@@ -12,6 +12,7 @@ export type PendingArgsLabels = {
   memoryKind: string
   parentRoot: string
   parentFolder: (id: string) => string
+  endpointDescription?: string | null
 }
 
 function str(value: unknown): string {
@@ -65,13 +66,23 @@ function gmailItemLines(args: Record<string, unknown>): string[] {
  * One multi-line summary for the control-plane approval card / tests.
  * Prefer `toolName` over shape heuristics so Gmail never falls through to Drive chrome.
  */
+function prettyJsonBody(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
+
 export function pendingOperationHeadline(
   toolName: string,
   args: Record<string, unknown>,
-  options?: { connectorName?: string },
+  options?: { connectorName?: string; endpointDescription?: string | null },
 ): string {
   const connectorName = str(args.connectorName) || options?.connectorName || 'HTTP API'
   if (toolName === 'http_api_request') {
+    const description = str(options?.endpointDescription) || str(args.endpointDescription)
+    if (description) return `${connectorName}: ${description}`
     const query = formatScalarQuery(args.query)
     return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
   }
@@ -105,8 +116,12 @@ export function pendingArgsSummary(
 ): string {
   if (toolName === 'http_api_request') {
     const query = formatScalarQuery(args.query)
-    const lines = [`${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`]
-    if (str(args.body)) lines.push(clip(str(args.body)))
+    const description = str(labels.endpointDescription)
+    const lines = [
+      ...(description ? [description] : []),
+      `${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`,
+    ]
+    if (str(args.body)) lines.push(clip(prettyJsonBody(str(args.body))))
     return lines.join('\n')
   }
 

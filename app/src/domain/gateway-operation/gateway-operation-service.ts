@@ -595,6 +595,7 @@ export type GatewayPendingOperationRow = GatewayPendingOperation & {
   connectorName: string | null
   connectorIconDataUrl: string | null
   connectorIconProvider: string
+  endpointDescription: string | null
 }
 
 export type GatewayOperationHistoryRow = GatewayPendingOperationRow

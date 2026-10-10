@@ -37,7 +37,8 @@ import {
   type GatewayOperationServiceDeps,
 } from './gateway-operation-service'
 import { resolveWriteConfirmOffer } from './write-confirm-branch'
-import { formatScalarQuery } from './pending-args-summary'
+import { findHttpApiEndpoint, parseHttpApiConfig } from '@/domain/connector/http-api-client'
+import { pendingOperationHeadline } from './pending-args-summary'
 import type { GatewayOperationView } from './types'
 
 export const WRITE_CONFIRM_KEY = 'confirm_write'
@@ -130,8 +131,23 @@ async function confirmMessage(
   let target = ''
   let content = ''
   if (view.toolName === HTTP_API_REQUEST_TOOL) {
-    const query = formatScalarQuery(args.query)
-    target = `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
+    let endpointDescription: string | null = null
+    if (view.connectorId) {
+      try {
+        const connector = await deps.findConnector(view.connectorId)
+        if (connector) {
+          const endpoint = findHttpApiEndpoint(
+            parseHttpApiConfig(connector.config),
+            str(args.method),
+            str(args.path),
+          )
+          endpointDescription = endpoint?.description?.trim() || null
+        }
+      } catch {
+        endpointDescription = null
+      }
+    }
+    target = pendingOperationHeadline(view.toolName, args, { connectorName, endpointDescription })
     content = str(args.body)
   } else if (view.toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) {
     target = `Google Drive mappa: ${str(args.name)}`

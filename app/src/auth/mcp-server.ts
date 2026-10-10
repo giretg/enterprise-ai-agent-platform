@@ -15,6 +15,7 @@ import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
+import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
 import { linkedAccountHandle } from '@/domain/connector-grant/linked-account'
@@ -208,6 +209,10 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   }) => Promise<boolean>
   /** #663: az agent megnevezett jóváhagyójának neve a briefing Jóváhagyások blokkjához. */
   loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
+  loadAgentWriteModes?: (input: {
+    tenantId: string
+    agentId: string
+  }) => Promise<import('@/lib/write-approval-modes').AgentWriteApprovalModes | null>
   loadSkillVersions: (versionIds: string[]) => Promise<McpCheckoutSkill[]>
   invokeEnterpriseTool: (input: {
     principal: McpPrincipal
@@ -350,6 +355,10 @@ export function productionMcpDeps(): McpRuntimeDeps {
       if (!agent?.approverUserId) return null
       const user = await repositories.users.findById(agent.approverUserId)
       return user ? user.name || user.email : null
+    },
+    loadAgentWriteModes: async ({ tenantId, agentId }) => {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      return agent ? modesFromAgentRow(agent) : null
     },
     async loadSkillVersions(versionIds) {
       const rows = await repositories.skills.findVersionsByIds(versionIds)
@@ -730,6 +739,10 @@ async function getDefinitionToolResult(
     tenantId: principal.tenantId,
     agentId: loaded.agentId,
   })
+  const writeModes = await deps.loadAgentWriteModes?.({
+    tenantId: principal.tenantId,
+    agentId: loaded.agentId,
+  })
   const roots = loaded.snapshot.localRoots
   if (memoryContext.memoryIndex) {
     memoryContext.memoryIndex = {
@@ -745,6 +758,7 @@ async function getDefinitionToolResult(
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
       approverName: approverName ?? null,
+      writeModes: writeModes ?? undefined,
     }),
     ...loaded,
     contentHash: hashSnapshot(loaded.snapshot),
@@ -1637,7 +1651,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers; pass only caller headers the endpoint declares, such as If-Match (the etag of your last read). body is at most 200000 characters. Does not call the API until a human approves the operation: returns immediately with status: awaiting_approval and an approvalUrl — show that link to the user so they can approve it, do not poll or wait for completion.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers; pass only caller headers the endpoint declares, such as If-Match (the etag of your last read). body is at most 200000 characters. If this agent requires approval, returns awaiting_approval and an approvalUrl — show that link, do not poll. Direct-write agents run the call immediately.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),

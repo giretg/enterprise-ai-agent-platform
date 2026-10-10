@@ -47,6 +47,7 @@ export function OperationSummaryBlock({
 }) {
   const headline = pendingOperationHeadline(row.toolName, row.args, {
     connectorName: row.connectorName ?? undefined,
+    endpointDescription: row.endpointDescription,
   })
   if (mode === 'headline') {
     return <p className="mt-1 text-sm text-ink">{headline}</p>
@@ -56,6 +57,7 @@ export function OperationSummaryBlock({
     memoryKind: t('memoryKind'),
     parentRoot: t('parentRoot'),
     parentFolder: (id) => t('parentFolder', { id }),
+    endpointDescription: row.endpointDescription,
   })
   return (
     <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-ink/10 bg-paper/80 p-2 font-mono text-xs text-ink-soft">

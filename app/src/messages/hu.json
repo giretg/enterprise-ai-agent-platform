@@ -330,8 +330,8 @@
         "eszkozokDesc": "Milyen platform-eszközöket használhat a publikált definíció.",
         "skillek": "Skillek",
         "skillekDesc": "Előre összeállított utasítás-csomagok ehhez az agenthez.",
-        "memoriairas": "Memóriaírás",
-        "memoriairasDesc": "Írásmód, és az ehhez a munkatárshoz tartozó projektmemória. Válassz projektet, nézegesd vagy szerkeszd az emlékeket. A betanított szabályt ez nem nyitja ki.",
+        "memoriairas": "Írások",
+        "memoriairasDesc": "Melyik íráshoz kell emberi jóváhagyás. A projektmemóriát lent böngészheted. A betanított szabályt ez nem nyitja ki.",
         "hozzaferes": "Hozzáférés",
         "hozzaferesDesc": "Ki indíthat chatet vagy ticketet ezzel a munkatárssal."
       },

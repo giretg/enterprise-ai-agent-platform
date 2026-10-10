@@ -480,6 +480,12 @@ model Agent {
   currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
   avatarUrl                  String?     @map("avatar_url")
   memoryWriteMode            MemoryWriteMode @default(approval) @map("memory_write_mode")
+  /** Céges HTTP API írás (http_api_request): jóváhagyás vagy azonnali. */
+  httpApiWriteMode           MemoryWriteMode @default(approval) @map("http_api_write_mode")
+  /** Gmail írás (küldés, piszkozat, címke, kuka). */
+  gmailWriteMode             MemoryWriteMode @default(approval) @map("gmail_write_mode")
+  /** Drive / Sheets írás. Az output-mappa ettől függetlenül marad kivétel. */
+  driveWriteMode             MemoryWriteMode @default(approval) @map("drive_write_mode")
   /** Megnevezett jóváhagyó (#663): a tenant egyik usere; az írások elsősorban hozzá kerülnek. */
   approverUserId             String?         @map("approver_user_id") @db.Uuid
   /** Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut. */
