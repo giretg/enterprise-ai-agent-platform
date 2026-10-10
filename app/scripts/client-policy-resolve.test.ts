@@ -73,6 +73,8 @@ const models = resolve(
 )
 assert.deepEqual(models.models, ['c'])
 assert.equal(models.reasons.models.source, 'agent_ceiling')
+assert.equal(resolve(row('tenant', { preset: 'free' }), null, row('agent', { preset: 'bound' })).agentCeilings.code_execution, 'denied')
+assert.equal(resolve(row('tenant'), null, row('agent', { capabilities: { code_execution: 'denied' } })).agentCeilings.code_execution, 'denied')
 assert.equal(resolve(row('tenant')).models, null)
 
 // tool-szabályok: azonos mintán user felülír tenantot (D3); azonos szinten a tiltás nyer; agent-tiltás nem oldható fel
@@ -117,6 +119,7 @@ const store: ClientPolicyStore = {
 }
 getPolicySnapshot(store, { tenantId: T, userId: U, agentId: A }, () => new Date('2026-10-01T00:00:00Z')).then((snap) => {
   assert.equal(snap.capabilities.code_execution, 'sandbox_only')
+  assert.equal(snap.agentCeilings.code_execution, 'sandbox_only')
   assert.equal(snap.capabilities.browser, 'free')
   assert.equal(snap.issuedAt, '2026-10-01T00:00:00.000Z')
   return getPolicySnapshot(store, { tenantId: T, userId: U, agentId: null }).then((noAgent) => {

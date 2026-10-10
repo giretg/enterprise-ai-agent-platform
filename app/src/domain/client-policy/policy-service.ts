@@ -18,6 +18,7 @@ export const policySnapshotSchema = z.object({
   policyVersion: z.string(),
   issuedAt: z.string(),
   capabilities: z.record(z.enum(CAPABILITY_KEYS as [string, ...string[]]), z.string()),
+  agentCeilings: z.record(z.string(), z.string()),
   models: z.array(z.string()).nullable(),
   toolRules: z.array(z.object({ pattern: z.string(), action: z.enum(TOOL_ACTIONS), source: z.enum(['tenant', 'user', 'agent']) })),
   floor: z.object({

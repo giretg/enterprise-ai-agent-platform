@@ -76,6 +76,7 @@ class Decision:
 def bound_snapshot():
     return {
         "capabilities": dict(BOUND),
+        "agentCeilings": {},
         "toolRules": [],
         "reasons": {key: {"source": "offline"} for key in BOUND},
         "policyVersion": "offline-bound",
@@ -85,6 +86,7 @@ def bound_snapshot():
 def snapshot_of(capabilities, tool_rules=(), version="test", source="user_preset"):
     return {
         "capabilities": dict(capabilities),
+        "agentCeilings": {},
         "toolRules": list(tool_rules),
         "reasons": {key: {"source": source} for key in capabilities},
         "policyVersion": version,
@@ -279,6 +281,24 @@ def decide(snapshot, tool_name, args=None):
             capability,
             level,
         )
+    # A tool-kivétel a user képességét tágíthatja, az agent saját plafonját nem.
+    if rule in ("allow", "approve"):
+        ceilings = (snapshot or {}).get("agentCeilings")
+        if not isinstance(ceilings, dict):
+            return Decision("block", f"A céges szabály régi, ezért a(z) „{tool_name}” kivételt nem tudom biztonságosan ellenőrizni. {ASK}", capability, level)
+        ceiling_level = ceilings.get(capability) if capability else None
+        if ceiling_level:
+            ceiling_action = _capability_action(kind, ceiling_level, tool_name)
+            # A plus_approved szintben az explicit tool-szabály maga a külső MCP jóváhagyása.
+            if kind == "mcp" and ceiling_level == "plus_approved" and mcp_server(tool_name):
+                ceiling_action = "allow"
+            if ceiling_action == "block":
+                return _block(kind, ceiling_level, tool_name, "agent_ceiling", capability)
+            if ceiling_action == "approve":
+                return _approve(tool_name, capability, ceiling_level, "Az asszisztens szabálya jóváhagyást kér.")
+        approval = ceilings.get("human_approval")
+        if approval == "always" or (approval == "risky" and _is_risky(kind)):
+            return _approve(tool_name, capability, level, "Az asszisztens szabálya jóváhagyást kér.")
     if rule == "approve":
         return _approve(tool_name, capability, level, "A céges szabály jóváhagyáshoz köti.")
     if rule == "allow":
