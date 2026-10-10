@@ -2,11 +2,11 @@ import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
-import { listAgents } from '@/app/actions/platform'
+import { listAgentsForCatalog } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
+import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
-import { personaFor } from '@/lib/agent-persona'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
 import { operationErrorLabel } from '../operations/labels'
 import { HandoffsPanel } from '../operations/handoffs-panel'
@@ -18,7 +18,7 @@ export default async function DashboardPage() {
   const ctx = await requireControlPlaneTenantViewer()
   const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
   const [agentsRes, listed, inbox] = await Promise.all([
-    listAgents({ limit: 100 }),
+    listAgentsForCatalog({ limit: 100 }),
     listPendingGatewayOperationsAction(),
     listHandoffInboxAction(),
   ])
@@ -84,17 +84,9 @@ export default async function DashboardPage() {
         </div>
         {agentsRes.success ? (
           <div className="grid gap-4 md:grid-cols-2">
-            {agents.map((agent) => {
-              const persona = personaFor(agent.name)
-              return (
-                <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
-                  <Card title={persona.nickname || agent.name}>
-                    {agent.description ? <p className="text-sm text-ink">{agent.description}</p> : null}
-                    <p className="mt-1 text-sm text-ink-soft">{agent.status}</p>
-                  </Card>
-                </Link>
-              )
-            })}
+            {agents.map((agent) => (
+              <AgentCatalogCard key={agent.id} agent={agent} />
+            ))}
             {agents.length === 0 ? (
               <Card title={tAgents('emptyTitle')}>
                 <p className="text-sm text-ink-soft">

@@ -94,7 +94,7 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
-  async updateAvatar(input: { agentId: string; avatarUrl: string }): Promise<Agent> {
+  async updateAvatar(input: { agentId: string; avatarUrl: string | null }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
       data: { avatarUrl: input.avatarUrl },

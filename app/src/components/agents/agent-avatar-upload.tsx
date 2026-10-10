@@ -2,6 +2,7 @@
 
 import { useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { updateAgentAvatar } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
@@ -17,7 +18,7 @@ async function fileToAvatarDataUrl(file: File): Promise<string> {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const el = new Image()
       el.onload = () => resolve(el)
-      el.onerror = () => reject(new Error('A kép nem tölthető be'))
+      el.onerror = () => reject(new Error('load_failed'))
       el.src = objectUrl
     })
 
@@ -25,7 +26,7 @@ async function fileToAvatarDataUrl(file: File): Promise<string> {
     canvas.width = OUTPUT_SIZE
     canvas.height = OUTPUT_SIZE
     const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('A vászon nem elérhető')
+    if (!ctx) throw new Error('canvas_failed')
 
     // Cover-illesztés: a rövidebb oldalra vágunk, hogy ne torzuljon.
     const scale = Math.max(OUTPUT_SIZE / img.width, OUTPUT_SIZE / img.height)
@@ -60,6 +61,7 @@ export function AgentAvatarUpload({
   bare?: boolean
 }) {
   const router = useRouter()
+  const t = useTranslations('AgentAvatar')
   const inputRef = useRef<HTMLInputElement>(null)
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -82,11 +84,11 @@ export function AgentAvatarUpload({
   async function onFile(file: File) {
     setError(null)
     if (!file.type.startsWith('image/')) {
-      setError('Csak képfájlt tölthetsz fel')
+      setError(t('notImage'))
       return
     }
     if (file.size > MAX_INPUT_BYTES) {
-      setError('A kép túl nagy (max. 8 MB)')
+      setError(t('tooLarge'))
       return
     }
     try {
@@ -94,16 +96,16 @@ export function AgentAvatarUpload({
       setPreview(dataUrl)
       save(dataUrl)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'A kép feldolgozása nem sikerült')
+      const code = e instanceof Error ? e.message : 'process_failed'
+      if (code === 'load_failed') setError(t('loadFailed'))
+      else if (code === 'canvas_failed') setError(t('canvasFailed'))
+      else setError(t('processFailed'))
     }
   }
 
   const body = (
     <>
-      <p className="mb-4 text-xs text-ink-faint">
-        Tölts fel portrét az agentnek. A kép automatikusan négyzetre igazodik. Ha
-        törlöd, visszaáll a színes emoji-arc.
-      </p>
+      <p className="mb-4 text-xs text-ink-faint">{t('help')}</p>
       <div className="flex items-center gap-5">
         <AgentAvatar
           name={name}
@@ -130,9 +132,9 @@ export function AgentAvatarUpload({
             onClick={() => inputRef.current?.click()}
             className="rounded-full bg-sky/20 px-5 py-2 text-sm font-semibold text-sky disabled:opacity-50"
           >
-            {pending ? 'Mentés...' : preview ? 'Kép cseréje' : 'Kép feltöltése'}
+            {pending ? t('saving') : preview ? t('replace') : t('upload')}
           </button>
-          {preview && (
+          {preview ? (
             <button
               type="button"
               disabled={pending}
@@ -142,15 +144,15 @@ export function AgentAvatarUpload({
               }}
               className="rounded-full border border-line px-5 py-2 text-sm font-semibold text-ink-soft transition-colors hover:text-coral disabled:opacity-50"
             >
-              Kép törlése
+              {t('remove')}
             </button>
-          )}
+          ) : null}
         </div>
       </div>
-      {error && <p className="mt-3 text-sm text-coral">{error}</p>}
+      {error ? <p className="mt-3 text-sm text-coral">{error}</p> : null}
     </>
   )
 
   if (bare) return body
-  return <Card title="Avatár">{body}</Card>
+  return <Card title={t('title')}>{body}</Card>
 }

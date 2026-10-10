@@ -283,7 +283,15 @@
       "loadError": "A munkatársak most nem tölthetők be.",
       "emptyTitle": "Még nincs munkatárs",
       "emptyCanCreate": "Ebben a szervezetben még nincs AI-munkatárs. Vedd fel az elsőt az „Új munkatárs” gombbal.",
-      "emptyNoCreate": "Ebben a szervezetben még nincs AI-munkatárs. Kérj egy admint, hogy vegyen fel egyet."
+      "emptyNoCreate": "Ebben a szervezetben még nincs AI-munkatárs. Kérj egy admint, hogy vegyen fel egyet.",
+      "unpublished": "Nincs közzétéve",
+      "unpublishedHint": "A vázlat megváltozott a közzétett verzió óta — az MCP még a régit látja. Kattints a kártyára, és tedd közzé az új verziót.",
+      "status": {
+        "draft": "vázlat",
+        "active": "aktív",
+        "suspended": "felfüggesztve",
+        "retired": "nyugdíjazva"
+      }
     },
     "dashboard": {
       "eyebrow": "Kezdőlap",
@@ -1183,6 +1191,19 @@
     "placeholder": "Marketing, SEO, tartalom. Sales lead → Gábor.",
     "saving": "Mentés...",
     "save": "Mentés"
+  },
+  "AgentAvatar": {
+    "title": "Arckép",
+    "help": "Ez a kép jelenik meg a munkatárs kártyáján. Automatikusan négyzetre vágjuk. Ha törlöd, egy színes emoji-arc marad.",
+    "upload": "Kép feltöltése",
+    "replace": "Kép cseréje",
+    "remove": "Kép törlése",
+    "saving": "Mentés…",
+    "notImage": "Csak képfájlt tölthetsz fel.",
+    "tooLarge": "A kép túl nagy (max. 8 MB).",
+    "loadFailed": "A kép nem tölthető be.",
+    "canvasFailed": "A kép nem dolgozható fel ezen a böngészőn.",
+    "processFailed": "A kép feldolgozása nem sikerült."
   },
   "AgentLocalRoots": {
     "title": "Helyi kódmappák",

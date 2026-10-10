@@ -283,7 +283,15 @@
       "loadError": "Teammates could not be loaded right now.",
       "emptyTitle": "No teammates yet",
       "emptyCanCreate": "This organization has no AI teammate yet. Add the first one with the “New teammate” button.",
-      "emptyNoCreate": "This organization has no AI teammate yet. Ask an admin to add one."
+      "emptyNoCreate": "This organization has no AI teammate yet. Ask an admin to add one.",
+      "unpublished": "Unpublished changes",
+      "unpublishedHint": "The draft has changed since the published version — MCP still sees the old one. Open the card and publish the new version.",
+      "status": {
+        "draft": "draft",
+        "active": "active",
+        "suspended": "suspended",
+        "retired": "retired"
+      }
     },
     "dashboard": {
       "eyebrow": "Home",
@@ -1183,6 +1191,19 @@
     "placeholder": "Marketing, SEO, content. Sales leads → Gábor.",
     "saving": "Saving...",
     "save": "Save"
+  },
+  "AgentAvatar": {
+    "title": "Portrait",
+    "help": "This picture appears on the teammate card. We crop it to a square. If you remove it, a coloured emoji face remains.",
+    "upload": "Upload picture",
+    "replace": "Replace picture",
+    "remove": "Remove picture",
+    "saving": "Saving…",
+    "notImage": "You can only upload an image file.",
+    "tooLarge": "The image is too large (max. 8 MB).",
+    "loadFailed": "The image could not be loaded.",
+    "canvasFailed": "This browser cannot process the image.",
+    "processFailed": "The image could not be processed."
   },
   "AgentLocalRoots": {
     "title": "Local coding folders",

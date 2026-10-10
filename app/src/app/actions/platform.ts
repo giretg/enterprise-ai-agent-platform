@@ -382,6 +382,38 @@ export async function listAgents(input?: { limit?: number; offset?: number }) {
   }
 }
 
+/** Lista / kezdőlap: agentek + van-e közzé nem tett vázlatváltozás. */
+export async function listAgentsForCatalog(input?: { limit?: number; offset?: number }) {
+  const listed = await listAgents(input)
+  if (!listed.success) return listed
+  try {
+    const user = await requireTenantRole('viewer')
+    const tenantId = user.activeTenantId
+    if (!tenantId) {
+      return ok(listed.data.map((agent) => ({ ...agent, unpublished: false })))
+    }
+    const rows = await Promise.all(
+      listed.data.map(async (agent) => {
+        if (!agent.currentDefinitionVersionId) {
+          return { ...agent, unpublished: false }
+        }
+        try {
+          const status = await services.agentDefinitions.getPublishStatus({
+            agentId: agent.id,
+            tenantId,
+          })
+          return { ...agent, unpublished: status.stale }
+        } catch {
+          return { ...agent, unpublished: false }
+        }
+      }),
+    )
+    return ok(rows)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list agents')
+  }
+}
+
 export async function getAgent(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -756,7 +788,11 @@ export async function updateAgentAvatar(input: { agentId: string; avatarUrl: str
     const parsed = updateAgentAvatarSchema.parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
-    const avatar = await repositories.agents.updateAvatar(parsed)
+    const nextAvatar = parsed.avatarUrl === '' ? null : parsed.avatarUrl
+    const avatar = await repositories.agents.updateAvatar({
+      agentId: parsed.agentId,
+      avatarUrl: nextAvatar,
+    })
     return ok({ updated: true, avatarUrl: avatar.avatarUrl })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update avatar')
