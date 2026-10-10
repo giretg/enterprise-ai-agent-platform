@@ -11,7 +11,18 @@ import {
   formatHttpApiEndpointCatalogSuffix,
   formatHttpApiQueryParamsHint,
 } from '../src/domain/connector/http-api-prompt'
-import { HttpApiClient, parseHttpApiConfig } from '../src/domain/connector/http-api-client'
+import {
+  HttpApiClient as RuntimeHttpApiClient,
+  parseHttpApiConfig,
+  type HttpApiConfig,
+  type HttpApiCredentials,
+} from '../src/domain/connector/http-api-client'
+
+class HttpApiClient extends RuntimeHttpApiClient {
+  constructor(config: HttpApiConfig, credentials: HttpApiCredentials) {
+    super(config, credentials, async () => ['8.8.8.8'])
+  }
+}
 import { formatLargeToolResultPreview } from '../src/domain/agent/tool-result-extract'
 import { requiresHttpApiGetAll } from '../src/lib/http-api-pagination-signals'
 

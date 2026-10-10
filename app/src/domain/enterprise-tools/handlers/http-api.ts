@@ -72,13 +72,15 @@ function clientFor(
   config: HttpApiConfig,
   apiKey: string | undefined,
   language?: TenantLanguage,
+  allowedEgressHosts?: string[],
 ): HttpApiClient {
   return new HttpApiClient(
-    config,
+    { ...config, ...(allowedEgressHosts ? { allowedEgressHosts } : {}) },
     {
       defaultApiKey: apiKey,
       resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
     },
+    undefined,
     language ? { language } : undefined,
   )
 }
@@ -97,6 +99,7 @@ export async function executeHttpApiTool(
    * #717 B réteg: a modellnek szóló hintek nyelve. Opcionális — hiányában `hu`.
    */
   language?: TenantLanguage,
+  allowedEgressHosts?: string[],
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -123,7 +126,7 @@ export async function executeHttpApiTool(
 
   const config = parseHttpApiConfig(connector.config)
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
-  const client = clientFor(config, apiKey, language)
+  const client = clientFor(config, apiKey, language, allowedEgressHosts)
   const callId = randomUUID()
   // X-Agent-Id a published definitionből jön. args.agentId csak akkor esik be,
   // ha egy hívó (régi teszt / kötött kliens) még nem adta át a 6. paramétert —

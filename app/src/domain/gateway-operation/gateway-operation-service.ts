@@ -105,9 +105,11 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     agent?: { id: string; version?: number },
     /** #717: a modellnek szóló http_api hintek nyelve. */
     language?: TenantLanguage,
+    allowedEgressHosts?: string[],
   ) => Promise<unknown>
   /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
   resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
+  resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
@@ -916,6 +918,9 @@ async function executeApprovedOperation(
           { id: definition.agentId, version: definition.version },
           // #717: a hintek/hibák a tenant nyelvén.
           await tenantLanguageOrDefault(deps.resolveTenantLanguage, operation.tenantId),
+          deps.resolveEgressAllowlist
+            ? await deps.resolveEgressAllowlist(authorized.connector.tenantId)
+            : undefined,
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')

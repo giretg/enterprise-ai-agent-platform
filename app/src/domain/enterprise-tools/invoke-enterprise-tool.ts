@@ -144,9 +144,11 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     agent?: { id: string; version?: number },
     /** #717: a modellnek szóló http_api hintek nyelve. */
     language?: TenantLanguage,
+    allowedEgressHosts?: string[],
   ) => Promise<unknown>
   /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
   resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
+  resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   executeKbTool?: (
     toolName: EnterpriseKbTool,
@@ -728,6 +730,9 @@ async function dispatchTool(
     const execute = deps.executeHttpApiTool ?? executeHttpApiTool
     // #717: a hintek/hibák a tenant nyelvén — angol tenant ne kapjon magyar szöveget.
     const language = await tenantLanguageOrDefault(deps.resolveTenantLanguage, input.connector.tenantId)
+    const allowedEgressHosts = deps.resolveEgressAllowlist
+      ? await deps.resolveEgressAllowlist(input.connector.tenantId)
+      : undefined
     return execute(
       input.toolName,
       input.args,
@@ -736,6 +741,7 @@ async function dispatchTool(
       input.actingUser,
       input.agent,
       language,
+      allowedEgressHosts,
     )
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
