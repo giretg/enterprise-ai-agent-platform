@@ -5,22 +5,11 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { services } from '@/domain/gateway-services'
 import { getAuthContext, ACTIVE_TENANT_COOKIE } from '@/auth/context'
+import { setActiveTenantCookie } from '@/auth/active-tenant-cookie'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
-import { decideSwitch } from '@/lib/tenant-policy'
+import { canStartSelfServiceTenant, decideSwitch } from '@/lib/tenant-policy'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
-
-const ACTIVE_TENANT_COOKIE_MAX_AGE = 60 * 60 * 24 * 30 // 30 nap
-
-async function setActiveTenantCookie(tenantId: string) {
-  const store = await cookies()
-  store.set(ACTIVE_TENANT_COOKIE, tenantId, {
-    httpOnly: true,
-    sameSite: 'lax',
-    path: '/',
-    maxAge: ACTIVE_TENANT_COOKIE_MAX_AGE,
-  })
-}
 
 // ── Tenant-váltás / assume / exit (§5.3, §9.1) ──────────────────────────────
 
@@ -91,6 +80,12 @@ export async function getTenantSwitcherState() {
     const membershipTenantIds = new Set(
       ctx.memberships.filter((m) => m.status === 'active').map((m) => m.tenantId),
     )
+    // #830 D9: „Új cég" a váltóban, ameddig a saját cég-limit engedi (assume alatt soha).
+    const canCreateCompany = canStartSelfServiceTenant({
+      userStatus: ctx.user.status,
+      assumed: ctx.assumed,
+      ownedSelfServiceCount: await repositories.tenants.countSelfServiceByCreator(ctx.user.id),
+    })
 
     if (ctx.platformRoles.includes('superadmin')) {
       const allTenants = (await repositories.tenants.findMany()).filter((t) => t.status !== 'archived')
@@ -99,6 +94,7 @@ export async function getTenantSwitcherState() {
         assumed: ctx.assumed,
         kind: ctx.kind,
         isSuperadmin: true,
+        canCreateCompany,
         tenants: allTenants.map((t) => ({
           id: t.id,
           slug: t.slug,
@@ -116,6 +112,7 @@ export async function getTenantSwitcherState() {
       assumed: ctx.assumed,
       kind: ctx.kind,
       isSuperadmin: false,
+      canCreateCompany,
       tenants: tenants
         .map((t) => ({
           id: t.id,

@@ -139,6 +139,12 @@ check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/api/ai-audit/content-unlock/approve')
 })
 
+check('a cégindító varázsló Clerk-sessiont kér (#830) — csak a /sign-up publikus', () => {
+  assertProtected('/onboarding')
+  assertProtected('/onboarding?step=team')
+  assertPublic('/sign-up')
+})
+
 check('a delegált OAuth callback és az MCP done page publikus (signed state, nincs Clerk-süti)', () => {
   assertPublic('/api/connectors/oauth/callback')
   assertPublic('/connectors/oauth/done')

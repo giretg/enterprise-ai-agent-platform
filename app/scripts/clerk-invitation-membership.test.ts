@@ -55,14 +55,18 @@ const user = {
   updatedAt: now,
 } as unknown as User
 
-function fixture(initialInvitation = invitation()) {
+function fixture(initialInvitation = invitation(), initialUser: User = user) {
   let currentInvitation = initialInvitation as { status: string; redeemedAt: Date | null }
+  let currentUser: User = { ...initialUser }
+  const userUpdates: Record<string, unknown>[] = []
   const membershipCalls: unknown[] = []
   const auditEvents: unknown[] = []
   const service = new IamService(
     {
       async update(_id: string, update: Record<string, unknown>) {
-        return { ...user, ...update }
+        userUpdates.push(update)
+        currentUser = { ...currentUser, ...update }
+        return currentUser
       },
     } as never,
     {
@@ -80,12 +84,6 @@ function fixture(initialInvitation = invitation()) {
       },
     } as never,
     {} as never,
-    {
-      async append(event: unknown) {
-        auditEvents.push(event)
-        return event as never
-      },
-    } as never,
     undefined,
     {
       async upsert(input: unknown) {
@@ -93,8 +91,21 @@ function fixture(initialInvitation = invitation()) {
         return { id: 'membership-a' } as never
       },
     } as never,
+    {
+      async append(event: unknown) {
+        auditEvents.push(event)
+        return event as never
+      },
+    } as never,
   )
-  return { service, membershipCalls, auditEvents, getInvitation: () => currentInvitation }
+  return {
+    service,
+    membershipCalls,
+    auditEvents,
+    userUpdates,
+    getInvitation: () => currentInvitation,
+    getUser: () => currentUser,
+  }
 }
 
 async function main() {
@@ -143,6 +154,59 @@ async function main() {
     assert.equal(getInvitation().status, 'expired')
     assert.equal(membershipCalls.length, 0)
     assert.equal(auditEvents.length, 0)
+  })
+
+  await check('first-login pending user still receives the invitation role', async () => {
+    const { service, userUpdates, getUser } = fixture()
+    await service.redeemClerkInvitation({ invitationId: 'invite-a', user })
+    assert.equal(getUser().role, 'operator')
+    assert.equal(getUser().status, 'active')
+    assert.equal(getUser().invitedById, 'admin-a')
+    assert.equal(userUpdates[0]?.role, 'operator')
+  })
+
+  await check('signed-in founder joining as operator keeps User.role and invitedById', async () => {
+    const founder = {
+      ...user,
+      role: 'admin' as const,
+      status: 'active' as const,
+      invitedById: 'self',
+      activatedAt: now,
+    }
+    const { service, membershipCalls, userUpdates, getUser } = fixture(
+      invitation({ role: 'operator' }),
+      founder,
+    )
+    await service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: founder })
+    assert.equal(getUser().role, 'admin')
+    assert.equal(getUser().invitedById, 'self')
+    assert.equal(getUser().activatedAt, now)
+    assert.equal('role' in userUpdates[0]!, false)
+    assert.equal('invitedById' in userUpdates[0]!, false)
+    assert.equal('activatedAt' in userUpdates[0]!, false)
+    assert.deepEqual(membershipCalls, [
+      {
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        role: 'operator',
+        status: 'active',
+        invitedById: 'admin-a',
+      },
+    ])
+  })
+
+  await check('signed-in operator joining as admin elevates User.role', async () => {
+    const operator = {
+      ...user,
+      role: 'operator' as const,
+      status: 'active' as const,
+      invitedById: 'self',
+      activatedAt: now,
+    }
+    const { service, getUser } = fixture(invitation({ role: 'admin' }), operator)
+    await service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator })
+    assert.equal(getUser().role, 'admin')
+    assert.equal(getUser().invitedById, 'self')
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)

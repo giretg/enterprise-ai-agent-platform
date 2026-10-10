@@ -4,14 +4,47 @@ import type {
   TenantMembershipRepository,
   PlatformMembershipRepository,
 } from '@/repositories/interfaces'
+import { randomUUID } from 'node:crypto'
 import {
   TENANT_AUDIT_ACTIONS,
   checkLastTenantAdminLock,
   isValidTenantSlug,
+  normalizeTaxId,
   normalizeTenantSlug,
+  selfServiceCapReached,
+  selfServiceFallbackSlug,
+  selfServiceSlugBase,
+  selfServiceSlugCandidate,
 } from '@/lib/tenant-policy'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import type { SelfServiceTenantStore } from './self-service-store'
+
+export type SelfServiceTenantErrorCode =
+  | 'terms_required'
+  | 'name_required'
+  | 'name_too_long'
+  | 'tax_id_too_long'
+  | 'user_not_found'
+  | 'user_suspended'
+  | 'assumed_context'
+  | 'cap_reached'
+  | 'slug_exhausted'
+  | 'unavailable'
+
+/** Üzleti elutasítás a self-service cégindításnál; a `code`-ot a UI fordítja le. */
+export class SelfServiceTenantError extends Error {
+  constructor(readonly code: SelfServiceTenantErrorCode) {
+    super(`self_service:${code}`)
+    this.name = 'SelfServiceTenantError'
+  }
+}
+
+/** A jogi oldalak, amelyek elfogadását a `legal.terms.accept` audit rögzíti. */
+export const SELF_SERVICE_LEGAL_PATHS = { gtcPath: '/gtc', privacyPath: '/privacy' } as const
+
+const DISPLAY_NAME_MAX = 120
+const SLUG_ATTEMPTS = 50
 
 /**
  * Tenant Management domain (Feature-spec Tenant-Management §7, §8, §10).
@@ -31,6 +64,7 @@ export class TenantService {
     private memberships: TenantMembershipRepository,
     private platformMemberships: PlatformMembershipRepository,
     private audit?: AuditSink,
+    private selfServiceStore?: SelfServiceTenantStore,
   ) {}
 
   private async append(data: Parameters<AuditSink['append']>[0]) {
@@ -90,6 +124,113 @@ export class TenantService {
     }
 
     return tenant
+  }
+
+  /**
+   * Saját cég indítása szerep-kapu nélkül: ÁSZF, felfüggesztés, assume és kvóta
+   * itt dől el. A superadmin `createTenant` nem számít a limitbe.
+   */
+  async provisionSelfService(params: {
+    userId: string
+    displayName: string
+    legalName?: string | null
+    taxId?: string | null
+    termsAccepted: boolean
+    /** Superadmin assume-módban fail closed: idegen tenant nevében nem indul saját cég. */
+    assumed?: boolean
+  }) {
+    if (!this.selfServiceStore) throw new SelfServiceTenantError('unavailable')
+    if (params.assumed) throw new SelfServiceTenantError('assumed_context')
+    if (params.termsAccepted !== true) throw new SelfServiceTenantError('terms_required')
+
+    const displayName = params.displayName.trim().replace(/\s+/g, ' ')
+    if (!displayName) throw new SelfServiceTenantError('name_required')
+    if (displayName.length > DISPLAY_NAME_MAX) throw new SelfServiceTenantError('name_too_long')
+    const legalName = params.legalName?.trim() || null
+    if (legalName && legalName.length > DISPLAY_NAME_MAX * 2) throw new SelfServiceTenantError('name_too_long')
+    const taxId = normalizeTaxId(params.taxId)
+    if (taxId === undefined) throw new SelfServiceTenantError('tax_id_too_long')
+
+    return this.selfServiceStore.transaction(async (tx) => {
+      const user = await tx.findUser(params.userId)
+      if (!user) throw new SelfServiceTenantError('user_not_found')
+      if (user.status === 'suspended') throw new SelfServiceTenantError('user_suspended')
+
+      const owned = await tx.countSelfServiceTenants(user.id)
+      if (selfServiceCapReached(owned)) throw new SelfServiceTenantError('cap_reached')
+
+      const slug = await this.pickSelfServiceSlug(displayName, (candidate) => tx.slugExists(candidate))
+
+      const tenant = await tx.createTenant({
+        slug,
+        displayName,
+        legalName,
+        taxId,
+        createdById: user.id,
+      })
+      await tx.clearDefaultMemberships(user.id)
+      const membership = await tx.createAdminMembership({ tenantId: tenant.id, userId: user.id })
+
+      // Az első saját cég élesíti a fiókot; a második+ nem írja felül a meglévő szerepet.
+      const activated = user.status !== 'active' || user.role === null
+      if (activated) await tx.activateUser(user.id, user.role ?? 'admin')
+
+      const base = {
+        actorType: 'human' as const,
+        actorId: user.id,
+        agentVersion: null,
+        modelUsed: null,
+        tenantId: tenant.id,
+      }
+      await tx.audit({
+        ...base,
+        action: TENANT_AUDIT_ACTIONS.create,
+        targetType: 'tenant',
+        targetId: tenant.id,
+        inputRef: slug,
+        outputRef: tenant.displayName,
+        policyDecision: 'created',
+        metadata: { tenantId: tenant.id, source: 'self_service', userActivated: activated },
+      })
+      await tx.audit({
+        ...base,
+        action: 'tenant.member.add',
+        targetType: 'tenant_membership',
+        targetId: membership.id,
+        inputRef: user.id,
+        outputRef: 'admin',
+        policyDecision: 'active',
+        metadata: { tenantId: tenant.id, source: 'self_service' },
+      })
+      await tx.audit({
+        ...base,
+        action: 'legal.terms.accept',
+        targetType: 'user',
+        targetId: user.id,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: 'accepted',
+        metadata: { tenantId: tenant.id, ...SELF_SERVICE_LEGAL_PATHS },
+      })
+
+      return { tenant, membership, userActivated: activated }
+    })
+  }
+
+  /** `slug`, `slug-2`, … az első szabad; érvénytelen névből `t-xxxxxxxx`. */
+  private async pickSelfServiceSlug(displayName: string, exists: (slug: string) => Promise<boolean>) {
+    const base = selfServiceSlugBase(displayName)
+    if (base) {
+      for (let attempt = 1; attempt <= SLUG_ATTEMPTS; attempt++) {
+        const candidate = selfServiceSlugCandidate(base, attempt)
+        if (!(await exists(candidate))) return candidate
+      }
+    }
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidate = selfServiceFallbackSlug(randomUUID())
+      if (!(await exists(candidate))) return candidate
+    }
+    throw new SelfServiceTenantError('slug_exhausted')
   }
 
   private async setTenantStatus(params: {

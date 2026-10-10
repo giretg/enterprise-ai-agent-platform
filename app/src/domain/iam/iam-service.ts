@@ -363,7 +363,7 @@ export class IamService {
    * activate exactly the locally-issued invitation id copied into Clerk's
    * server-only public metadata, after local email/status/expiry checks.
    */
-  async redeemClerkInvitation(params: { invitationId: string; user: User }) {
+  async redeemClerkInvitation(params: { invitationId: string; user: User; source?: 'clerk' | 'session' }) {
     const invitation = await this.invitations.findById(params.invitationId)
     if (!invitation) throw new Error('invitation: not found')
 
@@ -392,20 +392,47 @@ export class IamService {
       }
       throw new Error('invitation: already_redeemed_or_unavailable')
     }
-    const user = await this.users.update(params.user.id, {
-      role: invitation.role,
-      status: 'active',
-      activatedAt: new Date(),
-      invitedById: invitation.createdById,
-    })
-    await this.completeInvitationRedemption(claimed, user, 'clerk')
+    const patch: {
+      role?: UserRole
+      status: 'active'
+      activatedAt?: Date
+      invitedById?: string
+    } = { status: 'active' }
+    // A tenant-szerep a membershipen él. A globális User.role-t csak üresen
+    // állítjuk, vagy ROLE_RANK szerint emeljük — soha nem minősítjük le.
+    if (!params.user.role) {
+      patch.role = invitation.role
+    } else if (ROLE_RANK[invitation.role] > ROLE_RANK[params.user.role]) {
+      patch.role = invitation.role
+    }
+    if (params.user.status !== 'active') {
+      patch.activatedAt = new Date()
+      if (!params.user.invitedById) patch.invitedById = invitation.createdById
+    }
+    const user = await this.users.update(params.user.id, patch)
+    await this.completeInvitationRedemption(claimed, user, params.source ?? 'clerk')
     return user
+  }
+
+  /** A user e-mailjére szóló, még beváltható cég-meghívók. */
+  async listPendingInvitationsForEmail(email: string) {
+    const rows = await this.invitations.findPendingByEmail(email, new Date())
+    return rows.filter((row) => row.tenantId !== null)
+  }
+
+  /**
+   * Belépett user saját e-mailes meghívóját váltja be. Felfüggesztett fiókot
+   * nem aktivál; a globális User.role-t a redeem soha nem minősíti le.
+   */
+  async acceptInvitationForSignedInUser(params: { invitationId: string; user: User }) {
+    if (params.user.status === 'suspended') throw new Error('user: suspended')
+    return this.redeemClerkInvitation({ ...params, source: 'session' })
   }
 
   private async completeInvitationRedemption(
     invitation: Invitation,
     user: User,
-    source: 'token' | 'clerk',
+    source: 'token' | 'clerk' | 'session',
   ) {
     if (invitation.tenantId) {
       if (!this.memberships) throw new Error('invitation: tenant membership repository unavailable')

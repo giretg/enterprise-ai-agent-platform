@@ -364,10 +364,14 @@ model Tenant {
   slug            String       @unique
   displayName     String       @map("display_name")
   legalName       String?      @map("legal_name")
+  /// Opcionális adószám (szabad szöveg, max 32 karakter) — későbbi számlázáshoz (#830).
+  taxId           String?      @map("tax_id")
   status          TenantStatus @default(active)
   domainAllowlist Json         @default("[]") @map("domain_allowlist")
   settings        Json         @default("{}")
   createdById     String?      @map("created_by") @db.Uuid
+  /// true = a regisztráló user maga indította (#830); csak ezek számítanak a 5-ös cég-limitbe.
+  selfService     Boolean      @default(false) @map("self_service")
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -396,6 +400,7 @@ model Tenant {
   gatewaySurrogates GatewaySurrogate[]
 
   @@index([status])
+  @@index([createdById, selfService])
   @@map("tenants")
 }
 
