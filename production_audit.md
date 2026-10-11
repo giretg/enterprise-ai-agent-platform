@@ -7,6 +7,92 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-11 — IAM meghívó-beváltás TOKEN-út: tagság-eszkaláció + globális szerep-lebontás (#838 testvér-rése)
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legfrissebb, **auth-kritikus**
+felület az önkiszolgáló onboarding / tenant-tagság / meghívó-beváltás (friss #830/#833 kód, a
+`feat/hermes-enterprise-setup` erre épít). A membership-szerep dönti el a valódi tenant-jogosultságot
+(`requireTenantRole`/`requireTenantPermission`), ezért ez a legnagyobb blast-radius (privilege
+escalation, cross-tenant). Három nyitott DRAFT bug-PR is ide esik (#838 stale-invite eszkaláció a
+Clerk-ágon, #790 pending self-reg tenant-hozzáférés, #826 becenév-ütközés) → NEM duplikáltam; helyette
+az általuk LEFEDETLEN testvér-utat auditáltam végig.
+
+**Coverage (teljes meghívó-beváltás bizalmi-határ + mindkét belépési pont):** `IamService.redeemInvitation`
+(TOKEN-út, `/control-plane/iam/redeem`) vs `redeemClerkInvitation`/`acceptInvitationForSignedInUser`
+(Clerk/session-út, #838 által javítva) vs `provisionUser` (invariáns-forrás) vs `completeInvitationRedemption`
+(közös sink). Vizsgált még: `checkInvitationRedeemable` (email-egyeztetés), `ROLE_RANK` raise-only invariáns,
+`requireTenantRole`/`requireTenantPermission` (membership-szerep = igazság, NEM a legacy `User.role`),
+globális `requireRole`/`assertRole` konzumensei.
+
+Mellékesen tiszta/jól lezárt felületek (verifikálva, nincs finding): MCP principal-feloldás
+(tenant az URL-slugból, membership-ellenőrzés), agent-scaffold írás-kapu (`canMcpScaffoldWrite` =
+valódi admin, nem assumed), `platform.handoff` (tenant-scoped cél-betöltés + canViewAgent + self-blokk),
+`project_memory.write` replaceId/mergeId scoping (`(tenant,agent,projectKey,active)`), gateway-operation
+jóváhagyási állapotgép (`withLockedOperation` + státusz-kapu = nincs dupla-végrehajtás).
+
+### Bizonyított finding — javítva (PR **#841**)
+
+**A TOKEN-beváltási út két IAM-invariánst sért, amelyet minden testvér-út betart:**
+
+1. **🟠 Membership privilege escalation (HIGH).** `redeemInvitation` → `completeInvitationRedemption`
+   feltétel nélkül `upsert`-eli az `invitation.role`-t egy már **aktív** `TenantMembership`-re.
+   Trigger: admin meghívja Alice-t adminnak, később operatorként provisionálja a meghívó visszavonása
+   nélkül → Alice a redeem-linkkel operator→**admin**. Ez a #838 pontos bugja, de **#838 CSAK a Clerk/
+   session-ágat kapuzza** — a token-út (`/control-plane/iam/redeem`) ott érintetlen.
+2. **🟡 Globális `User.role` lebontás (LOW, correctness).** A token-út feltétel nélkül `User.role =
+   invitation.role`-t írt. A `provisionUser` (121-127) és `redeemClerkInvitation` (401-407) raise-only
+   ("soha nem minősítünk le"); a token-út nem. Más tenantben admin user alacsonyabb szerepű meghívó
+   beváltásakor globálisan lebomlott. (Súlyosság alacsony: a tenant-authz a membership-szerepre dől,
+   a globális `requireRole`-nak gyakorlatilag nincs hívója.)
+
+**Bizonyíték:** a regressziós teszt a JAVÍTATLAN kódon **mindkét** esetet buktatja (eszkaláció + lebontás),
+a javítással zöld.
+
+### Javítás (root-cause, csak a `redeemInvitation`-ben — nincs átfedés #838 függvényeivel)
+- **Claim előtti kapu:** aktív tagságnál `already_a_member` elutasítás (a meghívó pending marad;
+  felfüggesztett tagság továbbra is újraélesíthető).
+- **Claim utáni verseny-kapu:** ha a claim és az ellenőrzés közt aktív tagság keletkezett (pl. provision),
+  auditál és felülírás nélkül visszatér.
+- **`User.role` raise-only** `ROLE_RANK` szerint, a `provisionUser`/`redeemClerkInvitation` mintájára.
+
+### Ellenőrzések
+- Új `app/scripts/iam-token-redeem-escalation.test.ts` (CI-be kötve, package.json + ci.yml): **5 eset** —
+  eszkaláció tiltva (+ meghívó pending marad), nincs globális lebontás, suspended újraélesítés megőrizve,
+  **claim utáni verseny** tiltva + auditálva, új-user happy path. **Zöld**; a javítás visszavonásával 2 eset
+  **bukik** (regresszió-őr bizonyított).
+- `test:clerk-invitation-membership`, `test:iam-tenant-boundary`, `test:iam-membership-scope`,
+  `test:iam-policy` **zöld** (a `raiseOnlyRole` refaktor viselkedés-tartó). `tsc`/`eslint` tiszta.
+- `iam-provision-claim.test.ts` **pre-existing HALOTT** (nincs CI-ben, nincs npm-script; a stub-konstruktor
+  hibás "membership repository unavailable"/"sink.append is not a function") — nem e kör, nem maszkolja.
+- Független `/code-review` (Matt Pocock, 2 párhuzamos sub-agent) — mindkét nit átvezetve:
+  - **Standards:** 0 hard violation (magyar kommentek, minimális diff, teszt-harness konvenció OK). Fő nit:
+    a raise-only invariáns 3 helyen (provision/clerk/token) duplikálódott (Duplicated Code + latens
+    Shotgun Surgery) → **átvezetve**: `raiseOnlyRole(current, incoming)` helper `iam-policy.ts`-be, mindhárom
+    hívó ezt használja. Névtelen nitek (`updateRole`→`nextRole`, `afterClaim`→`membershipAfterClaim`) **átvezetve**.
+  - **Spec:** 0 correctness-bug; mindkét invariáns helyesen implementálva. (a1) a claim utáni verseny-ág
+    **teszteletlen volt** → **átvezetve** (5. teszteset). (a2) **tényhelyesbítés:** a #838 NINCS mergelve, így
+    a `main`-en a Clerk-út SEM kapuzott; az `already_a_member` kaput e PR a token-úton vezeti be, a Clerk-út a
+    #838 hatóköre. A PR-leírás és a lenti residual eszerint pontosítva.
+
+### PR
+- **#841** — `fix(iam): token invite redeem must not escalate membership or demote global role`
+  (branch `fix/iam-token-redeem-escalation`, `origin/main` `957e6de0`-ről, külön worktree).
+
+### Residual risk / következő audithoz
+- **🟠 A Clerk/session-út a `main`-en MÉG kapuzatlan (HIGH, #838 hatóköre).** A spec-review tárta fel:
+  a #838 NINCS mergelve, így jelenleg a `redeemClerkInvitation`/`acceptInvitationForSignedInUser` út a
+  `completeInvitationRedemption`-ön át **ugyanígy felülírja** az aktív membership szerepét. E kör a
+  token-utat zárta (kerülve a #838-cal való ütközést); a Clerk-út a #838-é. **Ha #838 elakad**, a Clerk-út
+  nyitott eszkalációs vektor marad → akkor a gyökér-ok szintű javítás a **közös sinkbe** (`completeInvitationRedemption`)
+  teendő, ami mindkét (sőt bármely jövőbeli) redeem-hívót egyszerre fedi. Ezt figyelni #838 sorsát.
+- **🟡 Közös sink duplikáció:** a tagság-védelem most hívónként él (token + #838 Clerk). A sink-szintű
+  összevonás a fenti pont szerint a #838 utáni, vagy #838-elakadás-esetén azonnali kör.
+- **🟡 #790/#826 DRAFT-ok nyitva** — pending self-reg tenant-hozzáférés (#790), becenév-ütközés (#826)
+  ugyanabban az onboarding/IAM klaszterben; nem e kör, de figyelni a mergelést.
+- **🟡 Globális `User.role` szemantika:** a legacy `User.role`-nak alig van konzumense (tenant-authz a
+  membershipre dől); érdemes lehet külön körben megvizsgálni, kell-e még egyáltalán, vagy teljesen
+  kivezethető-e (akkor a `raiseOnlyRole` karbantartási teher is megszűnik).
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
