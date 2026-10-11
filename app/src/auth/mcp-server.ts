@@ -18,7 +18,10 @@ import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
 import { services } from '@/domain/gateway-services'
-import { linkedAccountHandle } from '@/domain/connector-grant/linked-account'
+import {
+  isDelegatedLinkedAccountType,
+  linkedAccountHandle,
+} from '@/domain/connector-grant/linked-account'
 import {
   AgentDefinitionService,
   canReadPublishedAgent,
@@ -226,7 +229,13 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     userId: string
     tenantId: string
   }) => Promise<
-    Array<{ type: string; account: string; email: string | null; nickname: string | null }>
+    Array<{
+      type: string
+      name?: string
+      account: string
+      email: string | null
+      nickname: string | null
+    }>
   >
   /** HMAC key for the write-confirmation `requestState` (#618); missing → link only. */
   requestStateKey?: string
@@ -380,12 +389,10 @@ export function productionMcpDeps(): McpRuntimeDeps {
       const grants = await services.connectorGrants.listForUser(userId, tenantId)
       return grants
         .filter((grant) => grant.status === 'active')
-        .filter(
-          (grant) =>
-            grant.connector.type === 'gmail' || grant.connector.type === 'google_drive',
-        )
+        .filter((grant) => isDelegatedLinkedAccountType(grant.connector.type))
         .map((grant) => ({
           type: grant.connector.type,
+          name: grant.connector.name,
           account: linkedAccountHandle(grant),
           email: grant.accountLabel,
           nickname: grant.nickname,
@@ -452,6 +459,7 @@ function whoamiPayload(
   tenantContext: ReturnType<typeof buildTenantContextPayload>,
   linkedAccounts: Array<{
     type: string
+    name?: string
     account: string
     email: string | null
     nickname: string | null
@@ -1243,7 +1251,7 @@ async function createMcpResourceHandler(
         {
           title: 'Who am I',
           description:
-            'Return the authenticated MCP principal, tenant organization context, visible coworkers, and linkedAccounts (Gmail/Drive nicknames such as magán or céges). Pass linkedAccounts[].account on Gmail and Drive tools when more than one account is listed. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
+            'Return the authenticated MCP principal, tenant organization context, visible coworkers, and linkedAccounts (Gmail/Drive/Calendar nicknames such as magán or céges). Pass linkedAccounts[].account on Gmail, Drive, and HTTP API tools when more than one account is listed for that connector. Next step: platform.agent.get_definition — its response carries the agent\'s memory (company facts) that you need before answering company questions.',
           inputSchema: z.object({}).passthrough(),
         },
         async () => whoamiToolResult(principal, deps),
@@ -1640,7 +1648,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. The result includes the response etag when the API sends one. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. Unlisted paths return endpoint_not_allowed with the allowed list.',
+            'One GET against a bound company HTTP API connector. Requires definitionId from platform.agent.get_definition — agentId is optional. Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. The result includes the response etag when the API sends one. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email). Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1651,7 +1659,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET all pages',
           description:
-            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition (agentId optional) and pagination on the chosen connectors[].endpoints entry; without it the call returns an error. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. The platform injects trace headers — do not pass them. Disambiguate with connectorName or connectorId when needed.',
+            'Paginated GET of a company HTTP API list in one call. Requires definitionId from platform.agent.get_definition (agentId optional) and pagination on the chosen connectors[].endpoints entry; without it the call returns an error. Required for ownerships/partners/large registers — do not page http_api_get yourself. Path is relative to the connector baseUrl. The platform injects trace headers — do not pass them. Disambiguate with connectorName or connectorId when needed. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email).',
           inputSchema: httpApiGetAllInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -1662,7 +1670,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API write',
           description:
-            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. The platform injects trace headers and Idempotency-Key — do not pass them in headers; pass only caller headers the endpoint declares, such as If-Match (the etag of your last read). body is at most 200000 characters. If this agent requires approval, returns awaiting_approval and an approvalUrl — show that link, do not poll. Direct-write agents run the call immediately.',
+            'POST/PUT/PATCH/DELETE against a bound company HTTP API. Requires definitionId from platform.agent.get_definition (agentId optional). body is a JSON string. Path is relative to the connector baseUrl. Use connectors[].endpoints; disambiguate with connectorName or connectorId when several APIs are bound. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email). The platform injects trace headers and Idempotency-Key — do not pass them in headers; pass only caller headers the endpoint declares, such as If-Match (the etag of your last read). body is at most 200000 characters. If this agent requires approval, returns awaiting_approval and an approvalUrl — show that link, do not poll. Direct-write agents run the call immediately.',
           inputSchema: httpApiRequestInputSchema,
         },
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),

@@ -18,7 +18,11 @@ import {
   isAccessTokenExpired,
   type ConnectorGrantTokens,
 } from './grant-token-vault'
-import { nicknameTakenByPeer, normalizeNickname } from './linked-account'
+import {
+  isGoogleLinkedAccountConnector,
+  nicknameTakenByPeer,
+  normalizeNickname,
+} from './linked-account'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
 import {
   CONNECTOR_GRANT_NEEDED_REASONS,
@@ -164,10 +168,10 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
 }
 
 function isGoogleConnector(connector: Connector): boolean {
-  if (connector.type as string === 'gmail' || connector.type === 'google_drive') return true
-  const config = (connector.config ?? {}) as ConnectorOAuthConfig
-  const provider = (config.provider ?? '').toLowerCase()
-  return provider.includes('google')
+  return isGoogleLinkedAccountConnector({
+    type: connector.type,
+    config: connector.config,
+  })
 }
 
 function googleOAuthService(connector: Connector): GoogleOAuthService {

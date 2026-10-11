@@ -863,8 +863,15 @@ async function main() {
 
   await check('platform.whoami lists linked Gmail/Drive nicknames', async () => {
     const linked = [
-      { type: 'gmail', account: 'magán', email: 'anna@gmail.com', nickname: 'magán' },
-      { type: 'gmail', account: 'céges', email: 'anna@ceg.hu', nickname: 'céges' },
+      { type: 'gmail', name: 'Gmail', account: 'magán', email: 'anna@gmail.com', nickname: 'magán' },
+      { type: 'gmail', name: 'Gmail', account: 'céges', email: 'anna@ceg.hu', nickname: 'céges' },
+      {
+        type: 'http_api',
+        name: 'Google Calendar',
+        account: 'céges',
+        email: 'anna@ceg.hu',
+        nickname: 'céges',
+      },
     ]
     const { deps } = runtimeDeps({
       grantedAgentIds: new Set([AGENT_ID]),

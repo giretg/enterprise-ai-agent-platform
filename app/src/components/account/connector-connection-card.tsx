@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import { useState, useTransition } from 'react'
+import type { TranslateFn } from '@/i18n/translate'
 import { formatDateTime } from '@/i18n/format'
 import { asTranslate } from '@/i18n/translate'
 import {
@@ -28,6 +29,7 @@ import {
   type GoogleDriveGrantMetadata,
 } from '@/domain/connector-grant/google-drive-grant-metadata'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
+import { isGoogleLinkedAccountConnector } from '@/domain/connector-grant/linked-account'
 import { connectorUsageStatus } from '@/components/account/linked-account-view'
 import {
   connectorScopeProfileDescription,
@@ -195,6 +197,22 @@ type DetailTab = 'overview' | 'files' | 'created' | 'history'
 const pillButton =
   'rounded-full border border-line px-3.5 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-ink/5 disabled:opacity-50'
 
+function GoogleOauthPrivacyNotice({ t }: { t: TranslateFn }) {
+  return (
+    <p className="max-w-prose text-[11px] leading-4 text-ink-faint">
+      {t('oauthPrivacyNotice')}{' '}
+      <a
+        href="/privacy"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-medium text-ink-soft underline underline-offset-2 hover:text-ink"
+      >
+        {t('oauthPrivacyLink')}
+      </a>
+    </p>
+  )
+}
+
 function NicknameField({
   value,
   disabled,
@@ -287,7 +305,8 @@ export function ConnectorConnectionCard({
     missingCapability: t('usageMissingCapability'),
     unassigned: t('usageUnassigned'),
   })
-  const isGoogle = connector.type === 'gmail' || connector.type === 'google_drive'
+  const hasScopeProfiles = connector.type === 'gmail' || connector.type === 'google_drive'
+  const supportsLinkedAccounts = isGoogleLinkedAccountConnector(connector)
   const pickerGrants = activeGrants.filter(
     (grant) =>
       connector.type === 'google_drive' &&
@@ -342,14 +361,14 @@ export function ConnectorConnectionCard({
     })
 
   const connect = (addAccount: boolean) => {
-    if (addAccount && isGoogle && !nickname.trim()) {
+    if (addAccount && supportsLinkedAccounts && !nickname.trim()) {
       setMessage({ ok: false, text: t('nicknameRequiredAdd') })
       return
     }
     startTransition(async () => {
       const res = await startConnectorOAuth({
         connectorId: connector.id,
-        scopes: isGoogle ? selectedScopes : undefined,
+        scopes: hasScopeProfiles ? selectedScopes : undefined,
         ...(nickname.trim() ? { nickname: nickname.trim() } : {}),
         ...(addAccount ? { addAccount: true } : {}),
       })
@@ -424,10 +443,10 @@ export function ConnectorConnectionCard({
         provider={connector.type}
         iconDataUrl={connector.iconDataUrl}
         summary={<span title={hint ?? undefined}>{connectorDescription(connector, t)}</span>}
-        actions={isGoogle ? scopeSelect : undefined}
+        actions={hasScopeProfiles ? scopeSelect : undefined}
       >
         <div className="space-y-3">
-          {isGoogle ? (
+          {supportsLinkedAccounts ? (
             <NicknameField value={nickname} disabled={pending} t={t} onChange={setNickname} />
           ) : null}
           <button
@@ -438,6 +457,7 @@ export function ConnectorConnectionCard({
           >
             {t('connect')}
           </button>
+          {isGoogleLinkedAccountConnector(connector) ? <GoogleOauthPrivacyNotice t={t} /> : null}
           {messageBox}
         </div>
       </ConnectionCard>
@@ -457,7 +477,7 @@ export function ConnectorConnectionCard({
       summary={connectedGrantSummary(connector, activeGrants, t)}
       actions={
         <>
-          {isGoogle ? (
+          {supportsLinkedAccounts ? (
             <button type="button" className={pillButton} onClick={startAdding}>
               {t('addAccount')}
             </button>
@@ -514,7 +534,7 @@ export function ConnectorConnectionCard({
                       <span className="font-semibold text-ink">{grantDisplayName(grant, t)}</span>
                       <span>{scopeSummary(connector.type, grant.scopes, t)}</span>
                     </div>
-                    {isGoogle ? (
+                    {supportsLinkedAccounts ? (
                       <NicknameField
                         value={grant.nickname ?? ''}
                         disabled={pending}
@@ -529,7 +549,7 @@ export function ConnectorConnectionCard({
                       />
                     ) : null}
                     <div className="flex flex-wrap justify-end gap-2">
-                      {isGoogle ? (
+                      {supportsLinkedAccounts ? (
                         <button
                           type="button"
                           disabled={pending}
@@ -551,12 +571,12 @@ export function ConnectorConnectionCard({
                   </li>
                 ))}
               </ul>
-              {isGoogle ? (
+              {supportsLinkedAccounts ? (
                 adding ? (
                   <div className="space-y-2 rounded-xl border border-dashed border-line px-3 py-3">
                     <NicknameField value={nickname} disabled={pending} t={t} onChange={setNickname} />
                     <div className="flex flex-wrap items-center gap-2">
-                      {scopeSelect}
+                      {hasScopeProfiles ? scopeSelect : null}
                       <button
                         type="button"
                         disabled={pending || !nickname.trim()}
@@ -566,6 +586,9 @@ export function ConnectorConnectionCard({
                         {t('connect')}
                       </button>
                     </div>
+                    {isGoogleLinkedAccountConnector(connector) ? (
+                      <GoogleOauthPrivacyNotice t={t} />
+                    ) : null}
                   </div>
                 ) : (
                   <button type="button" className={pillButton} onClick={startAdding}>

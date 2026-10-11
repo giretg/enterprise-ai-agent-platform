@@ -986,6 +986,65 @@ async function main() {
     }
   })
 
+  await check('http_api calendar with two grants requires account', async () => {
+    const personal = grant({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountLabel: 'anna@gmail.com',
+      nickname: 'magán',
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    })
+    const work = grant({
+      id: '22222222-2222-4222-8222-222222222222',
+      tokenRef: 'stub-calendar-work',
+      accountLabel: 'anna@ceg.hu',
+      nickname: 'céges',
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    })
+    const deps: AuthorizeToolCallDeps = {
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'user_delegated' })
+      },
+      async findActiveGrant() {
+        return personal
+      },
+      async findActiveGrants() {
+        return [personal, work]
+      },
+    }
+    const input = {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Calendar',
+          roleInstruction: 'Read calendar',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+          capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+        },
+      }),
+      toolName: HTTP_API_GET_TOOL,
+      args: { path: '/calendar/v3/users/me/calendarList' },
+    }
+    const missing = await authorizeToolCall(deps, input)
+    assert.equal(missing.allowed, false)
+    if (!missing.allowed) {
+      assert.equal(missing.reason, 'account_required')
+      assert.deepEqual(
+        missing.accountChoices?.map((row) => row.account),
+        ['magán', 'céges'],
+      )
+    }
+    const picked = await authorizeToolCall(deps, {
+      ...input,
+      args: { path: '/calendar/v3/users/me/calendarList', account: 'céges' },
+    })
+    assert.equal(picked.allowed, true)
+    if (picked.allowed) {
+      assert.equal(picked.grantId, work.id)
+      assert.equal(picked.tokenRef, 'stub-calendar-work')
+    }
+  })
+
   await check('gmail search without grant is connector_grant_missing', async () => {
     const result = await authorizeToolCall(authorizeDeps({ connector: connector({ type: 'gmail' }), grant: null }), {
       principal: principal(),

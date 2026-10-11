@@ -60,7 +60,7 @@ export type AuthorizeToolCallDenied = {
   connectorId?: string
   /** Több http_api kötés esetén, ha path alapján nem egyértelmű. */
   connectorChoices?: HttpApiConnectorChoice[]
-  /** Több kapcsolt Gmail/Drive fiók esetén, ha az `account` argumentum hiányzik vagy ismeretlen. */
+  /** Több kapcsolt fiók esetén, ha az `account` argumentum hiányzik vagy ismeretlen. */
   accountChoices?: LinkedAccountChoice[]
 }
 

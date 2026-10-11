@@ -1,9 +1,31 @@
 /**
- * Több kapcsolt Gmail/Drive fiók megkülönböztetése MCP-n: a user által adott
- * becenév (pl. magán, céges) vagy a Google-cím.
+ * Több kapcsolt Google-fiók (Gmail, Drive, Calendar, Sheets, …) megkülönböztetése
+ * MCP-n: a user által adott becenév (pl. magán, céges) vagy a Google-cím.
  */
 
 export const LINKED_ACCOUNT_NICKNAME_MAX = 40
+
+function connectorGoogleHint(config: unknown): string {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return ''
+  const row = config as { provider?: unknown; provenance?: { templateKey?: unknown } }
+  const provider = typeof row.provider === 'string' ? row.provider : ''
+  const templateKey =
+    row.provenance && typeof row.provenance.templateKey === 'string' ? row.provenance.templateKey : ''
+  return `${provider} ${templateKey}`.toLowerCase()
+}
+
+/** Gmail, Drive, és a platform Google API connectorai (Calendar, Sheets, …). */
+export function isGoogleLinkedAccountConnector(connector: {
+  type: string
+  config?: unknown
+}): boolean {
+  if (connector.type === 'gmail' || connector.type === 'google_drive') return true
+  return connectorGoogleHint(connector.config).includes('google')
+}
+
+export function isDelegatedLinkedAccountType(type: string): boolean {
+  return type === 'gmail' || type === 'google_drive' || type === 'http_api'
+}
 
 export type LinkedAccountGrant = {
   id: string
