@@ -189,16 +189,32 @@ export type EgressGuardResult =
   | { ok: false; reason: EgressBlockReason; detail?: string }
 
 /**
+ * Platform Google OAuth token/userinfo hostok — Gmail/Drive/Calendar/Sheets/…
+ * A connector config `tokenUrl`/`userInfoUrl` mezője tenant-admin által szerkeszthető,
+ * ezért a platform client_secret-et SOHA nem pineljük a konfigurált URL hostjára
+ * (különben egy attacker tokenUrl + üres clientId kilophatja a shared secretet).
+ */
+export const PLATFORM_GOOGLE_OAUTH_HOSTS = [
+  'accounts.google.com',
+  'oauth2.googleapis.com',
+  'www.googleapis.com',
+] as const
+
+/**
  * OAuth token/userinfo cél allowlistje.
- * Gmail/Drive platform-OAuth: a tenant provisioning-listától független, a végpont
- * saját hostjára pinelve (SSRF/privát IP + redirect továbbra is tiltott).
+ * Platform Google OAuth (Gmail/Drive + platform API sablonok): fix Google hostok —
+ * tenant allowlisttől és a konfigurált URL hostjától függetlenül (SSRF/privát IP +
+ * redirect továbbra is tiltott).
  * Tenant HTTP/OpenAPI OAuth: a feloldott tenant-lista; ha nincs feloldó, SSRF-only pin.
  */
 export function allowlistForOAuthEndpoint(params: {
   connectorType: string
   url: string
   tenantAllowlist: string[] | null
-  /** Platform Google OAuth (Gmail/Drive/Calendar/Sheets/…): pin a végpont hostjára. */
+  /**
+   * Platform Google OAuth (Gmail/Drive/Calendar/Sheets/…): fix Google hostokra pin,
+   * ne a connector `tokenUrl` hostjára.
+   */
   pinToEndpointHost?: boolean
 }): string[] {
   const host = new URL(params.url).hostname.toLowerCase()
@@ -206,7 +222,8 @@ export function allowlistForOAuthEndpoint(params: {
     params.pinToEndpointHost === true ||
     params.connectorType === 'gmail' ||
     params.connectorType === 'google_drive'
-  if (platformGoogle || params.tenantAllowlist == null) return [host]
+  if (platformGoogle) return [...PLATFORM_GOOGLE_OAUTH_HOSTS]
+  if (params.tenantAllowlist == null) return [host]
   return params.tenantAllowlist.map((item) => item.toLowerCase())
 }
 
