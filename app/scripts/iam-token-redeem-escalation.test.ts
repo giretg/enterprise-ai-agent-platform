@@ -63,6 +63,9 @@ function fixture(opts: {
   invitation?: ReturnType<typeof invitation>
   existingUser?: User | null
   membership?: { status: string; role: string } | null
+  // Simulates a TOCTOU race: no membership on the pre-claim check, but an active
+  // one appears by the post-claim check (e.g. a concurrent provision).
+  appearsAfterClaim?: { status: string; role: string } | null
 }) {
   let currentInvitation = (opts.invitation ?? invitation()) as { id: string; status: string; tenantId: string | null; redeemedAt: Date | null }
   const existingUser = opts.existingUser ?? null
@@ -70,6 +73,7 @@ function fixture(opts: {
   let membership = opts.membership
     ? { id: 'membership-a', tenantId: 'tenant-a', userId: 'user-a', ...opts.membership }
     : null
+  let membershipLookups = 0
   const userUpdates: Record<string, unknown>[] = []
   const membershipUpserts: { role: string; status: string }[] = []
   const auditEvents: { policyDecision?: string }[] = []
@@ -115,6 +119,11 @@ function fixture(opts: {
     undefined,
     {
       async findByTenantAndUser() {
+        membershipLookups += 1
+        // First lookup = pre-claim guard; a race membership only shows up afterwards.
+        if (opts.appearsAfterClaim && membershipLookups >= 2) {
+          return { id: 'membership-a', tenantId: 'tenant-a', userId: 'user-a', ...opts.appearsAfterClaim } as never
+        }
         return membership as never
       },
       async upsert(input: { role: string; status: string }) {
@@ -187,6 +196,25 @@ async function main() {
     assert.equal(f.getMembership()?.status, 'active', 'suspended membership reactivated')
     assert.equal(f.getMembership()?.role, 'admin')
     assert.equal(f.getInvitation().status, 'redeemed')
+  })
+
+  await check('post-claim race: active membership appearing after claim must not escalate', async () => {
+    const existingUser = { ...baseUser, role: 'operator', status: 'active', activatedAt: now } as unknown as User
+    const f = fixture({
+      invitation: invitation({ role: 'admin' }),
+      existingUser,
+      membership: null, // pre-claim: no membership → pre-claim guard passes, claim proceeds
+      appearsAfterClaim: { status: 'active', role: 'operator' }, // provision landed mid-redeem
+    })
+    await f.service.redeemInvitation(redeem)
+    assert.equal(f.getInvitation().status, 'redeemed', 'claim happened')
+    assert.equal(f.membershipUpserts.length, 0, 'membership role not overwritten by the race')
+    assert.equal(f.getUser()?.role, 'operator', 'global role not escalated by the race')
+    assert.equal(
+      f.auditEvents.some((e) => e.policyDecision === 'already_a_member'),
+      true,
+      'post-claim guard audited the refusal',
+    )
   })
 
   await check('brand-new user token redeem activates with the invited role', async () => {
