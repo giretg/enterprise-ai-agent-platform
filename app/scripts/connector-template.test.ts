@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
 import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
-import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
+import { CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import {
   ConnectorTemplateMaterializationError,
   materializeConnectorConfig,
@@ -192,7 +192,7 @@ async function main() {
   })
 
   await test('seeded GitHub custom descriptor materializes to runtime-parseable config', () => {
-    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
     assert.ok(rawDescriptor, 'missing github custom template')
     const descriptor = parseTemplateDescriptor(rawDescriptor)
     assert.ok(descriptor.activationHelp?.includes('Personal access token'))
@@ -224,7 +224,7 @@ async function main() {
   })
 
   await test('seeded GitHub custom descriptor keeps account-wide tools in any mode', () => {
-    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
     assert.ok(rawDescriptor, 'missing github custom template')
     const config = materializeConnectorConfig(
       parseTemplateDescriptor(rawDescriptor),
@@ -248,7 +248,7 @@ async function main() {
       'google-ads',
       'meta-ads',
     ])
-    for (const rawDescriptor of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
+    for (const rawDescriptor of CUSTOM_CONNECTOR_TEMPLATES) {
       const descriptor = parseTemplateDescriptor(rawDescriptor)
       assert.equal(descriptor.key, rawDescriptor.key)
       if (!marketingKeys.has(descriptor.key)) continue
@@ -258,7 +258,7 @@ async function main() {
   })
 
   await test('Google Ads template injects developer-token request header', () => {
-    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-ads')
+    const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-ads')
     assert.ok(rawDescriptor, 'missing google-ads custom template')
     const config = materializeConnectorConfig(
       parseTemplateDescriptor(rawDescriptor),
@@ -305,7 +305,7 @@ async function main() {
     } as const
 
     for (const [key, spec] of Object.entries(expected)) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.equal(descriptor.baseUrl, spec.baseUrl)
@@ -334,7 +334,7 @@ async function main() {
     } as const
 
     for (const [key, spec] of Object.entries(expected)) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.equal(descriptor.baseUrl, spec.baseUrl)
@@ -360,7 +360,7 @@ async function main() {
   })
 
   await test('billingo template materializes api_key header auth', () => {
-    const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'billingo')
+    const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'billingo')
     assert.ok(raw, 'missing billingo custom template')
     const config = materializeConnectorConfig(
       parseTemplateDescriptor(raw),
@@ -383,7 +383,7 @@ async function main() {
 
   await test('issue #691 szamlazz / nav / minicrm templates materialize for the runtime', () => {
     const materialize = (key: string, authMethodKind: 'bearer' | 'basic', instanceValues: Record<string, string>) => {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.ok((descriptor.activationHelp ?? '').includes('1.'))
@@ -432,7 +432,7 @@ async function main() {
     } as const
 
     for (const [key, spec] of Object.entries(expected)) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
@@ -442,7 +442,7 @@ async function main() {
       selfCheckTemplateDescriptor(descriptor)
     }
 
-    const pipedriveRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'pipedrive')
+    const pipedriveRaw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'pipedrive')
     assert.ok(pipedriveRaw)
     const pipedrive = materializeConnectorConfig(
       parseTemplateDescriptor(pipedriveRaw),
@@ -463,7 +463,7 @@ async function main() {
       ),
     )
 
-    const wooRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'woocommerce')
+    const wooRaw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'woocommerce')
     assert.ok(wooRaw)
     const woo = materializeConnectorConfig(
       parseTemplateDescriptor(wooRaw),
@@ -489,7 +489,7 @@ async function main() {
       ),
     )
 
-    const shopRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'shoprenter')
+    const shopRaw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'shoprenter')
     assert.ok(shopRaw)
     const shop = materializeConnectorConfig(
       parseTemplateDescriptor(shopRaw),
@@ -791,7 +791,7 @@ async function main() {
       'ostorosbor-crm-sales-delegated': 'ostorosbor-crm.svg',
       'ostorosbor-crm-service-insight': 'ostorosbor-crm.svg',
     }
-    for (const descriptor of [...BUILTIN_CONNECTOR_TEMPLATES, ...GLOBAL_CUSTOM_CONNECTOR_TEMPLATES]) {
+    for (const descriptor of [...BUILTIN_CONNECTOR_TEMPLATES, ...CUSTOM_CONNECTOR_TEMPLATES]) {
       const file = shared[descriptor.key] ?? `${descriptor.key}.svg`
       const path = resolve(dir, file)
       assert.ok(existsSync(path), `missing icon file for template ${descriptor.key}: ${file}`)

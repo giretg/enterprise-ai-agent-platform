@@ -280,6 +280,49 @@ type ConnectorTemplateRow = {
   descriptor: TemplateDescriptor
 }
 
+function WizardChoice({
+  selected,
+  title,
+  hint,
+  onClick,
+}: {
+  selected: boolean
+  title: string
+  hint: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`rounded-lg border px-4 py-3 text-left transition ${
+        selected ? 'border-coral/45 bg-coral/8 ring-1 ring-coral/25' : 'border-ink/12 bg-paper hover:border-coral/30'
+      }`}
+    >
+      <span className="block text-sm font-semibold">{title}</span>
+      <span className="mt-1 block text-xs text-ink-soft">{hint}</span>
+    </button>
+  )
+}
+
+function authMethodLabel(kind: string, t: TranslateFn): string {
+  switch (kind) {
+    case 'api_key':
+      return t('authApiKey')
+    case 'bearer':
+      return t('authBearer')
+    case 'basic':
+      return t('authBasic')
+    case 'service_oauth2':
+      return t('authServiceOauth')
+    case 'user_delegated_oauth2':
+      return t('authUserOauth')
+    default:
+      return kind
+  }
+}
+
 function ProvisioningTopicShell({
   templates,
   connections,
@@ -552,8 +595,10 @@ export function ProvisioningPanel({
   // Create-form állapot
   const [name, setName] = useState('')
   const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
-  // Általános konnektoron belül: sablon-katalógusból vagy egyéb kapcsolat.
-  const [fixedSource, setFixedSource] = useState<'template' | 'custom'>('template')
+  // A varázsló első lépése: semmi sincs előre kiválasztva.
+  const [startPath, setStartPath] = useState<'template' | 'own' | null>(null)
+  const [ownKind, setOwnKind] = useState<'openapi' | 'custom' | null>(null)
+  const [templateQuery, setTemplateQuery] = useState('')
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
   const [selfUpdatingSpecUrl, setSelfUpdatingSpecUrl] = useState('')
   // Katalógus-varázsló (gyűjtőindex → leafenkénti kapcsolatok) állapota
@@ -651,7 +696,6 @@ export function ProvisioningPanel({
       if (t.success) {
         const rows = t.data as ConnectorTemplateRow[]
         setTemplates(rows)
-        if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
@@ -678,7 +722,7 @@ export function ProvisioningPanel({
       }
       setLoadedOnce(true)
     })
-  }, [applyTemplateSelection, isSuperadmin, selectedTemplateId])
+  }, [isSuperadmin])
 
   useEffect(() => {
     reload()
@@ -830,9 +874,21 @@ export function ProvisioningPanel({
     }
     return versions
   }, [templates])
-  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? templates[0]
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId)
   // Sablon-út: az 1. lépésben választott sablon; az alternatív úton nincs sablon.
-  const isTemplatePath = connectionKind === 'fixed' && fixedSource === 'template'
+  const isTemplatePath = startPath === 'template'
+  // Galéria: csak az aktív sablonok legfrissebb verziója.
+  const galleryTemplates = templates.filter(
+    (template) =>
+      template.status === 'active' &&
+      template.version === latestTemplateVersions[templateLineKey(template) ?? ''],
+  )
+  const templateQueryNorm = templateQuery.trim().toLowerCase()
+  const visibleTemplates = templateQueryNorm
+    ? galleryTemplates.filter((template) =>
+        `${template.displayName} ${template.description ?? ''}`.toLowerCase().includes(templateQueryNorm),
+      )
+    : galleryTemplates
   const effectiveName = isTemplatePath ? (selectedTemplate?.displayName ?? '') : name
   const selectedTemplateDescriptor = selectedTemplate?.descriptor
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
@@ -857,7 +913,10 @@ export function ProvisioningPanel({
     setName('')
     setCreateStep('basics')
     setConnectionKind('fixed')
-    setFixedSource('template')
+    setStartPath(null)
+    setOwnKind(null)
+    setTemplateQuery('')
+    setSelectedTemplateId('')
     setSelfUpdatingApiKey('')
     setSelfUpdatingSpecUrl('')
     setCatalogChecking(false)
@@ -973,10 +1032,26 @@ export function ProvisioningPanel({
     })
   }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
-  const stepOrder: CreateStep[] =
-    connectionKind === 'self_updating'
-      ? ['basics', 'source', ...SELF_UPDATING_ACTIVATION_STEPS]
-      : ['basics', 'source', 'review']
+  const wizardSteps: Array<{ id: CreateStep; label: string }> = isTemplatePath
+    ? [
+        { id: 'basics', label: t('stepService') },
+        { id: 'source', label: t('stepSetup') },
+      ]
+    : connectionKind === 'self_updating'
+      ? [
+          { id: 'basics', label: t('stepKind') },
+          { id: 'source', label: t('stepApiDoc') },
+          { id: 'su_link', label: t('suLink') },
+          { id: 'su_trust', label: t('suTrust') },
+          { id: 'su_sync', label: t('suSync') },
+          { id: 'su_version', label: t('suVersion') },
+        ]
+      : [
+          { id: 'basics', label: t('stepKind') },
+          { id: 'source', label: t('source') },
+          { id: 'review', label: t('review') },
+        ]
+  const stepOrder = wizardSteps.map((step) => step.id)
 
   const onCreate = useCallback(() => {
     if (connectionKind === 'self_updating') {
@@ -1071,12 +1146,9 @@ export function ProvisioningPanel({
 
   const activeStepIndex = stepOrder.indexOf(createStep)
   const suWizardProposal = suWizardRow?.versions.find((version) => version.id === suWizardVersionId) ?? null
-  const canEnterSource =
-    connectionKind === 'self_updating'
-      ? name.trim().length > 0
-      : isTemplatePath
-        ? !!selectedTemplate && !isAgentMailTemplate
-        : name.trim().length > 0
+  const canEnterSource = isTemplatePath
+    ? !!selectedTemplate && !isAgentMailTemplate
+    : startPath === 'own' && ownKind !== null && name.trim().length > 0
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
   const canEnterReview =
@@ -1239,8 +1311,9 @@ export function ProvisioningPanel({
       ) : null}
 
       {showCreateDraftForm ? (
-      <Card title={t('newConnector')}>
-        <div className="mb-4 flex justify-end">
+      <Card>
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <h2 className="font-display text-lg font-semibold tracking-tight">{t('newConnector')}</h2>
           <button
             type="button"
             onClick={closeCreateDraftForm}
@@ -1249,193 +1322,137 @@ export function ProvisioningPanel({
             {t('close')}
           </button>
         </div>
-        <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
-          <ol className="space-y-2">
-            {[
-              {
-                id: 'basics' as const,
-                label: t('basics'),
-                hint:
-                  `${connectionKind === 'self_updating'
-                    ? 'OpenAPI'
-                    : t('generalKind')}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
-              },
-              {
-                id: 'source' as const,
-                label: t('source'),
-                hint:
-                  connectionKind === 'self_updating'
-                    ? t('sourceApiKey')
-                    : isTemplatePath
-                    ? t('templateDot', { name: selectedTemplate?.displayName ?? '—' })
-                    : sourceMethod === 'document'
-                      ? 'OpenAPI'
-                      : t('sourceManual'),
-              },
-              ...(connectionKind === 'self_updating'
-                ? [
-                    { id: 'su_link' as const, label: t('suLink'), hint: t('suLinkHint') },
-                    { id: 'su_trust' as const, label: t('suTrust'), hint: t('suTrustHint') },
-                    { id: 'su_sync' as const, label: t('suSync'), hint: t('suSyncHint') },
-                    { id: 'su_version' as const, label: t('suVersion'), hint: t('suVersionHint') },
-                  ]
-                : [
-                    {
-                      id: 'review' as const,
-                      label: t('review'),
-                      hint: configText.trim() ? t('configReady') : t('configNeeded'),
-                    },
-                  ]),
-            ].map((step, index) => {
-              const active = createStep === step.id
-              const stepIdx = stepOrder.indexOf(step.id)
-              const complete =
-                stepIdx < activeStepIndex ||
-                (step.id === 'basics' && canEnterSource) ||
-                (step.id === 'source' && canEnterReview && !suWizardConnectorId) ||
-                (step.id === 'review' && !createDisabledReason) ||
-                (step.id === 'su_link' && Boolean(suWizardRow?.urlApproved)) ||
-                (step.id === 'su_trust' && Boolean(suWizardRow?.trusted)) ||
-                (step.id === 'su_sync' && Boolean(suWizardRow?.activeSpecVersionId || suWizardVersionId)) ||
-                (step.id === 'su_version' && Boolean(suWizardRow?.activeSpecVersionId))
-              const locked =
-                (step.id === 'source' && !canEnterSource) ||
-                (step.id === 'review' && !canEnterReview) ||
-                (SELF_UPDATING_ACTIVATION_STEPS.includes(step.id) && !suWizardConnectorId) ||
-                stepIdx > suWizardMaxStepIndex
-              return (
-                <li key={step.id}>
-                  <button
-                    type="button"
-                    disabled={locked}
-                    onClick={() => setWizardStep(step.id)}
-                    className={`flex w-full items-start gap-3 rounded-md border px-3 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                      active
-                        ? 'border-coral/45 bg-coral/8'
-                        : complete
-                          ? 'border-sage/35 bg-sage/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
+        <ol className="mb-5 flex flex-wrap items-center gap-2 text-sm">
+          {wizardSteps.map((step, index) => {
+            const active = createStep === step.id
+            const complete =
+              index < activeStepIndex ||
+              (step.id === 'basics' && canEnterSource) ||
+              (step.id === 'su_link' && Boolean(suWizardRow?.urlApproved)) ||
+              (step.id === 'su_trust' && Boolean(suWizardRow?.trusted)) ||
+              (step.id === 'su_sync' && Boolean(suWizardRow?.activeSpecVersionId || suWizardVersionId)) ||
+              (step.id === 'su_version' && Boolean(suWizardRow?.activeSpecVersionId))
+            const locked =
+              (step.id === 'source' && !canEnterSource) ||
+              (step.id === 'review' && !canEnterReview) ||
+              (SELF_UPDATING_ACTIVATION_STEPS.includes(step.id) && !suWizardConnectorId) ||
+              index > suWizardMaxStepIndex
+            return (
+              <li key={step.id} className="flex items-center gap-2">
+                {index > 0 ? <span aria-hidden className="h-px w-5 bg-ink/15" /> : null}
+                <button
+                  type="button"
+                  disabled={locked}
+                  aria-current={active ? 'step' : undefined}
+                  onClick={() => setWizardStep(step.id)}
+                  className={`inline-flex items-center gap-2 font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    active ? 'text-ink' : complete ? 'text-sage' : 'text-ink-soft hover:text-ink'
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${
+                      active ? 'bg-coral text-card' : complete ? 'bg-sage text-card' : 'bg-night-2 text-ink-soft'
                     }`}
                   >
-                    <span
-                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                        complete ? 'bg-sage text-card' : active ? 'bg-coral text-card' : 'bg-night-2 text-ink-soft'
-                      }`}
-                    >
-                      {complete ? '✓' : index + 1}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold">{step.label}</span>
-                      <span className="block truncate text-xs text-ink-soft">{step.hint}</span>
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ol>
+                    {complete && !active ? '✓' : index + 1}
+                  </span>
+                  {step.label}
+                </button>
+              </li>
+            )
+          })}
+        </ol>
 
-          <div className="min-w-0 rounded-md border border-ink/12 bg-wash/35 p-4">
+          <div className="min-w-0 rounded-md border border-ink/12 bg-wash/35 p-4 sm:p-5">
             {createStep === 'basics' ? (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-base font-semibold">{t('step1Title')}</h3>
-                  <p className="mt-1 text-xs text-ink-soft">
-                    {t('step1Body')}
-                  </p>
+                  <p className="mt-1 text-sm text-ink-soft">{t('step1Body')}</p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => setConnectionKind('fixed')}
-                    className={`rounded-md border px-4 py-3 text-left ${
-                      connectionKind === 'fixed'
-                        ? 'border-coral/45 bg-coral/8'
-                        : 'border-ink/12 bg-paper hover:border-coral/25'
-                    }`}
-                  >
-                    <span className="block text-sm font-semibold">{t('general')}</span>
-                    <span className="mt-1 block text-xs text-ink-soft">
-                      {t('generalHint')}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConnectionKind('self_updating')}
-                    className={`rounded-md border px-4 py-3 text-left ${
-                      connectionKind === 'self_updating'
-                        ? 'border-coral/45 bg-coral/8'
-                        : 'border-ink/12 bg-paper hover:border-coral/25'
-                    }`}
-                  >
-                    <span className="block text-sm font-semibold">OpenAPI-kapcsolat</span>
-                    <span className="mt-1 block text-xs text-ink-soft">
-                      {t('openapiKindHint')}
-                    </span>
-                  </button>
+                  <WizardChoice
+                    selected={startPath === 'template'}
+                    title={t('pathTemplate')}
+                    hint={t('pathTemplateHint')}
+                    onClick={() => {
+                      setStartPath('template')
+                      setConnectionKind('fixed')
+                      setSourceMethod('template')
+                      setSourceType('template')
+                    }}
+                  />
+                  <WizardChoice
+                    selected={startPath === 'own'}
+                    title={t('pathOwn')}
+                    hint={t('pathOwnHint')}
+                    onClick={() => setStartPath('own')}
+                  />
                 </div>
-                {connectionKind === 'fixed' ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFixedSource('template')
-                        setSourceMethod('template')
-                        setSourceType('template')
-                      }}
-                      className={`rounded-md border px-4 py-3 text-left ${
-                        fixedSource === 'template'
-                          ? 'border-coral/45 bg-coral/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold">{t('fromTemplate')}</span>
-                      <span className="mt-1 block text-xs text-ink-soft">
-                        {t('fromTemplateHint')}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFixedSource('custom')
-                        setSourceMethod('document')
-                        setSourceType('api_doc')
-                      }}
-                      className={`rounded-md border px-4 py-3 text-left ${
-                        fixedSource === 'custom'
-                          ? 'border-coral/45 bg-coral/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold">{t('customConnection')}</span>
-                      <span className="mt-1 block text-xs text-ink-soft">
-                        {t('customConnectionHint')}
-                      </span>
-                    </button>
-                  </div>
-                ) : null}
-                {connectionKind === 'fixed' && fixedSource === 'template' ? (
-                  <div className="space-y-2">
-                    <label className="block text-sm">
-                      <span className="mb-1 block text-ink-soft">{t('templateCatalog')}</span>
-                      <select
-                        className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                        value={selectedTemplate?.id ?? ''}
-                        onChange={(e) => {
-                          const template = templates.find((t) => t.id === e.target.value)
-                          if (template) applyTemplateSelection(template)
-                        }}
-                      >
-                        {templates.map((template) => (
-                          <option key={template.id} value={template.id}>
-                            {template.displayName} v{template.version} ({template.origin}
-                            {template.tenantId ? ' · tenant' : ' · platform'})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {templates.length === 0 ? (
-                      <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
-                    ) : isAgentMailTemplate ? (
+
+                {startPath === 'template' ? (
+                  <div className="space-y-3">
+                    {galleryTemplates.length > 6 ? (
+                      <input
+                        type="search"
+                        value={templateQuery}
+                        onChange={(e) => setTemplateQuery(e.target.value)}
+                        placeholder={t('searchTemplates')}
+                        aria-label={t('searchTemplates')}
+                        className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm"
+                      />
+                    ) : null}
+                    {galleryTemplates.length === 0 ? (
+                      <p className="text-sm text-ink-soft">{t('noConnectorTemplates')}</p>
+                    ) : visibleTemplates.length === 0 ? (
+                      <p className="text-sm text-ink-soft">{t('noTemplateMatch')}</p>
+                    ) : (
+                      <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                        {visibleTemplates.map((template) => {
+                          const selected = template.id === selectedTemplate?.id
+                          return (
+                            <li key={template.id}>
+                              <button
+                                type="button"
+                                aria-pressed={selected}
+                                onClick={() => {
+                                  applyTemplateSelection(template)
+                                  // Az AgentMail külön oldalon állítható be — ott nem lépünk tovább.
+                                  if (template.descriptor.key !== AGENTMAIL_TEMPLATE_KEY) setCreateStep('source')
+                                }}
+                                className={`flex h-full w-full items-start gap-3 rounded-lg border p-3 text-left transition ${
+                                  selected
+                                    ? 'border-coral/45 bg-coral/8'
+                                    : 'border-ink/12 bg-paper hover:border-coral/30 hover:bg-card'
+                                }`}
+                              >
+                                <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-ink/10 bg-white">
+                                  <ConnectorTemplateIcon
+                                    iconDataUrl={template.descriptor.iconDataUrl}
+                                    provider={template.key}
+                                    className="h-6 w-6"
+                                  />
+                                </span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="flex flex-wrap items-center gap-1.5">
+                                    <span className="text-sm font-semibold">{template.displayName}</span>
+                                    {template.tenantId ? (
+                                      <Badge tone="neutral">{t('pillTenant')}</Badge>
+                                    ) : null}
+                                  </span>
+                                  {template.description ? (
+                                    <span className="mt-0.5 line-clamp-2 block text-xs text-ink-soft">
+                                      {template.description}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                    {isAgentMailTemplate ? (
                       <div className="rounded-md border border-coral/30 bg-coral/8 px-3 py-3 text-sm">
                         <p className="text-ink">
                           Az agent saját postafiókjait (AgentMail) egy külön, egyszerűbb oldalon állítod be:
@@ -1448,24 +1465,48 @@ export function ProvisioningPanel({
                           Agent postafiókok beállítása →
                         </Link>
                       </div>
-                    ) : (
-                      <p className="text-xs text-ink-soft">
-                        {t('usesTemplateName', { name: selectedTemplate?.displayName ?? '' })}
-                      </p>
-                    )}
+                    ) : null}
                   </div>
                 ) : null}
-                {connectionKind === 'self_updating' ||
-                (connectionKind === 'fixed' && fixedSource === 'custom') ? (
-                  <label className="block text-sm">
-                    <span className="mb-1 block text-ink-soft">{t('name')}</span>
-                    <input
-                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Acme CRM"
-                    />
-                  </label>
+
+                {startPath === 'own' ? (
+                  <div className="space-y-3 rounded-lg border border-ink/10 bg-card p-3">
+                    <p className="text-sm font-semibold">{t('ownHowTitle')}</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <WizardChoice
+                        selected={ownKind === 'openapi'}
+                        title={t('openapiKind')}
+                        hint={t('openapiKindHint')}
+                        onClick={() => {
+                          setOwnKind('openapi')
+                          setConnectionKind('self_updating')
+                        }}
+                      />
+                      <WizardChoice
+                        selected={ownKind === 'custom'}
+                        title={t('customConnection')}
+                        hint={t('customConnectionHint')}
+                        onClick={() => {
+                          setOwnKind('custom')
+                          setConnectionKind('fixed')
+                          setSourceMethod('document')
+                          setSourceType('api_doc')
+                        }}
+                      />
+                    </div>
+                    {ownKind ? (
+                      <label className="block text-sm">
+                        <span className="mb-1 block font-semibold">{t('connectionName')}</span>
+                        <input
+                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Acme CRM"
+                        />
+                        <span className="mt-1 block text-xs text-ink-soft">{t('connectionNameHint')}</span>
+                      </label>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : null}
@@ -1742,199 +1783,202 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
-            {createStep === 'source' && connectionKind === 'fixed' && isTemplatePath ? (
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-base font-semibold">{t('step2Template')}</h3>
-                  <p className="mt-1 text-xs text-ink-soft">
-                    {t('step2TemplateBody', { name: selectedTemplate?.displayName ?? '' })}
+            {createStep === 'source' && isTemplatePath && selectedTemplate && selectedTemplateDescriptor ? (
+              <div className="space-y-5">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-ink/10 bg-white">
+                    <ConnectorTemplateIcon
+                      iconDataUrl={selectedTemplateDescriptor.iconDataUrl}
+                      provider={selectedTemplate.key}
+                      className="h-7 w-7"
+                    />
+                  </span>
+                  <div className="min-w-0">
+                    <h3 className="text-base font-semibold">
+                      {t('step2Template', { name: selectedTemplate.displayName })}
+                    </h3>
+                    <p className="mt-1 text-sm text-ink-soft">{t('step2TemplateBody')}</p>
+                  </div>
+                </div>
+
+                {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
+                  <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
+                    {t('driveOauthNeeded')}
                   </p>
-                </div>
-                <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <span className="block text-sm font-semibold">Konnektor-sablonok</span>
-                      <p className="mt-1 text-xs text-ink-soft">
-                        {t('templateSelfContained')}
-                      </p>
+                ) : null}
+                {isGoogleApiTemplate && !googleApiOauthConfigured ? (
+                  <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
+                    {t('googleApiOauthNeeded')}
+                  </p>
+                ) : null}
+                {selectedTemplateDescriptor.activationHelp ? (
+                  <div className="rounded-lg border border-sage/30 bg-sage/8 p-3 text-sm">
+                    <p className="font-semibold text-sage">{t('goodToKnow')}</p>
+                    <p className="mt-1 whitespace-pre-line text-ink-soft">
+                      {selectedTemplateDescriptor.activationHelp}
+                    </p>
+                  </div>
+                ) : null}
+
+                {selectedTemplateDescriptor.authMethods.length > 1 ? (
+                  <fieldset>
+                    <legend className="mb-2 text-sm font-semibold">{t('authMethodLabel')}</legend>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedTemplateDescriptor.authMethods.map((method) => (
+                        <label
+                          key={method.kind}
+                          className={`inline-flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm ${
+                            effectiveTemplateAuthMethod === method.kind
+                              ? 'border-coral/45 bg-coral/8'
+                              : 'border-ink/12 bg-paper'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            checked={effectiveTemplateAuthMethod === method.kind}
+                            onChange={() => setTemplateAuthMethod(method.kind)}
+                          />
+                          {authMethodLabel(method.kind, t)}
+                        </label>
+                      ))}
                     </div>
-                    <Badge tone="neutral">{templates.length} sablon</Badge>
+                  </fieldset>
+                ) : null}
+
+                {provisioningVisibleInstanceFields(selectedTemplateDescriptor.instanceFields).length > 0 &&
+                !isGmailTemplate ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {provisioningVisibleInstanceFields(selectedTemplateDescriptor.instanceFields).map((field) => {
+                      const value =
+                        field.type === 'secret'
+                          ? templateSecretAliases[field.name] ?? ''
+                          : templateValues[field.name] ?? ''
+                      return (
+                        <label key={field.name} className="text-sm">
+                          <span className="mb-1 block font-semibold">
+                            {field.label}
+                            <span className="font-normal text-ink-soft">
+                              {field.required === false ? t('optional') : ''}
+                            </span>
+                          </span>
+                          {field.type === 'enum' && field.enumValues ? (
+                            <select
+                              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                              value={value}
+                              onChange={(e) =>
+                                setTemplateValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                              }
+                            >
+                              <option value="">{t('choose')}</option>
+                              {field.enumValues.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                              value={value}
+                              onChange={(e) => {
+                                const setter =
+                                  field.type === 'secret' ? setTemplateSecretAliases : setTemplateValues
+                                setter((prev) => ({ ...prev, [field.name]: e.target.value }))
+                              }}
+                              placeholder={
+                                field.type === 'secret'
+                                  ? field.secretAliasHint ?? 'secret-alias'
+                                  : field.example ?? field.name
+                              }
+                            />
+                          )}
+                        </label>
+                      )
+                    })}
                   </div>
+                ) : null}
 
-                  {templates.length === 0 ? (
-                    <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
-                  ) : null}
+                {selectedTemplateDescriptor.scopeCatalog.length > 0 ? (
+                  <fieldset>
+                    <legend className="mb-2 text-sm font-semibold">{t('accessTitle')}</legend>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {selectedTemplateDescriptor.scopeCatalog.map((scope) => {
+                        const checked = selectedScopes.includes(scope.value)
+                        return (
+                          <label
+                            key={scope.value}
+                            title={scope.value}
+                            className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-sm transition ${
+                              checked ? 'border-coral/40 bg-coral/5' : 'border-ink/12 bg-paper hover:border-coral/25'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="mt-0.5"
+                              checked={checked}
+                              onChange={(e) =>
+                                setSelectedScopes((prev) =>
+                                  e.target.checked
+                                    ? [...new Set([...prev, scope.value])]
+                                    : prev.filter((s) => s !== scope.value),
+                                )
+                              }
+                            />
+                            <span>
+                              <span className="block font-semibold">{scope.label}</span>
+                              {scope.description ? (
+                                <span className="mt-0.5 block text-xs text-ink-soft">{scope.description}</span>
+                              ) : null}
+                            </span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </fieldset>
+                ) : null}
 
-                  {selectedTemplateDescriptor ? (
-                          <div className="space-y-3">
-                            {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
-                              <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
-                                {t('driveOauthNeeded')}
-                              </p>
-                            ) : null}
-                            {isGoogleApiTemplate && !googleApiOauthConfigured ? (
-                              <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
-                                {t('googleApiOauthNeeded')}
-                              </p>
-                            ) : null}
-                            {selectedTemplate.description ? (
-                              <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
-                            ) : null}
-                            {selectedTemplateDescriptor.activationHelp ? (
-                              <details open className="rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
-                                <summary className="cursor-pointer font-semibold text-sage">{t('setupHelp')}</summary>
-                                <p className="mt-2 whitespace-pre-line text-ink-soft">
-                                  {selectedTemplateDescriptor.activationHelp}
-                                </p>
-                              </details>
-                            ) : null}
+                {selectedTemplateDescriptor.endpoints.length > 0 ? (
+                  <details className="rounded-lg border border-ink/12 bg-paper">
+                    <summary className="cursor-pointer px-3 py-2.5 text-sm font-semibold">
+                      {t('advancedActions', {
+                        selected: selectedEndpoints.length,
+                        total: selectedTemplateDescriptor.endpoints.length,
+                      })}
+                    </summary>
+                    <div className="grid gap-2 border-t border-ink/10 p-3 sm:grid-cols-2">
+                      {selectedTemplateDescriptor.endpoints.map((endpoint) => (
+                        <label key={endpoint.name} className="flex cursor-pointer items-start gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5"
+                            checked={selectedEndpoints.includes(endpoint.name)}
+                            onChange={(e) =>
+                              setSelectedEndpoints((prev) =>
+                                e.target.checked
+                                  ? [...new Set([...prev, endpoint.name])]
+                                  : prev.filter((name) => name !== endpoint.name),
+                              )
+                            }
+                          />
+                          <span>
+                            <span className="block font-semibold text-ink">
+                              {endpoint.description ?? endpoint.name}
+                            </span>
+                            <span className="block font-mono text-[11px] text-ink-soft">
+                              {endpoint.method} {endpoint.path}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
 
-                            <div>
-                              <span className="mb-1 block text-xs font-semibold text-ink-soft">Auth method</span>
-                              <div className="flex flex-wrap gap-2">
-                                {selectedTemplateDescriptor.authMethods.map((method) => (
-                                  <label
-                                    key={method.kind}
-                                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold ${
-                                      effectiveTemplateAuthMethod === method.kind
-                                        ? 'border-coral/45 bg-coral/8'
-                                        : 'border-ink/12 bg-paper'
-                                    }`}
-                                  >
-                                    <input
-                                      type="radio"
-                                      checked={effectiveTemplateAuthMethod === method.kind}
-                                      onChange={() => setTemplateAuthMethod(method.kind)}
-                                    />
-                                    {method.kind}
-                                  </label>
-                                ))}
-                              </div>
-                            </div>
-
-                            {provisioningVisibleInstanceFields(selectedTemplateDescriptor.instanceFields)
-                              .length > 0 && !isGmailTemplate ? (
-                              <div className="grid gap-3 sm:grid-cols-2">
-                                {provisioningVisibleInstanceFields(
-                                  selectedTemplateDescriptor.instanceFields,
-                                ).map((field) => {
-                                  const value =
-                                    field.type === 'secret'
-                                      ? templateSecretAliases[field.name] ?? ''
-                                      : templateValues[field.name] ?? ''
-                                  return (
-                                    <label key={field.name} className="text-xs">
-                                      <span className="mb-1 block text-ink-soft">
-                                        {field.label}
-                                        {field.required === false ? t('optional') : ''}
-                                      </span>
-                                      {field.type === 'enum' && field.enumValues ? (
-                                        <select
-                                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                                          value={value}
-                                          onChange={(e) =>
-                                            setTemplateValues((prev) => ({ ...prev, [field.name]: e.target.value }))
-                                          }
-                                        >
-                                          <option value="">{t('choose')}</option>
-                                          {field.enumValues.map((option) => (
-                                            <option key={option} value={option}>
-                                              {option}
-                                            </option>
-                                          ))}
-                                        </select>
-                                      ) : (
-                                        <input
-                                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                                          value={value}
-                                          onChange={(e) => {
-                                            const setter =
-                                              field.type === 'secret'
-                                                ? setTemplateSecretAliases
-                                                : setTemplateValues
-                                            setter((prev) => ({ ...prev, [field.name]: e.target.value }))
-                                          }}
-                                          placeholder={
-                                            field.type === 'secret'
-                                              ? field.secretAliasHint ?? 'secret-alias'
-                                              : field.example ?? field.name
-                                          }
-                                        />
-                                      )}
-                                    </label>
-                                  )
-                                })}
-                              </div>
-                            ) : null}
-
-                            {selectedTemplateDescriptor.scopeCatalog.length > 0 ? (
-                              <div>
-                                <span className="mb-1 block text-xs font-semibold text-ink-soft">Scope-ok</span>
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                  {selectedTemplateDescriptor.scopeCatalog.map((scope) => (
-                                    <label
-                                      key={scope.value}
-                                      className="rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs"
-                                    >
-                                      <span className="flex items-center gap-2 font-semibold">
-                                        <input
-                                          type="checkbox"
-                                          checked={selectedScopes.includes(scope.value)}
-                                          onChange={(e) =>
-                                            setSelectedScopes((prev) =>
-                                              e.target.checked
-                                                ? [...new Set([...prev, scope.value])]
-                                                : prev.filter((s) => s !== scope.value),
-                                            )
-                                          }
-                                        />
-                                        {scope.label}
-                                      </span>
-                                      <span className="mt-1 block font-mono text-[11px] text-ink-soft">
-                                        {scope.value}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-
-                            {selectedTemplateDescriptor.endpoints.length > 0 ? (
-                              <div>
-                                <span className="mb-1 block text-xs font-semibold text-ink-soft">Endpointok</span>
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                  {selectedTemplateDescriptor.endpoints.map((endpoint) => (
-                                    <label
-                                      key={endpoint.name}
-                                      className="rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs"
-                                    >
-                                      <span className="flex items-center gap-2 font-semibold">
-                                        <input
-                                          type="checkbox"
-                                          checked={selectedEndpoints.includes(endpoint.name)}
-                                          onChange={(e) =>
-                                            setSelectedEndpoints((prev) =>
-                                              e.target.checked
-                                                ? [...new Set([...prev, endpoint.name])]
-                                                : prev.filter((name) => name !== endpoint.name),
-                                            )
-                                          }
-                                        />
-                                        {endpoint.name}
-                                      </span>
-                                      <span className="mt-1 block font-mono text-[11px] text-ink-soft">
-                                        {endpoint.method} {endpoint.path}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                  </div>
-                </div>
-              ) : null}
+                {createDisabledReason && !pending ? (
+                  <p className="text-xs text-ink-soft">{createDisabledReason}</p>
+                ) : null}
+              </div>
+            ) : null}
 
               {createStep === 'source' && connectionKind === 'fixed' && !isTemplatePath ? (
                 <div className="space-y-4">
@@ -2098,53 +2142,6 @@ export function ProvisioningPanel({
                     ) : null}
                   </div>
                 </dl>
-                {isTemplatePath && selectedTemplateDescriptor ? (
-                  <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold">{selectedTemplate?.displayName}</span>
-                      <Badge tone="neutral">v{selectedTemplate?.version}</Badge>
-                      <Badge tone={selectedTemplate?.origin === 'builtin' ? 'success' : 'warning'}>
-                        {selectedTemplate?.origin}
-                      </Badge>
-                      <Badge tone="neutral">{effectiveTemplateAuthMethod}</Badge>
-                    </div>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <h4 className="font-semibold">{t('fields')}</h4>
-                        <ul className="mt-1 space-y-1">
-                          {provisioningVisibleInstanceFields(
-                            selectedTemplateDescriptor.instanceFields,
-                          ).map((field) => (
-                            <li key={field.name} className="flex justify-between gap-2">
-                              <span className="text-ink-soft">{field.label}</span>
-                              <code className="truncate">
-                                {field.type === 'secret'
-                                  ? templateSecretAliases[field.name] || '—'
-                                  : templateValues[field.name] || '—'}
-                              </code>
-                            </li>
-                          ))}
-                          {selectedTemplateDescriptor.instanceFields.some(
-                            (field) => field.hiddenInProvisioning,
-                          ) ? (
-                            <li className="text-ink-soft">
-                              {t('secretOnActivate')}
-                            </li>
-                          ) : null}
-                        </ul>
-                      </div>
-                      <div>
-                        <h4 className="font-semibold">{t('selection')}</h4>
-                        <p className="mt-1 text-ink-soft">
-                          Scope: {selectedScopes.length || 0} · endpoint: {selectedEndpoints.length || 0}
-                        </p>
-                        <p className="mt-1 text-ink-soft">
-                          {t('materializerHint')}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
                   <label className="block text-sm">
                     <span className="mb-1 flex items-center justify-between text-ink-soft">
                       <span>{t('generatedJson')}</span>
@@ -2163,7 +2160,6 @@ export function ProvisioningPanel({
                       placeholder={EXAMPLE_CONFIG}
                     />
                   </label>
-                )}
                 {createDisabledReason ? (
                   <p className="text-xs text-ink-soft">{createDisabledReason}</p>
                 ) : null}
@@ -2171,16 +2167,19 @@ export function ProvisioningPanel({
             ) : null}
 
             <div className="mt-5 flex flex-col gap-2 border-t border-ink/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
-              <button
-                type="button"
-                disabled={activeStepIndex === 0}
-                onClick={() => setCreateStep(stepOrder[Math.max(0, activeStepIndex - 1)])}
-                className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold disabled:opacity-50"
-              >
-                Vissza
-              </button>
+              {activeStepIndex > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setCreateStep(stepOrder[Math.max(0, activeStepIndex - 1)])}
+                  className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold"
+                >
+                  Vissza
+                </button>
+              ) : (
+                <span />
+              )}
               {createStep === 'review' ||
-              (connectionKind === 'self_updating' && createStep === 'source') ? (
+              (createStep === 'source' && (isTemplatePath || connectionKind === 'self_updating')) ? (
                 <button
                   type="button"
                   disabled={!!createDisabledReason || pending}
@@ -2270,7 +2269,6 @@ export function ProvisioningPanel({
               )}
             </div>
           </div>
-        </div>
       </Card>
       ) : (
       <ProvisioningTopicShell

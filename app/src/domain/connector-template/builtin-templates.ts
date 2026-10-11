@@ -14,7 +14,7 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     connectorType: 'gmail',
     displayName: 'Gmail (felhasználói)',
     description:
-      'Per-user delegált Gmail OAuth connector — a platform gmail_* eszközei ezen a connectoron futnak.',
+      'Az AI a munkatárs saját Gmail-fiókjában olvas, piszkozatot ír és címkéz. Mindenki a saját Google-fiókjával csatlakozik.',
     activationHelp: `A Gmail connector a platform Google OAuth alkalmazását használja (Platform · Beállítások → Google OAuth). Tenant szinten nem kell Client ID-t vagy Secretet megadni.
 
 Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a postafiókot (Kapcsolt fiókok).`,
@@ -81,7 +81,7 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a posta
     connectorType: 'google_drive',
     displayName: 'Google Drive (felhasználói)',
     description:
-      'Per-user delegált Google Drive OAuth connector — a platform google_drive_* eszközei ezen a connectoron futnak.',
+      'Az AI a munkatárs Google Drive-jában keres és olvas fájlokat, engedéllyel írni is tud. Mindenki a saját Google-fiókjával csatlakozik.',
     activationHelp: `A Google Drive connector a platform Google Drive OAuth alkalmazását használja (Platform · Beállítások → Google Drive OAuth). Tenant szinten nem kell Client ID-t vagy Secretet megadni.
 
 Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive-ot (Kapcsolt fiókok).`,
@@ -212,7 +212,8 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive
   {
     key: 'microsoft-365',
     displayName: 'Microsoft 365',
-    description: 'Microsoft Graph delegated OAuth connector with explicit provider metadata.',
+    description:
+      'Outlook-levelek olvasása és küldése. Mindenki a saját Microsoft-fiókjával csatlakozik.',
     connectorType: 'http_api',
     baseUrl: 'https://graph.microsoft.com',
     egressHosts: ['graph.microsoft.com', 'login.microsoftonline.com'],
@@ -292,7 +293,8 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive
   {
     key: 'jira-cloud',
     displayName: 'Jira Cloud',
-    description: 'Atlassian Jira Cloud REST connector using an API token header.',
+    description:
+      'Jira-feladatok keresése, olvasása és létrehozása. Atlassian API-tokennel.',
     connectorType: 'http_api',
     baseUrl: 'https://{siteHost}',
     egressHosts: ['{siteHost}'],
@@ -346,7 +348,8 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive
   {
     key: 'slack',
     displayName: 'Slack',
-    description: 'Slack Web API connector using a bot or user bearer token.',
+    description:
+      'Slack-csatornák listázása és üzenetküldés. Slack bot-tokennel.',
     connectorType: 'http_api',
     baseUrl: 'https://slack.com',
     egressHosts: ['slack.com', 'www.slack.com'],
@@ -394,7 +397,7 @@ Aktiválás után a felhasználók a saját Google-fiókjukkal kötik be a Drive
     connectorType: 'http_api',
     displayName: 'AgentMail (agent saját postafiókja)',
     description:
-      'Az agent saját e-mail címe az AgentMailben (EU vagy global régió): a saját nevében küld, olvas és válaszol. Nem a felhasználó postafiókja — arra a Gmail (felhasználói) kapcsolat való.',
+      'Saját e-mail-cím az AI munkatársnak: a saját nevében küld, olvas és válaszol. A munkatársak postafiókjához a Gmail-kapcsolat való.',
     activationHelp: `Ezt a kapcsolatot a Konnektorok → Agent postafiókok oldalon állítod be, nem ebben a varázslóban.
 
 1. Hozz létre API kulcsot az AgentMail konzolban, a választott régió szervezetében (EU: api.agentmail.eu, global: api.agentmail.to).
