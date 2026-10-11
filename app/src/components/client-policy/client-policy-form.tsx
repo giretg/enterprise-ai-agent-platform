@@ -6,6 +6,8 @@ import { asTranslate } from '@/i18n/translate'
 import { useTranslations } from 'next-intl'
 import { CAPABILITY_KEYS, PRESET_IDS, PRESETS, capabilityLevels, type PresetId } from '@/domain/client-policy/capabilities'
 import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
+import { InstallerOsField } from '@/components/client-policy/installer-os-field'
+import type { InstallerPlatform } from '@/domain/client-policy/installer-filename'
 
 export type EditableClientPolicy = { preset: string | null; capabilities: unknown; version: number }
 
@@ -28,6 +30,7 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
   const [widened, setWidened] = useState<string[]>([])
   const [confirmed, setConfirmed] = useState(false)
   const [savedVersion, setSavedVersion] = useState(policy?.version ?? 0)
+  const [platform, setPlatform] = useState<InstallerPlatform>('posix')
   const tenantPreset = PRESET_IDS.includes(tenantPolicy?.preset as PresetId) ? tenantPolicy!.preset as PresetId : 'bound'
   const tenantOverrides = tenantPolicy?.capabilities as Record<string, unknown> | null
   const base = preset ? PRESETS[preset as PresetId] : scope === 'agent' ? null : PRESETS[tenantPreset]
@@ -63,7 +66,7 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
     setPending(true)
     setMessage('')
     try {
-      await downloadManagedInstaller(scopeId)
+      await downloadManagedInstaller(scopeId, platform)
     } catch { setMessage(t('downloadFailed')) }
     finally { setPending(false) }
   }
@@ -115,11 +118,21 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
       ) : null}
       <p className="text-xs text-ink-soft">{t('effectiveNotice')}</p>
       <p role="status" aria-live="polite" className="text-sm text-coral-deep">{message}</p>
+      {scope === 'user' ? (
+        <InstallerOsField
+          name={`${id}-os`}
+          value={platform}
+          onChange={setPlatform}
+          legend={t('pickOs')}
+          posixLabel={t('osPosix')}
+          windowsLabel={t('osWindows')}
+        />
+      ) : null}
       <div className="flex flex-wrap gap-3">
         <button type="submit" disabled={pending || (widened.length > 0 && !confirmed)} className="rounded-full bg-coral px-5 py-2 text-sm font-semibold text-white disabled:opacity-50">{t(pending ? 'saving' : 'save')}</button>
         {scope === 'user' ? <button type="button" onClick={downloadFloor} disabled={pending} className="rounded-full border border-line px-5 py-2 text-sm font-semibold disabled:opacity-50">{t('downloadFloor')}</button> : null}
       </div>
-      {scope === 'user' ? <p className="text-xs text-ink-soft">{t('floorHelp')}</p> : null}
+      {scope === 'user' ? <p className="text-xs text-ink-soft">{t(platform === 'windows' ? 'floorHelpWindows' : 'floorHelp')}</p> : null}
     </form>
   )
 }
