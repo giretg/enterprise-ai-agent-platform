@@ -1777,6 +1777,8 @@
     "reviewClosed": "review: closed",
     "egressHosts": "Egress target hosts",
     "platformGoogleOauth": "platform Google OAuth app",
+    "gmailOauthTitle": "Gmail OAuth",
+    "driveOauthTitle": "Google Drive OAuth",
     "unreadableConfig": "The stored config cannot be parsed.",
     "editFix": "Edit / fix",
     "cannotEditLive": "An active connector’s config cannot be rewritten live. To fix it, reopen as a draft: the connector goes offline (the Tool Broker will not resolve it), then you must walk validation→review→sandbox→activation again. Agent assignments stay, and return on reactivation.",

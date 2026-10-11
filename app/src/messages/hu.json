@@ -1777,6 +1777,8 @@
     "reviewClosed": "review: lezárt",
     "egressHosts": "Egress-célhostok",
     "platformGoogleOauth": "platform Google OAuth alkalmazás",
+    "gmailOauthTitle": "Gmail OAuth",
+    "driveOauthTitle": "Google Drive OAuth",
     "unreadableConfig": "A tárolt config nem értelmezhető.",
     "editFix": "Szerkesztés / javítás",
     "cannotEditLive": "Aktív konnektor configját nem lehet élesben átírni. A javításhoz nyisd vissza draftba: a konnektor offline lesz (a Tool Broker nem oldja fel), majd a módosítás után újra végig kell menni a valid→review→sandbox→aktiválás kapun. Az agent-hozzárendelések megmaradnak, és újraaktiváláskor visszaállnak.",
