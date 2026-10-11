@@ -247,7 +247,7 @@
       "menuClose": "Close menu"
     },
     "nav": {
-      "get-started": "Get started",
+      "dashboard": "Overview",
       "agents": "Teammates",
       "projects": "Projects",
       "account": "Linked accounts",
@@ -300,7 +300,41 @@
       "tasksEmpty": "Nothing is waiting on you.",
       "tasksAll": "All to-dos →",
       "agentsTitle": "Teammates",
-      "agentsAll": "All teammates →"
+      "agentsAll": "All teammates →",
+      "onboarding": {
+          "title": "Getting set up",
+          "progress": "{done}/{total} done",
+          "introAdmin": "Three steps and your colleagues can start working with AI teammates. Finished steps get a check mark.",
+          "introMember": "One step and you can work with the AI teammates from your own computer.",
+          "doneLabel": "done",
+          "todoLabel": "still to do",
+          "connectors": {
+            "title": "Connect your company's systems",
+            "todo": "Add at least one connection (e.g. Gmail, Google Drive or your own system) so teammates can work with real data.",
+            "done": "A company system is connected.",
+            "action": "Add connector"
+          },
+          "agents": {
+            "title": "Add an AI teammate",
+            "todo": "Create a teammate and choose what it can access.",
+            "done": "You have an AI teammate.",
+            "action": "New teammate"
+          },
+          "mcp": {
+            "title": "Turn it on on your computer",
+            "todo": "Install the connection on your computer (Claude, Codex, Cursor or Hermes). A check mark appears here the first time you use it.",
+            "done": "The AI app on your computer has connected.",
+            "action": "Setup guide"
+          },
+          "mcpInUse": "The AI app on your computer is connected — last used {date}.",
+          "connectorsTitle": "Connected systems",
+          "connectorsEmpty": "No company system is connected yet.",
+          "usersTitle": "Users",
+          "usersSummary": "The connection works on {used} of {total} users' computers.",
+          "usersAll": "Manage users →",
+          "userMcpUsed": "In use — last {date}",
+          "userMcpNever": "Not connected yet"
+        }
     },
     "agentNew": {
       "eyebrow": "New agent",
@@ -723,8 +757,8 @@
     "step2Eyebrow": "02 / First try",
     "step2Title": "Start working",
     "step2Body": "Open the connected AI tool and ask: “Who am I, and what AI teammates do I have?” If your teammates appear, the connection works.",
-    "continue": "Continue to teammates",
-    "reopenHint": "You can reopen this page from the header at any time.",
+    "continue": "Back to the overview",
+    "reopenHint": "You can reopen this guide from the Overview page at any time.",
     "hermesBadge": "Recommended",
     "hermesDesc": "With your own model key, for a quick try",
     "hermesIntro": "In Hermes Desktop every AI coworker gets its own Bot, with its role and skills. The Bot works through the platform, so you see and approve the work here and no passwords are stored on your machine. No plugin needed: stock Hermes is enough.",

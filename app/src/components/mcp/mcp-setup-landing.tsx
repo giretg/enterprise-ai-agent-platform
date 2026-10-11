@@ -1,17 +1,12 @@
 'use client'
 
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
 import { Card } from '@/components/ui/shell'
-import { HERMES_LINKS, MCP_SETUP_SEEN_COOKIE, type McpClientSetup } from '@/lib/mcp-client-setup'
-
-function markSetupSeen() {
-  const secure = window.location.protocol === 'https:' ? '; Secure' : ''
-  document.cookie = `${MCP_SETUP_SEEN_COOKIE}=1; Path=/; Max-Age=31536000; SameSite=Lax${secure}`
-}
+import { HERMES_LINKS, type McpClientSetup } from '@/lib/mcp-client-setup'
 
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -273,9 +268,6 @@ export function McpSetupLanding({
   hermesAdmin?: HermesAdminSetup
 }) {
   const t = useTranslations('GetStarted')
-  useEffect(() => {
-    markSetupSeen()
-  }, [])
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 pb-8">
@@ -431,7 +423,7 @@ export function McpSetupLanding({
       </Card>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Link href={continueHref} onClick={markSetupSeen} className="inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-coral-deep">
+        <Link href={continueHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-coral-deep">
           {t('continue')} <span aria-hidden="true">→</span>
         </Link>
         <p className="text-sm text-ink-faint">{t('reopenHint')}</p>

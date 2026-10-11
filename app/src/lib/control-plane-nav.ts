@@ -66,9 +66,9 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
  */
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
   {
-    key: 'get-started',
-    href: '/control-plane/get-started',
-    label: 'Első lépések',
+    key: 'dashboard',
+    href: '/control-plane/dashboard',
+    label: 'Áttekintés',
     requires: { tenantRole: 'viewer' },
   },
   { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },

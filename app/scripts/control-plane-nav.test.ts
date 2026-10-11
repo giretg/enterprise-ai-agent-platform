@@ -46,7 +46,7 @@ function main() {
     const hrefs = flattenNavHrefs(nav)
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/agents'))
-    assert.ok(hrefs.includes('/control-plane/get-started'))
+    assert.ok(hrefs.includes('/control-plane/dashboard'))
     assert.ok(hrefs.includes('/control-plane/projects'))
     assert.ok(!hrefs.includes('/control-plane/connectors'))
     assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
@@ -115,7 +115,7 @@ function main() {
     const hrefs = flattenNavHrefs(nav)
     assert.ok(hrefs.includes('/control-plane/agents'))
     assert.ok(hrefs.includes('/control-plane/account'))
-    assert.ok(hrefs.includes('/control-plane/get-started'))
+    assert.ok(hrefs.includes('/control-plane/dashboard'))
     assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
     assert.ok(account && !('children' in account))
@@ -145,7 +145,7 @@ function main() {
     assert.ok(keys.includes('admin.menu-access'))
     assert.ok(keys.includes('admin.audit'))
     assert.ok(keys.includes('admin.operations'))
-    assert.ok(keys.includes('get-started'))
+    assert.ok(keys.includes('dashboard'))
   })
 
   check('hiding legacy admin.connectors still hides Kapcsolt fiókok', () => {
