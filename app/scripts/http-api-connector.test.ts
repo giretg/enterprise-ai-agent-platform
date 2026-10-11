@@ -1084,6 +1084,37 @@ async function main() {
     )
   })
 
+  await test('üres tenant-allowlist mellett a connector saját hostja hívható', async () => {
+    const calls: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (input) => {
+      calls.push(String(input))
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    try {
+      const config = {
+        ...parseHttpApiConfig({
+          baseUrl: 'https://www.googleapis.com',
+          auth: { scheme: 'bearer' },
+          endpoints: [{ method: 'GET', path: '/calendar/v3/users/me/calendarList' }],
+          restrictToEndpoints: true,
+        }),
+        allowedEgressHosts: [],
+      }
+      const res = await new HttpApiClient(config, 'token').request({
+        method: 'GET',
+        path: '/calendar/v3/users/me/calendarList',
+      })
+      assert.equal(res.ok, true)
+      assert.equal(calls.length, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('OAuth token host nincs a tenant allowlisten → hitelesítő nem megy ki', async () => {
     const calls: string[] = []
     const originalFetch = globalThis.fetch

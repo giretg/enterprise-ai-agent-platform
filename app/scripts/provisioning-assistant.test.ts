@@ -31,7 +31,7 @@ import {
 } from '../src/domain/provisioning/provisioning-service'
 import { ProvisioningError } from '../src/domain/provisioning/errors'
 import { isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
-import { validateDraftConfig } from '../src/domain/provisioning/draft-validator'
+import { validateDraftConfig, withCatalogTrustedEgress } from '../src/domain/provisioning/draft-validator'
 import {
   normalizeConnectorConfig,
   type ConnectorConfig,
@@ -383,6 +383,31 @@ function cleanConfig() {
   }
 }
 
+function googleCalendarConfig() {
+  return {
+    provider: 'google-calendar',
+    baseUrl: 'https://www.googleapis.com',
+    egressHosts: ['www.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com'],
+    authMode: 'user_delegated',
+    auth: {
+      type: 'oauth2',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+    },
+    scopesSuggested: ['https://www.googleapis.com/auth/calendar.readonly'],
+    proposedTools: [
+      {
+        name: 'list_calendars',
+        method: 'GET',
+        path: '/calendar/v3/users/me/calendarList',
+        access: 'read',
+      },
+    ],
+    provenance: { templateKey: 'google-calendar', templateOrigin: 'custom', templateVersion: 1 },
+  }
+}
+
 function makeService(opts?: {
   bankPreset?: boolean
   tester?: SandboxConnectionTester
@@ -567,6 +592,94 @@ async function run() {
     await expectError('DRAFT_VALIDATION_FAILED', () =>
       svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
     )
+  })
+
+  await test('Katalógus-sablon: létrehozáskor a kapuk bezáródnak, üres allowlist mellett is', async () => {
+    const { svc, drafts } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      adminActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    const validation = draft.validationResult as { checks: { egressAllowlist: string }; status: string } | null
+    assert.equal(validation?.checks.egressAllowlist, 'passed')
+    assert.notEqual(validation?.status, 'failed')
+    assert.equal(draft.sandboxTestOk, true)
+    assert.equal(draft.reviewStatus, 'approved')
+  })
+
+  await test('Katalógus-sablon: Calendar üres allowlisttel aktiválható', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      adminActor,
+    )
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
+  })
+
+  await test('Katalógus-sablon: bukott ellenőrzés nem zár kaput és nem kapcsolható be', async () => {
+    const { svc, drafts } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Rossz sablon',
+        sourceType: 'template',
+        generatedConfig: {
+          ...googleCalendarConfig(),
+          proposedTools: [
+            {
+              name: 'list_calendars',
+              method: 'GET',
+              path: 'data:text/plain,secret',
+              access: 'read',
+            },
+          ],
+        },
+      },
+      adminActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    const validation = draft.validationResult as { status: string } | null
+    assert.equal(validation?.status, 'failed')
+    assert.equal(draft.reviewStatus, 'pending')
+    assert.equal(draft.sandboxTestOk, null)
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+    assert.equal(drafts.drafts.get(created.draftId)!.reviewStatus, 'pending')
+  })
+
+  await test('Agent katalógus-draftot nem auto-approve-ol; admin aktiváláskor zárja a kaput', async () => {
+    const { svc, drafts } = makeService({
+      allowlist: [],
+      agentCapabilities: DRAFT_CAPABILITIES,
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      agentActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    assert.equal(draft.reviewStatus, 'pending')
+    assert.equal(draft.sandboxTestOk, null)
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
+    assert.equal(drafts.drafts.get(created.draftId)!.reviewStatus, 'approved')
   })
 
   await test('P5/APG-03: CRM privacy capability append-only spec-verzióba kerül', async () => {
@@ -1069,6 +1182,17 @@ async function run() {
     })
     const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
     assert.equal(r.checks.egressAllowlist, 'passed')
+  })
+
+  await test('Validátor: katalógus-sablon hostjai a tenant-listától függetlenül ismertek', () => {
+    const cfg = normalizeConnectorConfig(googleCalendarConfig())
+    const bare = validateDraftConfig(cfg, { egressAllowlist: [] })
+    assert.equal(bare.checks.egressAllowlist, 'warned')
+    const trusted = validateDraftConfig(cfg, {
+      egressAllowlist: withCatalogTrustedEgress([], cfg),
+    })
+    assert.equal(trusted.checks.egressAllowlist, 'passed')
+    assert.equal(trusted.unknownHosts.length, 0)
   })
 
   await test('Validátor: banki preset → ismeretlen host failed (allowlist-only)', () => {

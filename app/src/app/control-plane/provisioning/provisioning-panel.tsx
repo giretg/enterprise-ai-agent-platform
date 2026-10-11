@@ -2880,7 +2880,10 @@ function DraftCard({
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [agentApiKey, setAgentApiKey] = useState('')
-  const [draftStep, setDraftStep] = useState<DraftManageStep>('inspect')
+  const templateFastPath = draft.sourceType === 'template'
+  const [draftStep, setDraftStep] = useState<DraftManageStep>(
+    templateFastPath ? 'activate' : 'inspect',
+  )
   const [activeStep, setActiveStep] = useState<ActiveManageStep>('inspect')
   // Javítás: draft-config inline szerkesztése (a gate resetelődik mentéskor).
   const [editingConfig, setEditingConfig] = useState(false)
@@ -3009,24 +3012,39 @@ function DraftCard({
   const validationReady = !!v && v.status !== 'failed'
   const reviewApproved = draft.reviewStatus === 'approved'
   const sandboxReady = draft.sandboxTestOk === true
-  const activationReady = validationReady && sandboxReady && reviewApproved
-  const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: t('inspect'), hint: t('inspectHint'), done: !!cfg || !!draft.httpApiView || !!delegatedOauthView },
-    { id: 'validate', label: t('validate'), hint: v ? v.status : t('notRunYet'), done: validationReady },
-    {
-      id: 'sandbox',
-      label: 'Sandbox',
-      hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : t('notRunYet'),
-      done: sandboxReady,
-    },
-    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
-    {
-      id: 'activate',
-      label: t('activateStep'),
-      hint: activationReady ? t('ready') : t('needPrereqs'),
-      done: isActive,
-    },
-  ]
+  const activationReady = templateFastPath
+    ? v?.status !== 'failed'
+    : validationReady && sandboxReady && reviewApproved
+  const inspectStep = {
+    id: 'inspect' as const,
+    label: t('inspect'),
+    hint: t('inspectHint'),
+    done: !!cfg || !!draft.httpApiView || !!delegatedOauthView,
+  }
+  const activateStep = {
+    id: 'activate' as const,
+    label: templateFastPath ? t('catalogActivateTitle') : t('activateStep'),
+    hint: templateFastPath && v?.status === 'failed'
+      ? t('catalogActivateBlocked')
+      : activationReady
+        ? t('ready')
+        : t('needPrereqs'),
+    done: isActive,
+  }
+  const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = templateFastPath
+    ? [inspectStep, activateStep]
+    : [
+        inspectStep,
+        { id: 'validate', label: t('validate'), hint: v ? v.status : t('notRunYet'), done: validationReady },
+        {
+          id: 'sandbox',
+          label: 'Sandbox',
+          hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : t('notRunYet'),
+          done: sandboxReady,
+        },
+        { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
+        activateStep,
+      ]
   const activeSteps: Array<{ id: ActiveManageStep; label: string; hint: string; done: boolean }> = [
     { id: 'inspect', label: t('status'), hint: t('activeConnector'), done: true },
     { id: 'assign', label: t('assign'), hint: t('assignHint'), done: false },
@@ -3174,14 +3192,20 @@ function DraftCard({
             <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
             {isActive ? (
               <Badge tone="success">{t('reviewClosed')}</Badge>
-            ) : (
+            ) : templateFastPath ? null : (
               <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
             )}
-            {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
+            {templateFastPath ? null : v ? (
+              <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge>
+            ) : (
               <Badge tone="neutral">validation: —</Badge>
             )}
-            {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
-            {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
+            {templateFastPath ? null : draft.sandboxTestOk === true ? (
+              <Badge tone="success">sandbox: ok</Badge>
+            ) : null}
+            {templateFastPath ? null : draft.sandboxTestOk === false ? (
+              <Badge tone="danger">sandbox: fail</Badge>
+            ) : null}
             {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
             {provenance?.templateKey ? (
               <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
@@ -3708,14 +3732,31 @@ function DraftCard({
           {/* Aktiválás — emberi admin-aktus */}
           {!isActive && selectedStep === 'activate' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-2 font-semibold">{t('activateHuman')}</h4>
+              <h4 className="mb-2 font-semibold">
+                {templateFastPath ? t('catalogActivateTitle') : t('activateHuman')}
+              </h4>
               {activationHelp ? (
                 <div className="mb-3 rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
                   <p className="mb-1 font-semibold text-sage">{t('setupHelp')}</p>
                   <p className="whitespace-pre-line text-ink-soft">{activationHelp}</p>
                 </div>
               ) : null}
-              {!activationReady ? (
+              {templateFastPath ? (
+                v?.status === 'failed' ? (
+                  <div className="mb-3 text-xs text-coral">
+                    <p>{t('catalogActivateBlocked')}</p>
+                    {v.errors.length > 0 ? (
+                      <ul className="mt-2 list-disc pl-5">
+                        {v.errors.map((e, i) => (
+                          <li key={i}>{e}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mb-3 text-xs text-ink-soft">{t('catalogActivateHint')}</p>
+                )
+              ) : !activationReady ? (
                 <p className="mb-3 text-xs text-honey">
                   {t('activatePrereqs')}
                 </p>
@@ -3948,7 +3989,7 @@ function DraftCard({
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
-                  {t('activate')}
+                  {templateFastPath ? t('catalogActivateTitle') : t('activate')}
                 </button>
                 {isUserDelegated ? (
                   <button

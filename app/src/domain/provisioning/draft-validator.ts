@@ -58,6 +58,24 @@ function hostOf(url: string): string | null {
   }
 }
 
+/** A draft által deklarált kimenő hostok (egressHosts + base/token/auth URL). */
+function declaredEgressHosts(config: ConnectorConfig): string[] {
+  const hosts = new Set(config.egressHosts.map((h) => h.toLowerCase()))
+  for (const url of [config.baseUrl, config.auth.tokenUrl, config.auth.userInfoUrl, config.auth.authUrl]) {
+    const host = typeof url === 'string' ? hostOf(url) : null
+    if (host) hosts.add(host)
+  }
+  return [...hosts]
+}
+
+/**
+ * Katalógus-sablon hostjai a tenant-listával együtt számítanak ismertnek:
+ * a sablon már bízott, nem kell külön allowlist-szertartás.
+ */
+export function withCatalogTrustedEgress(tenantAllowlist: string[], config: ConnectorConfig): string[] {
+  return [...new Set([...tenantAllowlist.map((h) => h.toLowerCase()), ...declaredEgressHosts(config)])]
+}
+
 function worst(...statuses: CheckStatus[]): CheckStatus {
   if (statuses.includes('failed')) return 'failed'
   if (statuses.includes('warned')) return 'warned'
@@ -77,14 +95,8 @@ export function validateDraftConfig(
 
   const allowlist = new Set(opts.egressAllowlist.map((h) => h.toLowerCase()))
 
-  // 1) Egress-allowlist: minden egressHost + a baseUrl host-ja az allowliston?
-  const declaredHosts = new Set<string>(config.egressHosts.map((h) => h.toLowerCase()))
-  const baseHost = hostOf(config.baseUrl)
-  if (baseHost) declaredHosts.add(baseHost)
-  for (const url of [config.auth.tokenUrl, config.auth.userInfoUrl]) {
-    const host = typeof url === 'string' ? hostOf(url) : null
-    if (host) declaredHosts.add(host)
-  }
+  // 1) Egress-allowlist: minden deklarált kimenő host az allowliston?
+  const declaredHosts = new Set(declaredEgressHosts(config))
 
   const unknownHosts: string[] = []
   for (const host of declaredHosts) {
