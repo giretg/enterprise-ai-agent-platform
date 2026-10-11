@@ -6,6 +6,7 @@ A kiszolgált Bot-profil MCP OAuth tokenjét 10 perces Model Gateway JWT-re cser
 Stdout = a token; hibánál nem nulla exit kód + hétköznapi nyelvű stderr. Csak stdlib.
 """
 import calendar
+import importlib.util
 import json
 import os
 import re
@@ -19,14 +20,27 @@ from urllib.parse import urlparse
 LEEWAY = 60
 SERVER = os.environ.get("EXCELLENCE_MCP_SERVER", "excellence")
 CACHE_NAME = "excellence-gateway-token.json"
-MANAGED_DIR = r"C:\ProgramData\Excellence\hermes" if os.name == "nt" else "/etc/hermes"
+
+
+def _load_paths():
+    # A `-I` nem teszi a szkript mappáját a sys.path-ra, ezért fájlból töltjük.
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (here, os.path.join(here, "excellence-guard")):
+        path = os.path.join(folder, "excellence_paths.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("excellence_paths_token", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError("excellence_paths")
+
+
+_paths = _load_paths()
+MANAGED_DIR = _paths.default_managed_dir()
 
 
 def default_home():
-    """A Hermes alapértelmezett profilja: Windowson %LOCALAPPDATA%\\hermes, máshol ~/.hermes."""
-    if os.name == "nt":
-        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"), "hermes")
-    return os.path.expanduser("~/.hermes")
+    return _paths.default_home()
 
 
 class Fail(Exception):

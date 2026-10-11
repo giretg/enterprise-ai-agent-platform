@@ -28,15 +28,20 @@ QUEUE_FILE = ("excellence-guard", "audit-queue.jsonl")
 MANAGED_FILES = ("config.yaml", ".env", "excellence-install-id")
 HASH_VERSION = "excellence-managed-dir-v1"
 MAX_CONTENT_CHARS = 200_000
-# Windowson nincs natív managed hely a Hermesben (U3): a telepítő ide tesz mindent,
-# és gépszintű HERMES_MANAGED_DIR-t állít (#755).
-WINDOWS_ROOT = r"C:\ProgramData\Excellence"
-if os.name == "nt":
-    DEFAULT_MANAGED_DIR = WINDOWS_ROOT + r"\hermes"
-    TOKEN_HELPER_PATH = WINDOWS_ROOT + r"\bin\exc-token"
-else:
-    DEFAULT_MANAGED_DIR = "/etc/hermes"
-    TOKEN_HELPER_PATH = "/opt/excellence/bin/exc-token"
+
+
+def _load_paths():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "excellence_paths.py")
+    spec = importlib.util.spec_from_file_location("excellence_paths_runtime", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_paths = _load_paths()
+ManagedDirRedirected = _paths.ManagedDirRedirected
+DEFAULT_MANAGED_DIR = _paths.default_managed_dir()
+TOKEN_HELPER_PATH = _paths.token_helper_path()
 _lock = threading.Lock()
 
 
@@ -71,14 +76,19 @@ def config_hash(home):
 
 
 def managed_dir():
-    return os.environ.get("HERMES_MANAGED_DIR") or DEFAULT_MANAGED_DIR
+    return _paths.resolve_managed_dir(os.environ.get("HERMES_MANAGED_DIR"), os.name == "nt")
 
 
 def default_home():
-    """A Hermes alapértelmezett profilja: Windowson %LOCALAPPDATA%\\hermes, máshol ~/.hermes."""
-    if os.name == "nt":
-        return os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"), "hermes")
-    return os.path.expanduser("~/.hermes")
+    return _paths.default_home()
+
+
+def reported_managed_dir_hash():
+    """A heartbeat hash-e. Átirányított Windows-padlónál szándékosan nem egyezik a kiadottal."""
+    try:
+        return hash_managed_dir(managed_dir())
+    except ManagedDirRedirected:
+        return "redirected"
 
 
 def _under(home, parts):
@@ -483,7 +493,7 @@ class Guard:
             self._version = hermes_version()
         payload = {
             "configHash": config_hash(self.home),
-            "managedDirHash": hash_managed_dir(managed_dir()),
+            "managedDirHash": reported_managed_dir_hash(),
             "policyVersion": str(version)[:200],
             "guardVersion": policy.GUARD_VERSION,
             "hermesVersion": self._version,

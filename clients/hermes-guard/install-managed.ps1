@@ -44,7 +44,7 @@ $PluginRoot = Join-Path $Root 'hermes-plugins'
 $Names = 'config.yaml', '.env', 'excellence-install-id'
 
 # A Guard és a token-segéd a padló élesítése előtt legyen jelen.
-foreach ($asset in 'exc_token.py', 'exc-guard', 'excellence-guard/plugin.yaml') {
+foreach ($asset in 'exc_token.py', 'exc-guard', 'excellence-guard/plugin.yaml', 'excellence-guard/excellence_paths.py') {
   if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $asset) -PathType Leaf)) { Fail "Hiányzó telepítőfájl: $asset" }
 }
 
@@ -131,6 +131,7 @@ Write-Output $pkg.managedDirHash
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'exc_token.py') -Destination (Join-Path $Bin 'exc-token') -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'exc-guard') -Destination (Join-Path $Bin 'exc-guard') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'excellence-guard\excellence_paths.py') -Destination (Join-Path $Bin 'excellence_paths.py') -Force
 foreach ($tool in 'exc-token', 'exc-guard') {
   # A config.yaml ezeket hívja; a Windows nem ismeri a shebanget. A Hermes UTF-8-ként olvas.
   [IO.File]::WriteAllText((Join-Path $Bin "$tool.cmd"), "@`"$Python`" -I -X utf8 `"%~dp0$tool`" %*`r`n", [Text.Encoding]::ASCII)
@@ -146,6 +147,7 @@ Copy-Plugin $PluginRoot (Join-Path $PluginRoot 'excellence-guard')
 # --- A munkatárs Hermes-profiljai: %LOCALAPPDATA%\hermes, profilonként saját plugin-mappa --
 $HermesHome = ''
 $Sid = ''
+$profileDir = ''
 if ($Testing) {
   $HermesHome = Join-Path $Prefix 'home/AppData/Local/hermes'
 } else {
@@ -169,14 +171,62 @@ if ($HermesHome) {
 }
 
 # --- A Hermes ebből tudja, hol a managed könyvtár -------------------------------------------
-if (-not $Testing) {
-  [Environment]::SetEnvironmentVariable('HERMES_MANAGED_DIR', $Managed, 'Machine')
-  # A felhasználói változó felülírná a gépszintűt; a szerver a hash-eltérést úgyis elutasítja.
-  $userEnv = "Registry::HKEY_USERS\$Sid\Environment"
-  if ($Sid -and (Test-Path $userEnv) -and (Get-ItemProperty $userEnv).PSObject.Properties['HERMES_MANAGED_DIR']) {
-    Remove-ItemProperty -Path $userEnv -Name 'HERMES_MANAGED_DIR'
+function Clear-ManagedDirValue([string]$Key) {
+  if ((Test-Path $Key) -and (Get-ItemProperty $Key).PSObject.Properties['HERMES_MANAGED_DIR']) {
+    Remove-ItemProperty -Path $Key -Name 'HERMES_MANAGED_DIR'
     Write-Output 'A munkatárs saját HERMES_MANAGED_DIR beállítását eltávolítottam.'
   }
+}
+
+function Remove-UnloadedUserManagedDir([string]$ProfileDir) {
+  # A ki nem töltött profil a következő bejelentkezéskor visszahozná a felülírást.
+  if (-not $ProfileDir) { return }
+  $dat = Join-Path $ProfileDir 'NTUSER.DAT'
+  if (-not (Test-Path -LiteralPath $dat)) { return }
+  $hive = 'HKU\ExcellenceFloor'
+  & reg load $hive $dat 2>$null
+  if ($LASTEXITCODE -ne 0) { return }
+  $unloaded = $false
+  try {
+    Clear-ManagedDirValue 'Registry::HKEY_USERS\ExcellenceFloor\Environment'
+  } finally {
+    for ($i = 0; $i -lt 5 -and -not $unloaded; $i++) {
+      [gc]::Collect()
+      [gc]::WaitForPendingFinalizers()
+      & reg unload $hive 2>$null
+      if ($LASTEXITCODE -eq 0) { $unloaded = $true } else { Start-Sleep -Milliseconds 200 }
+    }
+  }
+  if (-not $unloaded) {
+    Write-Output 'A profilt nem tudtam visszazárni. Ha a munkatárs bejelentkezése hibázik, indítsd újra a gépet.'
+  }
+}
+
+function Publish-EnvironmentChange {
+  if (-not ('Excellence.EnvBroadcast' -as [type])) {
+    Add-Type -Namespace Excellence -Name EnvBroadcast -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, int Msg, System.IntPtr wParam, string lParam, int fuFlags, int uTimeout, out System.IntPtr lpdwResult);
+'@
+  }
+  $broadcast = [IntPtr]::new(0xffff)
+  $result = [IntPtr]::Zero
+  [void][Excellence.EnvBroadcast]::SendMessageTimeout($broadcast, 0x001A, [IntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+}
+
+if (-not $Testing) {
+  [Environment]::SetEnvironmentVariable('HERMES_MANAGED_DIR', $Managed, 'Machine')
+  # A felhasználói változó felülírja a gépszintűt. Minden betöltött profilból kivesszük.
+  $loaded = @{}
+  Get-ChildItem Registry::HKEY_USERS | ForEach-Object {
+    $name = $_.PSChildName
+    if ($name -match '^S-1-5-21-' -and $name -notlike '*_Classes') {
+      $loaded[$name] = $true
+      Clear-ManagedDirValue "Registry::HKEY_USERS\$name\Environment"
+    }
+  }
+  if ($Sid -and -not $loaded.ContainsKey($Sid)) { Remove-UnloadedUserManagedDir $profileDir }
+  Publish-EnvironmentChange
 }
 
 Write-Output "Gép-padló: $Managed"
@@ -185,8 +235,8 @@ $hermes = Get-Command hermes -ErrorAction SilentlyContinue
 if ($hermes) {
   Write-Output '--- hermes config ---'
   $env:HERMES_MANAGED_DIR = $Managed
-  & $hermes.Source config
+  try { & $hermes.Source config } catch { Write-Output 'A hermes config most nem futott le. A telepítés ettől még megvan.' }
 } else {
-  Write-Output 'A hermes nincs a PATH-on, az élő ellenőrzés (hermes config mutatja-e a managed kulcsokat) kimaradt.'
+  Write-Output 'A hermes nincs a PATH-on. A telepítés megvan; a Hermes következő indításakor olvassa a céges beállítást.'
 }
-if (-not $Testing) { Write-Output 'A munkatárs jelentkezzen ki és be (vagy indítsa újra a gépet), hogy a Hermes lássa a HERMES_MANAGED_DIR-t.' }
+if (-not $Testing) { Write-Output 'Kész. Zárd be a Hermest, ha meg van nyitva, és nyisd meg újra. Kijelentkezni nem kell.' }

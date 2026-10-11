@@ -1127,9 +1127,11 @@ model ClientMachineFloor {
   id             String   @id @default(uuid()) @db.Uuid
   tenantId       String   @map("tenant_id") @db.Uuid
   userId         String   @map("user_id") @db.Uuid
-  installId      String   @map("install_id")
-  managedDirHash String   @map("managed_dir_hash")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  installId             String  @map("install_id")
+  managedDirHash        String  @map("managed_dir_hash")
+  /// A Windows-padló hash-e. A posix hash mellett él: egy munkatársnak lehet Macje és Windows-gépe is.
+  windowsManagedDirHash String? @map("windows_managed_dir_hash")
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

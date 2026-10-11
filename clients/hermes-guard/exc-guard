@@ -7,6 +7,7 @@ Ha ez a program elszáll, a Hermes
 (`fail_closed: true`) blokkolja a toolt. Az allow üres JSON, mert a nem-JSON
 stdoutot a fail_closed szintén blokkolná.
 """
+import importlib.util
 import json
 import os
 import sys
@@ -59,8 +60,15 @@ def plugin_dir():
     candidates = [
         os.path.join(here, "excellence-guard"),
         "/opt/excellence/hermes-plugins/excellence-guard",
-        r"C:\ProgramData\Excellence\hermes-plugins\excellence-guard",
     ]
+    for folder in (here, os.path.join(here, "excellence-guard")):
+        path = os.path.join(folder, "excellence_paths.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("excellence_paths_guard", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            candidates.append(mod.plugin_dir())
+            break
     for path in candidates:
         if os.path.isfile(os.path.join(path, "policy.py")):
             return path
@@ -88,10 +96,18 @@ def main():
     args = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
     home = os.environ.get("HERMES_HOME") or runtime.default_home()
     try:
+        managed = runtime.managed_dir()
+    except runtime.ManagedDirRedirected:
+        sys.stdout.write(json.dumps({
+            "action": "block",
+            "message": "A Hermes nem a céges beállítást használja. Zárd be, és nyisd meg újra. Ha így is előjön, szólj a rendszergazdának.",
+        }, ensure_ascii=False) + "\n")
+        return 0
+    try:
         token_helper = runtime.load_exc_token()
         origin = token_helper.read_profile(home)[0] if token_helper else None
         expected = origin + "/api/model-gateway/v1" if origin else None
-        if not policy.is_excellence_route("excellence", managed_gateway_url(runtime.DEFAULT_MANAGED_DIR), expected):
+        if not policy.is_excellence_route("excellence", managed_gateway_url(managed), expected):
             raise ValueError("A profil nem a céges modell-útvonalhoz tartozik")
         status, snapshot = runtime.fetch_snapshot(home)
     except Exception:

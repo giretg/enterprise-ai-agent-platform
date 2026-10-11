@@ -119,9 +119,13 @@ export type MachineFloorPackage = {
 export interface MachineFloorStore {
   /** Atomi kiosztás: párhuzamos első letöltések ugyanazt az ID-t kapják. */
   getOrCreateInstallId(input: { tenantId: string; userId: string; installId: string }): Promise<string>
-  save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string }): Promise<void>
-  /** null = ehhez az installhoz nincs kiadott padló (az env-tartalék dönthet). */
-  expectedHash(input: { tenantId: string; userId: string; installId: string }): Promise<string | null>
+  /** A `platform` nélküli hívás a posix hash-t írja, a Windows-hash-t békén hagyja. */
+  save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string; platform?: MachinePlatform }): Promise<void>
+  /**
+   * A kiadott padlók hash-ei (posix és Windows külön). null = nincs ilyen install.
+   * Üres tömb = a sor megvan, de még egyik platformra sem került hash.
+   */
+  issuedHashes(input: { tenantId: string; userId: string; installId: string }): Promise<readonly string[] | null>
 }
 
 export type MachineFloorDeps = {
@@ -244,6 +248,6 @@ export async function issueMachineFloor(
   const { agentIds, disabledToolsets } = await resolveMachineFloor(deps, input)
   const installId = await deps.floors.getOrCreateInstallId({ ...input, installId: (deps.newInstallId ?? randomUUID)() })
   const built = buildManagedFiles({ gatewayBaseUrl: input.gatewayBaseUrl, disabledToolsets, installId, platform })
-  await deps.floors.save({ tenantId: input.tenantId, userId: input.userId, installId, managedDirHash: built.managedDirHash })
+  await deps.floors.save({ tenantId: input.tenantId, userId: input.userId, installId, managedDirHash: built.managedDirHash, platform })
   return { installId, platform, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, ...built }
 }

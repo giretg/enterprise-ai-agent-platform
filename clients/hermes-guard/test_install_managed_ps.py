@@ -48,6 +48,9 @@ def main() -> None:
         assert not [p for p in managed.iterdir() if p.name.startswith(".stage-")]
         assert (root / "bin/exc-token").read_bytes() == (ROOT / "exc_token.py").read_bytes()
         assert (root / "bin/exc-guard").read_bytes() == (ROOT / "exc-guard").read_bytes()
+        assert (root / "bin/excellence_paths.py").read_bytes() == (ROOT / "excellence-guard/excellence_paths.py").read_bytes()
+        assert "C:\\ProgramData\\Excellence" in (ROOT / "excellence-guard/excellence_paths.py").read_text()
+        assert "$Root = 'C:\\ProgramData\\Excellence'" in SCRIPT.read_text()
         cmd = (root / "bin/exc-guard.cmd").read_bytes().decode()
         assert cmd == f'@"{sys.executable}" -I -X utf8 "%~dp0exc-guard" %*\r\n', cmd
         assert (root / "hermes-plugins/excellence-guard/policy.py").is_file()

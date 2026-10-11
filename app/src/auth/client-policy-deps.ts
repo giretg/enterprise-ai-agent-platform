@@ -11,7 +11,7 @@ export function clientPolicyDeps(): ClientPolicyDeps {
     store,
     audit: repositories.audit,
     timing: clientPolicyTimingFromEnv(),
-    lookupExpectedManagedDirHash: (key) => floors.expectedHash(key),
+    lookupExpectedManagedDirHash: (key) => floors.issuedHashes(key),
     // Tartalék, ha ehhez az installhoz még nincs kiadott gép-padló.
     expectedManagedDirHash: process.env.CLIENT_POLICY_EXPECTED_MANAGED_DIR_HASH || undefined,
   }

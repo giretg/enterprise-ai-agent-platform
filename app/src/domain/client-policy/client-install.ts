@@ -83,12 +83,26 @@ async function recordDeviation(
   })
 }
 
+/** Üres lista: nincs mivel összevetni (nincs kiadott padló, env-tartalék sincs). */
+export function acceptedManagedDirHashes(
+  fromInstall: string | readonly string[] | null | undefined,
+  envFallback?: string,
+): string[] {
+  const raw = fromInstall == null ? [] : typeof fromInstall === 'string' ? [fromInstall] : [...fromInstall]
+  const issued = raw.filter((hash) => hash.length > 0)
+  if (issued.length > 0) return issued
+  return envFallback ? [envFallback] : []
+}
+
 export type ClientPolicyDeps = {
   store: ClientInstallStore
   audit?: AuditSink
   timing?: ClientPolicyTiming
-  /** A V1-8 által ehhez az installhoz mentett `/etc/hermes` hash. null → az env-tartalék. */
-  lookupExpectedManagedDirHash?: (input: ClientInstallKey) => Promise<string | null>
+  /**
+   * A kiadott padlók hash-ei. Egy string vagy tömb: a posix és a Windows hash egyszerre érvényes.
+   * null vagy üres → az env-tartalék.
+   */
+  lookupExpectedManagedDirHash?: (input: ClientInstallKey) => Promise<string | readonly string[] | null>
   /** Env-tartalék, ha az installhoz nincs mentett hash. */
   expectedManagedDirHash?: string
   now?: () => Date
@@ -119,8 +133,8 @@ export async function recordHeartbeat(
   const fromInstall = deps.lookupExpectedManagedDirHash
     ? await deps.lookupExpectedManagedDirHash({ tenantId: input.tenantId, userId: input.userId, installId: input.installId })
     : null
-  const expected = fromInstall || deps.expectedManagedDirHash
-  if (expected && input.body.managedDirHash !== expected) {
+  const accepted = acceptedManagedDirHashes(fromInstall, deps.expectedManagedDirHash)
+  if (accepted.length > 0 && !accepted.includes(input.body.managedDirHash)) {
     await signal('managed_dir_hash_mismatch', { reported: input.body.managedDirHash })
   }
   return timing
@@ -141,9 +155,9 @@ export async function resolveClientMode(
   if (!found) return { mode: 'open', why: 'no_heartbeat' }
   if (found.lastHeartbeatAt.getTime() < cutoff) return { mode: 'open', why: 'stale_heartbeat' }
   const fromInstall = deps.lookupExpectedManagedDirHash ? await deps.lookupExpectedManagedDirHash(input) : null
-  const expected = fromInstall || deps.expectedManagedDirHash
-  if (!expected) return { mode: 'open', why: 'managed_dir_unissued' }
-  if (found.managedDirHash !== expected) return { mode: 'open', why: 'managed_dir_hash_mismatch' }
+  const accepted = acceptedManagedDirHashes(fromInstall, deps.expectedManagedDirHash)
+  if (accepted.length === 0) return { mode: 'open', why: 'managed_dir_unissued' }
+  if (!accepted.includes(found.managedDirHash)) return { mode: 'open', why: 'managed_dir_hash_mismatch' }
   if (!input.sessionId || !found.sessionLastSeenAt) return { mode: 'open', why: 'session_unregistered' }
   if (found.sessionLastSeenAt.getTime() < cutoff) return { mode: 'open', why: 'session_stale' }
   return { mode: 'managed' }

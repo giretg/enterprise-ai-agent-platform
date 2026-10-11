@@ -90,6 +90,21 @@ class ExcGuard(unittest.TestCase):
         self.assertEqual(broken.returncode, 2)
         self.assertIn("nem engedem", broken.stderr)
 
+    def test_redirected_windows_floor_blocks_without_asking_the_server(self):
+        with tempfile.TemporaryDirectory() as home:
+            with patch.object(runtime, "managed_dir", side_effect=runtime.ManagedDirRedirected("C:\\Users\\evil")):
+                result = run(home, {"tool_name": "terminal", "tool_input": {}})
+            self.assertEqual(json.loads(result.stdout)["action"], "block")
+            self.assertIn("céges beállítást", json.loads(result.stdout)["message"])
+            self.assertEqual(result.fetch_calls, 0)
+
+    def test_protected_company_config_is_read(self):
+        with tempfile.TemporaryDirectory() as managed:
+            with open(os.path.join(managed, "config.yaml"), "w") as fh:
+                fh.write('model:\n  base_url: "https://ai.example/api/model-gateway/v1"\n')
+            with patch.object(guard_script, "user_can_change", return_value=False):
+                self.assertEqual(guard_script.managed_gateway_url(managed), "https://ai.example/api/model-gateway/v1")
+
     def test_user_owned_managed_config_is_rejected(self):
         with tempfile.TemporaryDirectory() as managed:
             with open(os.path.join(managed, "config.yaml"), "w") as fh:

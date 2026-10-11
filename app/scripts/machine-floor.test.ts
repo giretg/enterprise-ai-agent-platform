@@ -48,8 +48,8 @@ function policy(preset: 'free' | 'bound' | 'standard' | null, agentPreset: 'free
   })
 }
 
-function memoryFloors(): MachineFloorStore & { saved: { installId: string; managedDirHash: string } | null } {
-  const state: { saved: { installId: string; managedDirHash: string } | null } = { saved: null }
+function memoryFloors(): MachineFloorStore & { saved: { installId: string; managedDirHash: string; windowsManagedDirHash: string } | null } {
+  const state: { saved: { installId: string; managedDirHash: string; windowsManagedDirHash: string } | null } = { saved: null }
   return {
     get saved() {
       return state.saved
@@ -58,14 +58,20 @@ function memoryFloors(): MachineFloorStore & { saved: { installId: string; manag
       state.saved = v
     },
     async getOrCreateInstallId(input) {
-      state.saved ??= { installId: input.installId, managedDirHash: "" }
+      state.saved ??= { installId: input.installId, managedDirHash: '', windowsManagedDirHash: '' }
       return state.saved.installId
     },
     async save(input) {
-      state.saved = { installId: input.installId, managedDirHash: input.managedDirHash }
+      const prev = state.saved ?? { installId: input.installId, managedDirHash: '', windowsManagedDirHash: '' }
+      state.saved = {
+        installId: prev.installId,
+        managedDirHash: input.platform === 'windows' ? prev.managedDirHash : input.managedDirHash,
+        windowsManagedDirHash: input.platform === 'windows' ? input.managedDirHash : prev.windowsManagedDirHash,
+      }
     },
-    async expectedHash(input) {
-      return state.saved && state.saved.installId === input.installId ? state.saved.managedDirHash : null
+    async issuedHashes(input) {
+      if (!state.saved || state.saved.installId !== input.installId) return null
+      return [state.saved.managedDirHash, state.saved.windowsManagedDirHash].filter((hash) => hash.length > 0)
     },
   }
 }
@@ -210,7 +216,25 @@ async function main() {
     ])
     assert.equal(first.installId, second.installId)
     assert.equal(first.managedDirHash, second.managedDirHash)
-    assert.equal(await floors.expectedHash({ tenantId: T, userId: U, installId: first.installId }), first.managedDirHash)
+    assert.deepEqual(await floors.issuedHashes({ tenantId: T, userId: U, installId: first.installId }), [first.managedDirHash])
+  })
+
+  await check('a Windows-csomag nem írja felül a már kiadott posix hash-t', async () => {
+    const floors = memoryFloors()
+    const deps = {
+      policyStore: storeFor({ 'agent-free': 'free' }),
+      listVisibleAgentIds: async () => ['agent-free'],
+      floors,
+      newInstallId: () => 'inst-both',
+    }
+    const posix = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY, platform: 'posix' })
+    const win = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY, platform: 'windows' })
+    assert.equal(win.installId, posix.installId)
+    assert.notEqual(win.managedDirHash, posix.managedDirHash)
+    assert.deepEqual(await floors.issuedHashes({ tenantId: T, userId: U, installId: posix.installId }), [posix.managedDirHash, win.managedDirHash])
+    const again = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY })
+    assert.equal(again.managedDirHash, posix.managedDirHash)
+    assert.equal(floors.saved?.windowsManagedDirHash, win.managedDirHash)
   })
 
   await check('a gateway URL a publikus originból áll', () => {

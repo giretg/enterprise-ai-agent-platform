@@ -5,6 +5,7 @@ import hashlib
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import shutil
 from pathlib import Path
@@ -62,6 +63,10 @@ def main() -> None:
         token = prefix / "opt" / "excellence" / "bin" / "exc-token"
         assert token.is_file()
         assert os.access(token, os.X_OK)
+        paths = prefix / "opt/excellence/bin/excellence_paths.py"
+        assert paths.read_bytes() == (ROOT / "excellence-guard/excellence_paths.py").read_bytes()
+        isolated = subprocess.run([sys.executable, "-I", str(token)], capture_output=True, text=True)
+        assert isolated.returncode != 0 and "ImportError" not in isolated.stderr and "excellence_paths" not in isolated.stderr, isolated.stderr
         guard = prefix / "opt/excellence/bin/exc-guard"
         assert os.access(guard, os.X_OK)
         plugin = prefix / "opt/excellence/hermes-plugins/excellence-guard"

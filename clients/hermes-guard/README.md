@@ -70,11 +70,11 @@ Ha nem a bejelentkezett munkatársnak telepítesz, add meg: `-User CEG\kovacs.an
 | `%LOCALAPPDATA%\hermes\plugins\`, `...\profiles\*\plugins\` | a Guard plugin a munkatárs profiljaiban |
 | gépszintű `HERMES_MANAGED_DIR` | `C:\ProgramData\Excellence\hermes` |
 
-A `C:\ProgramData\Excellence` könyvtárat csak a SYSTEM és az Administrators írhatja, a Users csoport csak olvashatja. A telepítő a korábbi explicit jogokat törli. A Hermes Windowson nem keres natív managed helyet (U3), ezért a gépszintű környezeti változó mondja meg neki. A változó a munkatárs következő bejelentkezésétől érvényes. A munkatárs saját `HERMES_MANAGED_DIR` változóját a telepítő eltávolítja. Ha később újra beállítja, a Hermes nem a céges padlót olvassa, a Guard heartbeatje eltérő hash-t küld, és a céges modell nem válaszol.
+A `C:\ProgramData\Excellence` könyvtárat csak a SYSTEM és az Administrators írhatja, a Users csoport csak olvashatja. A telepítő a korábbi explicit jogokat törli. A Hermes Windowson nem keres natív managed helyet (U3), ezért a gépszintű környezeti változó mondja meg neki. A telepítő a munkatárs saját `HERMES_MANAGED_DIR` változóját törli (a bejelentkezett és a megadott profilból is), majd szól a Windowsnak, hogy az új folyamatok lássák. A munkatársnak elég bezárni és újra megnyitni a Hermest, kijelentkezni nem kell.
 
-Egy munkatársnak egyszerre egy kiadott padlója érvényes. A Windows-csomag letöltése után a korábbi macOS- vagy Linux-csomag eltérő hash-t ad.
+Ha a munkatárs később újra beállítja a saját változót, a Guard nem követi: a műveletet megállítja, a céges modell pedig nem válaszol. A Mac- és a Windows-padló hash-e egymás mellett él, az egyik letöltése a másikat nem érvényteleníti.
 
-Élő Hermes Desktop-mérés Windowson még nincs. A telepítést, az ACL-t, a környezeti változót és a `.cmd` → `exc-guard` láncot a CI `windows-latest` futtatója ellenőrzi.
+Élő Hermes Desktop-mérés Windowson még nincs. A telepítést, az ACL-t, a környezeti változót és a `.cmd` → `exc-guard` láncot a CI `windows-latest` futtatója ellenőrzi. WSL-ben a Hermes Linux-folyamat, ott az `install-managed.sh` és a posix csomag a helyes út.
 
 ## Hova kerül a Guard plugin
 
