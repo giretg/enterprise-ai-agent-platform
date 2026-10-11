@@ -711,6 +711,13 @@ export async function invokeEnterpriseTool(
   }
 }
 
+function egressHostsFromStoredConfig(config: unknown): string[] {
+  if (!config || typeof config !== 'object') return []
+  const hosts = (config as { egressHosts?: unknown }).egressHosts
+  if (!Array.isArray(hosts)) return []
+  return hosts.filter((h): h is string => typeof h === 'string' && h.trim() !== '').map((h) => h.toLowerCase())
+}
+
 async function dispatchTool(
   deps: EnterpriseToolDeps,
   input: {
@@ -730,9 +737,12 @@ async function dispatchTool(
     const execute = deps.executeHttpApiTool ?? executeHttpApiTool
     // #717: a hintek/hibák a tenant nyelvén — angol tenant ne kapjon magyar szöveget.
     const language = await tenantLanguageOrDefault(deps.resolveTenantLanguage, input.connector.tenantId)
-    const allowedEgressHosts = deps.resolveEgressAllowlist
+    const tenantAllowlist = deps.resolveEgressAllowlist
       ? await deps.resolveEgressAllowlist(input.connector.tenantId)
-      : undefined
+      : []
+    const allowedEgressHosts = [
+      ...new Set([...tenantAllowlist, ...egressHostsFromStoredConfig(input.connector.config)]),
+    ]
     return execute(
       input.toolName,
       input.args,

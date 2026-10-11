@@ -1068,7 +1068,9 @@ export class HttpApiClient {
     const connectorOrigin = connectorUrl.origin
     const guard = await guardEgressUrl({
       url: input.toString(),
-      allowlistHosts: this.config.allowedEgressHosts ?? [connectorHost],
+      // A hívás a connector baseUrl-hostjára van pinelve; üres tenant-lista
+      // ne blokkolja a saját hostot (katalógus-sablon, pl. Calendar).
+      allowlistHosts: [...new Set([...(this.config.allowedEgressHosts ?? []), connectorHost])],
       resolveHostIps: this.resolveHostIps,
     })
     if (!guard.ok || guard.host !== connectorHost) {

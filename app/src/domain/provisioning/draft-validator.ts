@@ -58,6 +58,24 @@ function hostOf(url: string): string | null {
   }
 }
 
+/** A draft által deklarált kimenő hostok (egressHosts + base/token/auth URL). */
+export function catalogDeclaredHosts(config: ConnectorConfig): string[] {
+  const hosts = new Set(config.egressHosts.map((h) => h.toLowerCase()))
+  for (const url of [config.baseUrl, config.auth.tokenUrl, config.auth.userInfoUrl, config.auth.authUrl]) {
+    const host = typeof url === 'string' ? hostOf(url) : null
+    if (host) hosts.add(host)
+  }
+  return [...hosts]
+}
+
+/**
+ * Katalógus-sablon hostjai a tenant-listával együtt számítanak ismertnek:
+ * a sablon már bízott, nem kell külön allowlist-szertartás.
+ */
+export function withCatalogTrustedEgress(tenantAllowlist: string[], config: ConnectorConfig): string[] {
+  return [...new Set([...tenantAllowlist.map((h) => h.toLowerCase()), ...catalogDeclaredHosts(config)])]
+}
+
 function worst(...statuses: CheckStatus[]): CheckStatus {
   if (statuses.includes('failed')) return 'failed'
   if (statuses.includes('warned')) return 'warned'

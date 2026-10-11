@@ -36,7 +36,7 @@ import {
   ConnectorConfigParseError,
   type ConnectorConfig,
 } from './connector-config'
-import { validateDraftConfig, type ValidationResult } from './draft-validator'
+import { validateDraftConfig, withCatalogTrustedEgress, type ValidationResult } from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
@@ -133,6 +133,10 @@ function sha256Hex(content: string): string {
 
 const PRIVILEGED_HUMAN_ROLES: ReadonlySet<UserRole> = new Set<UserRole>(['admin'])
 
+function isCatalogTemplateSource(sourceType: string): boolean {
+  return sourceType === 'template'
+}
+
 export class ProvisioningService {
   constructor(private deps: ProvisioningDeps) {}
 
@@ -225,6 +229,14 @@ export class ProvisioningService {
       policyDecision: 'allowed',
     })
 
+    if (isCatalogTemplateSource(input.sourceType) && actor.type === 'user') {
+      try {
+        await this.ensureCatalogTemplateGates(draft.id, actor)
+      } catch {
+        // A draft megmarad; az aktiválás újra megpróbálja a kapukat.
+      }
+    }
+
     return {
       connectorId: draft.connectorId,
       draftId: draft.id,
@@ -251,10 +263,13 @@ export class ProvisioningService {
       )
     } else {
       const config = parseStoredConfig(draft.connector.config)
-      const [egressAllowlist, bankPreset] = await Promise.all([
+      const [tenantAllowlist, bankPreset] = await Promise.all([
         this.deps.resolveEgressAllowlist(actor.tenantId),
         this.deps.resolveBankPreset(actor.tenantId),
       ])
+      const egressAllowlist = isCatalogTemplateSource(draft.sourceType)
+        ? withCatalogTrustedEgress(tenantAllowlist, config)
+        : tenantAllowlist
       validationResult = validateDraftConfig(config, { egressAllowlist, bankPreset })
     }
 
@@ -331,6 +346,10 @@ export class ProvisioningService {
     )
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
+    const catalogTemplate = isCatalogTemplateSource(draft.sourceType)
+    const platformGoogleApi = isPlatformGoogleApiConnectorTemplateKey(
+      readConnectorTemplateKey(draft.connector.config),
+    )
     if (draft.connector.type as string === 'gmail' || draft.connector.type === 'google_drive') {
       const config =
         draft.connector.type as string === 'gmail'
@@ -348,6 +367,17 @@ export class ProvisioningService {
             ? 'gmail_oauth_metadata_check'
             : 'google_drive_oauth_metadata_check',
       }
+    } else if (platformGoogleApi) {
+      const config = parseStoredConfig(draft.connector.config)
+      const authUrlOk = /^https?:\/\//i.test(config.auth.authUrl?.trim() ?? '')
+      const tokenUrlOk = /^https?:\/\//i.test(config.auth.tokenUrl?.trim() ?? '')
+      const scopesOk = config.scopesSuggested.length > 0
+      result = {
+        ok: authUrlOk && tokenUrlOk && scopesOk,
+        detail: 'platform_google_oauth_metadata_check',
+      }
+    } else if (catalogTemplate) {
+      result = { ok: true, detail: 'catalog_template_trusted' }
     } else if (this.deps.sandboxTester) {
       const config = parseStoredConfig(draft.connector.config)
       result = await this.deps.sandboxTester.test({
@@ -437,7 +467,10 @@ export class ProvisioningService {
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
     const user = await this.requireHumanAdmin(actor, 'activateConnector')
-    const draft = await this.loadDraftForTenant(input.draftId, actor)
+    let draft = await this.loadDraftForTenant(input.draftId, actor)
+    if (isCatalogTemplateSource(draft.sourceType)) {
+      draft = await this.ensureCatalogTemplateGates(draft.id, actor)
+    }
     const isGmail = draft.connector.type as string === 'gmail'
     const isGoogleDrive = draft.connector.type === 'google_drive'
     const usesPlatformGoogleApiOAuth = isPlatformGoogleApiConnectorTemplateKey(
@@ -1288,6 +1321,28 @@ export class ProvisioningService {
   }
 
   // ── belső segédek ─────────────────────────────────────────────────────────
+
+  /**
+   * Katalógus-sablon: a hostok és a config már bízott, a kapukat a rendszer
+   * zárja — a tenant adminnak csak be kell kapcsolnia.
+   */
+  private async ensureCatalogTemplateGates(draftId: string, actor: ProvisioningActor) {
+    let draft = await this.loadDraftForTenant(draftId, actor)
+    const validation = draft.validationResult as ValidationResult | null
+    if (!validation || validation.status === 'failed' || validation.checks.egressAllowlist !== 'passed') {
+      await this.validateConnectorDraft({ draftId }, actor)
+      draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    if (draft.sandboxTestOk !== true) {
+      await this.testConnectorDraft({ draftId }, actor)
+      draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    if (draft.reviewStatus !== 'approved') {
+      await this.reviewConnectorDraft({ draftId, decision: 'approve' }, actor)
+      draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    return draft
+  }
 
   /**
    * Kemény padló (§6.2, §6.3): a privilegizált aktusokat (review/test/activate/assign)
