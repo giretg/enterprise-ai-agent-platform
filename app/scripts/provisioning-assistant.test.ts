@@ -629,6 +629,37 @@ async function run() {
     assert.equal(res.lifecycleState, 'active')
   })
 
+  await test('Katalógus-sablon: bukott ellenőrzés nem zár kaput és nem kapcsolható be', async () => {
+    const { svc, drafts } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Rossz sablon',
+        sourceType: 'template',
+        generatedConfig: {
+          ...googleCalendarConfig(),
+          proposedTools: [
+            {
+              name: 'list_calendars',
+              method: 'GET',
+              path: 'data:text/plain,secret',
+              access: 'read',
+            },
+          ],
+        },
+      },
+      adminActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    const validation = draft.validationResult as { status: string } | null
+    assert.equal(validation?.status, 'failed')
+    assert.equal(draft.reviewStatus, 'pending')
+    assert.equal(draft.sandboxTestOk, null)
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+    assert.equal(drafts.drafts.get(created.draftId)!.reviewStatus, 'pending')
+  })
+
   await test('Agent katalógus-draftot nem auto-approve-ol; admin aktiváláskor zárja a kaput', async () => {
     const { svc, drafts } = makeService({
       allowlist: [],

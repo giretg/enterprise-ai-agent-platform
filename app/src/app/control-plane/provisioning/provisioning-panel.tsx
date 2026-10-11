@@ -2880,9 +2880,9 @@ function DraftCard({
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [agentApiKey, setAgentApiKey] = useState('')
-  const catalogFastPath = draft.sourceType === 'template'
+  const templateFastPath = draft.sourceType === 'template'
   const [draftStep, setDraftStep] = useState<DraftManageStep>(
-    draft.sourceType === 'template' ? 'activate' : 'inspect',
+    templateFastPath ? 'activate' : 'inspect',
   )
   const [activeStep, setActiveStep] = useState<ActiveManageStep>('inspect')
   // Javítás: draft-config inline szerkesztése (a gate resetelődik mentéskor).
@@ -3012,8 +3012,9 @@ function DraftCard({
   const validationReady = !!v && v.status !== 'failed'
   const reviewApproved = draft.reviewStatus === 'approved'
   const sandboxReady = draft.sandboxTestOk === true
-  const activationReady =
-    catalogFastPath || (validationReady && sandboxReady && reviewApproved)
+  const activationReady = templateFastPath
+    ? v?.status !== 'failed'
+    : validationReady && sandboxReady && reviewApproved
   const inspectStep = {
     id: 'inspect' as const,
     label: t('inspect'),
@@ -3022,11 +3023,15 @@ function DraftCard({
   }
   const activateStep = {
     id: 'activate' as const,
-    label: catalogFastPath ? t('catalogActivateTitle') : t('activateStep'),
-    hint: activationReady ? t('ready') : t('needPrereqs'),
+    label: templateFastPath ? t('catalogActivateTitle') : t('activateStep'),
+    hint: templateFastPath && v?.status === 'failed'
+      ? t('catalogActivateBlocked')
+      : activationReady
+        ? t('ready')
+        : t('needPrereqs'),
     done: isActive,
   }
-  const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = catalogFastPath
+  const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = templateFastPath
     ? [inspectStep, activateStep]
     : [
         inspectStep,
@@ -3187,18 +3192,18 @@ function DraftCard({
             <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
             {isActive ? (
               <Badge tone="success">{t('reviewClosed')}</Badge>
-            ) : catalogFastPath ? null : (
+            ) : templateFastPath ? null : (
               <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
             )}
-            {catalogFastPath ? null : v ? (
+            {templateFastPath ? null : v ? (
               <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge>
             ) : (
               <Badge tone="neutral">validation: —</Badge>
             )}
-            {catalogFastPath ? null : draft.sandboxTestOk === true ? (
+            {templateFastPath ? null : draft.sandboxTestOk === true ? (
               <Badge tone="success">sandbox: ok</Badge>
             ) : null}
-            {catalogFastPath ? null : draft.sandboxTestOk === false ? (
+            {templateFastPath ? null : draft.sandboxTestOk === false ? (
               <Badge tone="danger">sandbox: fail</Badge>
             ) : null}
             {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
@@ -3728,7 +3733,7 @@ function DraftCard({
           {!isActive && selectedStep === 'activate' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
               <h4 className="mb-2 font-semibold">
-                {catalogFastPath ? t('catalogActivateTitle') : t('activateHuman')}
+                {templateFastPath ? t('catalogActivateTitle') : t('activateHuman')}
               </h4>
               {activationHelp ? (
                 <div className="mb-3 rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
@@ -3736,8 +3741,21 @@ function DraftCard({
                   <p className="whitespace-pre-line text-ink-soft">{activationHelp}</p>
                 </div>
               ) : null}
-              {catalogFastPath ? (
-                <p className="mb-3 text-xs text-ink-soft">{t('catalogActivateHint')}</p>
+              {templateFastPath ? (
+                v?.status === 'failed' ? (
+                  <div className="mb-3 text-xs text-coral">
+                    <p>{t('catalogActivateBlocked')}</p>
+                    {v.errors.length > 0 ? (
+                      <ul className="mt-2 list-disc pl-5">
+                        {v.errors.map((e, i) => (
+                          <li key={i}>{e}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mb-3 text-xs text-ink-soft">{t('catalogActivateHint')}</p>
+                )
               ) : !activationReady ? (
                 <p className="mb-3 text-xs text-honey">
                   {t('activatePrereqs')}
@@ -3971,7 +3989,7 @@ function DraftCard({
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
-                  {catalogFastPath ? t('catalogActivateTitle') : t('activate')}
+                  {templateFastPath ? t('catalogActivateTitle') : t('activate')}
                 </button>
                 {isUserDelegated ? (
                   <button

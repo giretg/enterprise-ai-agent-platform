@@ -133,7 +133,7 @@ function sha256Hex(content: string): string {
 
 const PRIVILEGED_HUMAN_ROLES: ReadonlySet<UserRole> = new Set<UserRole>(['admin'])
 
-function isCatalogTemplateSource(sourceType: string): boolean {
+function isTemplateSource(sourceType: string): boolean {
   return sourceType === 'template'
 }
 
@@ -229,7 +229,7 @@ export class ProvisioningService {
       policyDecision: 'allowed',
     })
 
-    if (isCatalogTemplateSource(input.sourceType) && actor.type === 'user') {
+    if (isTemplateSource(input.sourceType) && actor.type === 'user') {
       try {
         await this.ensureCatalogTemplateGates(draft.id, actor)
       } catch {
@@ -267,7 +267,7 @@ export class ProvisioningService {
         this.deps.resolveEgressAllowlist(actor.tenantId),
         this.deps.resolveBankPreset(actor.tenantId),
       ])
-      const egressAllowlist = isCatalogTemplateSource(draft.sourceType)
+      const egressAllowlist = isTemplateSource(draft.sourceType)
         ? withCatalogTrustedEgress(tenantAllowlist, config)
         : tenantAllowlist
       validationResult = validateDraftConfig(config, { egressAllowlist, bankPreset })
@@ -346,7 +346,7 @@ export class ProvisioningService {
     )
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
-    const catalogTemplate = isCatalogTemplateSource(draft.sourceType)
+    const catalogTemplate = isTemplateSource(draft.sourceType)
     const platformGoogleApi = isPlatformGoogleApiConnectorTemplateKey(
       readConnectorTemplateKey(draft.connector.config),
     )
@@ -468,7 +468,7 @@ export class ProvisioningService {
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
     const user = await this.requireHumanAdmin(actor, 'activateConnector')
     let draft = await this.loadDraftForTenant(input.draftId, actor)
-    if (isCatalogTemplateSource(draft.sourceType)) {
+    if (isTemplateSource(draft.sourceType)) {
       draft = await this.ensureCatalogTemplateGates(draft.id, actor)
     }
     const isGmail = draft.connector.type as string === 'gmail'
@@ -1332,6 +1332,13 @@ export class ProvisioningService {
     if (!validation || validation.status === 'failed' || validation.checks.egressAllowlist !== 'passed') {
       await this.validateConnectorDraft({ draftId }, actor)
       draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    const checked = draft.validationResult as ValidationResult | null
+    if (!checked || checked.status === 'failed' || checked.checks.egressAllowlist !== 'passed') {
+      throw new ProvisioningError(
+        'DRAFT_VALIDATION_FAILED',
+        'validation_result must pass before a template connector can be turned on',
+      )
     }
     if (draft.sandboxTestOk !== true) {
       await this.testConnectorDraft({ draftId }, actor)
