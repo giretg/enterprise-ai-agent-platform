@@ -94,8 +94,27 @@ PLUGIN_SRC="$SCRIPT_DIR/excellence-guard"
 copy_plugin() {
   local dest="$1"
   python3 - "$PLUGIN_SRC" "$dest" "${2:-}" <<'PYCOPY'
-import os, pathlib, pwd, shutil, sys
+import os, pathlib, pwd, stat, sys
 src, dest, user = sys.argv[1:]
+source = pathlib.Path(src)
+if source.is_symlink() or not source.is_dir():
+    raise ValueError("A plugin forrása nem olvasható könyvtár")
+# A sudo tempje rooté és 0700. A fájlokat még a jogeldobás előtt olvassuk be,
+# különben a user profiljába másolás Permission denied.
+payload = []
+for dirpath, dirnames, filenames in os.walk(source, followlinks=False):
+    current = pathlib.Path(dirpath)
+    rel_dir = current.relative_to(source).as_posix()
+    payload.append(("dir", "." if rel_dir == "" else rel_dir))
+    for name in dirnames:
+        if (current / name).is_symlink():
+            raise ValueError("A plugin forrása nem tartalmazhat symlinket")
+    for name in filenames:
+        child = current / name
+        if child.is_symlink() or not child.is_file():
+            raise ValueError("A plugin forrása nem tartalmazhat symlinket")
+        rel_file = name if rel_dir == "" else f"{rel_dir}/{name}"
+        payload.append(("file", rel_file, child.read_bytes(), stat.S_IMODE(child.stat().st_mode)))
 # A user profiljába soha nem írunk root-joggal: átirányítás sem adhat root-írást.
 if user:
     account = pwd.getpwnam(user)
@@ -107,7 +126,24 @@ if path.is_symlink() or any(part.is_symlink() and part.lstat().st_uid != 0 for p
     raise ValueError("A plugin telepítési útvonala nem lehet symlink")
 if path.exists() and any(part.is_symlink() for part in path.rglob("*")):
     raise ValueError("A plugin telepítési könyvtára nem tartalmazhat symlinket")
-shutil.copytree(src, dest, dirs_exist_ok=True)
+for item in payload:
+    if item[0] == "dir":
+        target = path if item[1] == "." else path / item[1]
+        target.mkdir(parents=True, exist_ok=True)
+        continue
+    _, rel, data, mode = item
+    target = path / rel
+    if target.is_symlink():
+        raise ValueError("A plugin telepítési könyvtára nem tartalmazhat symlinket")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(target, flags, mode)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    os.chmod(target, mode)
 PYCOPY
 }
 

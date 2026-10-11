@@ -26,7 +26,50 @@ PKG = {
 
 PKG["managedDirHash"] = hashlib.sha256(("excellence-managed-dir-v1\n" + "".join(f"{name}\n{hashlib.sha256(PKG["files"][name].encode()).hexdigest()}\n" for name in ("config.yaml", ".env", "excellence-install-id"))).encode()).hexdigest()
 
+def pycopy_source() -> str:
+    text = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'PYCOPY'\n"
+    start = text.index(marker) + len(marker)
+    end = text.index("\nPYCOPY\n", start)
+    return text[start:end]
+
+
+def assert_copy_survives_unreadable_source() -> None:
+    """sudo mktemp a root tempjébe (0700) tesz. setuid után a user onnan nem tud olvasni."""
+    import pwd
+
+    user = pwd.getpwuid(os.getuid()).pw_name
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "excellence-guard"
+        src.mkdir()
+        (src / "plugin.yaml").write_text("name: excellence-guard\n", encoding="utf-8")
+        (src / "policy.py").write_text("x = 1\n", encoding="utf-8")
+        dest = root / "plugins" / "excellence-guard"
+        prelude = (
+            "import os, sys\n"
+            "def _lock(_uid):\n"
+            "    os.chmod(sys.argv[1], 0)\n"
+            "os.setuid = _lock\n"
+            "os.setgid = lambda _gid: None\n"
+            "os.initgroups = lambda _user, _gid: None\n"
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", prelude + pycopy_source(), str(src), str(dest), user],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            assert (dest / "plugin.yaml").read_text(encoding="utf-8") == "name: excellence-guard\n"
+            assert (dest / "policy.py").read_text(encoding="utf-8") == "x = 1\n"
+        finally:
+            if src.exists():
+                os.chmod(src, 0o755)
+
+
 def main() -> None:
+    assert_copy_survives_unreadable_source()
     with tempfile.TemporaryDirectory() as tmp:
         blob = Path(tmp) / "floor.json"
         blob.write_text(json.dumps(PKG), encoding="utf-8")
