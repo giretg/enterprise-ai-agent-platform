@@ -21,6 +21,17 @@ class Runtime(unittest.TestCase):
             with patch.dict(os.environ, {"EXC_TOKEN_BIN": fake}), patch.object(runtime, "__file__", os.path.join(home, "plugins", "runtime.py")), patch.object(runtime, "TOKEN_HELPER_PATH", os.path.join(home, "missing")):
                 self.assertIsNone(runtime.load_exc_token())
 
+    def test_windows_user_redirect_is_refused_and_posix_override_stays(self):
+        company = r"C:\ProgramData\Excellence\hermes"
+        self.assertEqual(runtime._paths.resolve_managed_dir(None, True), company)
+        self.assertEqual(runtime._paths.resolve_managed_dir(company, True), company)
+        self.assertEqual(runtime._paths.resolve_managed_dir(company + "\\", True), company)
+        with self.assertRaises(runtime.ManagedDirRedirected):
+            runtime._paths.resolve_managed_dir(r"C:\Users\evil\hermes", True)
+        self.assertEqual(runtime._paths.resolve_managed_dir("/tmp/floor", False), "/tmp/floor")
+        with patch.object(runtime, "managed_dir", side_effect=runtime.ManagedDirRedirected("x")):
+            self.assertEqual(runtime.reported_managed_dir_hash(), "redirected")
+
     def test_managed_dir_hash_matches_v1_8_vector(self):
         files = {"config.yaml": b"a\n", ".env": b"b\n", "excellence-install-id": b"id\n"}
         self.assertEqual(runtime.managed_dir_hash(files), "0589eb3acdd43a350f50e45951471fcb70ff45fef63b8ef1ee11db4c1dd73074")

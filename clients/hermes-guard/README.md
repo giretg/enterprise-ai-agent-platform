@@ -59,6 +59,38 @@ Amit feltesz:
 
 A végén, ha a `hermes` parancs elérhető, lefut a `hermes config`. A managed kulcsokat onnan kell látni; a `hermes config set` ezekre „managed, cannot be changed” választ ad.
 
+## Telepítés Windowson (#755)
+
+**WSL:** ha a Hermes a WSL-disztribúcióban fut, ott Linuxként telepíts: alap csomag és `sudo ./install-managed.sh floor.json` a disztribúción belül. A Windows-oldali Hermes ezt nem látja.
+
+**Natív Windows:** a csomagot `platform=windows` paraméterrel töltsd le, mert a `config.yaml` más parancsútvonalakat tartalmaz:
+
+```
+GET /api/client-policy/machine-floor?userId=<a munkatárs azonosítója>&platform=windows
+```
+
+A munkatárs gépén, „Futtatás rendszergazdaként” PowerShellből, a `clients\hermes-guard` mappából:
+
+```
+powershell -ExecutionPolicy Bypass -File .\install-managed.ps1 floor.json
+```
+
+Ha nem a bejelentkezett munkatársnak telepítesz, add meg: `-User CEG\kovacs.anna`. Ha a Python nem a `PATH`-on van: `-Python "C:\Program Files\Python312\python.exe"`. Gépszintű Python 3.8+ kell. A felhasználói mappába telepített Pythont (például a Microsoft Store-ét) a telepítő elutasítja, mert azt a munkatárs kicserélhetné.
+
+| Hova | Mi |
+|---|---|
+| `C:\ProgramData\Excellence\hermes\` | `config.yaml`, `.env`, `excellence-install-id` |
+| `C:\ProgramData\Excellence\bin\exc-token(.cmd)`, `exc-guard(.cmd)` | token-segéd és shell-hook tartalék; a `.cmd` a rögzített Pythont indítja `-I -X utf8` kapcsolóval |
+| `C:\ProgramData\Excellence\hermes-plugins\excellence-guard\` | a Guard plugin |
+| `%LOCALAPPDATA%\hermes\plugins\`, `...\profiles\*\plugins\` | a Guard plugin a munkatárs profiljaiban |
+| gépszintű `HERMES_MANAGED_DIR` | `C:\ProgramData\Excellence\hermes` |
+
+A `C:\ProgramData\Excellence` könyvtárat csak a SYSTEM és az Administrators írhatja, a Users csoport csak olvashatja. A telepítő a korábbi explicit jogokat törli. A Hermes Windowson nem keres natív managed helyet (U3), ezért a gépszintű környezeti változó mondja meg neki. A telepítő a munkatárs saját `HERMES_MANAGED_DIR` változóját törli (a bejelentkezett és a megadott profilból is), majd szól a Windowsnak, hogy az új folyamatok lássák. A munkatársnak elég bezárni és újra megnyitni a Hermest, kijelentkezni nem kell.
+
+Ha a munkatárs később újra beállítja a saját változót, a Guard nem követi: a műveletet megállítja, a céges modell pedig nem válaszol. A Mac- és a Windows-padló hash-e egymás mellett él, az egyik letöltése a másikat nem érvényteleníti.
+
+Élő Hermes Desktop-mérés Windowson még nincs. A telepítést, az ACL-t, a környezeti változót és a `.cmd` → `exc-guard` láncot a CI `windows-latest` futtatója ellenőrzi. WSL-ben a Hermes Linux-folyamat, ott az `install-managed.sh` és a posix csomag a helyes út.
+
 ## Hova kerül a Guard plugin
 
 2026-10-03, a Hermes forrásából (`NousResearch/hermes-agent` main). A plugin-felderítési útvonal a forrás alapján rögzítve; a CLI managed konfigurációja a helyben telepített Hermes `6ec05205` runtime-ján, elkülönített profillal is ellenőrizve (spec §12). Desktop- és gateway-forgalmi mérés még nincs.

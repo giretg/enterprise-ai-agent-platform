@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { machineFloorDeps } from '@/auth/machine-floor-deps'
 import { buildManagedInstallerScript, MANAGED_INSTALLER_FILENAME } from '@/domain/client-policy/hermes-installer'
-import { issueMachineFloor, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
+import { issueMachineFloor, MACHINE_PLATFORMS, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { writeAudit } from '@/lib/audit/types'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
@@ -12,12 +12,14 @@ export const dynamic = 'force-dynamic'
 
 const querySchema = z.object({
   userId: z.string().uuid(),
+  platform: z.enum(MACHINE_PLATFORMS).default('posix'),
   format: z.enum(['json', 'installer']).optional(),
 })
 
 /**
  * #771: admin letölti egy munkatárs gép-padlóját.
- * `format=installer`: egyfájlos telepítő (padló + Guard), futtatás: sudo bash excellence-telepito.sh.
+ * `format=installer`: egyfájlos Mac/Linux telepítő (padló + Guard), futtatás: sudo bash excellence-telepito.sh.
+ * Windowson a JSON csomag kell (`platform=windows`), azt az install-managed.ps1 teszi fel.
  * A kiadás auditált.
  */
 export async function GET(request: Request): Promise<Response> {
@@ -33,11 +35,16 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
   }
 
+  if (parsed.data.format === 'installer' && parsed.data.platform !== 'posix') {
+    return NextResponse.json({ error: 'bad_request' }, { status: 400 })
+  }
+
   const gatewayBaseUrl = modelGatewayBaseUrl(resolvePublicAppOrigin(request))
   const pkg = await issueMachineFloor(machineFloorDeps(), {
     tenantId: user.activeTenantId,
     userId: parsed.data.userId,
     gatewayBaseUrl,
+    platform: parsed.data.platform,
   })
 
   await writeAudit(repositories.audit, {
@@ -49,6 +56,7 @@ export async function GET(request: Request): Promise<Response> {
     policyDecision: 'allowed',
     metadata: {
       installId: pkg.installId,
+      platform: pkg.platform,
       managedDirHash: pkg.managedDirHash,
       disabledToolsets: pkg.disabledToolsets,
       agentCount: pkg.agentIds.length,

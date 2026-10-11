@@ -13,21 +13,30 @@ export class PostgresMachineFloorRepository implements MachineFloorStore {
     return row.installId
   }
 
-  async save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string }) {
-    const data = { installId: input.installId, managedDirHash: input.managedDirHash }
+  async save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string; platform?: 'posix' | 'windows' }) {
+    const windows = input.platform === 'windows'
+    const data = windows
+      ? { installId: input.installId, windowsManagedDirHash: input.managedDirHash }
+      : { installId: input.installId, managedDirHash: input.managedDirHash }
     await prisma.clientMachineFloor.upsert({
       where: { tenantId_userId: { tenantId: input.tenantId, userId: input.userId } },
-      create: { tenantId: input.tenantId, userId: input.userId, ...data },
+      create: {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        installId: input.installId,
+        managedDirHash: windows ? '' : input.managedDirHash,
+        windowsManagedDirHash: windows ? input.managedDirHash : null,
+      },
       update: data,
     })
   }
 
-  async expectedHash(input: { tenantId: string; userId: string; installId: string }) {
+  async issuedHashes(input: { tenantId: string; userId: string; installId: string }) {
     const row = await prisma.clientMachineFloor.findUnique({
       where: { tenantId_userId: { tenantId: input.tenantId, userId: input.userId } },
-      select: { installId: true, managedDirHash: true },
+      select: { installId: true, managedDirHash: true, windowsManagedDirHash: true },
     })
     if (!row || row.installId !== input.installId) return null
-    return row.managedDirHash
+    return [row.managedDirHash, row.windowsManagedDirHash].filter((hash): hash is string => !!hash && hash.length > 0)
   }
 }

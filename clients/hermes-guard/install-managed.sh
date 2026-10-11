@@ -36,7 +36,7 @@ else
 fi
 
 # A Guard és a token-helper a padló élesítése előtt legyen jelen.
-for asset in exc_token.py exc-guard excellence-guard/plugin.yaml; do
+for asset in exc_token.py exc-guard excellence-guard/plugin.yaml excellence-guard/excellence_paths.py; do
   [ -f "$SCRIPT_DIR/$asset" ] || { echo "Hiányzó telepítőfájl: $asset" >&2; exit 1; }
 done
 
@@ -84,6 +84,9 @@ install_bin() {
 
 install_bin "$SCRIPT_DIR/exc_token.py" "$BIN/exc-token"
 install_bin "$SCRIPT_DIR/exc-guard" "$BIN/exc-guard"
+cp "$SCRIPT_DIR/excellence-guard/excellence_paths.py" "$BIN/excellence_paths.py"
+chmod 0644 "$BIN/excellence_paths.py"
+if [ -n "$OWNER" ]; then chown "$OWNER" "$BIN/excellence_paths.py"; fi
 
 # Hermes: $HERMES_HOME/plugins/<név>/plugin.yaml, profiloknál külön HERMES_HOME.
 PLUGIN_SRC="$SCRIPT_DIR/excellence-guard"

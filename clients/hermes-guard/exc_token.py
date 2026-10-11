@@ -6,6 +6,7 @@ A kiszolgált Bot-profil MCP OAuth tokenjét 10 perces Model Gateway JWT-re cser
 Stdout = a token; hibánál nem nulla exit kód + hétköznapi nyelvű stderr. Csak stdlib.
 """
 import calendar
+import importlib.util
 import json
 import os
 import re
@@ -19,6 +20,27 @@ from urllib.parse import urlparse
 LEEWAY = 60
 SERVER = os.environ.get("EXCELLENCE_MCP_SERVER", "excellence")
 CACHE_NAME = "excellence-gateway-token.json"
+
+
+def _load_paths():
+    # A `-I` nem teszi a szkript mappáját a sys.path-ra, ezért fájlból töltjük.
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (here, os.path.join(here, "excellence-guard")):
+        path = os.path.join(folder, "excellence_paths.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("excellence_paths_token", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise ImportError("excellence_paths")
+
+
+_paths = _load_paths()
+MANAGED_DIR = _paths.default_managed_dir()
+
+
+def default_home():
+    return _paths.default_home()
 
 
 class Fail(Exception):
@@ -60,7 +82,7 @@ def install_id(home):
     env = os.environ.get("EXC_INSTALL_ID", "").strip()
     if env:
         return env
-    for path in ("/etc/hermes/excellence-install-id", os.path.join(home, "excellence-install-id")):
+    for path in (os.path.join(MANAGED_DIR, "excellence-install-id"), os.path.join(home, "excellence-install-id")):
         try:
             v = open(path).read().strip()
             if v:
@@ -130,7 +152,7 @@ def get_token(home, now=time.time, fetcher=fetch):
 
 
 def main():
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    home = os.environ.get("HERMES_HOME") or default_home()
     try:
         sys.stdout.write(get_token(home))
     except Fail as e:

@@ -17,6 +17,7 @@ export const INSTALLER_ASSET_PATHS = [
   'excellence-guard/plugin.yaml',
   'excellence-guard/policy.py',
   'excellence-guard/runtime.py',
+  'excellence-guard/excellence_paths.py',
 ] as const
 
 const EXECUTABLE_PATHS = new Set(['install-managed.sh', 'exc-guard'])

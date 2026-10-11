@@ -171,6 +171,13 @@ async function main() {
     })
     await saved.beat()
     assert.equal((saved.audits[0].metadata as { kind: string }).kind, 'managed_dir_hash_mismatch')
+    const both = setup({
+      expectedManagedDirHash: 'mas',
+      lookupExpectedManagedDirHash: async () => ['dir', 'windows-hash'],
+    })
+    await both.beat()
+    assert.equal(both.audits.length, 0)
+    assert.equal(await both.ask(), null)
   })
 
   await check('módosított vagy nem kiadott gép-padló → Open; az új csomag azonnal érvényes', async () => {

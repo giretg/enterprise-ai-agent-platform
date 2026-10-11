@@ -47,6 +47,7 @@ function sampleScript() {
   })
   return buildManagedInstallerScript({
     installId: 'inst-test',
+    platform: 'posix',
     gatewayBaseUrl: 'https://excellence.example/api/model-gateway/v1',
     agentIds: [],
     disabledToolsets: ['terminal'],

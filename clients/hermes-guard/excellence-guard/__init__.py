@@ -19,7 +19,7 @@ _guard = None
 def guard():
     global _guard
     if _guard is None:
-        home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+        home = os.environ.get("HERMES_HOME") or runtime.default_home()
         _guard = runtime.Guard(home)
     return _guard
 
