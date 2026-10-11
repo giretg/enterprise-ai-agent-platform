@@ -58,8 +58,9 @@ ugyanazt a Secret Manager-bejegyzést köti be. A kulcsot ne tedd kliensre.
 Rollout előtt alkalmazd a ClientPolicy, ClientInstall/ClientSession, MachineFloor
 és AiInteractionEvent migrációit. Az admin a **Hermes céges kontroll** menüben
 beállítja a céges és felhasználói szabályokat; az agent **Eszközök** lapján a
-képesség-plafont. A munkatárs csomagját külön kell letölteni és az alábbi útmutató
-szerint telepíteni: [Hermes telepítés](clients/hermes-guard/README.md).
+képesség-plafont. A munkatárs telepítőjét az **Első lépések** oldalról töltsd le, és a gépén
+futtasd: `sudo bash excellence-telepito.sh`. Részletek:
+[Hermes telepítés](clients/hermes-guard/README.md).
 
 Éles átvétel: adminmentés auditnyoma, Bot-bejelentkezés, egy normál és streamelt
 modellkérés, MCP- és helyi tool tiltás/engedély, teljes audit user/agent/session/turn

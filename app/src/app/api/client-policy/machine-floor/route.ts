@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { machineFloorDeps } from '@/auth/machine-floor-deps'
+import { buildManagedInstallerScript, MANAGED_INSTALLER_FILENAME } from '@/domain/client-policy/hermes-installer'
 import { issueMachineFloor, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { writeAudit } from '@/lib/audit/types'
@@ -9,11 +10,15 @@ import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 
-const querySchema = z.object({ userId: z.string().uuid() })
+const querySchema = z.object({
+  userId: z.string().uuid(),
+  format: z.enum(['json', 'installer']).optional(),
+})
 
 /**
- * #771: admin letölti egy munkatárs gép-padlóját (config.yaml, .env, installId).
- * A csomagot az `install-managed.sh` teszi fel a gépre. A kiadás auditált.
+ * #771: admin letölti egy munkatárs gép-padlóját.
+ * `format=installer`: egyfájlos telepítő (padló + Guard), futtatás: sudo bash excellence-telepito.sh.
+ * A kiadás auditált.
  */
 export async function GET(request: Request): Promise<Response> {
   const auth = await requireTenantApiUser('admin')
@@ -47,9 +52,19 @@ export async function GET(request: Request): Promise<Response> {
       managedDirHash: pkg.managedDirHash,
       disabledToolsets: pkg.disabledToolsets,
       agentCount: pkg.agentIds.length,
+      format: parsed.data.format ?? 'json',
     },
     tenantId: user.activeTenantId,
   })
+
+  if (parsed.data.format === 'installer') {
+    return new Response(buildManagedInstallerScript(pkg), {
+      headers: {
+        'Content-Type': 'text/x-shellscript; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${MANAGED_INSTALLER_FILENAME}"`,
+      },
+    })
+  }
 
   return NextResponse.json(pkg)
 }

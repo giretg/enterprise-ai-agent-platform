@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { asTranslate } from '@/i18n/translate'
 import { useTranslations } from 'next-intl'
 import { CAPABILITY_KEYS, PRESET_IDS, PRESETS, capabilityLevels, type PresetId } from '@/domain/client-policy/capabilities'
+import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
 
 export type EditableClientPolicy = { preset: string | null; capabilities: unknown; version: number }
 
@@ -62,14 +63,7 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
     setPending(true)
     setMessage('')
     try {
-      const response = await fetch(`/api/client-policy/machine-floor?userId=${encodeURIComponent(scopeId)}`)
-      if (!response.ok) throw new Error('download_failed')
-      const url = URL.createObjectURL(await response.blob())
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `hermes-floor-${scopeId}.json`
-      link.click()
-      URL.revokeObjectURL(url)
+      await downloadManagedInstaller(scopeId)
     } catch { setMessage(t('downloadFailed')) }
     finally { setPending(false) }
   }
