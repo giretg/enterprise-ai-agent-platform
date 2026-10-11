@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { machineFloorDeps } from '@/auth/machine-floor-deps'
-import { buildManagedInstallerScript, MANAGED_INSTALLER_FILENAME } from '@/domain/client-policy/hermes-installer'
+import {
+  buildManagedInstallerScript,
+  managedInstallerContentType,
+  managedInstallerFilename,
+} from '@/domain/client-policy/hermes-installer'
 import { issueMachineFloor, MACHINE_PLATFORMS, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { writeAudit } from '@/lib/audit/types'
@@ -18,8 +22,8 @@ const querySchema = z.object({
 
 /**
  * #771: admin letölti egy munkatárs gép-padlóját.
- * `format=installer`: egyfájlos Mac/Linux telepítő (padló + Guard), futtatás: sudo bash excellence-telepito.sh.
- * Windowson a JSON csomag kell (`platform=windows`), azt az install-managed.ps1 teszi fel.
+ * `format=installer`: egyfájlos telepítő (padló + Guard).
+ * posix: sudo bash excellence-telepito.sh; windows: powershell -File excellence-telepito.ps1.
  * A kiadás auditált.
  */
 export async function GET(request: Request): Promise<Response> {
@@ -33,10 +37,6 @@ export async function GET(request: Request): Promise<Response> {
   const membership = await repositories.tenantMemberships.findByTenantAndUser(user.activeTenantId, parsed.data.userId)
   if (!membership || membership.status !== 'active') {
     return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
-  }
-
-  if (parsed.data.format === 'installer' && parsed.data.platform !== 'posix') {
-    return NextResponse.json({ error: 'bad_request' }, { status: 400 })
   }
 
   const gatewayBaseUrl = modelGatewayBaseUrl(resolvePublicAppOrigin(request))
@@ -68,8 +68,8 @@ export async function GET(request: Request): Promise<Response> {
   if (parsed.data.format === 'installer') {
     return new Response(buildManagedInstallerScript(pkg), {
       headers: {
-        'Content-Type': 'text/x-shellscript; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${MANAGED_INSTALLER_FILENAME}"`,
+        'Content-Type': managedInstallerContentType(pkg.platform),
+        'Content-Disposition': `attachment; filename="${managedInstallerFilename(pkg.platform)}"`,
       },
     })
   }

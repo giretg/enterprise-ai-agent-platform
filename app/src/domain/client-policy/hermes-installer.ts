@@ -1,16 +1,21 @@
 /**
  * Egyfájlos céges Hermes-telepítő: a gép-padló JSON + Guard/token fájlok
- * egy `sudo bash excellence-telepito.sh` scriptben.
+ * egy `sudo bash excellence-telepito.sh` vagy `excellence-telepito.ps1` scriptben.
  */
 import { Buffer } from 'node:buffer'
 import bundledFiles from './hermes-installer-files.json'
-import { MANAGED_INSTALLER_FILENAME } from './installer-filename'
+import {
+  MANAGED_INSTALLER_FILENAME,
+  MANAGED_WINDOWS_INSTALLER_FILENAME,
+  managedInstallerFilename,
+} from './installer-filename'
 import type { MachineFloorPackage } from './machine-floor'
 
-export { MANAGED_INSTALLER_FILENAME }
+export { MANAGED_INSTALLER_FILENAME, MANAGED_WINDOWS_INSTALLER_FILENAME, managedInstallerFilename }
 
 export const INSTALLER_ASSET_PATHS = [
   'install-managed.sh',
+  'install-managed.ps1',
   'exc_token.py',
   'exc-guard',
   'excellence-guard/__init__.py',
@@ -32,13 +37,16 @@ export function bundledInstallerFiles(): Record<(typeof INSTALLER_ASSET_PATHS)[n
   return files as Record<(typeof INSTALLER_ASSET_PATHS)[number], string>
 }
 
-/** Önkicsomagoló bash: kicsomagolja a padlót és a Guardot, majd futtatja az install-managed.sh-t. */
-export function buildManagedInstallerScript(pkg: MachineFloorPackage): string {
-  const files = [
+function installerFiles(pkg: MachineFloorPackage): [string, string][] {
+  return [
     ...Object.entries(bundledInstallerFiles()),
     ['floor.json', `${JSON.stringify(pkg)}\n`],
   ]
-  const payload = JSON.stringify(files.map(([path, content]) => [path, Buffer.from(content, 'utf8').toString('base64')]))
+}
+
+/** Önkicsomagoló bash: kicsomagolja a padlót és a Guardot, majd futtatja az install-managed.sh-t. */
+function buildPosixInstallerScript(pkg: MachineFloorPackage): string {
+  const payload = JSON.stringify(installerFiles(pkg).map(([path, content]) => [path, Buffer.from(content, 'utf8').toString('base64')]))
   const executable = JSON.stringify([...EXECUTABLE_PATHS])
   return `\
 #!/usr/bin/env bash
@@ -76,4 +84,50 @@ else
 fi
 echo "Kész. Indítsd újra a Hermest."
 `
+}
+
+/** Önkicsomagoló PowerShell: kicsomagolja a padlót és a Guardot, majd futtatja az install-managed.ps1-et. */
+function buildWindowsInstallerScript(pkg: MachineFloorPackage): string {
+  const payload = JSON.stringify(
+    installerFiles(pkg).map(([p, content]) => ({ p, b: Buffer.from(content, 'utf8').toString('base64') })),
+  )
+  return `\
+# Excellence company Hermes installer. On the employee computer, from Administrator PowerShell:
+# powershell -ExecutionPolicy Bypass -File ${MANAGED_WINDOWS_INSTALLER_FILENAME}
+param([string]$Prefix = '')
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2
+$root = Join-Path ([IO.Path]::GetTempPath()) ('exc-installer-' + [guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $root | Out-Null
+try {
+  $payload = @'
+${payload}
+'@
+  foreach ($item in @($payload | ConvertFrom-Json)) {
+    $path = $root
+    foreach ($part in ([string]$item.p -split '/')) { $path = Join-Path $path $part }
+    $dir = Split-Path -Parent $path
+    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String([string]$item.b))
+  }
+  $installer = Join-Path $root 'install-managed.ps1'
+  $floor = Join-Path $root 'floor.json'
+  if ($Prefix) {
+    & $installer $floor -Prefix $Prefix
+  } else {
+    & $installer $floor
+  }
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+} finally {
+  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
+`
+}
+
+export function buildManagedInstallerScript(pkg: MachineFloorPackage): string {
+  return pkg.platform === 'windows' ? buildWindowsInstallerScript(pkg) : buildPosixInstallerScript(pkg)
+}
+
+export function managedInstallerContentType(platform: MachineFloorPackage['platform']): string {
+  return platform === 'windows' ? 'text/plain; charset=utf-8' : 'text/x-shellscript; charset=utf-8'
 }

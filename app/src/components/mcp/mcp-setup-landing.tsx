@@ -5,6 +5,8 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
 import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
+import { InstallerOsField } from '@/components/client-policy/installer-os-field'
+import type { InstallerPlatform } from '@/domain/client-policy/installer-filename'
 import { Card } from '@/components/ui/shell'
 import { HERMES_LINKS, type McpClientSetup } from '@/lib/mcp-client-setup'
 
@@ -201,6 +203,7 @@ function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup 
     ? admin.defaultUserId
     : admin.members[0]?.userId ?? ''
   const [userId, setUserId] = useState(firstId)
+  const [platform, setPlatform] = useState<InstallerPlatform>('posix')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
 
@@ -209,7 +212,7 @@ function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup 
     setPending(true)
     setError('')
     try {
-      await downloadManagedInstaller(userId)
+      await downloadManagedInstaller(userId, platform)
     } catch {
       setError(t('hermesEntDownloadFailed'))
     } finally {
@@ -239,6 +242,14 @@ function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup 
               ))}
             </select>
           </label>
+          <InstallerOsField
+            name={`${id}-os`}
+            value={platform}
+            onChange={setPlatform}
+            legend={t('hermesEntPickOs')}
+            posixLabel={t('hermesEntOsPosix')}
+            windowsLabel={t('hermesEntOsWindows')}
+          />
           <button
             type="button"
             onClick={() => void download()}
@@ -248,10 +259,12 @@ function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup 
             {t(pending ? 'hermesEntDownloading' : 'hermesEntDownloadInstaller')}
           </button>
           {error ? <p role="status" className="text-sm text-coral-deep">{error}</p> : null}
-          <p>{t('hermesEntInstallRun')}</p>
-          <CodeBlock value={t('hermesEntInstallCommand')} copyLabel={t('copyCommand')} />
+          <p>{t(platform === 'windows' ? 'hermesEntInstallRunWindows' : 'hermesEntInstallRun')}</p>
+          <CodeBlock
+            value={t(platform === 'windows' ? 'hermesEntInstallCommandWindows' : 'hermesEntInstallCommand')}
+            copyLabel={t('copyCommand')}
+          />
           <p className="text-xs text-ink-faint">{t('hermesEntInstallHint')}</p>
-          <p className="text-xs text-ink-faint">{t('hermesEntInstallWindows')}</p>
         </>
       )}
     </HermesStep>

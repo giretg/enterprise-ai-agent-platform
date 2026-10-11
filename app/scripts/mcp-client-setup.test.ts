@@ -154,7 +154,7 @@ function main() {
     assert.match(html, /https:\/\/app\.example\.com\/api\/mcp\/acme/)
   })
 
-  check('admin Enterprise telepítő: munkatárs-választó, egy letöltés, egy parancs', () => {
+  check('admin Enterprise telepítő: munkatárs- és rendszer-választó, Mac parancs alapból', () => {
     const html = renderToStaticMarkup(
       createElement(
         NextIntlClientProvider,
@@ -173,11 +173,16 @@ function main() {
     assert.match(html, /\/control-plane\/ai-client-policy/)
     assert.match(html, /Kovács Anna \(anna@example.com\)/)
     assert.match(html, /Telepítő letöltése/)
+    assert.match(html, /value="posix"/)
+    assert.match(html, /value="windows"/)
+    assert.match(html, /Mac \/ Linux/)
     assert.match(html, /sudo bash excellence-telepito\.sh/)
-    assert.match(html, /Windows: Windowsos számítógépen ez a telepítő még nem működik/)
+    assert.doesNotMatch(html, /még nem működik/)
     assert.doesNotMatch(html, /natív Hermes|gépi csomag/)
-    assert.match(enMessages.GetStarted.hermesEntInstallWindows, /does not work on a Windows computer yet/)
-    assert.doesNotMatch(enMessages.GetStarted.hermesEntInstallWindows + enMessages.ClientPolicy.floorHelp, /native/)
+    assert.match(huMessages.GetStarted.hermesEntInstallCommandWindows, /excellence-telepito\.ps1/)
+    assert.match(enMessages.GetStarted.hermesEntInstallCommandWindows, /excellence-telepito\.ps1/)
+    assert.match(enMessages.ClientPolicy.floorHelpWindows, /excellence-telepito\.ps1/)
+    assert.doesNotMatch(enMessages.GetStarted.hermesEntInstallBody + enMessages.ClientPolicy.floorHelp, /native/)
     assert.doesNotMatch(enMessages.ClientPolicy.effectiveNotice, /machine package/)
     assert.doesNotMatch(huMessages.ClientPolicy.effectiveNotice + huMessages.ClientPolicy.floorHelp, /gépi csomag|natív/)
     assert.doesNotMatch(html, /github\.com\/giretg\/enterprise-ai-agent-platform\/archive/)

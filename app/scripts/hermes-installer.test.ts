@@ -12,6 +12,7 @@ import bundled from '../src/domain/client-policy/hermes-installer-files.json'
 import {
   INSTALLER_ASSET_PATHS,
   MANAGED_INSTALLER_FILENAME,
+  MANAGED_WINDOWS_INSTALLER_FILENAME,
   buildManagedInstallerScript,
   bundledInstallerFiles,
 } from '../src/domain/client-policy/hermes-installer'
@@ -39,20 +40,29 @@ check('a becsomagolt telepítőfájlok a clients/hermes-guard másolatai', () =>
   assert.equal(Object.keys(bundledInstallerFiles()).length, INSTALLER_ASSET_PATHS.length)
 })
 
-function sampleScript() {
+function samplePackage(platform: 'posix' | 'windows') {
   const built = buildManagedFiles({
     gatewayBaseUrl: 'https://excellence.example/api/model-gateway/v1',
     disabledToolsets: ['terminal'],
     installId: 'inst-test',
+    platform,
   })
-  return buildManagedInstallerScript({
+  return {
     installId: 'inst-test',
-    platform: 'posix',
+    platform,
     gatewayBaseUrl: 'https://excellence.example/api/model-gateway/v1',
     agentIds: [],
     disabledToolsets: ['terminal'],
     ...built,
-  })
+  }
+}
+
+function sampleScript() {
+  return buildManagedInstallerScript(samplePackage('posix'))
+}
+
+function sampleWindowsScript() {
+  return buildManagedInstallerScript(samplePackage('windows'))
 }
 
 const systemBash = existsSync('/bin/bash') ? '/bin/bash' : 'bash'
@@ -99,6 +109,38 @@ check('sudo bash útvonal argumentum nélkül eljut a padlóig', () => {
     assert.match(result.stdout, /floor\.json/)
     assert.doesNotMatch(result.stdout, /--prefix/)
     assert.match(result.stdout, /Kész/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+check('a Windows-telepítő önkicsomagoló PowerShell, és a padló windows platformú', () => {
+  const script = sampleWindowsScript()
+  assert.match(script, /^# Excellence/)
+  assert.match(script, /^param\(/m)
+  assert.match(script, new RegExp(MANAGED_WINDOWS_INSTALLER_FILENAME.replace('.', '\\.')))
+  assert.match(script, /install-managed\.ps1/)
+  assert.doesNotMatch(script, /^#!/)
+  assert.match(JSON.stringify(samplePackage('windows')), /"platform":"windows"/)
+})
+
+check('a Windows-telepítő --Prefix mellett felteszi a padlót, ha van pwsh', () => {
+  const pwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'echo ok'], { encoding: 'utf8' })
+  if (pwsh.status !== 0) {
+    console.log('  skip  Windows-telepítő élő futtatás (nincs pwsh)')
+    return
+  }
+  const script = sampleWindowsScript()
+  const dir = mkdtempSync(join(tmpdir(), 'exc-win-installer-'))
+  try {
+    const file = join(dir, MANAGED_WINDOWS_INSTALLER_FILENAME)
+    writeFileSync(file, script, { encoding: 'utf8' })
+    const prefix = join(dir, 'stage')
+    const result = spawnSync('pwsh', ['-NoProfile', '-File', file, '-Prefix', prefix], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    assert.match(readFileSync(join(prefix, 'ProgramData/Excellence/hermes/config.yaml'), 'utf8'), /exc-token\.cmd/)
+    assert.equal(readFileSync(join(prefix, 'ProgramData/Excellence/hermes/excellence-install-id'), 'utf8'), 'inst-test\n')
+    assert.ok(existsSync(join(prefix, 'ProgramData/Excellence/hermes-plugins/excellence-guard/plugin.yaml')))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
