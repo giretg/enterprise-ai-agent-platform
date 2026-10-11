@@ -247,7 +247,7 @@
       "menuClose": "Menü bezárása"
     },
     "nav": {
-      "get-started": "Első lépések",
+      "dashboard": "Áttekintés",
       "agents": "Munkatársak",
       "projects": "Projektek",
       "account": "Kapcsolt fiókok",
@@ -300,7 +300,41 @@
       "tasksEmpty": "Nincs rád váró teendő.",
       "tasksAll": "Összes teendő →",
       "agentsTitle": "Munkatársak",
-      "agentsAll": "Összes munkatárs →"
+      "agentsAll": "Összes munkatárs →",
+      "onboarding": {
+          "title": "Használatba vétel",
+          "progress": "{done}/{total} kész",
+          "introAdmin": "Három lépés, és a cég munkatársai elkezdhetik használni az AI-munkatársakat. A kész lépéseket pipa jelzi.",
+          "introMember": "Egy lépés, és a saját gépedről is dolgozhatsz az AI-munkatársakkal.",
+          "doneLabel": "kész",
+          "todoLabel": "még hátravan",
+          "connectors": {
+            "title": "Kösd össze a céged rendszereit",
+            "todo": "Adj hozzá legalább egy kapcsolatot (pl. Gmail, Google Drive vagy a céged saját rendszere), hogy a munkatársak a valódi adatokkal dolgozhassanak.",
+            "done": "Van összekötött céges rendszer.",
+            "action": "Konnektor hozzáadása"
+          },
+          "agents": {
+            "title": "Vegyél fel AI-munkatársat",
+            "todo": "Hozz létre egy munkatársat, és add meg, mihez férhet hozzá.",
+            "done": "Van már AI-munkatárs.",
+            "action": "Új munkatárs"
+          },
+          "mcp": {
+            "title": "Kapcsold be a saját gépeden",
+            "todo": "Telepítsd a kapcsolatot a gépedre (Claude, Codex, Cursor vagy Hermes). Amint először használod, itt pipa jelenik meg.",
+            "done": "A gépeden lévő AI-alkalmazás már kapcsolódott.",
+            "action": "Telepítési útmutató"
+          },
+          "mcpInUse": "A saját gépeden lévő AI-alkalmazás kapcsolódik — utoljára: {date}.",
+          "connectorsTitle": "Összekötött rendszerek",
+          "connectorsEmpty": "Még nincs összekötött céges rendszer.",
+          "usersTitle": "Felhasználók",
+          "usersSummary": "{used}/{total} felhasználó gépén működik már a kapcsolat.",
+          "usersAll": "Felhasználók kezelése →",
+          "userMcpUsed": "Használja — utoljára {date}",
+          "userMcpNever": "Még nem kapcsolódott"
+        }
     },
     "agentNew": {
       "eyebrow": "Új agent",
@@ -723,8 +757,8 @@
     "step2Eyebrow": "02 / Első próba",
     "step2Title": "Kezdj el dolgozni",
     "step2Body": "Nyisd meg az összekapcsolt AI-eszközt, és kérdezd meg: „Ki vagyok, és milyen AI-munkatársaim vannak?” Ha megjelennek a munkatársaid, a kapcsolat működik.",
-    "continue": "Tovább a munkatársakhoz",
-    "reopenHint": "Ezt az oldalt a fejlécből bármikor újra megnyithatod.",
+    "continue": "Vissza az áttekintéshez",
+    "reopenHint": "Ezt az útmutatót az Áttekintés oldalról bármikor újra megnyithatod.",
     "hermesBadge": "Ajánlott",
     "hermesDesc": "Saját modellkulccsal, gyors kipróbáláshoz",
     "hermesIntro": "A Hermes Desktopban minden AI-munkatársad saját Botot kap, a szerepével és a skilljeivel együtt. A munkát a Bot a platformon át végzi: itt látod, itt hagyod jóvá, és a jelszavak sem kerülnek a gépedre. Nem kell hozzá bővítmény, a gyári Hermes elég.",

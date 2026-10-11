@@ -13,17 +13,16 @@ import huMessages from '../src/messages/hu.json'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { McpSetupLanding } from '../src/components/mcp/mcp-setup-landing'
 import {
-  CONTROL_PLANE_GET_STARTED_PATH,
   buildMcpClientSetup,
   claudeMcpAddCommand,
   codexMcpSetupCommand,
   grokMcpAddCommand,
   cursorMcpInstallHref,
   hermesMcpInstallHref,
-  firstRunGetStartedPath,
   mcpClientName,
   mcpUrlForTenant,
 } from '../src/lib/mcp-client-setup'
+import { onboardingSteps } from '../src/lib/overview-onboarding'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -103,25 +102,30 @@ function main() {
     assert.equal(decoded.url, setup.mcpUrl)
   })
 
-  check('first login without cookie goes to get-started; returning user does not', () => {
-    assert.equal(firstRunGetStartedPath(undefined), CONTROL_PLANE_GET_STARTED_PATH)
-    assert.equal(firstRunGetStartedPath(''), CONTROL_PLANE_GET_STARTED_PATH)
-    assert.equal(firstRunGetStartedPath('1'), null)
-  })
-
-  check('control-plane gyökér cookie nélkül a landingre küld, pending/platform előtt nem', () => {
+  check('control-plane gyökér az Áttekintésre küld, nem az útmutatóra', () => {
     const root = readFileSync(resolve(process.cwd(), 'src/app/control-plane/page.tsx'), 'utf8')
-    assert.match(root, /firstRunGetStartedPath/)
-    assert.match(root, /MCP_SETUP_SEEN_COOKIE/)
-    assert.match(root, /CONTROL_PLANE_PENDING_PATH/)
-    assert.match(root, /CONTROL_PLANE_PLATFORM_HOME/)
+    assert.match(root, /resolveDefaultAgentWorkspacePath/)
+    assert.doesNotMatch(root, /get-started/)
   })
 
-  check('header catalog keeps a standing Első lépések leaf', () => {
+  check('header catalog: Áttekintés leaf replaces Első lépések', () => {
     const nav = readFileSync(resolve(process.cwd(), 'src/lib/control-plane-nav.ts'), 'utf8')
-    assert.match(nav, /key: 'get-started'/)
-    assert.match(nav, /href: '\/control-plane\/get-started'/)
-    assert.match(nav, /label: 'Első lépések'/)
+    assert.match(nav, /key: 'dashboard'/)
+    assert.match(nav, /href: '\/control-plane\/dashboard'/)
+    assert.doesNotMatch(nav, /key: 'get-started'/)
+  })
+
+  check('onboarding: admin 3 lépés, operátor csak a saját MCP-je', () => {
+    const none = { companyConnectorCount: 0, agentCount: 0, mcpUsed: false }
+    assert.deepEqual(
+      onboardingSteps({ isAdmin: true, ...none }).map((s) => s.key),
+      ['connectors', 'agents', 'mcp'],
+    )
+    assert.deepEqual(onboardingSteps({ isAdmin: false, ...none }), [{ key: 'mcp', done: false }])
+    const done = onboardingSteps({ isAdmin: true, companyConnectorCount: 1, agentCount: 2, mcpUsed: true })
+    assert.ok(done.every((s) => s.done))
+    const partial = onboardingSteps({ isAdmin: true, companyConnectorCount: 0, agentCount: 1, mcpUsed: false })
+    assert.deepEqual(partial.map((s) => s.done), [false, true, false])
   })
 
   check('Hermes is first; every client guide starts collapsed, branded cards', () => {
