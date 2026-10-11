@@ -326,8 +326,53 @@ export class IamService {
       throw new Error(`invitation: ${check.reason.toLowerCase()}`)
     }
 
+    // Aktív tagság mellett egy (esetleg elavult, magasabb szerepű) meghívó NEM írhatja
+    // felül a membership szerepet — ugyanaz a privilege escalation, mint a Clerk/session
+    // ágon (#838), de ez a token-beváltási út (/control-plane/iam/redeem) ott nincs lefedve.
+    // A meghívó pending marad (claim előtt állunk); felfüggesztett tagság újraélesíthető.
+    const existingUser = await this.users.findByExternalAuthId(params.externalAuthId)
+    if (invitation.tenantId && this.memberships && existingUser) {
+      const existing = await this.memberships.findByTenantAndUser(invitation.tenantId, existingUser.id)
+      if (existing?.status === 'active') {
+        throw new Error('invitation: already_a_member')
+      }
+    }
+
     const claimed = await this.invitations.claimPendingRedemption(invitation.id, params.email, new Date())
     if (!claimed) throw new Error('invitation: already_redeemed_or_unavailable')
+
+    // Claim utáni verseny: ha időközben aktív tagság keletkezett (pl. provision),
+    // ne írjuk felül a membershipet és ne minősítsük át a User.role-t.
+    if (claimed.tenantId && this.memberships && existingUser) {
+      const afterClaim = await this.memberships.findByTenantAndUser(claimed.tenantId, existingUser.id)
+      if (afterClaim?.status === 'active') {
+        await this.append({
+          actorType: 'human',
+          actorId: existingUser.id,
+          agentVersion: null,
+          action: 'user.invite.redeem',
+          targetType: 'user',
+          targetId: existingUser.id,
+          modelUsed: null,
+          inputRef: claimed.id,
+          outputRef: afterClaim.role,
+          policyDecision: 'already_a_member',
+          metadata: { source: 'token', invitationId: claimed.id },
+          tenantId: claimed.tenantId,
+        })
+        return existingUser
+      }
+    }
+
+    // A globális User.role raise-only: soha nem minősítjük le, csak ROLE_RANK szerint
+    // emeljük, vagy üresnél állítjuk — ugyanaz az invariáns, mint provisionUser /
+    // redeemClerkInvitation. (A korábbi feltétel nélküli felülírás keresztbérlői
+    // lebontást okozott: egy másik tenantben magasabb szerepű user alacsonyabb szerepű
+    // meghívót váltott be, és globálisan visszaminősült.)
+    const updateRole =
+      existingUser?.role && ROLE_RANK[existingUser.role] >= ROLE_RANK[invitation.role]
+        ? existingUser.role
+        : invitation.role
 
     const user = await this.users.upsertByExternalAuthId({
       externalAuthId: params.externalAuthId,
@@ -338,7 +383,7 @@ export class IamService {
         status: 'active',
       },
       update: {
-        role: invitation.role,
+        role: updateRole,
         status: 'active',
         activatedAt: new Date(),
         invitedById: invitation.createdById,
