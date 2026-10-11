@@ -191,6 +191,34 @@ async function main() {
     }
   })
 
+  await check('providernek továbbított tool és válaszséma is tartalomszűrt', async () => {
+    const pan = setup()
+    await pan.call({ messages: [user('szia')], tools: [{ type: 'function', function: { name: 'pay', description: 'Kártya: 4111 1111 1111 1111' } }] })
+    assert.equal(pan.calls.length, 0)
+    const email = setup({ scripts: [completion({ content: '[[EMAIL_1]]' })] })
+    const res = await email.call({
+      messages: [user('szia')],
+      tools: [{ type: 'function', function: { name: 'notify', description: 'Értesítsd: ugyfel@example.hu' } }],
+      response_format: { type: 'json_schema', json_schema: { name: 'reply', schema: { const: 'ugyfel@example.hu' } } },
+    })
+    assert.doesNotMatch(JSON.stringify(email.calls[0]), /ugyfel@example.hu/)
+    assert.match(JSON.stringify(email.calls[0]), /\[\[EMAIL_1\]\]/)
+    assert.equal((await res.json()).choices[0].message.content, 'ugyfel@example.hu')
+  })
+
+  await check('azonosítóban és séma-kulcsban levő személyes adat nem kerül ki és nem rontja el a protokollt', async () => {
+    const policy = { ...PRESETS.free, 'content_filter.email': 'tokenize' }
+    for (const body of [
+      { messages: [user('szia'), { role: 'tool', tool_call_id: 'ugyfel@example.hu', content: 'ok' }] },
+      { messages: [user('szia')], tools: [{ type: 'function', function: { name: 'ugyfel@example.hu', description: 'teszt' } }] },
+      { messages: [user('szia')], response_format: { type: 'json_schema', json_schema: { name: 'reply', schema: { properties: { 'ugyfel@example.hu': { type: 'string' } } } } } },
+    ]) {
+      const s = setup({ capabilities: policy })
+      await s.call(body)
+      assert.equal(s.calls.length, 0)
+    }
+  })
+
   await check('audit: blocked + pan_detected, a PAN értéke nélkül (V1-5 sink a kérés nélkül kapja)', async () => {
     const s = setup()
     await s.call({ messages: [user('4012 8888 8888 1881')] })
