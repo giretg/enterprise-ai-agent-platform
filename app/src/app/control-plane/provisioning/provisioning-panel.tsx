@@ -1438,8 +1438,6 @@ export function ProvisioningPanel({
                                     <span className="text-sm font-semibold">{template.displayName}</span>
                                     {template.tenantId ? (
                                       <Badge tone="neutral">{t('pillTenant')}</Badge>
-                                    ) : template.origin === 'custom' ? (
-                                      <Badge tone="neutral">{t('pillCustom')}</Badge>
                                     ) : null}
                                   </span>
                                   {template.description ? (

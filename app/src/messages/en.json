@@ -1822,7 +1822,6 @@
     "connectionNameHint": "This is how it will appear in the list, e.g. “Invoicing system”.",
     "searchTemplates": "Search services…",
     "noTemplateMatch": "No such service in the list. Try “Your own or another system”.",
-    "pillCustom": "Custom",
     "pillTenant": "Your company only",
     "stepService": "Service",
     "stepSetup": "Setup",

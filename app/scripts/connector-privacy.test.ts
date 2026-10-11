@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { parseCapabilitySet } from '../src/domain/connector-self-update/capability-set'
 import { computeCapabilityDiff } from '../src/domain/connector-self-update/spec-diff'
-import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
+import { CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import { enrichOstorosborConnectorConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
 import { materializeConnectorConfig, selfCheckTemplateDescriptor } from '../src/domain/connector-template/materializer'
 import { parseTemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
@@ -318,7 +318,7 @@ async function main() {
 
   await test('CRM sablon capabilitySet-je tartalmazza a privacy-deklarációt és a company mezőt', () => {
     for (const key of ['ostorosbor-crm-sales-delegated', 'ostorosbor-crm-service-insight'] as const) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `hiányzó CRM sablon: ${key}`)
       const config = materializeConnectorConfig(
         parseTemplateDescriptor(raw),
@@ -357,7 +357,7 @@ async function main() {
   })
 
   await test('privacy nélküli külső connector UI+audit alacsonyabb capability-t jelez', () => {
-    const github = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    const github = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
     assert.ok(github)
     const config = selfCheckTemplateDescriptor(parseTemplateDescriptor(github))
     assert.equal(config.privacy, undefined)

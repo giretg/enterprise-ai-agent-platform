@@ -1822,7 +1822,6 @@
     "connectionNameHint": "Ezen a néven látod majd a listában, például „Számlázó rendszer”.",
     "searchTemplates": "Keresés a szolgáltatások között…",
     "noTemplateMatch": "Nincs ilyen szolgáltatás a listában. Próbáld a „Saját vagy egyéb rendszer” lehetőséget.",
-    "pillCustom": "Egyedi",
     "pillTenant": "Csak a cégednek",
     "stepService": "Szolgáltatás",
     "stepSetup": "Beállítás",
