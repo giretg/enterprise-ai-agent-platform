@@ -248,6 +248,7 @@ export class SkillService {
         })
     const byUri = new Map<string, McpSkillPackage>()
     for (const { skill, version } of rows) {
+      if (version.status !== 'active') continue
       if (!isSkillReadableFromTenant(skill.tenantId, actorTenantId)) continue
       const pkg = buildMcpSkillPackage({
         skillId: skill.id,

@@ -189,13 +189,6 @@ function memoryScaffoldDeps(opts?: {
         if (idx >= 0) bindings[idx] = next
         else bindings.push(next)
       },
-      async setCurrentDefinitionVersionId(agentId, versionId) {
-        const row = agents.get(agentId)
-        if (!row) throw new Error('missing')
-        const next = { ...row, currentDefinitionVersionId: versionId }
-        agents.set(agentId, next)
-        return next
-      },
       async activate(agentId) {
         activateCalls++
         const row = agents.get(agentId)
@@ -206,28 +199,30 @@ function memoryScaffoldDeps(opts?: {
       },
     },
     versions: {
-      async create(data) {
+      async publish(data) {
         publishCalls++
+        const agent = agents.get(data.agentId)
+        if (!agent) throw new Error('missing')
+        const version = versions.length + 1
         const row: AgentDefinitionVersion = {
-          id: `def-${data.version}`,
+          id: `def-${version}`,
           agentId: data.agentId,
-          version: data.version,
+          version,
           snapshot: data.snapshot as Prisma.JsonValue,
           contentHash: data.contentHash,
           publishedById: data.publishedById,
           publishedAt: new Date('2026-01-02T00:00:00Z'),
         }
         versions.push(row)
-        return row
+        const updated = { ...agent, currentDefinitionVersionId: row.id }
+        agents.set(agent.id, updated)
+        return { agent: updated, version: row }
       },
       async findById(id) {
         return versions.find((row) => row.id === id) ?? null
       },
       async findByAgentAndVersion(agentId, version) {
         return versions.find((row) => row.agentId === agentId && row.version === version) ?? null
-      },
-      async findMaxVersion(agentId) {
-        return versions.filter((row) => row.agentId === agentId).reduce((max, row) => Math.max(max, row.version), 0)
       },
     },
     skills: {

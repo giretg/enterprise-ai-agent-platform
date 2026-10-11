@@ -95,13 +95,6 @@ function memoryDeps(opts?: {
           if (tenantId && row.tenantId !== tenantId) return null
           return row
         },
-        async setCurrentDefinitionVersionId(agentId, versionId) {
-          const row = agents.get(agentId)
-          if (!row) throw new Error('missing')
-          const next = { ...row, currentDefinitionVersionId: versionId }
-          agents.set(agentId, next)
-          return next
-        },
         async findCapabilitiesForAgent() {
           return [
             { toolName: 'google_drive_search', allowed: true },
@@ -130,27 +123,32 @@ function memoryDeps(opts?: {
         },
       },
       versions: {
-        async create(data) {
+        async publish(data) {
+          const agent = agents.get(data.agentId)
+          if (!agent) throw new Error('Agent not found')
+          if (agent.status === 'suspended' || agent.status === 'retired') {
+            throw new Error(`Cannot publish agent in status ${agent.status}`)
+          }
+          const version = versions.length + 1
           const row: AgentDefinitionVersion = {
-            id: `def-${data.version}`,
+            id: `def-${version}`,
             agentId: data.agentId,
-            version: data.version,
+            version,
             snapshot: data.snapshot as Prisma.JsonValue,
             contentHash: data.contentHash,
             publishedById: data.publishedById,
             publishedAt: new Date('2026-01-02T00:00:00Z'),
           }
           versions.push(row)
-          return row
+          const updated = { ...agent, currentDefinitionVersionId: row.id }
+          agents.set(agent.id, updated)
+          return { agent: updated, version: row }
         },
         async findById(id) {
           return versions.find((row) => row.id === id) ?? null
         },
         async findByAgentAndVersion(agentId, version) {
           return versions.find((row) => row.agentId === agentId && row.version === version) ?? null
-        },
-        async findMaxVersion(agentId) {
-          return versions.filter((row) => row.agentId === agentId).reduce((max, row) => Math.max(max, row.version), 0)
         },
       },
       skills: {
@@ -233,6 +231,29 @@ async function main() {
         }),
       /felelősségi kört/,
     )
+  })
+
+  await check('suspended and retired agents cannot be republished', async () => {
+    const { service, agents, versions } = memoryDeps()
+    for (const status of ['suspended', 'retired'] as const) {
+      agents.set(AGENT_ID, { ...agentRow(), status })
+      await assert.rejects(
+        service.publishAgentDefinition({ agentId: AGENT_ID, tenantId: TENANT_A, publishedById: USER_ID }),
+        new RegExp(`Cannot publish agent in status ${status}`),
+      )
+    }
+    assert.equal(versions.length, 0)
+  })
+
+  await check('parallel publishes keep unique versions and the newest pointer', async () => {
+    const { service, agents, versions } = memoryDeps()
+    const published = await Promise.all([
+      service.publishAgentDefinition({ agentId: AGENT_ID, tenantId: TENANT_A, publishedById: USER_ID }),
+      service.publishAgentDefinition({ agentId: AGENT_ID, tenantId: TENANT_A, publishedById: USER_ID }),
+    ])
+    assert.deepEqual(published.map((row) => row.version).sort(), [1, 2])
+    assert.equal(versions.length, 2)
+    assert.equal(agents.get(AGENT_ID)?.currentDefinitionVersionId, versions[1]?.id)
   })
 
   await check('second publish does not mutate v1 bytes', async () => {

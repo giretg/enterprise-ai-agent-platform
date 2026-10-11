@@ -88,14 +88,13 @@ export type AgentDefinitionDeps = {
   agents: Pick<
     AgentRepository,
     | 'findById'
-    | 'setCurrentDefinitionVersionId'
     | 'findCapabilitiesForAgent'
     | 'findConnectorsForAgent'
     | 'activate'
   >
   versions: Pick<
     AgentDefinitionRepository,
-    'create' | 'findById' | 'findByAgentAndVersion' | 'findMaxVersion'
+    'publish' | 'findById' | 'findByAgentAndVersion'
   >
   skills: Pick<SkillRepository, 'listEnabledForAgent'>
   /** Opcionális: http_api connectorok végpont-katalógusának feloldásához a snapshotban. */
@@ -312,6 +311,9 @@ export class AgentDefinitionService {
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
     if (!agent.description?.trim()) throw new Error(AGENT_SCOPE_REQUIRED)
+    if (agent.status === 'suspended' || agent.status === 'retired') {
+      throw new Error(`Cannot publish agent in status ${agent.status}`)
+    }
 
     const [enabledSkills, connectors, capabilities] = await Promise.all([
       this.deps.skills.listEnabledForAgent(agent.id),
@@ -325,27 +327,24 @@ export class AgentDefinitionService {
       this.deps.connectors,
     )
 
-    const version = (await this.deps.versions.findMaxVersion(agent.id)) + 1
-    const row = await this.deps.versions.create({
+    const { agent: updated, version: row } = await this.deps.versions.publish({
       agentId: agent.id,
-      version,
       snapshot: snapshot as unknown as Prisma.InputJsonValue,
       contentHash: hashSnapshot(snapshot),
       publishedById: input.publishedById,
     })
-    const updated = await this.deps.agents.setCurrentDefinitionVersionId(agent.id, row.id)
     await writeAudit(this.deps.audit, {
       actorType: 'human',
       actorId: input.publishedById,
-      agentVersion: version,
+      agentVersion: row.version,
       action: 'agent.version',
       targetType: 'agent',
       targetId: agent.id,
       modelUsed: null,
       inputRef: row.id,
-      outputRef: String(version),
+      outputRef: String(row.version),
       policyDecision: 'published',
-      metadata: { definitionId: row.id, version },
+      metadata: { definitionId: row.id, version: row.version },
       tenantId: input.tenantId,
     })
     return toDefinition(updated, row)

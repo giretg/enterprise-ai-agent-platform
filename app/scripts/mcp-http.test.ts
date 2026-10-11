@@ -52,6 +52,7 @@ import {
 } from '../src/auth/mcp-principal'
 import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
 import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
+import { SkillService } from '../src/domain/skill/skill-service'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
 const ORIGIN = 'https://app.example.com'
@@ -399,15 +400,12 @@ function runtimeDeps(overrides: {
             return []
           },
           async upsertConnectorBinding() {},
-          async setCurrentDefinitionVersionId() {
-            throw new Error('agentScaffold stub')
-          },
           async activate() {
             throw new Error('agentScaffold stub')
           },
         },
         versions: {
-          async create() {
+          async publish() {
             throw new Error('agentScaffold stub')
           },
           async findById() {
@@ -415,9 +413,6 @@ function runtimeDeps(overrides: {
           },
           async findByAgentAndVersion() {
             return null
-          },
-          async findMaxVersion() {
-            return 0
           },
         },
         skills: {
@@ -1063,6 +1058,60 @@ async function main() {
     assert.equal(payload.definitionId, DEFINITION_ID)
     assert.equal(payload.tenantId, TENANT_ID)
     assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
+  })
+
+  await check('get_definition refuses retired agents and omits retired skill instructions', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const call = async () => {
+      const res = await post(
+        'acme',
+        {
+          jsonrpc: '2.0',
+          id: 61,
+          method: 'tools/call',
+          params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { agentId: AGENT_ID } },
+        },
+        { authorization: `Bearer ${TOKEN}` },
+        deps,
+      )
+      return (await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text: string }> } }
+    }
+    deps.loadDefinition = async () => ({ ...SAMPLE_DEFINITION, status: 'retired' })
+    await initialize(deps)
+    const retired = await call()
+    assert.equal(retired.result?.isError, true)
+    assert.equal(retired.result?.content?.[0]?.text.includes('Inspect Drive'), false)
+
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        skills: [{ skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb', name: 'retired-procedure' }],
+      },
+    })
+    deps.loadSkillVersions = async () => [{
+      skillId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+      skillVersionId: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+      status: 'retired',
+      name: 'retired-procedure',
+      description: 'Sensitive retired procedure',
+      content: { instructions: ['Do not expose this retired instruction.'], triggerKeywords: [], parameters: [] },
+      requires: [],
+    }]
+    const active = await call()
+    assert.equal(active.result?.isError, undefined)
+    assert.equal(active.result?.content?.[0]?.text.includes('Do not expose this retired instruction.'), false)
+  })
+
+  await check('MCP skill lookup does not serve a retired pinned version', async () => {
+    const service = new SkillService({
+      findVersionsByIds: async () => [{
+        id: 'retired-version',
+        status: 'retired',
+        skill: { tenantId: TENANT_ID },
+      }],
+    } as never, {} as never, {} as never, {} as never)
+    assert.deepEqual(await service.listMcpSkillPackages(TENANT_ID, ['retired-version']), [])
   })
 
   await check('get_definition carries memory index; denied memory read is omitted', async () => {
@@ -2133,6 +2182,7 @@ async function main() {
     const skill = {
       skillId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
       skillVersionId,
+      status: 'active' as const,
       name: 'napi-riport',
       description: 'Daily marketing report.',
       content: { instructions: ['Write the report.'], triggerKeywords: ['riport'], parameters: [] },
@@ -2258,6 +2308,7 @@ async function main() {
     const checkoutSkills = [workflowV1, seo].map((pkg) => ({
       skillId: pkg.skillId,
       skillVersionId: pkg.skillVersionId,
+      status: 'active' as const,
       name: pkg.name,
       description: pkg.description,
       content: { instructions: ['x'], triggerKeywords: [], parameters: [] },
