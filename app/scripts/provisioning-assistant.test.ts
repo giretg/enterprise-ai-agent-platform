@@ -1447,6 +1447,44 @@ async function run() {
     assert.equal(drafts.drafts.get(created.draftId)!.sandboxTestOk, true)
   })
 
+  await test('listDrafts: Google Drive config secret-mentes OAuth nézetben jelenik meg', async () => {
+    const { svc } = makeService()
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Drive',
+        sourceType: 'template',
+        connectorType: 'google_drive',
+        generatedConfig: {
+          provider: 'google-drive',
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            scopes: ['https://www.googleapis.com/auth/drive.file'],
+            scopeTransform: 'none',
+          },
+          provenance: {
+            templateKey: 'google-drive',
+            templateVersion: 1,
+            templateOrigin: 'builtin',
+          },
+        },
+      },
+      adminActor,
+    )
+    const rows = await svc.listDrafts(adminActor)
+    const row = rows.find((item) => item.draftId === created.draftId)
+    assert.ok(row)
+    assert.equal(row.config, null)
+    assert.equal(row.httpApiView, null)
+    assert.equal(row.delegatedOauthView?.provider, 'google-drive')
+    assert.equal(row.delegatedOauthView?.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
+    assert.equal(row.delegatedOauthView?.tokenUrl, 'https://oauth2.googleapis.com/token')
+    assert.deepEqual(row.delegatedOauthView?.scopes, ['https://www.googleapis.com/auth/drive.file'])
+    assert.equal(row.delegatedOauthView?.scopeTransform, 'none')
+    assert.equal(row.delegatedOauthView?.provenance?.templateKey, 'google-drive')
+  })
+
   await test('SBX: Gmail sandbox zöld clientId nélkül (platform OAuth az aktiváláskor kell)', async () => {
     const audit = new FakeAudit()
     const drafts = new FakeDraftRepo()

@@ -110,7 +110,7 @@ type HttpApiConfigView = {
   isDelegated: boolean
   endpoints: Array<{ method: string; path: string }>
 } | null
-type GmailConfigView = {
+type DelegatedOauthConfigView = {
   provider: string
   authUrl: string
   tokenUrl: string
@@ -140,7 +140,7 @@ type DraftRow = {
   authMode: string
   config: DraftConfig
   httpApiView: HttpApiConfigView
-  gmailView: GmailConfigView
+  delegatedOauthView: DelegatedOauthConfigView
   sourceType: string
   sourceHash: string
   createdAt: string | Date
@@ -2874,7 +2874,7 @@ function DraftCard({
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
-  const [clientId, setClientId] = useState(() => draft.gmailView?.clientId ?? '')
+  const [clientId, setClientId] = useState(() => draft.delegatedOauthView?.clientId ?? '')
   const [approverId, setApproverId] = useState('')
   const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [agentId, setAgentId] = useState('')
@@ -2897,8 +2897,8 @@ function DraftCard({
   const v = draft.validationResult
   const cfg = draft.config
   const [actingUserEmail, setActingUserEmail] = useState(() => cfg?.defaultActingUserEmail ?? '')
-  const gmailView = draft.gmailView
-  const provenance = cfg?.provenance ?? gmailView?.provenance
+  const delegatedOauthView = draft.delegatedOauthView
+  const provenance = cfg?.provenance ?? delegatedOauthView?.provenance
   const templateVersionKey = templateLineKey({
     key: provenance?.templateKey,
     origin: provenance?.templateOrigin,
@@ -3011,7 +3011,7 @@ function DraftCard({
   const sandboxReady = draft.sandboxTestOk === true
   const activationReady = validationReady && sandboxReady && reviewApproved
   const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: t('inspect'), hint: t('inspectHint'), done: !!cfg || !!draft.httpApiView || !!gmailView },
+    { id: 'inspect', label: t('inspect'), hint: t('inspectHint'), done: !!cfg || !!draft.httpApiView || !!delegatedOauthView },
     { id: 'validate', label: t('validate'), hint: v ? v.status : t('notRunYet'), done: validationReady },
     {
       id: 'sandbox',
@@ -3273,29 +3273,31 @@ function DraftCard({
                 </div>
               </div>
             </div>
-          ) : gmailView ? (
+          ) : delegatedOauthView ? (
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <h4 className="mb-1 font-semibold">Gmail OAuth</h4>
+                <h4 className="mb-1 font-semibold">
+                  {isGoogleDriveConnector ? t('driveOauthTitle') : t('gmailOauthTitle')}
+                </h4>
                 <p className="text-xs text-ink-soft">
-                  {draft.authMode} · provider: {gmailView.provider}
+                  {draft.authMode} · provider: {delegatedOauthView.provider}
                 </p>
                 <ul className="mt-2 space-y-1 font-mono text-xs">
                   <li>
-                    <span className="text-ink-soft">authUrl:</span> {gmailView.authUrl}
+                    <span className="text-ink-soft">authUrl:</span> {delegatedOauthView.authUrl}
                   </li>
                   <li>
-                    <span className="text-ink-soft">tokenUrl:</span> {gmailView.tokenUrl}
+                    <span className="text-ink-soft">tokenUrl:</span> {delegatedOauthView.tokenUrl}
                   </li>
-                  {gmailView.userInfoUrl ? (
+                  {delegatedOauthView.userInfoUrl ? (
                     <li>
-                      <span className="text-ink-soft">userInfoUrl:</span> {gmailView.userInfoUrl}
+                      <span className="text-ink-soft">userInfoUrl:</span> {delegatedOauthView.userInfoUrl}
                     </li>
                   ) : null}
                   <li>
                     <span className="text-ink-soft">clientId:</span>{' '}
-                    {gmailView.clientId?.trim() ? (
-                      <code>{gmailView.clientId}</code>
+                    {delegatedOauthView.clientId?.trim() ? (
+                      <code>{delegatedOauthView.clientId}</code>
                     ) : (
                       <span className="text-ink-soft">{t('platformGoogleOauth')}</span>
                     )}
@@ -3305,10 +3307,10 @@ function DraftCard({
               <div>
                 <h4 className="mb-1 font-semibold">Scope-ok</h4>
                 <div className="flex flex-wrap gap-1">
-                  {gmailView.scopes.length === 0 ? (
+                  {delegatedOauthView.scopes.length === 0 ? (
                     <span className="text-xs text-ink-soft">—</span>
                   ) : (
-                    gmailView.scopes.map((scope) => (
+                    delegatedOauthView.scopes.map((scope) => (
                       <Badge key={scope} tone="neutral">
                         {scope.replace('https://www.googleapis.com/auth/', '')}
                       </Badge>
@@ -3316,13 +3318,13 @@ function DraftCard({
                   )}
                 </div>
                 <p className="mt-3 text-xs text-ink-soft">
-                  scopeTransform: <code>{gmailView.scopeTransform}</code>
+                  scopeTransform: <code>{delegatedOauthView.scopeTransform}</code>
                 </p>
-                {gmailView.provenance?.templateKey ? (
+                {delegatedOauthView.provenance?.templateKey ? (
                   <p className="mt-1 text-xs text-ink-soft">
-                    sablon: {gmailView.provenance.templateKey}
-                    {gmailView.provenance.templateVersion
-                      ? ` v${gmailView.provenance.templateVersion}`
+                    sablon: {delegatedOauthView.provenance.templateKey}
+                    {delegatedOauthView.provenance.templateVersion
+                      ? ` v${delegatedOauthView.provenance.templateVersion}`
                       : ''}
                   </p>
                 ) : null}

@@ -1276,9 +1276,8 @@ export class ProvisioningService {
       authMode: d.connector.authMode,
       // A diff-nézethez: a generált deskriptor (§4.3). A secret SOSEM része — csak alias-név.
       config: safeParseStoredConfig(d.connector.config),
-      // Gmail connector config (provider + oauth) — secret-mentes nézet.
-      gmailView:
-        d.connector.type as string === 'gmail' ? safeGmailConfigView(d.connector.config) : null,
+      // Gmail / Google Drive (provider + oauth) — secret-mentes nézet.
+      delegatedOauthView: safeDelegatedOauthView(d.connector.type, d.connector.config),
       // Fallback nézet, ha a config nem provisioning-ConnectorConfig alakú (pl. az
       // API-szerkesztőn átírt http_api config). Secret-mentes.
       httpApiView: safeHttpApiView(d.connector.config),
@@ -1480,7 +1479,7 @@ export type HttpApiConfigView = {
   endpoints: Array<{ method: string; path: string }>
 }
 
-export type GmailConfigView = {
+export type DelegatedOauthConfigView = {
   provider: string
   authUrl: string
   tokenUrl: string
@@ -1497,27 +1496,47 @@ export type GmailConfigView = {
   }
 }
 
-function safeGmailConfigView(raw: unknown): GmailConfigView | null {
+function toDelegatedOauthView(config: {
+  provider: string
+  oauth: {
+    authUrl: string
+    tokenUrl: string
+    userInfoUrl?: string
+    clientId?: string
+    scopes: string[]
+    scopeTransform: string
+  }
+  provenance?: DelegatedOauthConfigView['provenance']
+}): DelegatedOauthConfigView {
+  return {
+    provider: config.provider,
+    authUrl: config.oauth.authUrl,
+    tokenUrl: config.oauth.tokenUrl,
+    userInfoUrl: config.oauth.userInfoUrl,
+    clientId: config.oauth.clientId,
+    scopes: config.oauth.scopes,
+    scopeTransform: config.oauth.scopeTransform,
+    provenance: config.provenance
+      ? {
+          templateId: config.provenance.templateId,
+          templateKey: config.provenance.templateKey,
+          templateVersion: config.provenance.templateVersion,
+          templateOrigin: config.provenance.templateOrigin,
+          materializedAt: config.provenance.materializedAt,
+        }
+      : undefined,
+  }
+}
+
+function safeDelegatedOauthView(connectorType: string, raw: unknown): DelegatedOauthConfigView | null {
   try {
-    const config = normalizeGmailConnectorConfig(raw)
-    return {
-      provider: config.provider,
-      authUrl: config.oauth.authUrl,
-      tokenUrl: config.oauth.tokenUrl,
-      userInfoUrl: config.oauth.userInfoUrl,
-      clientId: config.oauth.clientId,
-      scopes: config.oauth.scopes,
-      scopeTransform: config.oauth.scopeTransform,
-      provenance: config.provenance
-        ? {
-            templateId: config.provenance.templateId,
-            templateKey: config.provenance.templateKey,
-            templateVersion: config.provenance.templateVersion,
-            templateOrigin: config.provenance.templateOrigin,
-            materializedAt: config.provenance.materializedAt,
-          }
-        : undefined,
+    if (connectorType === 'gmail') {
+      return toDelegatedOauthView(normalizeGmailConnectorConfig(raw))
     }
+    if (connectorType === 'google_drive') {
+      return toDelegatedOauthView(normalizeGoogleDriveConnectorConfig(raw))
+    }
+    return null
   } catch {
     return null
   }
