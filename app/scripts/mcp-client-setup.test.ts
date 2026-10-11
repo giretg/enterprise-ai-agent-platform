@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createElement } from 'react'
 import { NextIntlClientProvider } from 'next-intl'
+import enMessages from '../src/messages/en.json'
 import huMessages from '../src/messages/hu.json'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { McpSetupLanding } from '../src/components/mcp/mcp-setup-landing'
@@ -169,7 +170,12 @@ function main() {
     assert.match(html, /Kovács Anna \(anna@example.com\)/)
     assert.match(html, /Telepítő letöltése/)
     assert.match(html, /sudo bash excellence-telepito\.sh/)
-    assert.match(html, /Windows: a natív Hermesben a céges telepítő még nincs kész/)
+    assert.match(html, /Windows: Windowsos számítógépen ez a telepítő még nem működik/)
+    assert.doesNotMatch(html, /natív Hermes|gépi csomag/)
+    assert.match(enMessages.GetStarted.hermesEntInstallWindows, /does not work on a Windows computer yet/)
+    assert.doesNotMatch(enMessages.GetStarted.hermesEntInstallWindows + enMessages.ClientPolicy.floorHelp, /native/)
+    assert.doesNotMatch(enMessages.ClientPolicy.effectiveNotice, /machine package/)
+    assert.doesNotMatch(huMessages.ClientPolicy.effectiveNotice + huMessages.ClientPolicy.floorHelp, /gépi csomag|natív/)
     assert.doesNotMatch(html, /github\.com\/giretg\/enterprise-ai-agent-platform\/archive/)
     assert.doesNotMatch(html, /install-managed\.sh floor\.json/)
   })

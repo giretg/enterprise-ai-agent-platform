@@ -14,7 +14,7 @@ sudo bash excellence-telepito.sh
 
 4. Indítsd újra a Hermest. A munkatárs az Első lépések további pontjai szerint köti be a Botokat.
 
-Macen és Linuxon működik. A natív Windows Hermesnek még nincs céges telepítője (#755): a Hermes managed könyvtára POSIX-első, a padló Unix-útvonalakat hash-el.
+Macen és Linuxon működik. Windowsos számítógépen ez a telepítő még nem működik.
 
 Ugyanez a gomb a **Hermes céges kontroll** oldalon a munkatárs sorában is ott van. A telepítő újrafuttatható: engedélybővítés után töltsd le újra, és futtasd megint. Az `installId` ugyanaz marad.
 
@@ -26,9 +26,9 @@ Adj a munkatársnak hozzáférést legalább egy éles AI-munkatárshoz, mielőt
 2. Az **AI-munkatárs adatlap → Eszközök** részen állíts képesség-plafont. A tényleges jog a munkatárs engedélyének és az agent plafonjának metszete.
 3. Töltsd le és futtasd a telepítőt (fent).
 4. A munkatárs újraindítja a Hermest, bejelentkezik az Excellence MCP-kapcsolatra és Botot választ.
-5. Ellenőrizzétek az alábbi átvételi eseteket, utána terítsétek a gépi csomagot központilag.
+5. Ellenőrizzétek az alábbi átvételi eseteket, utána futtassátok a telepítőt a többi gépen is.
 
-Mentéskor verzió nő, és a beállítás az auditnaplóval egy tranzakcióban kerül mentésre. Más admin közben történt módosítását a szerver nem írja felül. Visszavonás a következő kérésnél, engedélybővítés legkésőbb a következő sessionben érvényes. Ha a korábbi gépi csomag letiltotta a most engedélyezett funkciót, új csomag telepítése is kell. A letöltés új elvárt hash-t adhat: a régi, eltérő csomag ezután nem kap céges modellválaszt a telepítésig.
+Mentéskor verzió nő, és a beállítás az auditnaplóval egy tranzakcióban kerül mentésre. Más admin közben történt módosítását a szerver nem írja felül. Visszavonás a következő kérésnél, engedélybővítés legkésőbb a következő sessionben érvényes. Ha a korábbi telepítés letiltotta a most engedélyezett funkciót, a telepítőt újra le kell tölteni és futtatni. A letöltés új elvárt azonosítót adhat: a régi, eltérő beállítás ezután nem kap céges modellválaszt a telepítésig.
 
 Szerveroldalon szükséges a `MODEL_GATEWAY_JWT_KEY` (külön, legalább 32 véletlen karakteres Secret Manager kulcs) és a kapcsolódó adatbázis-migrációk: lásd [DEPLOY.md](../../DEPLOY.md). Kulcs nélkül a token-csere elutasít.
 

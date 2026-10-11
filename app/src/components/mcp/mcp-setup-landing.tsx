@@ -4,6 +4,7 @@ import { useEffect, useId, useState, type ReactNode } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
+import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
 import { Card } from '@/components/ui/shell'
 import { HERMES_LINKS, MCP_SETUP_SEEN_COOKIE, type McpClientSetup } from '@/lib/mcp-client-setup'
 
@@ -213,14 +214,7 @@ function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup 
     setPending(true)
     setError('')
     try {
-      const response = await fetch(`/api/client-policy/machine-floor?userId=${encodeURIComponent(userId)}&format=installer`)
-      if (!response.ok) throw new Error('download_failed')
-      const url = URL.createObjectURL(await response.blob())
-      const link = document.createElement('a')
-      link.href = url
-      link.download = t('hermesEntInstallerFile')
-      link.click()
-      URL.revokeObjectURL(url)
+      await downloadManagedInstaller(userId)
     } catch {
       setError(t('hermesEntDownloadFailed'))
     } finally {

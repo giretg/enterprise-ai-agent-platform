@@ -4,9 +4,10 @@
  */
 import { Buffer } from 'node:buffer'
 import bundledFiles from './hermes-installer-files.json'
+import { MANAGED_INSTALLER_FILENAME } from './installer-filename'
 import type { MachineFloorPackage } from './machine-floor'
 
-export const MANAGED_INSTALLER_FILENAME = 'excellence-telepito.sh'
+export { MANAGED_INSTALLER_FILENAME }
 
 export const INSTALLER_ASSET_PATHS = [
   'install-managed.sh',
@@ -42,13 +43,15 @@ export function buildManagedInstallerScript(pkg: MachineFloorPackage): string {
 #!/usr/bin/env bash
 # Excellence céges Hermes telepítő. A munkatárs gépén: sudo bash ${MANAGED_INSTALLER_FILENAME}
 set -euo pipefail
-PREFIX_ARGS=()
 if [ "\${1:-}" = "--prefix" ]; then
-  PREFIX_ARGS=(--prefix "\${2:?--prefix könyvtár kell}")
+  PREFIX_DIR="\${2:?--prefix könyvtár kell}"
   shift 2
-elif [ "\$(id -u)" -ne 0 ]; then
-  echo "A telepítőhöz rendszergazdai jelszó kell. Futtasd: sudo bash \$0" >&2
-  exit 1
+else
+  PREFIX_DIR=""
+  if [ "\$(id -u)" -ne 0 ]; then
+    echo "A telepítőhöz rendszergazdai jelszó kell. Futtasd: sudo bash \$0" >&2
+    exit 1
+  fi
 fi
 ROOT=\$(mktemp -d)
 trap 'rm -rf "\$ROOT"' EXIT
@@ -65,7 +68,11 @@ for rel, blob in files:
     if rel in executable:
         os.chmod(path, 0o755)
 PY
-bash "\$ROOT/install-managed.sh" "\${PREFIX_ARGS[@]}" "\$ROOT/floor.json"
+if [ -n "\$PREFIX_DIR" ]; then
+  bash "\$ROOT/install-managed.sh" --prefix "\$PREFIX_DIR" "\$ROOT/floor.json"
+else
+  bash "\$ROOT/install-managed.sh" "\$ROOT/floor.json"
+fi
 echo "Kész. Indítsd újra a Hermest."
 `
 }
