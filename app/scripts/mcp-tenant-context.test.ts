@@ -83,6 +83,7 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /no separate in-platform/)
   assert.match(text, /tools\/list as the callable tool list/)
   assert.match(text, /http_api_get_all only when the endpoint has pagination/)
+  assert.match(text, /several linkedAccounts for a connector/)
   assert.match(text, /injects CRM\/API trace headers/)
   assert.match(text, /X-Agent-Id/)
   assert.match(text, /gmail_send/)

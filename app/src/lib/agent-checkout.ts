@@ -417,9 +417,9 @@ export function renderAgentBriefing(input: {
 
   const tools = mcpToolNames(snapshot.capabilities)
   if (tools.length > 0) lines.push(`- MCP tools: ${tools.join(', ')}.`)
-  if (snapshot.connectors.some((row) => row.type === 'google_drive' || row.type === 'gmail')) {
+  if (snapshot.connectors.some((row) => row.type === 'google_drive' || row.type === 'gmail' || row.type === 'http_api')) {
     lines.push(
-      '- Linked Gmail/Drive accounts: call platform.whoami → linkedAccounts. When more than one account is listed, pass account (nickname or email, e.g. magán / céges) on Gmail and Drive tools.',
+      '- Linked accounts: call platform.whoami → linkedAccounts. When more than one account is listed for a connector, pass account (nickname or email, e.g. magán / céges) on Gmail, Drive, and HTTP API tools.',
     )
   }
   if (httpApis.length > 0) {

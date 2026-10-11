@@ -179,7 +179,7 @@ const optionalLinkedAccount = z
   .max(80)
   .optional()
   .describe(
-    'Nickname or email of the linked Gmail/Drive account from platform.whoami linkedAccounts (e.g. magán, céges). Required when the user has more than one.',
+    'Nickname or email of the linked account from platform.whoami linkedAccounts (e.g. magán, céges). Required when the user has more than one account for this connector (Gmail, Drive, Calendar, or other delegated HTTP APIs).',
   )
 const scalarMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
 const callerHeaders = z
@@ -467,6 +467,7 @@ export const httpApiGetInputSchema = z
     agentId: optionalAgentId,
     connectorId: optionalConnectorId,
     connectorName: optionalConnectorName,
+    account: optionalLinkedAccount,
     path: z
       .string()
       .min(1)
@@ -483,6 +484,7 @@ export const httpApiGetAllInputSchema = z
     agentId: optionalAgentId,
     connectorId: optionalConnectorId,
     connectorName: optionalConnectorName,
+    account: optionalLinkedAccount,
     path: z.string().min(1).max(1000),
     query: scalarMap.optional(),
     pageSize: z.number().int().min(1).max(500).optional(),
@@ -496,6 +498,7 @@ export const httpApiRequestInputSchema = z
     agentId: optionalAgentId,
     connectorId: optionalConnectorId,
     connectorName: optionalConnectorName,
+    account: optionalLinkedAccount,
     method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
     path: z.string().min(1).max(1000),
     query: scalarMap.optional(),

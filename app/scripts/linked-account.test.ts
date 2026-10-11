@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import {
+  isDelegatedLinkedAccountType,
+  isGoogleLinkedAccountConnector,
   linkedAccountHandle,
   nicknameTakenByPeer,
   normalizeNickname,
@@ -81,5 +83,26 @@ assert.equal(linkedAccountHandle({ id: 'g3', accountLabel: 'x@y.hu', nickname: n
 assert.equal(nicknameTakenByPeer([personal, work], 'Magán'), true)
 assert.equal(nicknameTakenByPeer([personal, work], 'magán', personal.id), false)
 assert.equal(nicknameTakenByPeer([personal], 'céges'), false)
+
+assert.equal(isGoogleLinkedAccountConnector({ type: 'gmail' }), true)
+assert.equal(isGoogleLinkedAccountConnector({ type: 'google_drive' }), true)
+assert.equal(
+  isGoogleLinkedAccountConnector({ type: 'http_api', config: { provider: 'google-calendar' } }),
+  true,
+)
+assert.equal(
+  isGoogleLinkedAccountConnector({ type: 'http_api', config: { provider: 'google-sheets' } }),
+  true,
+)
+assert.equal(isGoogleLinkedAccountConnector({ type: 'http_api', config: { provider: 'crm' } }), false)
+assert.equal(
+  isGoogleLinkedAccountConnector({
+    type: 'http_api',
+    config: { provenance: { templateKey: 'google-calendar' } },
+  }),
+  true,
+)
+assert.equal(isDelegatedLinkedAccountType('http_api'), true)
+assert.equal(isDelegatedLinkedAccountType('knowledge_base'), false)
 
 console.log('✅ linked-account picker: egy fiók, magán/céges, e-mail')
