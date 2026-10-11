@@ -30,7 +30,7 @@ import {
   type ValVaultRecord,
 } from '@/domain/privacy/surrogate-vault'
 import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
-import type { GatewayCallContext, GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
+import { FORWARDED_PARAMS, type GatewayCallContext, type GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
 import { createRestoreTransform } from '@/domain/model-gateway/response-restorer'
 import { PRIVACY_CATEGORY_ALIASES, type PrivacyPolicyCategory } from '@/domain/privacy/privacy-category-policy'
 import { writeAudit, type AuditSink } from '@/lib/audit/types'
@@ -166,17 +166,20 @@ export const PRIVACY_UNAVAILABLE_MESSAGE =
 
 // ── Szöveg-slotok ───────────────────────────────────────────────────────────
 
-type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; text: string }
+type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; text: string; replaceable: boolean }
 
-const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
+const SKIP_KEYS = new Set(['role', 'type', 'id', 'name', 'tool_call_id'])
 
 /** Minden string a `messages`-ben (content, content-részek, tool_calls argumentumok, reasoning…). */
 function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
   if (Array.isArray(value) || (value && typeof value === 'object')) {
     const owner = value as Record<string, unknown> | unknown[]
     for (const [key, child] of Object.entries(owner)) {
+      // A JSON-kulcsok is a providerhez mennek, de átnevezésük megsértené a sémát.
+      if (!Array.isArray(owner)) out.push({ owner, key, text: key, replaceable: false })
       if (typeof child === 'string') {
-        if (!SKIP_KEYS.has(key) && !child.startsWith('data:')) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
+        out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child,
+          replaceable: !SKIP_KEYS.has(key) && !child.startsWith('data:') })
       } else collectSlots(child, out)
     }
   }
@@ -208,6 +211,7 @@ function findCandidates(text: string): Candidate[] {
 
 /** Kétlépéses, hogy az eredmény ne függjön az üzenetek sorrendjétől (a név a fejlécben későn is jöhet). */
 async function tokenizeSlots(slots: Slot[], session: SurrogateSession, types: Set<string>): Promise<void> {
+  slots = slots.filter((slot) => slot.replaceable)
   for (const slot of slots) {
     for (const candidate of findCandidates(slot.text).filter((c) => types.has(c.entityType))) await session.surrogateFor(candidate.entityType, candidate.value)
   }
@@ -246,8 +250,9 @@ export function createContentFilterHooks(deps: {
 
   return {
     async filterRequest(ctx, body) {
-      const messages = structuredClone(body.messages)
-      const slots = collectSlots(messages)
+      // Ugyanazt a mezőlistát szűrjük, amelyet a proxy ténylegesen továbbít a providernek.
+      const forwarded = structuredClone(Object.fromEntries(FORWARDED_PARAMS.map((key) => [key, body[key]])))
+      const slots = collectSlots(forwarded)
       try {
         const capabilities = await deps.getCapabilities?.(ctx)
         // Without a policy loader retain the original V1 filter contract for standalone callers.
@@ -255,13 +260,20 @@ export function createContentFilterHooks(deps: {
           ? capabilities[`content_filter.${category}` as `content_filter.${PrivacyPolicyCategory}`] ?? 'block'
           : category === 'pan' ? 'block' : ['email', 'person'].includes(category) ? 'tokenize' : 'off'
         const categories = new Set<string>()
+        const unreplaceableCategories = new Set<string>()
         for (const slot of slots) {
-          for (const span of collectSensitivityMatchSpans(slot.text)) categories.add(PRIVACY_CATEGORY_ALIASES[span.category] ?? span.category)
-          for (const candidate of findCandidates(slot.text)) categories.add(candidate.entityType)
+          const found = [
+            ...collectSensitivityMatchSpans(slot.text).map((span) => PRIVACY_CATEGORY_ALIASES[span.category] ?? span.category),
+            ...findCandidates(slot.text).map((candidate) => candidate.entityType),
+          ]
+          for (const category of found) {
+            categories.add(category)
+            if (!slot.replaceable) unreplaceableCategories.add(category)
+          }
         }
         const blocked = () => [...categories].find((category) => level(category) === 'block'
           // V1 only has reversible email/person aliases; unsupported tokenization must never leak raw values.
-          || (level(category) === 'tokenize' && !['email', 'person'].includes(category)))
+          || (level(category) === 'tokenize' && (!['email', 'person'].includes(category) || unreplaceableCategories.has(category))))
         const block = (category: string) => ({
           block: category === 'pan' ? PAN_BLOCK_MESSAGE : 'Ezt a kérést nem küldtem el az AI-modellnek: a céges adatvédelmi beállítás tiltja a benne felismert adat továbbítását. Töröld vagy takard ki az érintett adatot, majd próbáld újra.',
           reason: category === 'pan' ? 'pan_detected' : `content_filter_block:${category}`,
@@ -271,9 +283,13 @@ export function createContentFilterHooks(deps: {
         const types = new Set(['email', 'person'].filter((category) => level(category) === 'tokenize'))
         // Known names from earlier messages remain governed even when they occur without an email header.
         const session = types.size || level('person') !== 'off' ? await sessionFor(ctx) : null
-        if (session && level('person') !== 'off' && slots.some((slot) =>
-          findKnownValueMatches(slot.text, session.personReplacements()).some((match) => !findCandidates(slot.text).some((candidate) =>
-            candidate.entityType === 'email' && match.start < candidate.end && match.end > candidate.start)))) categories.add('person')
+        if (session && level('person') !== 'off') for (const slot of slots) {
+          if (findKnownValueMatches(slot.text, session.personReplacements()).some((match) => !findCandidates(slot.text).some((candidate) =>
+            candidate.entityType === 'email' && match.start < candidate.end && match.end > candidate.start))) {
+            categories.add('person')
+            if (!slot.replaceable) unreplaceableCategories.add('person')
+          }
+        }
         const knownBlocked = blocked()
         if (knownBlocked) return block(knownBlocked)
         const warned = [...categories].filter((category) => level(category) === 'warn')
@@ -290,7 +306,7 @@ export function createContentFilterHooks(deps: {
         logger.error({ event: 'model_gateway.tokenize_failed', error: String(error) }, 'Gateway tokenization failed')
         return { block: PRIVACY_UNAVAILABLE_MESSAGE, reason: 'privacy_unavailable' }
       }
-      return { body: { ...body, messages } }
+      return { body: { ...body, ...forwarded } }
     },
 
     transformResponse: (ctx) => sessions.has(ctx)
