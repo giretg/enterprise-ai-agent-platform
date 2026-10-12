@@ -135,7 +135,7 @@ export function buildMcpServerInstructions(input: {
   ]
   if (!input.bound) {
     lines.push(
-      `Hermes: "${HERMES_SYNC_PROMPT}" means one Bot per agent — for every agent in platform.agents.list call platform.agent.checkout with harness:"hermes", write files[] to suggestedRoot, then run the writeRecipe commands with the terminal tool.`,
+      `Hermes: "${HERMES_SYNC_PROMPT}" means one thin Bot connector per agent — for every agent in platform.agents.list call platform.agent.checkout with harness:"hermes", write files[] (profile stub only) to suggestedRoot, then run the writeRecipe commands. Do not copy skills or the role briefing onto disk; the Bot loads those from platform.agent.get_definition every session.`,
     )
   }
 

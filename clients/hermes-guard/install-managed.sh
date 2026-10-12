@@ -158,6 +158,52 @@ elif [ -n "${SUDO_USER:-}" ]; then
   TARGET_USER="$SUDO_USER"
 fi
 if [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]; then
+  python3 - "$PKG" "$TARGET_HOME" "$TARGET_USER" <<'PYBOTS'
+import os, pathlib, pwd, re, shutil, sys, json
+pkg_path, home, user = sys.argv[1:4]
+pkg = json.load(open(pkg_path, encoding="utf-8"))
+bots = pkg.get("bots") or []
+if not isinstance(bots, list):
+    raise ValueError("Hibás bots lista")
+SAFE_PROFILE = re.compile(r"^exc-[a-z0-9][a-z0-9-]{0,54}$")
+SAFE_FILES = ("SOUL.md", "profile.yaml", "config.yaml", "distribution.yaml")
+if user:
+    account = pwd.getpwnam(user)
+    os.initgroups(user, account.pw_gid)
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+hermes = pathlib.Path(home) / ".hermes" / "profiles"
+if hermes.is_symlink() or any(part.is_symlink() and part.lstat().st_uid != 0 for part in hermes.parents):
+    raise ValueError("A Hermes profilkönyvtár nem lehet symlink")
+hermes.mkdir(parents=True, exist_ok=True)
+for bot in bots:
+    if not isinstance(bot, dict):
+        continue
+    profile = bot.get("profile")
+    files = bot.get("files")
+    if not isinstance(profile, str) or not SAFE_PROFILE.match(profile) or len(profile) > 60:
+        continue
+    if not isinstance(files, dict):
+        continue
+    dest = hermes / profile
+    if dest.is_symlink() or (dest.exists() and any(part.is_symlink() for part in dest.rglob("*"))):
+        raise ValueError("A Bot-profil nem lehet symlink")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in SAFE_FILES:
+        content = files.get(name)
+        if not isinstance(content, str):
+            continue
+        target = dest / name
+        if target.is_symlink():
+            raise ValueError("A Bot-profil nem tartalmazhat symlinket")
+        with open(target, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
+    for leftover in (dest / ".enterprise-agent", dest / "skills" / "excellence"):
+        if leftover.is_symlink():
+            raise ValueError("A Bot-profil nem tartalmazhat symlinket")
+        if leftover.exists():
+            shutil.rmtree(leftover)
+PYBOTS
   copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard" "$TARGET_USER"
   if [ -d "$TARGET_HOME/.hermes/profiles" ]; then
     for profile in "$TARGET_HOME/.hermes/profiles"/*; do

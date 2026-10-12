@@ -241,7 +241,7 @@ async function main() {
     assert.match(agents, /platform\.agent\.get_definition/)
   })
 
-  await check('#652 briefing: fixed sections, same text in prompt, AGENTS.md and SOUL.md', () => {
+  await check('#652 briefing: fixed sections, same text in prompt and AGENTS.md; Hermes SOUL is a connector stub', () => {
     const def = definition()
     const skills = [skill(SKILL_A, VER_A, 'drive-search'), skill(SKILL_B, VER_B, 'drive-write')]
     const briefing = renderAgentBriefing({ definition: def, skills })
@@ -274,7 +274,9 @@ async function main() {
     const soul = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' }).files.find(
       (f) => f.path === 'SOUL.md',
     )
-    assert.ok(soul?.content.includes(bound))
+    assert.ok(soul?.content.includes('connector to Drive asszisztens'))
+    assert.ok(soul?.content.includes('platform.agent.get_definition'))
+    assert.ok(!soul?.content.includes(bound))
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
   })
 
@@ -424,6 +426,8 @@ async function main() {
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /first checkout \(create folder\)/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /claude \| codex \| goose \| grok \| hermes/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /harness:"hermes"/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /thin Bot connector/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /Do not copy skills/)
   })
 
   await check('codex harness adds Desktop open hint to writeRecipe', () => {
@@ -445,7 +449,7 @@ async function main() {
     assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
   })
 
-  await check('hermes harness → profile distribution (#682 WP-1)', () => {
+  await check('hermes harness → thin Bot connector, no skill or briefing copy', () => {
     const def = definition()
     const bundle = renderAgentCheckout({
       definition: def,
@@ -453,32 +457,15 @@ async function main() {
       mcpUrl: MCP_URL,
       harness: 'hermes',
     })
-    // Pins decide the skill label; give the snapshot a non-slug name too.
-    const napi = renderAgentCheckout({
-      definition: definition({
-        snapshot: {
-          ...def.snapshot,
-          skills: [{ skillId: SKILL_A, skillVersionId: VER_A, name: 'Napi Marketing Riport' }],
-        },
-      }),
-      skills: [skill(SKILL_A, VER_A, 'Napi Marketing Riport')],
-      mcpUrl: MCP_URL,
-      harness: 'hermes',
-    })
-    const napiSkill = napi.files.find((f) => f.path.startsWith('skills/excellence/'))
-    assert.equal(napiSkill?.path, 'skills/excellence/napi-marketing-riport/SKILL.md')
-    assert.match(napiSkill?.content ?? '', /^---\nname: napi-marketing-riport\ntitle: Napi Marketing Riport\n/)
 
     assert.equal(bundle.suggestedRoot, '.hermes/excellence/acme/drive-asszisztens')
+    assert.deepEqual(bundle.files.map((f) => f.path).sort(), ['SOUL.md', 'config.yaml', 'distribution.yaml', 'profile.yaml'].sort())
     assert.deepEqual(bundle.files.map((f) => f.path), bundle.generatedPaths)
     for (const path of bundle.generatedPaths) assertSafeCheckoutPath(path)
-    assert.ok(bundle.generatedPaths.includes('SOUL.md'))
     assert.ok(!bundle.generatedPaths.includes('AGENTS.md'))
-    for (const file of bundle.files.filter((f) => f.path.startsWith('skills/excellence/'))) {
-      const name = /^name: (.+)$/m.exec(file.content)?.[1] ?? ''
-      assert.match(name, /^[a-z0-9][a-z0-9._-]*$/)
-      assert.equal(file.path, `skills/excellence/${name}/SKILL.md`)
-    }
+    assert.equal(bundle.files.some((f) => f.path.startsWith('skills/excellence/')), false)
+    assert.equal(bundle.files.some((f) => f.path === '.enterprise-agent/manifest.json'), false)
+    assert.deepEqual(bundle.deleteUnder, ['.enterprise-agent', 'skills/excellence'])
 
     const content = (path: string) => bundle.files.find((f) => f.path === path)?.content ?? ''
     const config = content('config.yaml')
@@ -494,20 +481,23 @@ async function main() {
     assert.match(dist, /name: exc-drive-asszisztens/)
     assert.match(dist, /version: 3\.0\.0/)
     const owned = dist.slice(dist.indexOf('distribution_owned'))
-    assert.doesNotMatch(owned, /config\.yaml|profile\.yaml/)
+    assert.doesNotMatch(owned, /config\.yaml|profile\.yaml|skills\/excellence/)
     const profileYaml = content('profile.yaml')
     assert.match(profileYaml, /display_name: Drive asszisztens \(Inspect Drive through MCP\)/)
     assert.match(profileYaml, /title: Drive asszisztens \(Inspect Drive through MCP\)/)
 
     const soul = content('SOUL.md')
+    assert.match(soul, /connector to Drive asszisztens/)
+    assert.match(soul, /platform\.agent\.get_definition/)
     assert.match(soul, /do not pass definitionId/)
-    assert.match(soul, new RegExp(`contentHash: ${hashSnapshot(def.snapshot)}`))
+    assert.doesNotMatch(soul, /contentHash/)
     assert.doesNotMatch(soul, /agent_stale/)
+    assert.doesNotMatch(soul, /Töltsd le az AI munkatársaimat/)
+    assert.match(bundle.writeRecipe, /thin bind/)
     assert.match(bundle.writeRecipe, /hermes profile install "\$HOME\/\.hermes\/excellence\/acme\/drive-asszisztens" --name exc-drive-asszisztens -y/)
     assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
     assert.match(bundle.writeRecipe, /display_name and ui_meta\.hermes-bots\.title/)
     assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
-    assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
   })
 
   await check('hermes profile name stays within 60 chars for long agent names', () => {
@@ -585,8 +575,8 @@ async function main() {
     assert.match(goose.writeRecipe, /session working directory/)
 
     const hermes = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' })
-    assert.match(hermes.writeRecipe, /allowlist the union/)
-    assert.match(hermes.files.find((file) => file.path === 'SOUL.md')?.content ?? '', /Local coding folders/)
+    assert.match(hermes.writeRecipe, /platform.agent.get_definition → localRoots/)
+    assert.doesNotMatch(hermes.files.find((file) => file.path === 'SOUL.md')?.content ?? '', /Local coding folders/)
     assert.match(hermes.files.find((file) => file.path === 'distribution.yaml')?.content ?? '', /local_roots/)
   })
 

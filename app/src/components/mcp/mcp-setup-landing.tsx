@@ -156,13 +156,13 @@ function HermesBotSteps({ n, setup }: { n: number; setup: McpClientSetup }) {
   )
 }
 
-function HermesFooter() {
+function HermesFooter({ enterprise }: { enterprise?: boolean }) {
   const t = useTranslations('GetStarted')
   return (
     <>
       <div className="rounded-xl border border-line bg-card p-3">
         <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
-        <p className="mt-1">{t('hermesUpdateBody')}</p>
+        <p className="mt-1">{t(enterprise ? 'hermesEntUpdateBody' : 'hermesUpdateBody')}</p>
       </div>
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('hermesLinksTitle')}</p>
@@ -356,10 +356,17 @@ export function McpSetupLanding({
                 <HermesConnectStep n={2} setup={setup}>
                   <p className="text-xs text-ink-faint">{t('hermesEntNoModel')}</p>
                 </HermesConnectStep>
-                <HermesBotSteps n={3} setup={setup} />
+                <HermesStep n={3} title={t('hermesEntBotsTitle')}>
+                  <p>{t('hermesEntBotsBody')}</p>
+                  <p className="text-xs text-ink-faint">{t('hermesEntBotsHint')}</p>
+                </HermesStep>
+                <HermesStep n={4} title={t('hermesStep5Title')}>
+                  <p>{t('hermesStep5Body')}</p>
+                  <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
+                </HermesStep>
               </ol>
             </section>
-            <HermesFooter />
+            <HermesFooter enterprise />
           </ClientCard>
 
           <ClientCard

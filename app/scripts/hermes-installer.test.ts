@@ -53,6 +53,18 @@ function samplePackage(platform: 'posix' | 'windows') {
     gatewayBaseUrl: 'https://excellence.example/api/model-gateway/v1',
     agentIds: [],
     disabledToolsets: ['terminal'],
+    bots: [
+      {
+        profile: 'exc-kati',
+        agentId: '11111111-1111-4111-8111-111111111111',
+        files: {
+          'SOUL.md': '# Kati\n\nconnector to Kati\n',
+          'profile.yaml': 'display_name: Kati\n',
+          'config.yaml': 'mcp_servers: {}\n',
+          'distribution.yaml': 'name: exc-kati\n',
+        },
+      },
+    ],
     ...built,
   }
 }
@@ -83,6 +95,8 @@ check('az egyfájlos telepítő --prefix mellett felteszi a padlót és a Guardo
     assert.equal(readFileSync(join(prefix, 'etc/hermes/excellence-install-id'), 'utf8'), 'inst-test\n')
     assert.ok(readFileSync(join(prefix, 'opt/excellence/bin/exc-token'), 'utf8').length > 0)
     assert.ok(readFileSync(join(prefix, 'opt/excellence/hermes-plugins/excellence-guard/plugin.yaml'), 'utf8').length > 0)
+    assert.match(readFileSync(join(prefix, 'home/.hermes/profiles/exc-kati/SOUL.md'), 'utf8'), /connector to Kati/)
+    assert.ok(existsSync(join(prefix, 'home/.hermes/profiles/exc-kati/plugins/excellence-guard/plugin.yaml')))
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -141,6 +155,7 @@ check('a Windows-telepítő --Prefix mellett felteszi a padlót, ha van pwsh', (
     assert.match(readFileSync(join(prefix, 'ProgramData/Excellence/hermes/config.yaml'), 'utf8'), /exc-token\.cmd/)
     assert.equal(readFileSync(join(prefix, 'ProgramData/Excellence/hermes/excellence-install-id'), 'utf8'), 'inst-test\n')
     assert.ok(existsSync(join(prefix, 'ProgramData/Excellence/hermes-plugins/excellence-guard/plugin.yaml')))
+    assert.match(readFileSync(join(prefix, 'home/AppData/Local/hermes/profiles/exc-kati/SOUL.md'), 'utf8'), /connector to Kati/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
