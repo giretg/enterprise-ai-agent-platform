@@ -414,7 +414,7 @@ async function parseNavResponse(res: Response): Promise<ProtocolResult> {
 
 /** A kibontott (és a nyers base64) számla-XML kemény plafonja. */
 const MAX_INVOICE_XML_BYTES = 8 * 1024 * 1024
-/** base64 ≈ 4/3 overhead: ekkora bemenet kell a plafonnyi nyers/kibontott bájthoz. */
+/** base64 ≈ 4/3 overhead (+4 a padding-tűréshez): ennyi karakter dekódol a plafonnyi nyers bájtra. */
 const MAX_INVOICE_DATA_B64_CHARS = Math.ceil((MAX_INVOICE_XML_BYTES * 4) / 3) + 4
 
 /**
