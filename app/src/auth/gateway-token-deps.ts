@@ -1,3 +1,4 @@
+import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
 import { repositories } from '@/repositories/postgres'
 import { services } from '@/domain/gateway-services'
 import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
@@ -20,6 +21,7 @@ export async function productionGatewayTokenDeps(): Promise<GatewayTokenDeps> {
     audit: repositories.audit,
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    listAgentIds: async ({ tenantId }) => (await repositories.agents.findMany({ tenantId, unbounded: true })).filter(isAvailableOnMcp).map((a) => a.id).reverse(), // a repo createdAt desc-et ad
     policyVersion: async (input) => (await getPolicySnapshot(clientPolicy, input)).policyVersion,
   }
 }

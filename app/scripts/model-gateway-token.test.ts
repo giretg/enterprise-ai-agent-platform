@@ -15,6 +15,7 @@ const KEY = 'k'.repeat(40)
 const USER = '11111111-1111-4111-8111-111111111111'
 const TENANT = '22222222-2222-4222-8222-222222222222'
 const AGENT = '33333333-3333-4333-8333-333333333333'
+const OTHER_AGENT = '55555555-5555-4555-8555-555555555555' // a loadDefinition nem ismeri → kihagyja
 const ORIGIN = 'https://app.example.com'
 let t = new Date('2026-10-01T10:00:00Z')
 let failures = 0
@@ -50,6 +51,7 @@ function deps(over: Partial<GatewayTokenDeps> = {}): GatewayTokenDeps {
     loadDefinition: async ({ agentId }) => (agentId === AGENT ? { agentId, status: state.agentStatus } : null) as never,
     canViewAgent: async () => state.agentVisible,
     policyVersion: async () => 'pv1',
+    listAgentIds: async () => [OTHER_AGENT, AGENT],
     ...over,
   }
 }
@@ -114,6 +116,21 @@ async function main() {
     assert.deepEqual(await issue(deps(), { ...body, agentId: '44444444-4444-4444-8444-444444444444' }), { ok: false, code: 'agent_not_found' })
     assert.deepEqual(await issue(deps(), { ...body, agentId: 'nem-uuid' }), { ok: false, code: 'agent_not_found' })
     assert.ok(audits.includes('model_gateway.token.deny'))
+  })
+
+  await check('indító jegy (agentId nélkül): első elérhető agent; nincs elérhető → agent_not_found (#858)', async () => {
+    const { agentId: _omit, ...noAgent } = body
+    const meta: unknown[] = []
+    const r = await issue(deps({ audit: { append: async (a) => void meta.push(a.metadata) } }), noAgent)
+    assert.ok(r.ok)
+    assert.equal((meta[0] as { bootstrap?: boolean }).bootstrap, true)
+    const v = await verifyGatewayToken(deps(), `Bearer ${r.token}`)
+    assert.ok(v.ok)
+    assert.equal(v.claims.agentId, AGENT)
+    state.agentVisible = false
+    assert.deepEqual(await issue(deps(), noAgent), { ok: false, code: 'agent_not_found' })
+    assert.ok(audits.includes('model_gateway.token.deny'))
+    assert.deepEqual(await issue(deps(), { ...noAgent, agentId: null }), { ok: false, code: 'bad_request' })
   })
 
   await check('hibás törzs → bad_request', async () => {
