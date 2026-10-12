@@ -31,6 +31,41 @@ check('http_api_request includes sorted query + pretty body', () => {
   assert.equal(text, 'POST /v1/users?admin=true&role=owner\n{\n  "ok": 1\n}')
 })
 
+check('http_api_request surfaces linked account for multi-mailbox Calendar', () => {
+  const text = pendingArgsSummary(
+    'http_api_request',
+    {
+      account: 'magán',
+      method: 'POST',
+      path: '/calendar/v3/calendars/primary/events',
+      body: '{"summary":"1:1"}',
+    },
+    labels,
+  )
+  assert.match(text, /^account: magán\n/)
+  assert.match(text, /POST \/calendar\/v3\/calendars\/primary\/events/)
+  assert.equal(
+    pendingOperationHeadline(
+      'http_api_request',
+      {
+        account: 'magán',
+        method: 'POST',
+        path: '/calendar/v3/calendars/primary/events',
+      },
+      { connectorName: 'Google Calendar' },
+    ),
+    'Google Calendar: POST /calendar/v3/calendars/primary/events (magán)',
+  )
+  assert.equal(
+    pendingOperationHeadline(
+      'http_api_request',
+      { account: 'céges', method: 'POST', path: '/calendar/v3/calendars/primary/events' },
+      { connectorName: 'Google Calendar', endpointDescription: 'Esemény létrehozása' },
+    ),
+    'Google Calendar: Esemény létrehozása (céges)',
+  )
+})
+
 check('http_api_request headline prefers endpoint description', () => {
   assert.equal(
     pendingOperationHeadline(
