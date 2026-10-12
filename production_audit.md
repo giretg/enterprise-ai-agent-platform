@@ -7,6 +7,84 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-12 — NAV számla-connector válaszkibontás: korlátlan `gunzipSync` (dekompressziós bomba → OOM/event-loop-stall)
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legújabb, aktív PR-ekkel
+(#840 model-gateway content-filter, #852 agent-publish, #839 egress-host-pin, #828 gateway-op,
+#841 IAM) NEM ütköző, és a ledgerben nem szereplő felületeket vettem sorra. Végigauditáltam a
+**Hermes Managed Client / Model Gateway / ai-audit** új (09-30…10-01) felületet és a **connector-runtime**
+titok-/egress-útját — ezek a legfrissebb, legmagasabb kockázatú, agent-elérhető kódutak. A security-réteg
+egységesen keményített (lásd coverage); a megbízhatósági szálon viszont egy bizonyított, lefedetlen,
+**visszavonhatatlan szolgáltatás-kieséshez** vezető hibát találtam a NAV protokoll-ág válaszkibontásában.
+
+**Coverage (mély olvasás, bizonyíték-szintig):**
+- **MCP tenant-határ** (`resolveMcpPrincipal`/`resolvePrincipalForUser`): tenantId a slug→tenant rekordból,
+  aktív-tagság vagy superadmin kötelező. Tiszta.
+- **Project-work MCP** (memory/work-file/handoff): `authorizeProjectWorkCall` (definitionId→tenant-scoped
+  load→grant→canOperate); `readMemory` az `ids`-t a tenant+agent-scoped halmazon szűri (nincs IDOR);
+  `prepareMemoryWrite` a `replaceId`/`mergeIds`-t tenant+agent+project+aktív ellenőrzi; secret-scan,
+  write-mode kapu, `assertProject` (létezés+archív), `normalizeWorkFilePath` (`..`/`~`/abszolút tiltva),
+  work-file kvóta-számítás. Tiszta.
+- **Gateway-operation get** (`getGatewayOperation`): findById + `row.tenantId===principal.tenantId` +
+  `canSeeGatewayOperation`. Tiszta.
+- **Model Gateway token** (#746/#772): HS256 rögzített alg, `safeSecretEquals` (hossz-safe), exp-check;
+  `verifyGatewayToken` MINDEN híváskor user/tenant/tagság/agent re-check (visszavonás 10 perc TTL-en belül);
+  snapshot **nem** tartalmaz modell-kulcsot. Tiszta.
+- **ai-audit ingest/retention** (#770/#759): token-scoped ctx (payload-mezők stripelve), per-event content/meta
+  kvóta, batch-byte kapu, idempotens insert; retenciós sweep **fail-closed**, timing-safe `x-dispatcher-token`. Tiszta.
+- **Model Gateway proxy/fallback** (#768/#769): `FORWARDED_PARAMS` allowlist (OpenRouter policy-megkerülés tiltva),
+  fallback-osztályozás (auth/budget/content NEM vált — a 09-16 "401→deepseek" incidens már lefedve),
+  stream-failover body-safe (`request.signal`, nem újraolvasott törzs). Tiszta.
+- **Egress-guard** (séma/forbidden-minták/IPv4+IPv6 CIDR incl. mapped/NAT64/compat + feloldás-utáni rebinding
+  re-check). Tiszta (ismert, inherens DNS-rebinding TOCTOU megjegyezve).
+- **Connector http-api runtime**: per-hívás egress-guard a connector **saját** hostjára pinnelve,
+  `redirect:'manual'` same-origin-only követéssel (pinnelt connectoron minden 3xx tilos), OAuth2-titok JSON-ként
+  (soha nyers string tokenként), token-cache soha nem perzisztált/naplózott; fejléc-merge: deklarált-only,
+  védett fejlécek (`authorization/host/...`) tiltva, auth MINDIG utolsóként. XML-válasz: regex-`xmlText` (nincs XXE). Tiszta.
+
+### Bizonyított finding (reliability / availability) — javítva (PR **#854**)
+
+**`parseNavResponse` (`xml-protocols.ts`) a NAV `invoiceData` base64 — opcionálisan gzip — számla-XML-t
+korlátlan, szinkron `gunzipSync(raw)`-kal bontotta ki.**
+- **Dekompressziós bomba:** egy pár kilobájtos gzip blob gigabájtokra tágulhat. A **szinkron** kibontás a
+  megosztott Cloud Run példány **event-loopját blokkolja és OOM-ot okoz** → **minden ott futó bérlő** AI-hívása
+  megakad. Ez a naplóban visszatérő **Cloud Run OOM** incidensek egy konkrét, eddig lefedetlen kiváltója.
+- **Nem biztonságos failure mode:** a sérült gzip kezeletlen hibaként szállt fel.
+- **Kapu-rés:** a protokoll-ág a `maxResponseChars` plafont sem alkalmazza; a válasz- és kibontott méret is korlátlan volt.
+- **Forrás-bizalom:** a NAV egy host-pinnelt kormányzati API; közvetlen agent-vezérlés nincs, ezért ez elsősorban
+  **megbízhatósági/defense-in-depth** finding (nem cross-tenant szivárgás), de a blast-radius **több-bérlős** (közös példány).
+- **Súlyosság:** közepes (hitelesített; nincs adatszivárgás; de szolgáltatás-kiesés az egész példányra).
+
+### Javítás (root-cause, a határon)
+- Új `decodeInvoiceXml` helper: base64-bemenet **és** kibontott kimenet kemény plafonnal
+  (`gunzipSync(raw, { maxOutputLength: 8 MiB })` + nyers-méret ellenőrzés). Túl nagy/sérült tartalom →
+  `response_too_large` kóddal `ProtocolRequestError`, nem összeomlás.
+- `http-api-client.requestViaProtocol`: a `parseProtocolResponse` hibája most `HttpApiError`-rá képződik
+  (ugyanaz a szerződés, mint a kérés-építésé) — tiszta, strukturált tool-hiba.
+- **Code-review follow-up (Matt Pocock /code-review, mindkét axis):** Standards — nincs kemény jogsértés;
+  a `+4` base64 padding-tűrés kommentje pontosítva. Spec — a mag-fix helyes és memória-korlátos
+  (`maxOutputLength` inkrementálisan nő és `ERR_BUFFER_TOO_LARGE`-et dob, nem foglal gigabájtot előre;
+  a base64 pre-check iránya helyes). Mindkét axis a `maxResponseChars`-rést out-of-scope-minimal-ként
+  elfogadta (lásd residual).
+
+### Ellenőrzések
+- `test:connector-template` (új regresszió): 16 MiB→kis gzip bomba → `response_too_large`; a normál kis gzip
+  válasz változatlanul dekódol. **Zöld.**
+- `test:http-api` (protokoll-ág érintetlen). **Zöld.** `tsc --noEmit` tiszta a 3 módosított fájlra.
+
+### Residual risk / következő kör
+- **🟠 `maxResponseChars` nincs a protokoll-ágra kötve + `res.text()` korlátlan (`xml-protocols.ts:391`):**
+  egy óriási **tömörítetlen** NAV HTTP-válasz még mindig teljesen a memóriába pufferelődik (memória = válaszméret,
+  nincs amplifikáció). A mostani fix csak az **amplifikációs** (gzip) vektort zárta. Olcsó follow-up: a protokoll-ág
+  kösse be a konfigurált `maxResponseChars`-t / egy nyers-válasz byte-plafont. (Spawn-task nyitva.)
+- A 8 MiB plafon hangolható; valódi egyszeri NAV számla-XML jóval alatta — alacsony fals-elutasítás-kockázat.
+- **Scope-megállapítás jövőbeli köröknek:** a security-felület (MCP/gateway/connector/egress/ai-audit) a napi
+  audit-program hatására **egységesen keményített**; a marginális findingok inkább a **reliability/failure-mode**
+  szálon (szinkron CPU/memória-műveletek külső adaton, kapu-lefedettség a protokoll-ágakon) vannak. A következő
+  kör nézze a többi szinkron/korlátlan külső-adat-műveletet (pl. más `*Sync` hívások, uncapped `res.text()`/`res.json()`).
+
+---
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
