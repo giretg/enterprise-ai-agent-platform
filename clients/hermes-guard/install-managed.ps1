@@ -176,6 +176,16 @@ if ($HermesHome) {
         [IO.File]::WriteAllText((Join-Path $dest $name), $text, $Utf8)
       }
     }
+    $srcTokens = Join-Path $HermesHome 'mcp-tokens'
+    if (Test-Path -LiteralPath $srcTokens -PathType Container) {
+      $destTokens = Join-Path $dest 'mcp-tokens'
+      New-Item -ItemType Directory -Force -Path $destTokens | Out-Null
+      Get-ChildItem -LiteralPath $srcTokens -File -Force | Where-Object {
+        $_.Name -like 'excellence*' -and $_.Name -notlike '*.lock'
+      } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destTokens $_.Name) -Force
+      }
+    }
     foreach ($leftover in @('.enterprise-agent', (Join-Path 'skills' 'excellence'))) {
       $path = Join-Path $dest $leftover
       if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }

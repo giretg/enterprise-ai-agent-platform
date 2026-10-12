@@ -96,6 +96,11 @@ def main() -> None:
         leftover = prefix / "home/.hermes/profiles/exc-kati/skills/excellence"
         leftover.mkdir(parents=True)
         (leftover / "SKILL.md").write_text("stale\n", encoding="utf-8")
+        tokens = prefix / "home/.hermes/mcp-tokens"
+        tokens.mkdir(parents=True)
+        (tokens / "excellence.json").write_text('{"access_token":"oauth-parent"}\n', encoding="utf-8")
+        (tokens / "excellence.client.json").write_text('{"client_id":"cid"}\n', encoding="utf-8")
+        (tokens / "other.json").write_text("{}\n", encoding="utf-8")
         subprocess.run(["bash", str(SCRIPT), "--prefix", str(prefix), str(blob)], check=True)
         managed = prefix / "etc" / "hermes"
         assert (managed / "config.yaml").read_text(encoding="utf-8").startswith("model:")
@@ -128,6 +133,9 @@ def main() -> None:
         assert "connector to Kati" in (bot / "SOUL.md").read_text(encoding="utf-8")
         assert (bot / "profile.yaml").read_text(encoding="utf-8") == "display_name: Kati\n"
         assert (bot / "plugins/excellence-guard/plugin.yaml").is_file()
+        assert (bot / "mcp-tokens/excellence.json").read_text(encoding="utf-8") == '{"access_token":"oauth-parent"}\n'
+        assert (bot / "mcp-tokens/excellence.client.json").is_file()
+        assert not (bot / "mcp-tokens/other.json").exists()
         assert not (bot / "skills/excellence").exists()
         assert not (prefix / "home/.hermes/profiles/evil").exists()
         assert profile.is_dir()
@@ -137,7 +145,12 @@ def main() -> None:
         assert os.access(token, os.X_OK)
         paths = prefix / "opt/excellence/bin/excellence_paths.py"
         assert paths.read_bytes() == (ROOT / "excellence-guard/excellence_paths.py").read_bytes()
-        isolated = subprocess.run([sys.executable, "-I", str(token)], capture_output=True, text=True)
+        isolated = subprocess.run(
+            [sys.executable, "-I", str(token)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HERMES_HOME": tempfile.mkdtemp()},
+        )
         assert isolated.returncode != 0 and "ImportError" not in isolated.stderr and "excellence_paths" not in isolated.stderr, isolated.stderr
         guard = prefix / "opt/excellence/bin/exc-guard"
         assert os.access(guard, os.X_OK)

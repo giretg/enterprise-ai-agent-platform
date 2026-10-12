@@ -55,6 +55,35 @@ class T(unittest.TestCase):
         with self.assertRaisesRegex(x.Fail, "nincs beállított"):
             x.get_token(profile(config="model:\n  provider: excellence\n"), fetcher=lambda *a: ("j", 1))
 
+    def test_bot_profile_uses_parent_mcp_token(self):
+        # Vékony Bot: a belépés a default Hermes-profilban van, a Botnak saját HERMES_HOME-ja.
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        os.makedirs(bot)
+        open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        json.dump({"access_token": "oauth-parent"}, open(os.path.join(root, "mcp-tokens", "excellence.json"), "w"))
+        os.environ["EXC_INSTALL_ID"] = "inst-1"
+        calls = []
+        x.get_token(bot, now=lambda: 1, fetcher=lambda *a: (calls.append(a) or "jwt-bot", 9999999999))
+        self.assertEqual(calls[0][4], "oauth-parent")
+        self.assertEqual(calls[0][2], "33333333-3333-4333-8333-333333333333")
+
+    def test_share_mcp_tokens_copies_excellence_files_into_bot(self):
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        os.makedirs(bot)
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        json.dump({"access_token": "oauth-parent"}, open(os.path.join(root, "mcp-tokens", "excellence.json"), "w"))
+        json.dump({"client_id": "cid"}, open(os.path.join(root, "mcp-tokens", "excellence.client.json"), "w"))
+        open(os.path.join(root, "mcp-tokens", "other.json"), "w").write("{}")
+        self.assertTrue(x.share_mcp_tokens(bot))
+        dest = os.path.join(bot, "mcp-tokens")
+        self.assertEqual(json.load(open(os.path.join(dest, "excellence.json")))["access_token"], "oauth-parent")
+        self.assertTrue(os.path.isfile(os.path.join(dest, "excellence.client.json")))
+        self.assertFalse(os.path.exists(os.path.join(dest, "other.json")))
+        self.assertFalse(x.share_mcp_tokens(root))
+
     def test_profile_without_agent_asks_for_bootstrap_token(self):
         # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.
         home, calls = profile(config="mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n"), []

@@ -89,6 +89,8 @@ check('az egyfájlos telepítő --prefix mellett felteszi a padlót és a Guardo
     const file = join(dir, MANAGED_INSTALLER_FILENAME)
     writeFileSync(file, script, { encoding: 'utf8', mode: 0o755 })
     const prefix = join(dir, 'stage')
+    mkdirSync(join(prefix, 'home/.hermes/mcp-tokens'), { recursive: true })
+    writeFileSync(join(prefix, 'home/.hermes/mcp-tokens/excellence.json'), '{"access_token":"oauth-parent"}\n')
     const result = spawnSync(systemBash, [file, '--prefix', prefix], { encoding: 'utf8' })
     assert.equal(result.status, 0, result.stderr || result.stdout)
     assert.match(readFileSync(join(prefix, 'etc/hermes/config.yaml'), 'utf8'), /provider: "excellence"/)
@@ -97,6 +99,10 @@ check('az egyfájlos telepítő --prefix mellett felteszi a padlót és a Guardo
     assert.ok(readFileSync(join(prefix, 'opt/excellence/hermes-plugins/excellence-guard/plugin.yaml'), 'utf8').length > 0)
     assert.match(readFileSync(join(prefix, 'home/.hermes/profiles/exc-kati/SOUL.md'), 'utf8'), /connector to Kati/)
     assert.ok(existsSync(join(prefix, 'home/.hermes/profiles/exc-kati/plugins/excellence-guard/plugin.yaml')))
+    assert.equal(
+      readFileSync(join(prefix, 'home/.hermes/profiles/exc-kati/mcp-tokens/excellence.json'), 'utf8'),
+      '{"access_token":"oauth-parent"}\n',
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -150,12 +156,18 @@ check('a Windows-telepítő --Prefix mellett felteszi a padlót, ha van pwsh', (
     const file = join(dir, MANAGED_WINDOWS_INSTALLER_FILENAME)
     writeFileSync(file, script, { encoding: 'utf8' })
     const prefix = join(dir, 'stage')
+    mkdirSync(join(prefix, 'home/AppData/Local/hermes/mcp-tokens'), { recursive: true })
+    writeFileSync(join(prefix, 'home/AppData/Local/hermes/mcp-tokens/excellence.json'), '{"access_token":"oauth-parent"}\n')
     const result = spawnSync('pwsh', ['-NoProfile', '-File', file, '-Prefix', prefix], { encoding: 'utf8' })
     assert.equal(result.status, 0, result.stderr || result.stdout)
     assert.match(readFileSync(join(prefix, 'ProgramData/Excellence/hermes/config.yaml'), 'utf8'), /exc-token\.cmd/)
     assert.equal(readFileSync(join(prefix, 'ProgramData/Excellence/hermes/excellence-install-id'), 'utf8'), 'inst-test\n')
     assert.ok(existsSync(join(prefix, 'ProgramData/Excellence/hermes-plugins/excellence-guard/plugin.yaml')))
     assert.match(readFileSync(join(prefix, 'home/AppData/Local/hermes/profiles/exc-kati/SOUL.md'), 'utf8'), /connector to Kati/)
+    assert.equal(
+      readFileSync(join(prefix, 'home/AppData/Local/hermes/profiles/exc-kati/mcp-tokens/excellence.json'), 'utf8'),
+      '{"access_token":"oauth-parent"}\n',
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
