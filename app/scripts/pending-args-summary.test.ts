@@ -3,7 +3,7 @@
  * Futtatás: npx tsx scripts/pending-args-summary.test.ts
  */
 import assert from 'node:assert/strict'
-import { pendingArgsSummary, pendingOperationHeadline } from '../src/domain/gateway-operation/pending-args-summary'
+import { pendingArgsSummary, pendingOperationHeadline, splitLabelledSections } from '../src/domain/gateway-operation/pending-args-summary'
 
 const labels = {
   memoryKind: 'memory',
@@ -21,6 +21,20 @@ function check(name: string, fn: () => void) {
     console.log(`  FAIL ${name}: ${e instanceof Error ? e.message : e}`)
   }
 }
+
+check('splitLabelledSections splits run-on labelled body', () => {
+  const out = splitLabelledSections(
+    'Téma: Google Pay. Folyamat: blogok (a/b) + linkek. Következő lépés: jóváhagyás után PATCH.',
+  )
+  assert.deepEqual(out, [
+    { label: 'Téma', text: 'Google Pay.' },
+    { label: 'Folyamat', text: 'blogok (a/b) + linkek.' },
+    { label: 'Következő lépés', text: 'jóváhagyás után PATCH.' },
+  ])
+  assert.deepEqual(splitLabelledSections('plain text, no labels'), [
+    { label: null, text: 'plain text, no labels' },
+  ])
+})
 
 check('http_api_request includes sorted query + pretty body', () => {
   const text = pendingArgsSummary(

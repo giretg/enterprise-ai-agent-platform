@@ -74,6 +74,23 @@ function prettyJsonBody(raw: string): string {
   }
 }
 
+/**
+ * Splits a run-on "Téma: x. Folyamat: y." body into labelled sections for display.
+ * A label is a capitalised 1–3 word phrase + colon at the start or after a sentence end;
+ * text without labels comes back as one unlabelled section.
+ */
+export function splitLabelledSections(body: string): { label: string | null; text: string }[] {
+  const parts = body.split(
+    /(?:^|(?<=[.!?]\s)|(?<=\n))([A-ZÁÉÍÓÖŐÚÜŰ]\p{L}*(?: \p{L}+){0,2}):\s+/u,
+  )
+  const sections: { label: string | null; text: string }[] = []
+  if (parts[0].trim()) sections.push({ label: null, text: parts[0].trim() })
+  for (let i = 1; i < parts.length; i += 2) {
+    sections.push({ label: parts[i], text: (parts[i + 1] ?? '').trim() })
+  }
+  return sections
+}
+
 export function pendingOperationHeadline(
   toolName: string,
   args: Record<string, unknown>,
