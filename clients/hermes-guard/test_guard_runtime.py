@@ -202,7 +202,44 @@ class Runtime(unittest.TestCase):
             self.assertEqual(call(), "ok")
         finally:
             runtime.post_json = original_post
-        self.assertEqual(order, [("beat", ["s-new"]), "call", "call"])  # egyszer jelent be, a hívás előtt
+        # Minden hívás előtt heartbeat: a kapu 180s után Open, ha a háttérszál kimarad.
+        self.assertEqual(order, [("beat", ["s-new"]), "call", ("beat", ["s-new"]), "call"])
+
+    def test_llm_execution_puts_fresh_gateway_token_on_the_request(self):
+        # A Hermes a JWT-t kliens-initkor cache-eli; 10 perc után 401. A Guard minden hívásra friss tokent tesz.
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
+        guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        guard._origin_and_token = lambda: ("https://ai.example", "fresh-jwt")
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        forwarded = guard.llm_execution(
+            request={"extra_headers": {"Authorization": "Bearer stale"}},
+            next_call=lambda req: req,
+            provider="custom",
+            base_url="https://ai.example/api/model-gateway/v1",
+            session_id="s-1",
+        )
+        self.assertEqual(forwarded["extra_headers"]["Authorization"], "Bearer fresh-jwt")
+        self.assertEqual(forwarded["extra_headers"]["X-Excellence-Session"], "s-1")
+
+    def test_write_json_does_not_share_tmp_name_across_threads(self):
+        home = tempfile.mkdtemp()
+        path = os.path.join(home, "snapshot.json")
+        seen = []
+        original_open = os.open
+
+        def tracking_open(name, flags, mode=0o777):
+            if str(name).startswith(path + "."):
+                seen.append(name)
+            return original_open(name, flags, mode)
+
+        with patch.object(os, "open", tracking_open):
+            runtime.write_json(path, {"a": 1})
+            runtime.write_json(path, {"a": 2})
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(len(set(seen)), 2)
+        self.assertEqual(runtime.read_json(path), {"a": 2})
 
 
 if __name__ == "__main__":
