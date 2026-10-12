@@ -379,6 +379,11 @@ async function tryDirectWrite(
     })
   }
   const connector = authorized.connector
+  // AgentMail promises human approval for every outgoing message, even when other HTTP writes are direct.
+  if (
+    toolName === 'http_api_request' &&
+    (connector.config as { provider?: unknown } | null)?.provider === 'agentmail'
+  ) return null
   const authFailedCode =
     connector.type === 'gmail'
       ? 'gmail_auth_failed'

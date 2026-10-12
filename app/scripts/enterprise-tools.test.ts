@@ -1467,6 +1467,49 @@ async function main() {
     assert.equal(parsePayload(result).ok, true)
   })
 
+  await check('AgentMail send still requires approval when HTTP API is direct', async () => {
+    let executed = false
+    const enqueued: string[] = []
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          connector: connector({
+            type: 'http_api',
+            authMode: 'service',
+            config: { provider: 'agentmail', baseUrl: 'https://api.agentmail.eu/v0/inboxes/test', auth: { scheme: 'none' } },
+          }),
+          grant: null,
+          definition: definition({
+            snapshot: {
+              name: 'Mailer', roleInstruction: 'Mail', skills: [],
+              connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write' }],
+              capabilities: [{ toolName: HTTP_API_REQUEST_TOOL, allowed: true }],
+            },
+          }),
+          executeHttpApiTool: async () => {
+            executed = true
+            return { ok: true, status: 200 }
+          },
+        }),
+        async findAgentWriteModes() {
+          return { memory: 'approval', httpApi: 'direct', gmail: 'approval', drive: 'approval' }
+        },
+        async enqueueWrite(input: { toolName: string }) {
+          enqueued.push(input.toolName)
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ status: 'awaiting_approval' }) }] }
+        },
+      },
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: HTTP_API_REQUEST_TOOL,
+        args: { definitionId: DEFINITION_ID, method: 'POST', path: '/messages/send', body: '{"to":["a@b.c"]}', idempotencyKey: 'mail-1' },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.equal(executed, false)
+    assert.deepEqual(enqueued, [HTTP_API_REQUEST_TOOL])
+  })
+
   await check('gmail stays queued when only HTTP API is direct', async () => {
     const enqueued: string[] = []
     const result = await invokeEnterpriseTool(
