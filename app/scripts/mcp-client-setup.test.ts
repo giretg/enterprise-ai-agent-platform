@@ -115,6 +115,14 @@ function main() {
     assert.doesNotMatch(nav, /key: 'get-started'/)
   })
 
+  check('header catalog keeps AI kliens under Beállítások for every tenant user', () => {
+    const nav = readFileSync(resolve(process.cwd(), 'src/lib/control-plane-nav.ts'), 'utf8')
+    assert.match(nav, /key: 'settings'/)
+    assert.match(nav, /key: 'settings.get-started'/)
+    assert.match(nav, /href: '\/control-plane\/get-started'/)
+    assert.match(nav, /label: 'AI kliens'/)
+  })
+
   check('onboarding: admin 3 lépés, operátor csak a saját MCP-je', () => {
     const none = { companyConnectorCount: 0, agentCount: 0, mcpUsed: false }
     assert.deepEqual(

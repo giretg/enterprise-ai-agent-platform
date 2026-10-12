@@ -64,7 +64,13 @@ function HandoffLinks({ raw }: { raw: string | null }) {
   )
 }
 
-export function HandoffsPanel({ handoffs }: { handoffs: HandoffInboxRow[] }) {
+export function HandoffsPanel({
+  handoffs,
+  hideIntro = false,
+}: {
+  handoffs: HandoffInboxRow[]
+  hideIntro?: boolean
+}) {
   const t = asTranslate(useTranslations('ControlPlane.operations'))
   const locale = useLocale()
   const router = useRouter()
@@ -98,10 +104,12 @@ export function HandoffsPanel({ handoffs }: { handoffs: HandoffInboxRow[] }) {
 
   return (
     <section className="space-y-4">
-      <div>
-        <h2 className="font-display text-xl font-semibold">{t('handoffsTitle')}</h2>
-        <p className="mt-1 max-w-2xl text-sm text-ink-soft">{t('handoffsBody')}</p>
-      </div>
+      {hideIntro ? null : (
+        <div>
+          <h2 className="font-display text-xl font-semibold">{t('handoffsTitle')}</h2>
+          <p className="mt-1 max-w-2xl text-sm text-ink-soft">{t('handoffsBody')}</p>
+        </div>
+      )}
       {message ? (
         <p
           className={
