@@ -23,7 +23,7 @@ const ROWS: Array<{
   hint: string
 }> = [
   { key: 'memory', title: 'Memória', hint: 'Tények, fókusz, napló.' },
-  { key: 'httpApi', title: 'Céges API', hint: 'CRM és más REST írás.' },
+  { key: 'httpApi', title: 'Céges API', hint: 'CRM és más REST írás. Az AgentMail-küldéshez mindig jóváhagyás kell.' },
   { key: 'gmail', title: 'Gmail', hint: 'Küldés, piszkozat, címke, kuka.' },
   { key: 'drive', title: 'Drive és táblázat', hint: 'Fájl, mappa, cella. A kimeneti mappa ettől függetlenül mehet.' },
 ]

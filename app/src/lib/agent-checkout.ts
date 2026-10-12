@@ -377,7 +377,7 @@ function renderWriteApprovalBriefing(modes?: AgentWriteApprovalModes): string[] 
   const waiting: string[] = []
   if (resolved.memory === 'direct') direct.push('memory')
   else waiting.push('memory')
-  if (resolved.httpApi === 'direct') direct.push('company HTTP APIs')
+  if (resolved.httpApi === 'direct') direct.push('company HTTP APIs (except AgentMail messages)')
   else waiting.push('company HTTP APIs')
   if (resolved.gmail === 'direct') direct.push('Gmail')
   else waiting.push('Gmail')
@@ -391,6 +391,9 @@ function renderWriteApprovalBriefing(modes?: AgentWriteApprovalModes): string[] 
     lines.push(
       `These writes wait for a human: ${waiting.join(', ')}. The tool returns awaiting_approval and an approvalUrl — show that link; do not poll or retry.`,
     )
+  }
+  if (resolved.httpApi === 'direct') {
+    lines.push('AgentMail messages always wait for human approval; show the approvalUrl returned by the tool.')
   }
   lines.push(
     "Exception: google_drive_upload_file with no parentFolderId (or the agent's output folder id) still runs immediately when an output folder is configured.",
