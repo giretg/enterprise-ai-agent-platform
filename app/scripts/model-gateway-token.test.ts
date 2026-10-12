@@ -120,12 +120,13 @@ async function main() {
 
   await check('indító jegy (agentId nélkül): első elérhető agent; nincs elérhető → agent_not_found (#858)', async () => {
     const { agentId: _omit, ...noAgent } = body
-    const r = await issue(deps(), noAgent)
+    const meta: unknown[] = []
+    const r = await issue(deps({ audit: { append: async (a) => void meta.push(a.metadata) } }), noAgent)
     assert.ok(r.ok)
+    assert.equal((meta[0] as { bootstrap?: boolean }).bootstrap, true)
     const v = await verifyGatewayToken(deps(), `Bearer ${r.token}`)
     assert.ok(v.ok)
     assert.equal(v.claims.agentId, AGENT)
-    assert.ok(audits.includes('model_gateway.token.issued'))
     state.agentVisible = false
     assert.deepEqual(await issue(deps(), noAgent), { ok: false, code: 'agent_not_found' })
     assert.ok(audits.includes('model_gateway.token.deny'))
