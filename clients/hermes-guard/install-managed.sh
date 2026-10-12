@@ -198,6 +198,21 @@ for bot in bots:
             raise ValueError("A Bot-profil nem tartalmazhat symlinket")
         with open(target, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(content)
+    src_tokens = pathlib.Path(home) / ".hermes" / "mcp-tokens"
+    if src_tokens.is_dir() and not src_tokens.is_symlink():
+        dest_tokens = dest / "mcp-tokens"
+        dest_tokens.mkdir(parents=True, exist_ok=True)
+        for path in src_tokens.iterdir():
+            if path.is_symlink() or not path.is_file():
+                continue
+            if not path.name.startswith("excellence") or path.name.endswith(".lock"):
+                continue
+            target = dest_tokens / path.name
+            if target.is_symlink():
+                raise ValueError("A Bot-profil nem tartalmazhat symlinket")
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(path.read_bytes())
     for leftover in (dest / ".enterprise-agent", dest / "skills" / "excellence"):
         if leftover.is_symlink():
             raise ValueError("A Bot-profil nem tartalmazhat symlinket")

@@ -98,13 +98,62 @@ def install_id(home):
     return v
 
 
+def parent_hermes_home(home):
+    """A vékony Bot (`.../profiles/exc-…`) default Hermes-profilja. Más HERMES_HOME-ra None."""
+    home = os.path.abspath(home)
+    parent, name = os.path.split(home.rstrip(os.sep))
+    grand, profiles = os.path.split(parent)
+    if profiles == "profiles" and name.startswith("exc-"):
+        return grand
+    return None
+
+
+def share_mcp_tokens(dest_home, source_home=None):
+    """A default profil Excellence MCP OAuth fájljait a Bot HERMES_HOME-jába másolja.
+
+    A Hermes MCP és a key_cmd a Bot saját `mcp-tokens/` könyvtárát olvassa; symlinket
+    nem írunk, a telepítő azt elutasítja.
+    """
+    source_home = source_home or parent_hermes_home(dest_home)
+    if not source_home:
+        return False
+    src_dir = os.path.join(source_home, "mcp-tokens")
+    dest_dir = os.path.join(dest_home, "mcp-tokens")
+    if not os.path.isdir(src_dir):
+        return False
+    copied = False
+    for name in os.listdir(src_dir):
+        if not name.startswith(SERVER) or name.endswith(".lock"):
+            continue
+        src = os.path.join(src_dir, name)
+        if os.path.islink(src) or not os.path.isfile(src):
+            continue
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, name)
+        if os.path.islink(dest):
+            continue
+        data = open(src, "rb").read()
+        tmp = f"{dest}.{os.getpid()}"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, dest)
+        copied = True
+    return copied
+
+
 def mcp_access_token(home):
-    try:
-        tok = json.load(open(os.path.join(home, "mcp-tokens", f"{SERVER}.json"), encoding="utf-8"))["access_token"]
-        if tok:
-            return tok
-    except (OSError, ValueError, KeyError):
-        pass
+    homes = [home]
+    parent = parent_hermes_home(home)
+    if parent:
+        homes.append(parent)
+    for candidate in homes:
+        try:
+            tok = json.load(open(os.path.join(candidate, "mcp-tokens", f"{SERVER}.json"), encoding="utf-8"))["access_token"]
+            if tok:
+                return tok
+        except (OSError, ValueError, KeyError):
+            pass
     raise Fail("Jelentkezz be újra a Hermes Excellence-kapcsolatába.")
 
 

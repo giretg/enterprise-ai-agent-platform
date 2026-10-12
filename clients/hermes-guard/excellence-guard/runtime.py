@@ -411,6 +411,7 @@ class Guard:
 
     def on_session_start(self, session_id=None, **kwargs):
         try:
+            self._share_mcp_tokens()
             self.note_session(session_id)
             self.current(force=True)
             self.beat()
@@ -424,6 +425,7 @@ class Guard:
         self.sessions.discard(session_id)
 
     def llm_execution(self, request=None, next_call=None, provider=None, base_url=None, **kwargs):
+        self._share_mcp_tokens()
         token_helper = None
         try:
             token_helper = load_exc_token()
@@ -454,12 +456,39 @@ class Guard:
                     headers[key] = str(kwargs[field])[:200]
             # A Hermes a bare key_cmd jegyet 15 percig cache-eli, a gateway-JWT 10 perc. Friss token a kérésre.
             _, token = self._origin_and_token()
+            if not token:
+                refused = self._refuse_missing_gateway_token()
+                if refused is not None:
+                    return refused
             if token:
                 headers = {name: value for name, value in headers.items() if name.lower() != "authorization"}
                 headers["Authorization"] = f"Bearer {token}"
             request = {**request, "extra_headers": headers}
         # A provider hibája a Hermes újrapróbálási/tömörítési útjára tartozik.
         return next_call(request)
+
+    def _share_mcp_tokens(self):
+        mod = load_exc_token()
+        if mod is None or not hasattr(mod, "share_mcp_tokens"):
+            return
+        try:
+            mod.share_mcp_tokens(self.home)
+        except Exception:
+            log.exception("share_mcp_tokens")
+
+    def _refuse_missing_gateway_token(self):
+        """A key_cmd Fail-t ne Hermes modellhibának hagyjuk: a user a magyar szöveget lássa."""
+        mod = load_exc_token()
+        if mod is None:
+            return synthetic_refusal(policy.PROVIDER_BLOCK)
+        fail = getattr(mod, "Fail", ())
+        try:
+            token = mod.get_token(self.home)
+        except Exception as exc:
+            return synthetic_refusal(str(exc) if isinstance(exc, fail) else policy.PROVIDER_BLOCK)
+        if not token:
+            return synthetic_refusal(policy.PROVIDER_BLOCK)
+        return None
 
     def _origin_and_token(self):
         mod = load_exc_token()

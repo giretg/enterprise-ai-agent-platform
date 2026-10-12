@@ -37,7 +37,21 @@ def main() -> None:
         prefix = Path(tmp) / "stage"
         hermes_home = prefix / "home/AppData/Local/hermes"
         (hermes_home / "profiles/test-bot").mkdir(parents=True)
-        blob.write_text(json.dumps(package()), encoding="utf-8")
+        tokens = hermes_home / "mcp-tokens"
+        tokens.mkdir(parents=True)
+        (tokens / "excellence.json").write_text('{"access_token":"oauth-parent"}\n', encoding="utf-8")
+        pkg = package()
+        pkg["bots"] = [{
+            "profile": "exc-kati",
+            "agentId": "11111111-1111-4111-8111-111111111111",
+            "files": {
+                "SOUL.md": "# Kati\n",
+                "profile.yaml": "display_name: Kati\n",
+                "config.yaml": "mcp_servers: {}\n",
+                "distribution.yaml": "name: exc-kati\n",
+            },
+        }]
+        blob.write_text(json.dumps(pkg), encoding="utf-8")
 
         result = install(pwsh, prefix, blob)
         assert result.returncode == 0, result.stderr + result.stdout
@@ -56,6 +70,7 @@ def main() -> None:
         assert (root / "hermes-plugins/excellence-guard/policy.py").is_file()
         assert (hermes_home / "plugins/excellence-guard/plugin.yaml").is_file()
         assert (hermes_home / "profiles/test-bot/plugins/excellence-guard/plugin.yaml").is_file()
+        assert (hermes_home / "profiles/exc-kati/mcp-tokens/excellence.json").read_text(encoding="utf-8") == '{"access_token":"oauth-parent"}\n'
 
         # A user által átirányított plugin-könyvtárba nem ír.
         outside = Path(tmp) / "outside"

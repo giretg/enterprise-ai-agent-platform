@@ -12,7 +12,7 @@ A munkatárs gépére kerülő, rendszergazdai Hermes-beállítás. A munkatárs
 sudo bash excellence-telepito.sh
 ```
 
-4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`). A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
+4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`), és átmásolja a default profil Excellence MCP belépőjét, hogy a Botnak ne kelljen külön `hermes mcp login`. A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
 
 Macen és Linuxon működik. Windowsos számítógépen ez a telepítő még nem működik.
 

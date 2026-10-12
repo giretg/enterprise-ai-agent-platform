@@ -121,6 +121,7 @@ class Runtime(unittest.TestCase):
         with open(os.path.join(home, "config.yaml"), "w") as fh:
             fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
         guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        guard._origin_and_token = lambda: ("https://ai.example", "jwt")
         called = []
         blocked = guard.llm_execution(request={"model": "x"}, next_call=lambda req: called.append(req) or "live", provider="openrouter", base_url="https://openrouter.ai/api")
         self.assertEqual(called, [])
@@ -130,7 +131,7 @@ class Runtime(unittest.TestCase):
         self.assertEqual(live, "ok")
         request = {"extra_headers": {"Custom": "retained", "x-excellence-turn": "stale"}}
         forwarded = guard.llm_execution(request=request, next_call=lambda req: req, provider="custom", base_url="https://ai.example/api/model-gateway/v1", session_id="session-1", turn_id="turn-1")
-        self.assertEqual(forwarded["extra_headers"], {"Custom": "retained", "X-Excellence-Session": "session-1", "X-Excellence-Turn": "turn-1"})
+        self.assertEqual(forwarded["extra_headers"], {"Custom": "retained", "X-Excellence-Session": "session-1", "X-Excellence-Turn": "turn-1", "Authorization": "Bearer jwt"})
         self.assertEqual(request["extra_headers"]["x-excellence-turn"], "stale")
         foreign = guard.llm_execution(request={}, next_call=lambda req: called.append(req), provider="custom", base_url="https://foreign.example/api/model-gateway/v1")
         self.assertEqual(called, [])
@@ -222,6 +223,46 @@ class Runtime(unittest.TestCase):
         )
         self.assertEqual(forwarded["extra_headers"]["Authorization"], "Bearer fresh-jwt")
         self.assertEqual(forwarded["extra_headers"]["X-Excellence-Session"], "s-1")
+
+    def test_llm_execution_without_mcp_login_shows_login_error(self):
+        # Réka-bot: van agent-id, nincs MCP token → ne „AI service returned an error” legyen.
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
+        guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        called = []
+        try:
+            response = guard.llm_execution(
+                request={"model": "m"},
+                next_call=lambda req: called.append(req) or "live",
+                provider="custom",
+                base_url="https://ai.example/api/model-gateway/v1",
+            )
+        finally:
+            os.environ.pop("EXC_GUARD_OFFLINE", None)
+        self.assertEqual(called, [])
+        self.assertIn("Jelentkezz be", response.choices[0].message.content)
+        self.assertNotEqual(response.choices[0].message.content, policy.PROVIDER_BLOCK)
+
+    def test_session_start_copies_parent_mcp_tokens_into_bot(self):
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        os.makedirs(bot)
+        with open(os.path.join(bot, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n")
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        with open(os.path.join(root, "mcp-tokens", "excellence.json"), "w") as fh:
+            json.dump({"access_token": "oauth-parent"}, fh)
+        guard = runtime.Guard(bot, client=runtime.SnapshotClient(bot, fetcher=lambda: ("down", None)))
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        try:
+            guard.on_session_start(session_id="s1")
+        finally:
+            os.environ.pop("EXC_GUARD_OFFLINE", None)
+        copied = os.path.join(bot, "mcp-tokens", "excellence.json")
+        self.assertTrue(os.path.isfile(copied))
+        self.assertEqual(json.load(open(copied))["access_token"], "oauth-parent")
 
     def test_write_json_does_not_share_tmp_name_across_threads(self):
         home = tempfile.mkdtemp()
