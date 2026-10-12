@@ -1,7 +1,7 @@
 'use client'
 
 import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
-import { formatToolUiName } from '@/lib/tool-ui-labels'
+import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import {
   pendingArgsSummary,
   pendingOperationHeadline,
@@ -60,22 +60,16 @@ export function OperationSummaryBlock({
     endpointDescription: row.endpointDescription,
   })
   return (
-    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-ink/10 bg-paper/80 p-2 font-mono text-xs text-ink-soft">
+    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-ink">
       {details}
     </pre>
   )
 }
 
 export function OperationTitleLine({ row }: { row: PendingOperationRow }) {
-  const connector = row.connectorName
   return (
-    <div className="min-w-0">
-      <p className="font-medium text-ink">
-        {connector ? connector : formatToolUiName(row.toolName)}
-      </p>
-      <p className="text-xs text-ink-faint">
-        {connector ? formatToolUiName(row.toolName) : row.toolName}
-      </p>
-    </div>
+    <p className="font-medium text-ink">
+      {row.connectorName || getToolUiLabel(row.toolName).label}
+    </p>
   )
 }
