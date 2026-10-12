@@ -53,7 +53,27 @@ class T(unittest.TestCase):
         with self.assertRaisesRegex(x.Fail, "Jelentkezz be újra"):
             x.get_token(profile(token=False), fetcher=lambda *a: ("j", 1))
         with self.assertRaisesRegex(x.Fail, "nincs beállított"):
-            x.get_token(profile(config="mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n"), fetcher=lambda *a: ("j", 1))
+            x.get_token(profile(config="model:\n  provider: excellence\n"), fetcher=lambda *a: ("j", 1))
+
+    def test_profile_without_agent_asks_for_bootstrap_token(self):
+        # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.
+        home, calls = profile(config="mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n"), []
+        x.get_token(home, now=lambda: 1, fetcher=lambda *a: (calls.append(a) or "j", 9999999999))
+        self.assertEqual(calls[0][:4], ("https://a", "t", None, "inst-1"))
+        sent = {}
+        class R:
+            def __enter__(s): return s
+            def __exit__(s, *a): pass
+            def read(s): return b'{"token": "j", "expiresAt": "2030-01-01T00:00:00Z"}'
+        def urlopen(req, timeout):
+            sent.update(json.loads(req.data))
+            return R()
+        orig, x.urllib.request.urlopen = x.urllib.request.urlopen, urlopen
+        try:
+            x.fetch("https://a", "t", None, "inst-1", "oauth-abc")
+        finally:
+            x.urllib.request.urlopen = orig
+        self.assertEqual(sent, {"tenantSlug": "t", "installId": "inst-1"})
 
 
 if __name__ == "__main__":

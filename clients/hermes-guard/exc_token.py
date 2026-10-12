@@ -71,9 +71,10 @@ def read_profile(home):
         cfg = open(os.path.join(home, "config.yaml"), encoding="utf-8").read()
         block = server_block(cfg, SERVER)
         url = next(m.group(1) for ln in block if (m := re.match(r"url:\s*['\"]?(\S+?)['\"]?$", ln)))
-        agent = next(m.group(1) for ln in block if (m := re.match(r"['\"]?X-Excellence-Agent-Id['\"]?:\s*['\"]?([\w-]+)", ln, re.I)))
     except (OSError, StopIteration):
-        raise Fail("Ennek a Hermes-profilnak nincs beállított Excellence-asszisztense. Kapcsold össze újra a Hermes Excellence-kapcsolatát.")
+        raise Fail("Ennek a Hermes-profilnak nincs beállított Excellence-kapcsolata. Kapcsold össze újra a Hermes Excellence-kapcsolatát.")
+    # Az alap profilhoz nincs asszisztens kötve (#858): agent nélkül a szerver választ egyet az elérhetők közül.
+    agent = next((m.group(1) for ln in block if (m := re.match(r"['\"]?X-Excellence-Agent-Id['\"]?:\s*['\"]?([\w-]+)", ln, re.I))), None)
     u = urlparse(url)
     return f"{u.scheme}://{u.netloc}", u.path.rstrip("/").rsplit("/", 1)[-1], agent
 
@@ -110,7 +111,7 @@ def mcp_access_token(home):
 def fetch(origin, tenant, agent, inst, access):
     req = urllib.request.Request(
         f"{origin}/api/model-gateway/token",
-        data=json.dumps({"tenantSlug": tenant, "agentId": agent, "installId": inst}).encode(),
+        data=json.dumps({"tenantSlug": tenant, **({"agentId": agent} if agent else {}), "installId": inst}).encode(),
         headers={"Authorization": f"Bearer {access}", "Content-Type": "application/json"},
         method="POST",
     )

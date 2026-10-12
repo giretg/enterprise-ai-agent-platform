@@ -20,6 +20,7 @@ export async function productionGatewayTokenDeps(): Promise<GatewayTokenDeps> {
     audit: repositories.audit,
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
     canViewAgent,
+    listAgentIds: async ({ tenantId }) => (await repositories.agents.findMany({ tenantId, unbounded: true })).map((a) => a.id).reverse(),
     policyVersion: async (input) => (await getPolicySnapshot(clientPolicy, input)).policyVersion,
   }
 }
