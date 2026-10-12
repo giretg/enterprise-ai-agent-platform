@@ -149,6 +149,9 @@ class Runtime(unittest.TestCase):
             response = guard.llm_execution(request={}, next_call=lambda req: called.append(req), provider="custom", base_url="https://ai.example/api/model-gateway/v1")
             self.assertEqual(called, [])
             self.assertIn("Excellence", response.choices[0].message.content)
+            # Hiányzó asszisztens: a valódi okot mondja, nem a modellváltós üzenetet (#858).
+            self.assertNotEqual(response.choices[0].message.content, policy.PROVIDER_BLOCK)
+            self.assertIn("Hermes-profilnak", response.choices[0].message.content)
 
     def test_heartbeat_payload_shape(self):
         home = tempfile.mkdtemp()

@@ -424,14 +424,17 @@ class Guard:
         self.sessions.discard(session_id)
 
     def llm_execution(self, request=None, next_call=None, provider=None, base_url=None, **kwargs):
+        token_helper = None
         try:
             token_helper = load_exc_token()
             expected_url = token_helper.read_profile(self.home)[0] + "/api/model-gateway/v1" if token_helper else None
             allowed = policy.is_excellence_route(provider, base_url, expected_url)
-        except Exception:
+        except Exception as exc:
             log.exception("llm_execution")
             # A middleware fail-open: kivételre a Hermes továbbhívna. Inkább szintetikus elutasítás.
-            return synthetic_refusal(policy.PROVIDER_BLOCK)
+            # Az exc-token saját, érthető hibája (pl. nincs hozzárendelt asszisztens) ne modellhibának látsszon (#858).
+            fail = getattr(token_helper, "Fail", ())
+            return synthetic_refusal(str(exc) if isinstance(exc, fail) else policy.PROVIDER_BLOCK)
         if not allowed:
             return synthetic_refusal(policy.PROVIDER_BLOCK)
         if isinstance(request, dict):
