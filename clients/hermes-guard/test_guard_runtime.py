@@ -151,7 +151,7 @@ class Runtime(unittest.TestCase):
             self.assertIn("Excellence", response.choices[0].message.content)
             # Hiányzó asszisztens: a valódi okot mondja, nem a modellváltós üzenetet (#858).
             self.assertNotEqual(response.choices[0].message.content, policy.PROVIDER_BLOCK)
-            self.assertIn("asszisztens", response.choices[0].message.content)
+            self.assertIn("Hermes-profilnak", response.choices[0].message.content)
 
     def test_heartbeat_payload_shape(self):
         home = tempfile.mkdtemp()
