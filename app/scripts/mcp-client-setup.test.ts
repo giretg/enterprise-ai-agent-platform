@@ -142,7 +142,8 @@ function main() {
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
     assert.match(html, /hermes:\/\/mcp\/install\?name=excellence/)
     assert.match(html, /hermes mcp add excellence --url https:\/\/app\.example\.com\/api\/mcp\/acme --auth oauth &amp;&amp; hermes mcp login excellence/)
-    assert.match(html, /Töltsd le az AI munkatársaimat/)
+    assert.equal((html.match(/Töltsd le az AI munkatársaimat/g) ?? []).length, 1)
+    assert.match(html, /vékony csatlakozót készít/)
     assert.match(html, /hermes-agent\.nousresearch\.com\/#downloads/)
     assert.match(html, /user-guide\/bot-mode/)
     for (const client of ['hermes', 'codex', 'cursor', 'grok', 'claude', 'claudecode', 'goose']) {
@@ -187,6 +188,9 @@ function main() {
     assert.doesNotMatch(huMessages.ClientPolicy.effectiveNotice + huMessages.ClientPolicy.floorHelp, /gépi csomag|natív/)
     assert.doesNotMatch(html, /github\.com\/giretg\/enterprise-ai-agent-platform\/archive/)
     assert.doesNotMatch(html, /install-managed\.sh floor\.json/)
+    assert.match(html, /céges telepítő már kirakta a Bot-csatlakozókat/)
+    assert.match(html, /chat nem írhatja a profilokat/)
+    assert.equal((html.match(/Töltsd le az AI munkatársaimat/g) ?? []).length, 1)
   })
 
   if (failures > 0) {

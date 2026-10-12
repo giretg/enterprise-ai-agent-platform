@@ -72,3 +72,9 @@ _Avoid_: global skill, platform skill
 **Kiadott skill**:
 Platform-admin által kiadott, tenantoknak olvasható, de nem szerkeszthető skill, amelyet a tenant admin a saját (nem rendszer-) agentjeihez rendelhet.
 _Avoid_: global pack, published catalog item
+
+## Hermes kliens
+
+**Hermes Bot csatlakozó**:
+A munkatárs gépén lévő vékony Hermes-profil (név, MCP URL, `X-Excellence-Agent-Id`). Szerep, skill, memória és céges tények élőben a platform `get_definition` válaszából jönnek — a lemezre nem másolódnak.
+_Avoid_: checkout-mappa, helyi skill-másolat, szinkronizált SOUL-briefing

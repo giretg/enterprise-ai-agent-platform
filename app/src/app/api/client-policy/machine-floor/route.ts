@@ -9,6 +9,7 @@ import {
 import { issueMachineFloor, MACHINE_PLATFORMS, modelGatewayBaseUrl } from '@/domain/client-policy/machine-floor'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { writeAudit } from '@/lib/audit/types'
+import { mcpUrlForTenant } from '@/lib/mcp-client-setup'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
 
@@ -39,12 +40,18 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
   }
 
-  const gatewayBaseUrl = modelGatewayBaseUrl(resolvePublicAppOrigin(request))
+  const tenant = await repositories.tenants.findById(user.activeTenantId)
+  if (!tenant) return NextResponse.json({ error: 'tenant_not_found' }, { status: 404 })
+
+  const origin = resolvePublicAppOrigin(request)
+  const gatewayBaseUrl = modelGatewayBaseUrl(origin)
   const pkg = await issueMachineFloor(machineFloorDeps(), {
     tenantId: user.activeTenantId,
     userId: parsed.data.userId,
     gatewayBaseUrl,
     platform: parsed.data.platform,
+    mcpUrl: mcpUrlForTenant(origin, tenant.slug),
+    tenantSlug: tenant.slug,
   })
 
   await writeAudit(repositories.audit, {
@@ -60,6 +67,7 @@ export async function GET(request: Request): Promise<Response> {
       managedDirHash: pkg.managedDirHash,
       disabledToolsets: pkg.disabledToolsets,
       agentCount: pkg.agentIds.length,
+      botCount: pkg.bots.length,
       format: parsed.data.format ?? 'json',
     },
     tenantId: user.activeTenantId,

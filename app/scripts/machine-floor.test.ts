@@ -179,6 +179,7 @@ async function main() {
     }
     const first = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY })
     assert.deepEqual(first.agentIds, ['agent-bound', 'agent-free'])
+    assert.deepEqual(first.bots, [])
     assert.equal(first.disabledToolsets.includes('terminal'), false)
     assert.equal(first.installId, 'inst-stable')
     assert.equal(floors.saved?.managedDirHash, first.managedDirHash)
@@ -235,6 +236,53 @@ async function main() {
     const again = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY })
     assert.equal(again.managedDirHash, posix.managedDirHash)
     assert.equal(floors.saved?.windowsManagedDirHash, win.managedDirHash)
+  })
+
+  await check('mcpUrl + listVisibleBots → vékony Bot csatlakozók, a hash változatlan', async () => {
+    const floors = memoryFloors()
+    const without = await issueMachineFloor(
+      {
+        policyStore: storeFor({ 'agent-kati': 'bound' }),
+        listVisibleAgentIds: async () => ['agent-kati'],
+        floors,
+        newInstallId: () => 'inst-bots',
+      },
+      { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY },
+    )
+    const withBots = await issueMachineFloor(
+      {
+        policyStore: storeFor({ 'agent-kati': 'bound' }),
+        listVisibleAgentIds: async () => ['agent-kati'],
+        listVisibleBots: async () => [
+          {
+            agentId: 'agent-kati',
+            version: 3,
+            snapshot: {
+              name: 'Kati',
+              roleInstruction: 'POSnavigator marketing.',
+              capabilities: [{ toolName: 'gmail_send', allowed: true }],
+            },
+          },
+        ],
+        floors,
+        newInstallId: () => 'inst-bots',
+      },
+      {
+        tenantId: T,
+        userId: U,
+        gatewayBaseUrl: GATEWAY,
+        mcpUrl: 'https://excellence.example/api/mcp/acme',
+        tenantSlug: 'acme',
+      },
+    )
+    assert.equal(withBots.managedDirHash, without.managedDirHash)
+    assert.equal(withBots.bots.length, 1)
+    assert.equal(withBots.bots[0]?.profile, 'exc-kati')
+    assert.equal(withBots.bots[0]?.agentId, 'agent-kati')
+    assert.match(withBots.bots[0]?.files['SOUL.md'] ?? '', /platform\.agent\.get_definition/)
+    assert.doesNotMatch(withBots.bots[0]?.files['SOUL.md'] ?? '', /POSnavigator marketing/)
+    assert.match(withBots.bots[0]?.files['config.yaml'] ?? '', /X-Excellence-Agent-Id: agent-kati/)
+    assert.match(withBots.bots[0]?.files['config.yaml'] ?? '', /https:\/\/excellence\.example\/api\/mcp\/acme/)
   })
 
   await check('a gateway URL a publikus originból áll', () => {

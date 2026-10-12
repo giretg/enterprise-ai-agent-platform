@@ -2168,7 +2168,9 @@ async function main() {
       mcpUrl: 'https://app.example.com/api/mcp/acme',
       harness: 'hermes',
     })
-    assert.ok(hermes.files.find((f) => f.path === 'SOUL.md')?.content.includes(boundBriefing))
+    const soul = hermes.files.find((f) => f.path === 'SOUL.md')?.content ?? ''
+    assert.match(soul, /platform\.agent\.get_definition/)
+    assert.ok(!soul.includes(boundBriefing))
   })
 
   await check('#653 skills are scoped to the agent, pinned version, entry skill in briefing and checkout', async () => {

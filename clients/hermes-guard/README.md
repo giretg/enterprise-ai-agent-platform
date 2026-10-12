@@ -12,7 +12,7 @@ A munkatárs gépére kerülő, rendszergazdai Hermes-beállítás. A munkatárs
 sudo bash excellence-telepito.sh
 ```
 
-4. Indítsd újra a Hermest. A munkatárs az Első lépések további pontjai szerint köti be a Botokat.
+4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`). A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
 
 Macen és Linuxon működik. Windowsos számítógépen ez a telepítő még nem működik.
 
@@ -25,7 +25,7 @@ Adj a munkatársnak hozzáférést legalább egy éles AI-munkatárshoz, mielőt
 1. **Adminisztráció → Hermes céges kontroll**: céges alap (Kötött pálya / Standard / Szabad), munkatársi preset és képességenkénti kivételek. A céges alapnál lazább kivételhez külön megerősítés és auditbejegyzés kell.
 2. Az **AI-munkatárs adatlap → Eszközök** részen állíts képesség-plafont. A tényleges jog a munkatárs engedélyének és az agent plafonjának metszete.
 3. Töltsd le és futtasd a telepítőt (fent).
-4. A munkatárs újraindítja a Hermest, bejelentkezik az Excellence MCP-kapcsolatra és Botot választ.
+4. A munkatárs újraindítja a Hermest, Bot Mode-ban megnyit egy telepített Botot, és a böngészőben belép a platformra.
 5. Ellenőrizzétek az alábbi átvételi eseteket, utána futtassátok a telepítőt a többi gépen is.
 
 Mentéskor verzió nő, és a beállítás az auditnaplóval egy tranzakcióban kerül mentésre. Más admin közben történt módosítását a szerver nem írja felül. Visszavonás a következő kérésnél, engedélybővítés legkésőbb a következő sessionben érvényes. Ha a korábbi telepítés letiltotta a most engedélyezett funkciót, a telepítőt újra le kell tölteni és futtatni. A letöltés új elvárt azonosítót adhat: a régi, eltérő beállítás ezután nem kap céges modellválaszt a telepítésig.
@@ -41,7 +41,7 @@ GET /api/client-policy/machine-floor?userId=<a munkatárs azonosítója>
 GET /api/client-policy/machine-floor?userId=<id>&format=installer
 ```
 
-A JSON válaszban benne van a `config.yaml`, a `.env`, az `excellence-install-id` és a `managedDirHash`. Az `installer` formátum egy futtatható scriptet ad, padlóval és Guarddal együtt.
+A JSON válaszban benne van a `config.yaml`, a `.env`, az `excellence-install-id`, a `managedDirHash` és a `bots[]` (vékony Hermes-profilok). Az `installer` formátum egy futtatható scriptet ad, padlóval, Guarddal és Bot-csatlakozókkal együtt. A `bots` nem része a `managedDirHash`-nek.
 
 Ha a scriptet erről a mappáról futtatod (sudo):
 
@@ -103,9 +103,9 @@ Az általános plugin innen töltődik, ha a neve szerepel a `plugins.enabled` l
 
 A `HERMES_BUNDLED_PLUGINS` a beépített pluginkönyvtárat cseréli, nem egészíti ki, ezért a telepítő nem nyúl hozzá.
 
-A telepítő a plugin-könyvtárat (`excellence-guard/plugin.yaml`) bemásolja a kanonikus `/opt/excellence/hermes-plugins/excellence-guard/` alá, és a sudozó user `~/.hermes` profiljaiba. A home könyvtár a useré, ezért a fájlt ki tudja törölni. A `plugins.enabled` és a `hooks.pre_tool_call` pinjét nem: azok az `/etc/hermes`-ben vannak, a `hermes config set` elutasítja. A hook `fail_closed`: ha az `exc-guard` hiányzik, timeoutol vagy hibázik, a tool nem fut le.
+A telepítő a plugin-könyvtárat (`excellence-guard/plugin.yaml`) bemásolja a kanonikus `/opt/excellence/hermes-plugins/excellence-guard/` alá, és a sudozó user `~/.hermes` profiljaiba — beleértve a `bots[]` alapján frissen kirakott `exc-…` Bot-profilokat. A home könyvtár a useré, ezért a fájlt ki tudja törölni. A `plugins.enabled` és a `hooks.pre_tool_call` pinjét nem: azok az `/etc/hermes`-ben vannak, a `hermes config set` elutasítja. A hook `fail_closed`: ha az `exc-guard` hiányzik, timeoutol vagy hibázik, a tool nem fut le.
 
-A telepítő hiányzó Guard- vagy token-segéd esetén megáll, mielőtt a padlót módosítaná. A letöltött csomag hash-ét és kötelező mezőit ellenőrzi; hibás csomag nem írja felül a meglévő beállításokat. Új Desktop-profil létrehozása után futtasd újra, hogy a Guard abba a profilba is bekerüljön.
+A telepítő hiányzó Guard- vagy token-segéd esetén megáll, mielőtt a padlót módosítaná. A letöltött csomag hash-ét és kötelező mezőit ellenőrzi; hibás csomag nem írja felül a meglévő beállításokat. Új AI-munkatárs vagy hozzáférés-változás után töltsd le és futtasd újra, hogy a Bot-csatlakozó és a Guard bekerüljön. A telepítő nem töröl idegen (nem `exc-`) profilokat.
 
 ## Átállás: a laptopokon tárolt kulcsok
 

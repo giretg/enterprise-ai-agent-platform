@@ -21,6 +21,23 @@ PKG = {
         ".env": "OPENROUTER_API_KEY=\n",
         "excellence-install-id": "inst-test\n",
     },
+    "bots": [
+        {
+            "profile": "exc-kati",
+            "agentId": "11111111-1111-4111-8111-111111111111",
+            "files": {
+                "SOUL.md": "# Kati\n\nThis Hermes Bot is a connector to Kati on Excellence AI.\n",
+                "profile.yaml": "display_name: Kati\n",
+                "config.yaml": "mcp_servers:\n  excellence:\n    url: https://app.example.com/api/mcp/acme\n",
+                "distribution.yaml": "name: exc-kati\n",
+            },
+        },
+        {
+            "profile": "../evil",
+            "agentId": "ignore",
+            "files": {"SOUL.md": "nope\n"},
+        },
+    ],
 }
 
 
@@ -76,6 +93,9 @@ def main() -> None:
         prefix = Path(tmp) / "stage"
         profile = prefix / "home/.hermes/profiles/test-bot"
         profile.mkdir(parents=True)
+        leftover = prefix / "home/.hermes/profiles/exc-kati/skills/excellence"
+        leftover.mkdir(parents=True)
+        (leftover / "SKILL.md").write_text("stale\n", encoding="utf-8")
         subprocess.run(["bash", str(SCRIPT), "--prefix", str(prefix), str(blob)], check=True)
         managed = prefix / "etc" / "hermes"
         assert (managed / "config.yaml").read_text(encoding="utf-8").startswith("model:")
@@ -103,6 +123,15 @@ def main() -> None:
         (user_plugin / "policy.py").unlink()
         mode = stat.S_IMODE((managed / "config.yaml").stat().st_mode)
         assert mode == 0o644, mode
+        bot = prefix / "home/.hermes/profiles/exc-kati"
+        assert (bot / "SOUL.md").read_text(encoding="utf-8").startswith("# Kati")
+        assert "connector to Kati" in (bot / "SOUL.md").read_text(encoding="utf-8")
+        assert (bot / "profile.yaml").read_text(encoding="utf-8") == "display_name: Kati\n"
+        assert (bot / "plugins/excellence-guard/plugin.yaml").is_file()
+        assert not (bot / "skills/excellence").exists()
+        assert not (prefix / "home/.hermes/profiles/evil").exists()
+        assert profile.is_dir()
+        assert not (profile / "SOUL.md").exists()
         token = prefix / "opt" / "excellence" / "bin" / "exc-token"
         assert token.is_file()
         assert os.access(token, os.X_OK)

@@ -159,8 +159,29 @@ if ($Testing) {
   }
 }
 if ($HermesHome) {
-  Copy-Plugin $HermesHome (Join-Path $HermesHome 'plugins/excellence-guard')
   $profilesDir = Join-Path $HermesHome 'profiles'
+  $bots = @()
+  if ($pkg.PSObject.Properties['bots'] -and $pkg.bots) { $bots = @($pkg.bots) }
+  $safe = '^exc-[a-z0-9][a-z0-9-]{0,54}$'
+  $botFiles = @('SOUL.md', 'profile.yaml', 'config.yaml', 'distribution.yaml')
+  foreach ($bot in $bots) {
+    $profileName = [string]$bot.profile
+    if ($profileName -notmatch $safe -or $profileName.Length -gt 60) { continue }
+    $dest = Join-Path $profilesDir $profileName
+    Assert-NoReparse $HermesHome $dest
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    foreach ($name in $botFiles) {
+      $text = $bot.files.$name
+      if ($text -is [string]) {
+        [IO.File]::WriteAllText((Join-Path $dest $name), $text, $Utf8)
+      }
+    }
+    foreach ($leftover in @('.enterprise-agent', (Join-Path 'skills' 'excellence'))) {
+      $path = Join-Path $dest $leftover
+      if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+  }
+  Copy-Plugin $HermesHome (Join-Path $HermesHome 'plugins/excellence-guard')
   if (Test-Path -LiteralPath $profilesDir -PathType Container) {
     foreach ($botProfile in Get-ChildItem -LiteralPath $profilesDir -Directory -Force) {
       Copy-Plugin $HermesHome (Join-Path $botProfile.FullName 'plugins/excellence-guard')

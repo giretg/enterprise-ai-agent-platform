@@ -10,6 +10,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { CapabilityKey } from '@/domain/client-policy/capabilities'
 import { getPolicySnapshot, type ClientPolicyStore, type PolicySnapshot } from '@/domain/client-policy/policy-service'
+import {
+  isHermesProfileName,
+  renderHermesBotConnector,
+  type HermesBotConnector,
+  type HermesBotSnapshot,
+} from '@/lib/agent-checkout'
 
 /** A toolset csak akkor kerül a padlóba, ha minden látható agent effektív szintje pontosan ez. */
 const TOOLSET_GATES: { key: CapabilityKey; denied: string; toolsets: readonly string[] }[] = [
@@ -114,6 +120,8 @@ export type MachineFloorPackage = {
   agentIds: string[]
   disabledToolsets: string[]
   files: ManagedDirFiles
+  /** Thin Hermes Bot connectors to write into ~/.hermes/profiles. Not part of managedDirHash. */
+  bots: HermesBotConnector[]
 }
 
 export interface MachineFloorStore {
@@ -128,9 +136,16 @@ export interface MachineFloorStore {
   issuedHashes(input: { tenantId: string; userId: string; installId: string }): Promise<readonly string[] | null>
 }
 
+export type VisibleHermesBot = {
+  agentId: string
+  version: number
+  snapshot: HermesBotSnapshot
+}
+
 export type MachineFloorDeps = {
   policyStore: ClientPolicyStore
   listVisibleAgentIds: (input: { tenantId: string; userId: string }) => Promise<string[]>
+  listVisibleBots?: (input: { tenantId: string; userId: string }) => Promise<VisibleHermesBot[]>
   floors: MachineFloorStore
   newInstallId?: () => string
 }
@@ -242,12 +257,36 @@ export async function resolveMachineFloor(
 
 export async function issueMachineFloor(
   deps: MachineFloorDeps,
-  input: { tenantId: string; userId: string; gatewayBaseUrl: string; platform?: MachinePlatform },
+  input: {
+    tenantId: string
+    userId: string
+    gatewayBaseUrl: string
+    platform?: MachinePlatform
+    mcpUrl?: string
+    tenantSlug?: string
+  },
 ): Promise<MachineFloorPackage> {
   const platform = input.platform ?? 'posix'
   const { agentIds, disabledToolsets } = await resolveMachineFloor(deps, input)
   const installId = await deps.floors.getOrCreateInstallId({ ...input, installId: (deps.newInstallId ?? randomUUID)() })
   const built = buildManagedFiles({ gatewayBaseUrl: input.gatewayBaseUrl, disabledToolsets, installId, platform })
   await deps.floors.save({ tenantId: input.tenantId, userId: input.userId, installId, managedDirHash: built.managedDirHash, platform })
-  return { installId, platform, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, ...built }
+  const bots: HermesBotConnector[] = []
+  if (input.mcpUrl && input.tenantSlug && deps.listVisibleBots) {
+    const seen = new Set<string>()
+    for (const bot of await deps.listVisibleBots(input)) {
+      const connector = renderHermesBotConnector({
+        agentId: bot.agentId,
+        version: bot.version,
+        snapshot: bot.snapshot,
+        mcpUrl: input.mcpUrl,
+        tenantSlug: input.tenantSlug,
+      })
+      if (!isHermesProfileName(connector.profile) || seen.has(connector.profile)) continue
+      seen.add(connector.profile)
+      bots.push(connector)
+    }
+    bots.sort((a, b) => a.profile.localeCompare(b.profile))
+  }
+  return { installId, platform, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, bots, ...built }
 }

@@ -76,6 +76,8 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /agentId agent-1/)
   assert.match(text, /platform\.agents\.list/)
   assert.match(text, /platform\.agent\.checkout/)
+  assert.match(text, /thin Bot connector/)
+  assert.match(text, /Do not copy skills/)
   assert.match(text, /LOCAL AGENT WORKSPACES/)
   assert.ok(text.indexOf("MEMORY FIRST") < text.indexOf("YOUR ROLE"), "memory rule precedes role")
   assert.match(text, /memoryIndex/)
