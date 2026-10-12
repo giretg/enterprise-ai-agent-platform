@@ -329,7 +329,6 @@ class Guard:
         self.client = client or SnapshotClient(home, now=now)
         self.now = now
         self.sessions = set()
-        self.reported = set()  # a szervernek már bejelentett session-ök (#858)
         self.noticed = set()
         self.decisions = {}
         self.interval = 60
@@ -519,7 +518,6 @@ class Guard:
         }
         status, body = post_json(f"{origin}/api/client-policy/heartbeat", token, payload)
         if status == 200 and isinstance(body, dict):
-            self.reported.update(payload["sessions"])
             interval = body.get("intervalSeconds")
             if isinstance(interval, int) and interval > 0:
                 self.interval = interval
