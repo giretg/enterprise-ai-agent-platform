@@ -20,6 +20,7 @@ const EYEBROW: Record<string, string> = {
   staff: 'Munkatársak',
   'agent.new': 'Csapat',
   dashboard: 'Kezdőlap',
+  settings: 'Beállítások',
 }
 
 function eyebrowForKey(key: string): string {

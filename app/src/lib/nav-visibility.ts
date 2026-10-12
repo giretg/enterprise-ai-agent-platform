@@ -94,6 +94,8 @@ const NAV_KEY_LEGACY_HIDDEN: Record<string, readonly string[]> = {
   'admin.agent-access': ['admin.agent-access', 'staff.access'],
   // Fiókom / Fiókok / Adminisztráció.account → Kapcsolt fiókok (főmenü).
   account: ['account', 'admin.account', 'admin.connectors'],
+  // Első lépések top-level → Beállítások / AI kliens.
+  'settings.get-started': ['settings.get-started', 'get-started'],
 }
 
 export function isNavKeyHiddenFor(

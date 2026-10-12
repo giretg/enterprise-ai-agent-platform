@@ -21,6 +21,8 @@ import { OperationsPanel } from '../operations/operations-panel'
 
 export const dynamic = 'force-dynamic'
 
+const OVERVIEW_TASK_LIMIT = 2
+
 const STEP_HREF: Record<OnboardingStepKey, string> = {
   connectors: '/control-plane/provisioning',
   agents: '/control-plane/agents/new',
@@ -71,8 +73,10 @@ export default async function DashboardPage() {
   })
   const doneCount = steps.filter((step) => step.done).length
   const mcpUserCount = members.filter((m) => mcpUse.has(m.userId)).length
-  const tasksEmpty =
-    listed.success && inbox.success && operations.length === 0 && handoffs.length === 0
+  const totalTasks = operations.length + handoffs.length
+  const tasksEmpty = listed.success && inbox.success && totalTasks === 0
+  const previewOperations = operations.slice(0, OVERVIEW_TASK_LIMIT)
+  const previewHandoffs = handoffs.slice(0, OVERVIEW_TASK_LIMIT - previewOperations.length)
 
   return (
     <div className="space-y-10">
@@ -137,9 +141,12 @@ export default async function DashboardPage() {
       <section className="space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-display text-xl font-semibold">{t('tasksTitle')}</h2>
-          <Link href="/control-plane/operations" className="text-sm text-coral-deep hover:underline">
-            {t('tasksAll')}
-          </Link>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+            {tasksEmpty ? null : <span className="text-ink-soft">{t('tasksTotal', { count: totalTasks })}</span>}
+            <Link href="/control-plane/operations" className="text-coral-deep hover:underline">
+              {t('tasksAll')}
+            </Link>
+          </div>
         </div>
         {listed.success ? null : (
           <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
@@ -152,13 +159,12 @@ export default async function DashboardPage() {
           </p>
         )}
         {tasksEmpty ? <p className="text-sm text-ink-soft">{t('tasksEmpty')}</p> : null}
-        {listed.success && operations.length > 0 ? (
-          <div className="space-y-3">
-            <h3 className="font-display text-lg font-semibold">{tOps('approvalsTitle')}</h3>
-            <OperationsPanel operations={operations} />
-          </div>
+        {listed.success && previewOperations.length > 0 ? (
+          <OperationsPanel operations={previewOperations} />
         ) : null}
-        {inbox.success && handoffs.length > 0 ? <HandoffsPanel handoffs={handoffs} /> : null}
+        {inbox.success && previewHandoffs.length > 0 ? (
+          <HandoffsPanel handoffs={previewHandoffs} hideIntro />
+        ) : null}
       </section>
 
       <section className="space-y-3">

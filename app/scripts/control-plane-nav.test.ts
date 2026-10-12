@@ -48,6 +48,8 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/agents'))
     assert.ok(hrefs.includes('/control-plane/dashboard'))
     assert.ok(hrefs.includes('/control-plane/projects'))
+    assert.ok(hrefs.includes('/control-plane/get-started'))
+    assert.ok(!hrefs.includes('/control-plane/settings'))
     assert.ok(!hrefs.includes('/control-plane/connectors'))
     assert.ok(!hrefs.includes('/control-plane/ai-client-policy'))
     assert.ok(!hrefs.includes('/control-plane/iam'))
@@ -65,6 +67,12 @@ function main() {
     assert.ok(account && !('children' in account))
     assert.equal(account.label, 'Kapcsolt fiókok')
     assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
+    const settings = nav.find((entry) => 'children' in entry && entry.key === 'settings')
+    assert.ok(settings && 'children' in settings)
+    assert.deepEqual(
+      settings.children.map((child) => child.href),
+      ['/control-plane/get-started'],
+    )
   })
 
   check('admin sees tenant admin pages but not platform pages without platform role', () => {
@@ -116,7 +124,16 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/agents'))
     assert.ok(hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/dashboard'))
+    assert.ok(hrefs.includes('/control-plane/get-started'))
+    assert.ok(!hrefs.includes('/control-plane/settings'))
     assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
+    const settings = nav.find((entry) => 'children' in entry && entry.key === 'settings')
+    assert.ok(settings && 'children' in settings)
+    assert.equal(settings.label, 'Beállítások')
+    assert.deepEqual(
+      settings.children.map((child) => child.key),
+      ['settings.get-started'],
+    )
     const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
     assert.ok(account && !('children' in account))
     assert.equal(account.label, 'Kapcsolt fiókok')
@@ -146,6 +163,20 @@ function main() {
     assert.ok(keys.includes('admin.audit'))
     assert.ok(keys.includes('admin.operations'))
     assert.ok(keys.includes('dashboard'))
+    assert.ok(keys.includes('settings'))
+    assert.ok(keys.includes('settings.get-started'))
+  })
+
+  check('hiding legacy get-started still hides AI kliens', () => {
+    const hrefs = flattenNavHrefs(
+      buildControlPlaneNav({
+        tenantRole: 'operator',
+        platformRoles: [],
+        navVisibility: policyWith({ operator: ['get-started'] }),
+      }),
+    )
+    assert.ok(!hrefs.includes('/control-plane/get-started'))
+    assert.ok(hrefs.includes('/control-plane/account'))
   })
 
   check('hiding legacy admin.connectors still hides Kapcsolt fiókok', () => {
@@ -368,6 +399,22 @@ function main() {
     }).find((entry) => !('children' in entry) && entry.key === 'admin.operations')
     assert.ok(zero && !('children' in zero))
     assert.equal(zero.badge, undefined)
+  })
+
+  check('overview shows two tasks, the total count, and a link to Teendők', () => {
+    const page = readFileSync(
+      path.join(__dirname, '..', 'src', 'app', 'control-plane', 'dashboard', 'page.tsx'),
+      'utf8',
+    )
+    const hu = JSON.parse(
+      readFileSync(path.join(__dirname, '..', 'src', 'messages', 'hu.json'), 'utf8'),
+    ) as { ControlPlane: { dashboard: { tasksTotal: string; tasksAll: string } } }
+    assert.match(page, /OVERVIEW_TASK_LIMIT = 2/)
+    assert.match(page, /href="\/control-plane\/operations"/)
+    assert.match(page, /t\('tasksTotal'/)
+    assert.match(page, /t\('tasksAll'\)/)
+    assert.equal(hu.ControlPlane.dashboard.tasksTotal, '{count} teendő')
+    assert.equal(hu.ControlPlane.dashboard.tasksAll, 'Összes teendő →')
   })
 
   check('header nav is page links, not route modals', () => {

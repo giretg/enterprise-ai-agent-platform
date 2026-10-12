@@ -101,6 +101,18 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     ],
   },
   {
+    key: 'settings',
+    label: 'Beállítások',
+    children: [
+      {
+        key: 'settings.get-started',
+        href: '/control-plane/get-started',
+        label: 'AI kliens',
+        requires: { tenantRole: 'viewer' },
+      },
+    ],
+  },
+  {
     key: 'admin',
     label: 'Adminisztráció',
     children: [
