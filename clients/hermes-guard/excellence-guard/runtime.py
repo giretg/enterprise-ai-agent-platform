@@ -329,6 +329,7 @@ class Guard:
         self.client = client or SnapshotClient(home, now=now)
         self.now = now
         self.sessions = set()
+        self.reported = set()  # a szervernek már bejelentett session-ök (#858)
         self.noticed = set()
         self.decisions = {}
         self.interval = 60
@@ -437,6 +438,14 @@ class Guard:
             return synthetic_refusal(str(exc) if isinstance(exc, fail) else policy.PROVIDER_BLOCK)
         if not allowed:
             return synthetic_refusal(policy.PROVIDER_BLOCK)
+        # A kapu csak bejelentett session-t enged: az első hívás előtt azonnal heartbeat, ne a percenkénti ciklusra várjon (#858).
+        sid = str(kwargs.get("session_id") or "")[:200]
+        if sid and sid not in self.reported:
+            try:
+                self.note_session(sid)
+                self.beat()
+            except Exception:
+                log.exception("llm_execution heartbeat")
         if isinstance(request, dict):
             headers = dict(request.get("extra_headers") or {})
             for key, field in (("X-Excellence-Session", "session_id"), ("X-Excellence-Turn", "turn_id")):
@@ -504,6 +513,7 @@ class Guard:
         }
         status, body = post_json(f"{origin}/api/client-policy/heartbeat", token, payload)
         if status == 200 and isinstance(body, dict):
+            self.reported.update(payload["sessions"])
             interval = body.get("intervalSeconds")
             if isinstance(interval, int) and interval > 0:
                 self.interval = interval

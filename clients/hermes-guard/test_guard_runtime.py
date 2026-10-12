@@ -186,6 +186,24 @@ class Runtime(unittest.TestCase):
         self.assertEqual(guard.interval, 30)
         json.dumps(body)
 
+    def test_first_llm_call_registers_session_before_forwarding(self):
+        # Új session első hívása: a szerver kapuja csak bejelentett session-t enged (#858).
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n")
+        guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        guard._origin_and_token = lambda: ("https://ai.example", "jwt")
+        order, original_post = [], runtime.post_json
+        runtime.post_json = lambda url, token, payload, timeout=5: (order.append(("beat", payload["sessions"])) or 200, {})
+        try:
+            os.environ.pop("EXC_GUARD_OFFLINE", None)
+            call = lambda: guard.llm_execution(request={}, next_call=lambda req: order.append("call") or "ok", provider="custom", base_url="https://ai.example/api/model-gateway/v1", session_id="s-new")
+            self.assertEqual(call(), "ok")
+            self.assertEqual(call(), "ok")
+        finally:
+            runtime.post_json = original_post
+        self.assertEqual(order, [("beat", ["s-new"]), "call", "call"])  # egyszer jelent be, a hívás előtt
+
 
 if __name__ == "__main__":
     unittest.main()
