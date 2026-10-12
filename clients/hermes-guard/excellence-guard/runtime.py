@@ -105,7 +105,7 @@ def read_json(path):
 
 def write_json(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}"
+    tmp = f"{path}.{os.getpid()}.{uuid.uuid4().hex}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
@@ -438,9 +438,10 @@ class Guard:
             return synthetic_refusal(str(exc) if isinstance(exc, fail) else policy.PROVIDER_BLOCK)
         if not allowed:
             return synthetic_refusal(policy.PROVIDER_BLOCK)
-        # A kapu csak bejelentett session-t enged: az első hívás előtt azonnal heartbeat, ne a percenkénti ciklusra várjon (#858).
+        # A kapu 180s után Open, ha a session lastSeenAt-je a háttérszál (másik folyamat) miatt kimarad.
+        # Minden modellhívás előtt újra bejelentjük ezt a sessiont, ne csak az elsőt.
         sid = str(kwargs.get("session_id") or "")[:200]
-        if sid and sid not in self.reported:
+        if sid:
             try:
                 self.note_session(sid)
                 self.beat()
@@ -452,6 +453,11 @@ class Guard:
                 if kwargs.get(field):
                     headers = {name: value for name, value in headers.items() if name.lower() != key.lower()}
                     headers[key] = str(kwargs[field])[:200]
+            # A Hermes a bare key_cmd jegyet 15 percig cache-eli, a gateway-JWT 10 perc. Friss token a kérésre.
+            _, token = self._origin_and_token()
+            if token:
+                headers = {name: value for name, value in headers.items() if name.lower() != "authorization"}
+                headers["Authorization"] = f"Bearer {token}"
             request = {**request, "extra_headers": headers}
         # A provider hibája a Hermes újrapróbálási/tömörítési útjára tartozik.
         return next_call(request)
