@@ -579,6 +579,7 @@ async function loadAgentSkills(
   const loaded = await deps.loadDefinition({ tenantId: principal.tenantId, definitionId, agentId })
   if (
     !loaded ||
+    !isDispatchable(loaded.status) ||
     !(await deps.canViewAgent({
       tenantId: principal.tenantId,
       userId: principal.userId,
@@ -732,7 +733,7 @@ async function getDefinitionToolResult(
     agentId: asUuid(args.agentId),
     version: asVersion(args.version),
   })
-  if (!loaded) return definitionNotFound()
+  if (!loaded || !isDispatchable(loaded.status)) return definitionNotFound()
   const allowed = await deps.canViewAgent({
     tenantId: principal.tenantId,
     userId: principal.userId,
@@ -763,7 +764,7 @@ async function getDefinitionToolResult(
   return textResult({
     briefing: renderAgentBriefing({
       definition: loaded,
-      skills,
+      skills: skills.filter((skill) => skill.status === 'active'),
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
@@ -1088,7 +1089,7 @@ async function agentPromptResult(
           type: 'text' as const,
           text: renderAgentPrompt({
             definition: loaded,
-            skills,
+            skills: skills.filter((skill) => skill.status === 'active'),
             task,
             bound: boundAgentId !== null,
             language: readTenantLanguage(tenant?.settings),

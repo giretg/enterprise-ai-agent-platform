@@ -98,7 +98,6 @@ export interface AgentRepository {
   updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent>
   updateModelConfig(input: { agentId: string; modelConfig: Prisma.InputJsonValue }): Promise<Agent>
   updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent>
-  setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>
   activate(agentId: string): Promise<Agent>
   suspend(agentId: string, reason?: string): Promise<Agent>
   resume(agentId: string): Promise<Agent>
@@ -117,16 +116,14 @@ export interface AgentRepository {
 export type AgentDefinitionVersionRow = AgentDefinitionVersion
 
 export interface AgentDefinitionRepository {
-  create(data: {
+  publish(input: {
     agentId: string
-    version: number
     snapshot: Prisma.InputJsonValue
     contentHash: string
     publishedById: string
-  }): Promise<AgentDefinitionVersion>
+  }): Promise<{ agent: Agent; version: AgentDefinitionVersion }>
   findById(id: string): Promise<AgentDefinitionVersion | null>
   findByAgentAndVersion(agentId: string, version: number): Promise<AgentDefinitionVersion | null>
-  findMaxVersion(agentId: string): Promise<number>
 }
 
 export interface ResourceGrantRepository {

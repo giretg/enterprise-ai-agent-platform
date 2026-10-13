@@ -45,12 +45,11 @@ export type AgentScaffoldDeps = {
     | 'upsertConnectorBinding'
     | 'findCapabilitiesForAgent'
     | 'findConnectorsForAgent'
-    | 'setCurrentDefinitionVersionId'
     | 'activate'
   >
   versions: Pick<
     AgentDefinitionRepository,
-    'create' | 'findById' | 'findByAgentAndVersion' | 'findMaxVersion'
+    'publish' | 'findById' | 'findByAgentAndVersion'
   >
   skills: Pick<SkillRepository, 'findByNameInScope' | 'findById' | 'assign' | 'listEnabledForAgent'>
   connectors: Pick<ConnectorRepository, 'listForTenant' | 'findById'>

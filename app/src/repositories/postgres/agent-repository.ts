@@ -160,13 +160,6 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
-  async setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent> {
-    return prisma.agent.update({
-      where: { id: agentId },
-      data: { currentDefinitionVersionId: versionId },
-    })
-  }
-
   async activate(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
@@ -175,7 +168,7 @@ export class PostgresAgentRepository implements AgentRepository {
     }
     assertTransition(agent.status, 'active')
     return prisma.agent.update({
-      where: { id: agentId },
+      where: { id: agentId, status: agent.status },
       data: { status: 'active', retiredAt: null },
     })
   }
@@ -185,7 +178,7 @@ export class PostgresAgentRepository implements AgentRepository {
     if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'suspended')
     return prisma.agent.update({
-      where: { id: agentId },
+      where: { id: agentId, status: agent.status },
       data: { status: 'suspended' },
     })
   }
@@ -195,7 +188,7 @@ export class PostgresAgentRepository implements AgentRepository {
     if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'active')
     return prisma.agent.update({
-      where: { id: agentId },
+      where: { id: agentId, status: agent.status },
       data: { status: 'active' },
     })
   }
@@ -205,7 +198,7 @@ export class PostgresAgentRepository implements AgentRepository {
     if (!agent) throw new Error('Agent not found')
     assertTransition(agent.status, 'retired')
     return prisma.agent.update({
-      where: { id: agentId },
+      where: { id: agentId, status: agent.status },
       data: { status: 'retired', retiredAt: new Date() },
     })
   }
