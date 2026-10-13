@@ -26,6 +26,7 @@ export const clientPolicyAdminStore: AdminPolicyStore = {
       save: async (row, expectedVersion, actorId) => {
         const data = {
           preset: row.preset, capabilities: row.capabilities as Prisma.InputJsonValue,
+          toolOverrides: (row.toolOverrides ?? {}) as Prisma.InputJsonValue,
           version: row.version, updatedById: actorId,
         }
         if (expectedVersion === 0) {

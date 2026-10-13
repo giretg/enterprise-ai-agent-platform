@@ -60,6 +60,7 @@ function setup(depth: AuditDepth) {
     },
     list: async (f) =>
       rows.filter((r) => r.tenantId === f.tenantId && (!f.sessionId || r.sessionId === f.sessionId)).slice(0, f.limit),
+    unclassifiedTools: async () => [],
     deleteExpired: async (now, limit) => {
       const doomed = rows.filter((r) => r.expiresAt.getTime() <= now.getTime()).slice(0, limit)
       for (const d of doomed) {
@@ -153,6 +154,17 @@ async function main() {
     const b = setup('plus_tool_results')
     await ingestGuardEvents(b.deps, ctx, { events: [ev(1, { kind: 'tool_call', content: { result: 'titok' } })] })
     assert.deepEqual(JSON.parse(decryptContent(TENANT, b.rows[0].content!)), { result: 'titok' })
+  })
+
+  await check('tool_unclassified (#872): elfogadott, tartalom a legmélyebb auditnál sem tárolódik', async () => {
+    const s = setup('plus_tool_results')
+    const r = await ingestGuardEvents(s.deps, ctx, {
+      events: [ev(1, { kind: 'tool_unclassified', content: { args: 'titok' }, meta: { tool: 'new_tool', hermesVersion: 'v0.21.3' } })],
+    })
+    assert.deepEqual(r, { ok: true, received: 1, stored: 1 })
+    assert.equal(s.rows[0].kind, 'tool_unclassified')
+    assert.equal(s.rows[0].content, null)
+    assert.deepEqual(s.rows[0].meta, { tool: 'new_tool', hermesVersion: 'v0.21.3' })
   })
 
   await check('lejárat: alapból +90 nap', async () => {

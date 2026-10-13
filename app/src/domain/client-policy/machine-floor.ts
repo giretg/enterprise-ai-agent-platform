@@ -8,7 +8,8 @@
  * Nincs látható agent → minden kapuzott toolset tiltva (üres unió, fail-closed).
  */
 import { createHash, randomUUID } from 'node:crypto'
-import type { CapabilityKey } from '@/domain/client-policy/capabilities'
+import { CAPABILITY_KEYS, capabilityLevels, type CapabilityKey } from '@/domain/client-policy/capabilities'
+import { DEFAULT_TOOL_CATALOG, type ToolCatalogEntry } from '@/domain/client-policy/tool-catalog'
 import { getPolicySnapshot, type ClientPolicyStore, type PolicySnapshot } from '@/domain/client-policy/policy-service'
 import {
   isHermesProfileName,
@@ -17,15 +18,29 @@ import {
   type HermesBotSnapshot,
 } from '@/lib/agent-checkout'
 
-/** A toolset csak akkor kerül a padlóba, ha minden látható agent effektív szintje pontosan ez. */
-const TOOLSET_GATES: { key: CapabilityKey; denied: string; toolsets: readonly string[] }[] = [
-  { key: 'code_execution', denied: 'denied', toolsets: ['terminal', 'code_execution'] },
-  { key: 'local_files', denied: 'none', toolsets: ['file'] },
-  { key: 'browser', denied: 'denied', toolsets: ['browser', 'computer_use'] },
-  { key: 'web_search', denied: 'denied', toolsets: ['web'] },
-  { key: 'local_memory', denied: 'denied', toolsets: ['memory'] },
-  { key: 'autonomous_run', denied: 'denied', toolsets: ['delegation', 'cronjob'] },
-]
+/**
+ * A toolset csak akkor kerül a padlóba, ha minden látható agent effektív szintje pontosan a tengely
+ * legszigorúbb, tiltó szintje. A kapuk a katalógusból jönnek (#872): egy toolset akkor kapuzható, ha
+ * minden eszköze ugyanarra a tengelyre tartozik, és annak legszigorúbb szintje tilt („denied”/„none”).
+ */
+function toolsetGates(catalog: readonly ToolCatalogEntry[]): { key: CapabilityKey; denied: string; toolsets: string[] }[] {
+  const axes = new Map<string, Set<string>>()
+  for (const entry of catalog) {
+    const axis = entry.class.startsWith('capability:') ? entry.class.split(':')[1] : entry.class
+    for (const toolset of entry.toolsets ?? []) axes.set(toolset, (axes.get(toolset) ?? new Set()).add(axis))
+  }
+  const gates = new Map<CapabilityKey, string[]>()
+  for (const [toolset, set] of axes) {
+    const [axis] = set
+    if (set.size !== 1 || !(CAPABILITY_KEYS as readonly string[]).includes(axis)) continue
+    const key = axis as CapabilityKey
+    if (!['denied', 'none'].includes(capabilityLevels(key)[0])) continue
+    gates.set(key, [...(gates.get(key) ?? []), toolset])
+  }
+  return [...gates].map(([key, toolsets]) => ({ key, denied: capabilityLevels(key)[0], toolsets }))
+}
+
+const TOOLSET_GATES = toolsetGates(DEFAULT_TOOL_CATALOG)
 
 /**
  * Hermes aux feladatok, amelyek saját providerre kaphatnának (2026-10, hermes-agent main).

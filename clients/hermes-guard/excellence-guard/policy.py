@@ -9,7 +9,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-GUARD_VERSION = "0.1.1"
+GUARD_VERSION = "0.2.0"
 NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
 ASK = "Ha erre szükséged van, kérd a rendszergazdát."
 OFFLINE_TTL_SECONDS = 3600
@@ -52,27 +52,62 @@ FREE = {
     "audit_depth": "prompt_and_response",
 }
 
-_CODE = {"terminal", "process_manage", "execute_code", "close_terminal", "read_terminal"}
-_FILE_READ = {"read_file", "search_files"}
-_FILE_WRITE = {"write_file", "patch"}
-_WEB = {"web_search", "web_extract", "x_search"}
-_AUTO = {"delegate_task", "cronjob_manage"}
-_SKILL_READ = {"skills_list", "skill_view"}
-_SKILL_WRITE = {"skill_manage"}
 _RULE_RANK = {"allow": 0, "approve": 1, "deny": 2}
-# #871: a híd csak katalógust olvas vagy továbbít; a kockázat a hívott eszközé. A kicsomagolt
-# `tool_call` belső eszközét a Guard külön látja; kicsomagolatlanul (hibás vagy helyi batch) a
-# Hermes maga utasítja el, connector-batchnél pedig elemenként fut a pre_tool_call.
-# A beszélgetés-eszközök a userhez fordulnak, nem a géphez.
-_PASSTHROUGH = {"tool_search", "tool_describe", "tool_call", "clarify", "todo_list", "todo"}
+
+# #872: offline tartalék-katalógus (D4). Élesben a snapshot `toolCatalog`-ja dönt; ez a lista
+# a szerver `DEFAULT_TOOL_CATALOG`-ja (tool-catalog.ts), a client-policy-tool-catalog teszt veti össze.
+# #871/D17: a híd (`passthrough`) és a beszélgetés (`always`) nem döntési pont.
+FALLBACK_CATALOG = [
+    ("tool_search", "passthrough"), ("tool_describe", "passthrough"), ("tool_call", "passthrough"),
+    ("clarify", "always"), ("todo_list", "always"), ("todo", "always"), ("gui_tour", "always"),
+    ("show_tip", "always"), ("apply_layout", "always"), ("focus_pane", "always"),
+    ("desktop_project", "always"), ("react_to_message", "always"), ("setup_choose", "always"),
+    ("terminal", "capability:code_execution:run"), ("process_manage", "capability:code_execution:run"),
+    ("execute_code", "capability:code_execution:run"), ("read_terminal", "capability:code_execution:run"),
+    ("close_terminal", "capability:code_execution:run"),
+    ("read_file", "capability:local_files:read"), ("search_files", "capability:local_files:read"),
+    ("vision_analyze", "capability:local_files:read"),
+    ("write_file", "capability:local_files:write"), ("patch", "capability:local_files:write"),
+    ("browser_*", "capability:browser:use"), ("computer_use", "capability:browser:use"),
+    ("desktop_preview", "capability:browser:use"), ("drive_preview", "capability:browser:use"),
+    ("annotate_preview", "capability:browser:use"), ("read_window_below", "capability:browser:use"),
+    ("web_search", "capability:web_search:use"), ("web_extract", "capability:web_search:use"),
+    ("x_search", "capability:web_search:use"),
+    ("memory", "capability:local_memory:use"), ("session_search", "capability:local_memory:use"),
+    ("skills_list", "capability:skills:read"), ("skill_view", "capability:skills:read"),
+    ("skill_manage", "capability:skills:write"), ("manage_catalog", "capability:skills:write"),
+    ("delegate_task", "capability:autonomous_run:use"), ("cronjob_manage", "capability:autonomous_run:use"),
+    ("kanban_*", "capability:autonomous_run:use"), ("start_chat", "capability:autonomous_run:use"),
+    ("image_generate", "capability:external_services:use"), ("video_generate", "capability:external_services:use"),
+    ("xai_video_edit", "capability:external_services:use"), ("xai_video_extend", "capability:external_services:use"),
+    ("text_to_speech", "capability:external_services:use"), ("manage_connections", "capability:external_services:use"),
+    ("video_analyze", "capability:external_services:use"), ("discord", "capability:external_services:use"),
+    ("discord_admin", "capability:external_services:use"), ("feishu_doc_read", "capability:external_services:use"),
+    ("feishu_drive_*", "capability:external_services:use"), ("yb_*", "capability:external_services:use"),
+    ("mcp__*", "mcp"),
+]
+# (tengely, művelet) → a Guard belső döntési fajtája
+_KIND = {
+    ("code_execution", "run"): "code",
+    ("local_files", "read"): "file_read",
+    ("local_files", "write"): "file_write",
+    ("browser", "use"): "browser",
+    ("web_search", "use"): "web",
+    ("local_memory", "use"): "memory",
+    ("skills", "read"): "skill_read",
+    ("skills", "write"): "skill_write",
+    ("autonomous_run", "use"): "autonomous",
+}
 
 
 class Decision:
-    def __init__(self, action, message, capability=None, level=None):
+    def __init__(self, action, message, capability=None, level=None, unclassified=False):
         self.action = action  # allow | approve | block
         self.message = message
         self.capability = capability
         self.level = level
+        # #872: a katalógus nem ismeri az eszközt → `tool_unclassified` esemény az adminnak.
+        self.unclassified = unclassified
 
     def __repr__(self):
         return f"Decision({self.action!r}, {self.message!r})"
@@ -117,27 +152,43 @@ def company_servers():
     return {"excellence"}
 
 
-def _classify(tool_name):
-    if tool_name.startswith("mcp__"):
+def catalog_of(snapshot):
+    """A snapshot katalógusa [(minta, osztály)]; régi vagy hibás snapshotnál a beépített tartalék."""
+    raw = (snapshot or {}).get("toolCatalog")
+    if not isinstance(raw, list):
+        return FALLBACK_CATALOG
+    out = []
+    for entry in raw:
+        if isinstance(entry, dict) and isinstance(entry.get("pattern"), str) and isinstance(entry.get("class"), str):
+            out.append((entry["pattern"], entry["class"]))
+    return out
+
+
+def tool_class(catalog, tool_name):
+    """Pontos név előbb, utána a leghosszabb `*` végű minta (mint a szerver `classifyTool`-ja). None = besorolatlan."""
+    best = None
+    for pattern, cls in catalog:
+        if pattern == tool_name:
+            return cls
+        if pattern.endswith("*") and tool_name.startswith(pattern[:-1]) and (best is None or len(pattern) > len(best[0])):
+            best = (pattern, cls)
+    return best[1] if best else None
+
+
+def _classify(tool_name, catalog=FALLBACK_CATALOG):
+    """(képesség, fajta). Fajta: a _KIND értékei, mcp, passthrough, always, denied, external, other."""
+    cls = tool_class(catalog, tool_name)
+    if cls is None:
+        return None, "other"
+    if cls == "mcp":
         return "mcp_servers", "mcp"
-    if tool_name in _CODE:
-        return "code_execution", "code"
-    if tool_name in _FILE_READ:
-        return "local_files", "file_read"
-    if tool_name in _FILE_WRITE:
-        return "local_files", "file_write"
-    if tool_name.startswith("browser_") or tool_name == "computer_use":
-        return "browser", "browser"
-    if tool_name in _WEB:
-        return "web_search", "web"
-    if tool_name == "memory":
-        return "local_memory", "memory"
-    if tool_name in _AUTO:
-        return "autonomous_run", "autonomous"
-    if tool_name in _SKILL_READ:
-        return "skills", "skill_read"
-    if tool_name in _SKILL_WRITE:
-        return "skills", "skill_write"
+    if cls in ("passthrough", "always", "denied"):
+        return None, cls
+    parts = cls.split(":")
+    if len(parts) == 3 and parts[0] == "capability":
+        kind = _KIND.get((parts[1], parts[2]))
+        # Ismert osztály, de a Guard még nem ismeri a tengelyét (#873 external_services): szigorúan tilt.
+        return parts[1], kind or "external"
     return None, "other"
 
 
@@ -202,14 +253,18 @@ def _lead(kind, level, tool_name):
         return "Új vagy módosított skillt ez a beállítás nem enged. Csak a jóváhagyott skillek használhatók."
     if kind == "skill_read":
         return "A jóváhagyott skillek ellenőrizhető céges listája még nem érhető el, ezért helyi skillt nem tölthetek be."
-    return f"A(z) „{tool_name}” eszközt a céges lista még nem ismeri, ezért nem fut le."
+    if kind == "external":
+        return "Ez a Hermes saját felhős szolgáltatása (például kép-, hang- vagy videókészítés, külső fiók), céges módban nincs engedve."
+    if kind == "denied":
+        return f"A(z) „{tool_name}” eszközt a cég véglegesen letiltotta."
+    return f"A(z) „{tool_name}” eszközt a céges lista még nem ismeri, ezért nem fut le. A rendszergazda a besorolatlan eszközök között látja."
 
 
 def _block(kind, level, tool_name, source, capability):
-    # Ismeretlen eszköznél nincs céges döntés, amire hivatkozhatnánk (#871).
-    why = "" if kind == "other" else f" {_why(source)}"
+    # Ismeretlen vagy véglegesen tiltott eszköznél nincs szintbeli döntés, amire hivatkozhatnánk (#871).
+    why = "" if kind in ("other", "denied", "external") else f" {_why(source)}"
     text = f"{_lead(kind, level, tool_name)}{why} {ASK}"
-    return Decision("block", text, capability, level)
+    return Decision("block", text, capability, level, unclassified=kind == "other")
 
 
 def _approve(tool_name, capability, level, because):
@@ -272,7 +327,9 @@ def decide(snapshot, tool_name, args=None):
     if not isinstance(caps, dict):
         snapshot = bound_snapshot()
         caps = snapshot["capabilities"]
-    capability, kind = _classify(tool_name)
+    capability, kind = _classify(tool_name, catalog_of(snapshot))
+    if kind == "denied":  # a tiltás nyer, eszközönkénti engedély sem oldja fel
+        return _block(kind, None, tool_name, None, None)
     level = caps.get(capability) if capability else None
     if capability and not isinstance(level, str):
         level = BOUND.get(capability)
@@ -294,7 +351,7 @@ def decide(snapshot, tool_name, args=None):
     # #871: híd/beszélgetés átlátszó — de csak ha nincs explicit toolRules találat.
     # A tiltás mindig nyer (D3); a human_approval alól viszont kivétel, mert a
     # kockázat a hívott belső eszközé, azt a saját pre_tool_call-ja dönti el.
-    if tool_name in _PASSTHROUGH:
+    if kind in ("passthrough", "always"):
         return Decision("allow", "", capability, level)
 
     action = _capability_action(kind, level, tool_name)

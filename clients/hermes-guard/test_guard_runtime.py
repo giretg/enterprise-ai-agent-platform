@@ -116,6 +116,25 @@ class Runtime(unittest.TestCase):
         meta_only = runtime.build_event(policy.snapshot_of({**policy.FREE, "audit_depth": "metadata"}), "s", None, "user_prompt", "titok", {})
         self.assertNotIn("content", meta_only)
 
+    def test_unclassified_tool_is_reported_without_arguments(self):
+        home = tempfile.mkdtemp()
+        snap = policy.snapshot_of(policy.BOUND, version="p")
+        client = runtime.SnapshotClient(home, fetcher=lambda: ("ok", snap), now=lambda: 5_000)
+        guard = runtime.Guard(home, client=client, now=lambda: 5_000)
+        guard._version = "hermes v0.21.3"
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        try:
+            body = guard.pre_tool_call("ha_call_service", {"secret": "titok"}, session_id="s", tool_call_id="c1")
+            guard.pre_tool_call("clarify", {}, session_id="s", tool_call_id="c2")
+        finally:
+            os.environ.pop("EXC_GUARD_OFFLINE", None)
+        self.assertEqual(body["action"], "block")
+        queued = runtime._read_queue(runtime._under(home, runtime.QUEUE_FILE))
+        self.assertEqual([e["kind"] for e in queued], ["tool_unclassified"])
+        self.assertEqual(queued[0]["meta"], {"tool": "ha_call_service", "hermesVersion": "hermes v0.21.3"})
+        self.assertNotIn("content", queued[0])
+        self.assertNotIn("titok", json.dumps(queued[0]))
+
     def test_llm_execution_blocks_foreign_provider(self):
         home = tempfile.mkdtemp()
         with open(os.path.join(home, "config.yaml"), "w") as fh:
@@ -179,7 +198,7 @@ class Runtime(unittest.TestCase):
         body = sent["payload"]
         self.assertTrue(sent["url"].endswith("/api/client-policy/heartbeat"))
         self.assertEqual(body["policyVersion"], "v9")
-        self.assertEqual(body["guardVersion"], "0.1.1")
+        self.assertEqual(body["guardVersion"], "0.2.0")
         self.assertEqual(body["hermesVersion"], "0.21.5")
         self.assertEqual(body["sessions"], ["sess-1"])
         self.assertEqual(len(body["configHash"]), 64)

@@ -363,11 +363,24 @@ class Guard:
             if call_id:
                 self.decisions[str(call_id)] = decision.action
             self.note_session(kwargs.get("session_id"))
+            if decision.unclassified:
+                self._report_unclassified(tool_name, kwargs.get("session_id"))
             body = policy.hook_body(decision)
             return None if decision.action == "allow" else body
         except Exception:
             log.exception("pre_tool_call")
             return {"action": "block", "message": f"A céges ellenőrzés hibázott, ezért ezt a műveletet nem engedem. {policy.ASK}"}
+
+    def _report_unclassified(self, tool_name, session_id):
+        """#872: az admin „Besorolatlan eszközök” listájához. Argumentum nincs benne, csak a név és a verzió."""
+        try:
+            if self._version is None:
+                self._version = hermes_version()
+            meta = {"tool": str(tool_name)[:128], "hermesVersion": self._version}
+            enqueue(self.home, build_event({"capabilities": {"audit_depth": "metadata"}}, session_id, None, "tool_unclassified", None, meta))
+            self._flush_soon()
+        except Exception:
+            log.exception("tool_unclassified")
 
     def post_tool_call(self, tool_name=None, args=None, result=None, **kwargs):
         try:

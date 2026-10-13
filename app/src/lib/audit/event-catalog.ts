@@ -155,6 +155,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'client_policy.machine_floor.export',
   // Admin policy mentés és a tenantnál tágabb, kifejezetten jóváhagyott user-kivétel (#776).
   'client_policy.save',
+  'client_policy.tool_classified',
   'client_policy.user_exception',
   'client_policy.content_warning',
 ])

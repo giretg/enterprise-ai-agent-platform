@@ -24,9 +24,9 @@ import {
   type CapabilityMap,
   type PresetId,
 } from '@/domain/client-policy/capabilities'
+import { TOOL_ACTIONS, type ToolAction } from '@/domain/client-policy/tool-catalog'
 
-export const TOOL_ACTIONS = ['allow', 'approve', 'deny'] as const // szigorúság szerint növekvő
-export type ToolAction = (typeof TOOL_ACTIONS)[number]
+export { TOOL_ACTIONS, type ToolAction }
 
 export type PolicyRow = {
   scope: 'tenant' | 'user' | 'agent'
