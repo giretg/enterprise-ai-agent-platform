@@ -1,7 +1,7 @@
 /**
  * Model Gateway tartalomszűrő (#746 V1-4) — a #769 proxy `filterRequest`/`transformResponse` horgainak tartalma.
  *
- * 1. PAN → blokk: a teljes kimenő kérésen (system/user/assistant/tool üzenet, tool-argumentum), slotonként
+ * 1. PAN → blokk: a teljes kimenő kérésen (a proxy `FORWARDED_PARAMS` mezői), slotonként
  *    szkennelve (üzenethatáron át nincs hamis PAN-találat). Találatnál nincs provider-hívás (D15).
  * 2. E-mail + személynév → álnév, `hermes_session` hatókörben, bijektíven és stabilan (prompt-cache).
  *    Személynév csak ott ismerhető fel katalógus nélkül, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
@@ -30,7 +30,7 @@ import {
   type ValVaultRecord,
 } from '@/domain/privacy/surrogate-vault'
 import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
-import type { GatewayCallContext, GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
+import { FORWARDED_PARAMS, type GatewayCallContext, type GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
 import { createRestoreTransform } from '@/domain/model-gateway/response-restorer'
 import { PRIVACY_CATEGORY_ALIASES, type PrivacyPolicyCategory } from '@/domain/privacy/privacy-category-policy'
 import { writeAudit, type AuditSink } from '@/lib/audit/types'
@@ -170,17 +170,40 @@ type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; 
 
 const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
 
-/** Minden string a `messages`-ben (content, content-részek, tool_calls argumentumok, reasoning…). */
+/** Csak bináris média data-URL — a sima `data:…` szöveg (pl. `data:4111…`) továbbra is szkennelendő. */
+function isMediaDataUrl(text: string): boolean {
+  return /^data:(?:image|audio|video|application)\/[a-z0-9.+-]+(?:;[^,]*)?;base64,/i.test(text)
+}
+
+/** Minden string a bejárt fában (content, tool leírás, tool_choice név, stop-elemek…). */
 function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
   if (Array.isArray(value) || (value && typeof value === 'object')) {
     const owner = value as Record<string, unknown> | unknown[]
     for (const [key, child] of Object.entries(owner)) {
       if (typeof child === 'string') {
-        if (!SKIP_KEYS.has(key) && !child.startsWith('data:')) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
+        if (!SKIP_KEYS.has(key) && !isMediaDataUrl(child)) {
+          out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
+        }
       } else collectSlots(child, out)
     }
   }
   return out
+}
+
+/**
+ * Top-level string mező (pl. `stop` / `tool_choice` / rossz típusú `temperature`) is kapjon slotot —
+ * a `collectSlots` csak objektumot/tömböt jár.
+ */
+function collectScannedBodySlots(scanned: Record<string, unknown>): Slot[] {
+  const slots: Slot[] = []
+  for (const [key, value] of Object.entries(scanned)) {
+    if (typeof value === 'string') {
+      if (!isMediaDataUrl(value)) slots.push({ owner: scanned, key, text: value })
+    } else {
+      collectSlots(value, slots)
+    }
+  }
+  return slots
 }
 
 export function containsPan(text: string): boolean {
@@ -246,8 +269,12 @@ export function createContentFilterHooks(deps: {
 
   return {
     async filterRequest(ctx, body) {
-      const messages = structuredClone(body.messages)
-      const slots = collectSlots(messages)
+      // Minden továbbított mező — ne csak a messages: tool_choice/stop/tools/… is hordozhat PAN/PII-t.
+      const scanned: Record<string, unknown> = {}
+      for (const key of FORWARDED_PARAMS) {
+        if (body[key] !== undefined) scanned[key] = structuredClone(body[key])
+      }
+      const slots = collectScannedBodySlots(scanned)
       try {
         const capabilities = await deps.getCapabilities?.(ctx)
         // Without a policy loader retain the original V1 filter contract for standalone callers.
@@ -290,7 +317,7 @@ export function createContentFilterHooks(deps: {
         logger.error({ event: 'model_gateway.tokenize_failed', error: String(error) }, 'Gateway tokenization failed')
         return { block: PRIVACY_UNAVAILABLE_MESSAGE, reason: 'privacy_unavailable' }
       }
-      return { body: { ...body, messages } }
+      return { body: { ...body, ...scanned } }
     },
 
     transformResponse: (ctx) => sessions.has(ctx)

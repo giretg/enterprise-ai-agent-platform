@@ -191,6 +191,76 @@ async function main() {
     }
   })
 
+  await check('tools / response_format / reasoning mezőben lévő PAN is blokkol (nem csak messages)', async () => {
+    for (const extra of [
+      { tools: [{ type: 'function', function: { name: 'pay', description: 'Use card 4111 1111 1111 1111', parameters: { type: 'object' } } }] },
+      { response_format: { type: 'json_schema', json_schema: { name: 'x', schema: { description: 'card 5555 5555 5555 4444' } } } },
+      { reasoning: { effort: 'high', summary: 'pay with 4111111111111111' } },
+    ]) {
+      const s = setup()
+      const data = await (await s.call({ messages: [user('szia')], ...extra })).json()
+      assert.equal(data.choices[0].message.content, PAN_BLOCK_MESSAGE)
+      assert.equal(s.calls.length, 0)
+    }
+  })
+
+  await check('stop / tool_choice / reasoning_effort stringben lévő PAN blokkol — a messages tiszta maradhat', async () => {
+    for (const extra of [
+      { stop: '4111 1111 1111 1111' },
+      { stop: ['END', '5555 5555 5555 4444'] },
+      { tool_choice: '4111 1111 1111 1111' },
+      { tool_choice: { type: 'function', function: { name: '4111111111111111' } } },
+      { reasoning_effort: '4111111111111111' },
+      { temperature: '4111 1111 1111 1111' },
+    ]) {
+      const s = setup()
+      const data = await (await s.call({ messages: [user('szia')], ...extra })).json()
+      assert.equal(data.choices[0].message.content, PAN_BLOCK_MESSAGE, JSON.stringify(extra))
+      assert.equal(s.calls.length, 0, JSON.stringify(extra))
+    }
+  })
+
+  await check('tools leírásban és tool_choice/stop mezőben lévő e-mail álneveződik', async () => {
+    const s = setup({
+      scripts: [completion({ content: 'ok' })],
+    })
+    await s.call({
+      messages: [user('szia')],
+      tools: [{ type: 'function', function: { name: 'mail', description: 'Write to secret.person@tesco.hu', parameters: { type: 'object' } } }],
+      stop: 'kovacs.janos@tesco.hu',
+      tool_choice: { type: 'function', function: { name: 'alert' }, /* name stays short; email in adjacent string field via tools */ },
+      reasoning_effort: 'ping me at other.person@tesco.hu',
+    })
+    assert.equal(s.calls.length, 1)
+    const sent = JSON.stringify(s.calls[0])
+    assert.doesNotMatch(sent, /secret\.person@tesco\.hu|kovacs\.janos@tesco\.hu|other\.person@tesco\.hu/)
+    assert.match(JSON.stringify(s.calls[0].tools), /\[\[EMAIL_\d+\]\]/)
+    assert.match(String(s.calls[0].stop), /^\[\[EMAIL_\d+\]\]$/)
+    assert.match(String(s.calls[0].reasoning_effort), /\[\[EMAIL_\d+\]\]/)
+  })
+
+  await check('data: előtagú szöveg nem kerül ki a szűrés alól; média data-URL igen', async () => {
+    const blocked = setup()
+    const data = await (await blocked.call({ messages: [user('data:4111 1111 1111 1111')] })).json()
+    assert.equal(data.choices[0].message.content, PAN_BLOCK_MESSAGE)
+    assert.equal(blocked.calls.length, 0)
+    const email = setup({ scripts: [completion({ content: 'ok' })] })
+    await email.call({ messages: [user('data:contact secret.person@tesco.hu')] })
+    assert.doesNotMatch(sentTo(email.calls), /secret\.person@tesco\.hu/)
+    assert.match(sentTo(email.calls), /\[\[EMAIL_\d+\]\]/)
+    const media = setup({ scripts: [completion({ content: 'ok' })] })
+    await media.call({
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'nézd' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+        ],
+      }],
+    })
+    assert.match(JSON.stringify(media.calls[0].messages), /data:image\/png;base64,iVBORw0KGgo=/)
+  })
+
   await check('audit: blocked + pan_detected, a PAN értéke nélkül (V1-5 sink a kérés nélkül kapja)', async () => {
     const s = setup()
     await s.call({ messages: [user('4012 8888 8888 1881')] })

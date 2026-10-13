@@ -30,8 +30,11 @@ const PROVIDER_CONNECT_TIMEOUT_MS = 120_000
 /**
  * Amit a kliens küldhet. Allowlist, mert az OpenRouter-specifikus `models`/`route`/`provider`/`plugins`
  * megkerülné a modell-policyt és a tartalék-láncot.
+ *
+ * A tartalomszűrő ugyanezeket a mezőket járja be: bármelyik hordozhat szabad szöveget
+ * (pl. `stop`, `tool_choice`, vagy rossz típusú skáláris stringként).
  */
-const FORWARDED_PARAMS = [
+export const FORWARDED_PARAMS = [
   'messages', 'tools', 'tool_choice', 'parallel_tool_calls', 'temperature', 'top_p', 'top_k', 'min_p',
   'max_tokens', 'max_completion_tokens', 'stop', 'seed', 'frequency_penalty', 'presence_penalty',
   'repetition_penalty', 'response_format', 'reasoning', 'reasoning_effort', 'include_reasoning',
