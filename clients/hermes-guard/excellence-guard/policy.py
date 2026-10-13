@@ -9,7 +9,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-GUARD_VERSION = "0.1.0"
+GUARD_VERSION = "0.1.1"
 NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
 ASK = "Ha erre szükséged van, kérd a rendszergazdát."
 OFFLINE_TTL_SECONDS = 3600
@@ -60,6 +60,11 @@ _AUTO = {"delegate_task", "cronjob_manage"}
 _SKILL_READ = {"skills_list", "skill_view"}
 _SKILL_WRITE = {"skill_manage"}
 _RULE_RANK = {"allow": 0, "approve": 1, "deny": 2}
+# #871: a híd csak katalógust olvas vagy továbbít; a kockázat a hívott eszközé. A kicsomagolt
+# `tool_call` belső eszközét a Guard külön látja; kicsomagolatlanul (hibás vagy helyi batch) a
+# Hermes maga utasítja el, connector-batchnél pedig elemenként fut a pre_tool_call.
+# A beszélgetés-eszközök a userhez fordulnak, nem a géphez.
+_PASSTHROUGH = {"tool_search", "tool_describe", "tool_call", "clarify", "todo_list", "todo"}
 
 
 class Decision:
@@ -168,7 +173,7 @@ def _lead(kind, level, tool_name):
     server = mcp_server(tool_name)
     if kind == "mcp":
         shown = server or "ismeretlen"
-        return f"A(z) „{shown}” külső eszköz nincs a céges listán, ezért a(z) „{tool_name}” hívás nem fut le."
+        return f"A(z) „{shown}” külső eszköz nincs a céges listán, ezért a(z) „{tool_name}” hívás nem fut le. A céges Excellence-eszközök engedettek."
     if kind == "code" and level == "sandbox_only":
         return "A kódot csak a céges homokozóban futtathatod, a saját gépeden nem."
     if kind == "code":
@@ -177,7 +182,7 @@ def _lead(kind, level, tool_name):
         return "Ezzel az asszisztenssel nem nyithatsz helyi fájlt."
     if kind == "file_write":
         if level == "project_write":
-            return "A jóváhagyott projektmappa nincs megadva, ezért a helyi fájlmódosítást nem engedem."
+            return "A jóváhagyott projektmappa nincs megadva, ezért a helyi fájlmódosítást nem engedem. Helyi fájlt olvasni viszont engedett."
         return "Fájlt olvashatsz, de írni vagy módosítani nem."
     if kind == "browser" and level == "company_cloud":
         return "A helyi böngésző nincs engedve. A céges böngésző ehhez az asszisztenshez még nem elérhető."
@@ -197,11 +202,13 @@ def _lead(kind, level, tool_name):
         return "Új vagy módosított skillt ez a beállítás nem enged. Csak a jóváhagyott skillek használhatók."
     if kind == "skill_read":
         return "A jóváhagyott skillek ellenőrizhető céges listája még nem érhető el, ezért helyi skillt nem tölthetek be."
-    return f"A(z) „{tool_name}” művelet nincs engedve."
+    return f"A(z) „{tool_name}” eszközt a céges lista még nem ismeri, ezért nem fut le."
 
 
 def _block(kind, level, tool_name, source, capability):
-    text = f"{_lead(kind, level, tool_name)} {_why(source)} {ASK}"
+    # Ismeretlen eszköznél nincs céges döntés, amire hivatkozhatnánk (#871).
+    why = "" if kind == "other" else f" {_why(source)}"
+    text = f"{_lead(kind, level, tool_name)}{why} {ASK}"
     return Decision("block", text, capability, level)
 
 
@@ -282,6 +289,12 @@ def decide(snapshot, tool_name, args=None):
     if rule == "approve":
         return _approve(tool_name, capability, level, "A céges szabály jóváhagyáshoz köti.")
     if rule == "allow":
+        return Decision("allow", "", capability, level)
+
+    # #871: híd/beszélgetés átlátszó — de csak ha nincs explicit toolRules találat.
+    # A tiltás mindig nyer (D3); a human_approval alól viszont kivétel, mert a
+    # kockázat a hívott belső eszközé, azt a saját pre_tool_call-ja dönti el.
+    if tool_name in _PASSTHROUGH:
         return Decision("allow", "", capability, level)
 
     action = _capability_action(kind, level, tool_name)
