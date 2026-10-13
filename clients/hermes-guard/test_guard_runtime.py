@@ -198,7 +198,7 @@ class Runtime(unittest.TestCase):
         body = sent["payload"]
         self.assertTrue(sent["url"].endswith("/api/client-policy/heartbeat"))
         self.assertEqual(body["policyVersion"], "v9")
-        self.assertEqual(body["guardVersion"], "0.2.0")
+        self.assertEqual(body["guardVersion"], "0.3.0")
         self.assertEqual(body["hermesVersion"], "0.21.5")
         self.assertEqual(body["sessions"], ["sess-1"])
         self.assertEqual(len(body["configHash"]), 64)

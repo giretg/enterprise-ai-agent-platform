@@ -1,6 +1,7 @@
 """Döntési mátrix: allow / approve / block, ismeretlen MCP, tool-szabály. Futtatás: python3 clients/hermes-guard/test_guard_policy.py"""
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "excellence-guard"))
@@ -87,13 +88,50 @@ class Policy(unittest.TestCase):
         self.assertEqual(p.decide(allowed, "ha_call_service").action, "allow")
         self.assertFalse(p.decide(snap(p.BOUND), "terminal").unclassified)
 
-    def test_external_services_blocked_until_axis_exists_unless_tool_rule(self):
-        blocked = p.decide(snap(p.FREE), "image_generate")
-        self.assertEqual(blocked.action, "block")
-        self.assertFalse(blocked.unclassified)
-        self.assertIn("felhős szolgáltatás", blocked.message)
-        allowed = snap(p.FREE, ({"pattern": "image_generate", "action": "allow", "source": "user"},))
-        self.assertEqual(p.decide(allowed, "image_generate").action, "allow")
+    def test_external_services_axis(self):
+        for preset in (p.BOUND, p.STANDARD):
+            blocked = p.decide(snap(preset), "image_generate")
+            self.assertEqual(blocked.action, "block")
+            self.assertFalse(blocked.unclassified)
+            self.assertIn("felhős szolgáltatás", blocked.message)
+        self.assertEqual(p.decide(snap({**p.FREE, "human_approval": "none"}), "image_generate").action, "allow")
+        self.assertEqual(p.decide(snap(p.FREE), "text_to_speech").action, "allow")
+        denied = snap(p.STANDARD, ({"pattern": "image_generate", "action": "allow", "source": "user"},))
+        self.assertEqual(p.decide(denied, "image_generate").action, "allow")
+        # Hiányzó tengely (régi snapshot) → Kötött pálya szintje: tilt.
+        old = {k: v for k, v in p.FREE.items() if k != "external_services"}
+        self.assertEqual(p.decide(snap(old), "image_generate").action, "block")
+
+    def test_attachments_only_reads_only_profile_attachments(self):
+        with tempfile.TemporaryDirectory() as home:
+            att = os.path.join(home, "attachments")
+            os.makedirs(att)
+            csv = os.path.join(att, "re_EloRend.csv")
+            open(csv, "w").close()
+            open(os.path.join(home, "config.yaml"), "w").close()
+            outside = os.path.join(home, "outside")
+            os.makedirs(outside)
+            os.symlink(outside, os.path.join(att, "link"))
+            caps = snap({**p.BOUND, "local_files": "attachments_only"})
+
+            def run(tool, args):
+                return p.decide(caps, tool, args, att)
+
+            self.assertEqual(run("read_file", {"path": csv}).action, "allow")
+            self.assertEqual(run("read_file", {"path": "re_EloRend.csv"}).action, "allow")
+            self.assertEqual(run("search_files", {"pattern": "x", "path": att}).action, "allow")
+            self.assertEqual(run("vision_analyze", {"image_url": os.path.join(att, "a.png")}).action, "allow")
+            for path in (os.path.expanduser("~/Documents/x.csv"), os.path.join(att, "..", "config.yaml"),
+                         os.path.join(att, "link", "secret.csv"), "../config.yaml", "",
+                         "https://x.example/a.png", "data:image/png;base64,xx", "file:///etc/passwd", None):
+                blocked = run("read_file", {"path": path})
+                self.assertEqual(blocked.action, "block", path)
+                self.assertIn("csak csatolmány", blocked.message)
+            self.assertEqual(run("search_files", {"pattern": "x"}).action, "block")
+            self.assertEqual(run("vision_analyze", {"image_url": "https://x.example/a.png"}).action, "block")
+            self.assertEqual(run("write_file", {"path": csv}).action, "block")
+            # Csatolmány-mappa nélkül (ismeretlen profil) minden olvasás tilt.
+            self.assertEqual(p.decide(caps, "read_file", {"path": csv}).action, "block")
 
     def test_snapshot_catalog_reclassifies_without_guard_release(self):
         # #872: a snapshot katalógusa felülírja a beépített tartalékot.

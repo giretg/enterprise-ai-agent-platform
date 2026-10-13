@@ -163,6 +163,16 @@ async function main() {
     assert.equal(policy('standard').capabilities.code_execution, 'sandbox_only')
   })
 
+  await check('#873: csak csatolmány mellett a file toolset marad; külső szolgáltatás csak Szabadban', () => {
+    const bound = policy('bound')
+    const attachments = { capabilities: { ...bound.capabilities, local_files: 'attachments_only' } }
+    assert.equal(disabledToolsetsForPolicies([attachments]).includes('file'), false)
+    for (const toolset of ['image_gen', 'video_gen', 'tts', 'connections']) {
+      assert.equal(disabledToolsetsForPolicies([bound, policy('standard')]).includes(toolset), true, toolset)
+      assert.equal(disabledToolsetsForPolicies([bound, policy('free')]).includes(toolset), false, toolset)
+    }
+  })
+
   await check('nincs látható agent → minden kapuzott toolset tiltva', () => {
     const disabled = disabledToolsetsForPolicies([])
     assert.equal(disabled.includes('terminal'), true)
