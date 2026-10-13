@@ -14,28 +14,28 @@
 export async function readResponseTextCapped(
   res: Response,
   maxBytes: number,
-): Promise<{ text: string; bytes: number; truncated: boolean }> {
+): Promise<{ text: string; truncated: boolean }> {
   const body = res.body
-  if (!body) return { text: '', bytes: 0, truncated: false }
+  if (!body) return { text: '', truncated: false }
 
   const reader = body.getReader()
   const chunks: Buffer[] = []
-  let total = 0
+  let kept = 0
   let truncated = false
   try {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       if (!value || value.byteLength === 0) continue
-      const remaining = maxBytes - total
-      total += value.byteLength
-      if (total > maxBytes) {
+      const remaining = maxBytes - kept
+      if (value.byteLength > remaining) {
         // Csak a plafonig tartó részt tartjuk meg, a többit eldobjuk és a streamet lezárjuk.
         if (remaining > 0) chunks.push(Buffer.from(value.buffer, value.byteOffset, remaining))
         truncated = true
         break
       }
       chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength))
+      kept += value.byteLength
     }
   } finally {
     // A fennmaradó törzs eldobása: felszabadítja a kapcsolatot, nem olvas tovább a memóriába.
@@ -43,5 +43,5 @@ export async function readResponseTextCapped(
   }
   // A bájt-határon történő vágás kettévághat egy több-bájtos UTF-8 karaktert; a TextDecoder
   // (nem-fatal) a csonka záró bájtokat U+FFFD-re cseréli — csonkolt előnézetnél/hibánál rendben.
-  return { text: new TextDecoder('utf-8').decode(Buffer.concat(chunks)), bytes: total, truncated }
+  return { text: new TextDecoder('utf-8').decode(Buffer.concat(chunks)), truncated }
 }
