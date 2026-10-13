@@ -51,11 +51,13 @@ class Policy(unittest.TestCase):
         self.assertEqual(p.decide(risky, "read_file").action, "allow")
 
     def test_bridge_and_conversation_tools_pass_in_every_preset(self):
-        deny_all = ({"pattern": "*", "action": "deny", "source": "admin"},)
         for preset in (p.BOUND, p.STANDARD, p.FREE, {**p.FREE, "human_approval": "always"}):
-            for tool in ("tool_search", "tool_describe", "clarify", "todo_list"):
+            for tool in ("tool_search", "tool_describe", "tool_call", "clarify", "todo_list", "todo"):
                 self.assertEqual(p.decide(snap(preset), tool).action, "allow", tool)
-                self.assertEqual(p.decide(snap(preset, deny_all), tool).action, "allow", tool)
+        # Explicit tiltás viszont nyer (D3) — a passthrough csak szabály nélkül átlátszó.
+        denied = snap(p.FREE, ({"pattern": "clarify", "action": "deny", "source": "admin"},))
+        self.assertEqual(p.decide(denied, "clarify").action, "block")
+        self.assertEqual(p.decide(denied, "tool_search").action, "allow")
         self.assertEqual(p.decide_interpreted({"kind": "bound"}, "clarify").action, "allow")
 
     def test_unwrapped_tool_call_is_left_to_hermes(self):

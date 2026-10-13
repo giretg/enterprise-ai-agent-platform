@@ -268,8 +268,6 @@ def decide(snapshot, tool_name, args=None):
     del args  # v0: a szint és a tool-szabály dönt, nem a parancs szövege
     if not isinstance(tool_name, str) or not tool_name:
         return Decision("block", f"Nem látom, milyen művelet indulna, ezért nem engedem. {ASK}")
-    if tool_name in _PASSTHROUGH:
-        return Decision("allow", "")
     caps = (snapshot or {}).get("capabilities")
     if not isinstance(caps, dict):
         snapshot = bound_snapshot()
@@ -291,6 +289,12 @@ def decide(snapshot, tool_name, args=None):
     if rule == "approve":
         return _approve(tool_name, capability, level, "A céges szabály jóváhagyáshoz köti.")
     if rule == "allow":
+        return Decision("allow", "", capability, level)
+
+    # #871: híd/beszélgetés átlátszó — de csak ha nincs explicit toolRules találat.
+    # A tiltás mindig nyer (D3); a human_approval alól viszont kivétel, mert a
+    # kockázat a hívott belső eszközé, azt a saját pre_tool_call-ja dönti el.
+    if tool_name in _PASSTHROUGH:
         return Decision("allow", "", capability, level)
 
     action = _capability_action(kind, level, tool_name)
