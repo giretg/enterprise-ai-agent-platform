@@ -358,7 +358,7 @@ class Guard:
             if not isinstance(args, dict):
                 args = kwargs.get("tool_input") if isinstance(kwargs.get("tool_input"), dict) else {}
             # P4/NFR: visszavonás a következő hívásnál. Ha a Control Plane down, D4 cache marad.
-            decision = policy.decide_interpreted(self.current(force=True), tool_name, args)
+            decision = policy.decide_interpreted(self.current(force=True), tool_name, args, os.path.join(self.home, "attachments"))
             call_id = kwargs.get("tool_call_id")
             if call_id:
                 self.decisions[str(call_id)] = decision.action

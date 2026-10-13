@@ -12,7 +12,8 @@ export const CONTENT_FILTER_LEVELS = ['block', 'tokenize', 'warn', 'off'] as con
 
 const BASE_CAPABILITY_LEVELS = {
   code_execution: ['denied', 'sandbox_only', 'local_with_approval', 'local_free'],
-  local_files: ['none', 'read_only', 'project_write', 'free'],
+  // attachments_only (#873, D18): csak a Bot-profil `attachments/` mappája, írás nélkül.
+  local_files: ['none', 'attachments_only', 'read_only', 'project_write', 'free'],
   browser: ['denied', 'company_cloud', 'domain_allowlist', 'free'],
   web_search: ['denied', 'company_egress', 'builtin'],
   mcp_servers: ['company_only', 'plus_approved', 'free'],
@@ -21,6 +22,8 @@ const BASE_CAPABILITY_LEVELS = {
   autonomous_run: ['denied', 'audited'],
   human_approval: ['always', 'risky', 'none'],
   audit_depth: ['plus_tool_results', 'prompt_and_response', 'metadata'],
+  /** A Hermes saját felhős szolgáltatásai (kép, hang, videó, connectorok): a Model Gateway-t megkerülik (#873, D19). */
+  external_services: ['denied', 'allowed'],
 } as const
 
 export type BaseCapabilityKey = keyof typeof BASE_CAPABILITY_LEVELS
@@ -77,6 +80,7 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     autonomous_run: 'denied',
     human_approval: 'risky',
     audit_depth: 'plus_tool_results',
+    external_services: 'denied',
     ...contentFilter({ ...SECRETS_BLOCK, taj: 'block', adoszam: 'block' }, 'tokenize'),
   } as CapabilityMap,
   standard: {
@@ -90,6 +94,7 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     autonomous_run: 'audited',
     human_approval: 'risky',
     audit_depth: 'prompt_and_response',
+    external_services: 'denied',
     ...contentFilter(SECRETS_BLOCK, 'tokenize'),
   } as CapabilityMap,
   free: {
@@ -103,6 +108,7 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     autonomous_run: 'audited',
     human_approval: 'none',
     audit_depth: 'prompt_and_response',
+    external_services: 'allowed',
     ...contentFilter({ secret_key: 'block' }, 'off'),
   } as CapabilityMap,
 }

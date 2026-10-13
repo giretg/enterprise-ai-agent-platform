@@ -23,7 +23,6 @@ export const TOOL_CLASSES = [
   'capability:skills:read',
   'capability:skills:write',
   'capability:autonomous_run:use',
-  // A tengely a #873-mal jön; addig a Guard ismeretlen tengelyként blokkolja (D19: Kötött/Standard tiltott).
   'capability:external_services:use',
   'mcp',
   'always',

@@ -9,7 +9,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-GUARD_VERSION = "0.2.0"
+GUARD_VERSION = "0.3.0"
 NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
 ASK = "Ha erre szükséged van, kérd a rendszergazdát."
 OFFLINE_TTL_SECONDS = 3600
@@ -27,6 +27,7 @@ BOUND = {
     "autonomous_run": "denied",
     "human_approval": "risky",
     "audit_depth": "plus_tool_results",
+    "external_services": "denied",
 }
 STANDARD = {
     **BOUND,
@@ -50,6 +51,7 @@ FREE = {
     "autonomous_run": "audited",
     "human_approval": "none",
     "audit_depth": "prompt_and_response",
+    "external_services": "allowed",
 }
 
 _RULE_RANK = {"allow": 0, "approve": 1, "deny": 2}
@@ -97,7 +99,10 @@ _KIND = {
     ("skills", "read"): "skill_read",
     ("skills", "write"): "skill_write",
     ("autonomous_run", "use"): "autonomous",
+    ("external_services", "use"): "external",
 }
+# #873: „csak csatolmány” mellett ezekből az argumentumokból jön az olvasott útvonal.
+_PATH_ARGS = {"read_file": "path", "search_files": "path", "vision_analyze": "image_url"}
 
 
 class Decision:
@@ -187,8 +192,8 @@ def _classify(tool_name, catalog=FALLBACK_CATALOG):
     parts = cls.split(":")
     if len(parts) == 3 and parts[0] == "capability":
         kind = _KIND.get((parts[1], parts[2]))
-        # Ismert osztály, de a Guard még nem ismeri a tengelyét (#873 external_services): szigorúan tilt.
-        return parts[1], kind or "external"
+        # Ismert osztály, de a Guard még nem ismeri a tengelyét: szigorúan tilt.
+        return parts[1], kind or "unknown_axis"
     return None, "other"
 
 
@@ -229,6 +234,10 @@ def _lead(kind, level, tool_name):
         return "A kódot csak a céges homokozóban futtathatod, a saját gépeden nem."
     if kind == "code":
         return "Ezzel az asszisztenssel nem futtathatsz parancsot vagy kódot a gépeden."
+    if kind in ("file_read", "file_write") and level == "attachments_only":
+        if kind == "file_write":
+            return "A chatbe csatolt fájlt elolvashatod, de helyi fájlt írni vagy módosítani nem."
+        return "Ezzel az asszisztenssel csak a chatbe csatolt fájlt nyithatod meg (csak csatolmány szabály), a gépen lévő más fájlt nem. Csatold a fájlt a beszélgetéshez."
     if kind == "file_read" or (kind == "file_write" and level == "none"):
         return "Ezzel az asszisztenssel nem nyithatsz helyi fájlt."
     if kind == "file_write":
@@ -254,7 +263,7 @@ def _lead(kind, level, tool_name):
     if kind == "skill_read":
         return "A jóváhagyott skillek ellenőrizhető céges listája még nem érhető el, ezért helyi skillt nem tölthetek be."
     if kind == "external":
-        return "Ez a Hermes saját felhős szolgáltatása (például kép-, hang- vagy videókészítés, külső fiók), céges módban nincs engedve."
+        return "Ez a Hermes saját felhős szolgáltatása (például kép-, hang- vagy videókészítés, külső fiók), amely a céges modell-útvonalat megkerüli, ezért nincs engedve."
     if kind == "denied":
         return f"A(z) „{tool_name}” eszközt a cég véglegesen letiltotta."
     return f"A(z) „{tool_name}” eszközt a céges lista még nem ismeri, ezért nem fut le. A rendszergazda a besorolatlan eszközök között látja."
@@ -262,7 +271,7 @@ def _lead(kind, level, tool_name):
 
 def _block(kind, level, tool_name, source, capability):
     # Ismeretlen vagy véglegesen tiltott eszköznél nincs szintbeli döntés, amire hivatkozhatnánk (#871).
-    why = "" if kind in ("other", "denied", "external") else f" {_why(source)}"
+    why = "" if kind in ("other", "denied", "unknown_axis") else f" {_why(source)}"
     text = f"{_lead(kind, level, tool_name)}{why} {ASK}"
     return Decision("block", text, capability, level, unclassified=kind == "other")
 
@@ -280,7 +289,22 @@ def _is_risky(kind):
     return kind in {"code", "file_write", "browser", "autonomous", "skill_write", "mcp"}
 
 
-def _capability_action(kind, level, tool_name):
+def in_attachments(path, attachments_dir):
+    """#873: abszolút (vagy `~`) útvonal, `..` nélkül, symlinkek feloldása után a csatolmány-mappán belül."""
+    if not attachments_dir or not isinstance(path, str) or not path:
+        return False
+    try:
+        raw = os.path.expanduser(path)
+        if not os.path.isabs(raw) or ".." in re.split(r"[\\/]", raw):
+            return False
+        root = os.path.normcase(os.path.realpath(attachments_dir))
+        target = os.path.normcase(os.path.realpath(raw))
+        return os.path.commonpath([root, target]) == root
+    except (ValueError, OSError):
+        return False
+
+
+def _capability_action(kind, level, tool_name, args=None, attachments_dir=None):
     if kind == "code":
         if level in ("denied", "sandbox_only"):
             return "block"
@@ -288,6 +312,9 @@ def _capability_action(kind, level, tool_name):
             return "approve"
         return "allow"
     if kind == "file_read":
+        if level == "attachments_only":
+            path = (args or {}).get(_PATH_ARGS.get(tool_name, "path"))
+            return "allow" if in_attachments(path, attachments_dir) else "block"
         return "block" if level == "none" else "allow"
     if kind == "file_write":
         return "allow" if level == "free" else "block"
@@ -301,6 +328,8 @@ def _capability_action(kind, level, tool_name):
         return "allow" if level == "local" else "block"
     if kind == "autonomous":
         return "block" if level == "denied" else "allow"
+    if kind == "external":
+        return "allow" if level == "allowed" else "block"
     if kind == "skill_write":
         return "block" if level == "approved_only" else "allow"
     if kind == "skill_read":
@@ -318,9 +347,11 @@ def _capability_action(kind, level, tool_name):
     return "block"
 
 
-def decide(snapshot, tool_name, args=None):
-    """allow / approve / block. Az args a későbbi útvonal-policyhoz van fenntartva (#748)."""
-    del args  # v0: a szint és a tool-szabály dönt, nem a parancs szövege
+def decide(snapshot, tool_name, args=None, attachments_dir=None):
+    """allow / approve / block. Az args csak a „csak csatolmány” útvonal-döntéshez kell (#873).
+
+    `attachments_dir`: a Bot-profil `attachments/` mappája; hiányában a csatolmány-szint mindent tilt.
+    """
     if not isinstance(tool_name, str) or not tool_name:
         return Decision("block", f"Nem látom, milyen művelet indulna, ezért nem engedem. {ASK}")
     caps = (snapshot or {}).get("capabilities")
@@ -354,7 +385,7 @@ def decide(snapshot, tool_name, args=None):
     if kind in ("passthrough", "always"):
         return Decision("allow", "", capability, level)
 
-    action = _capability_action(kind, level, tool_name)
+    action = _capability_action(kind, level, tool_name, args if isinstance(args, dict) else None, attachments_dir)
     if action == "block":
         return _block(kind, level, tool_name, source, capability)
     if action == "approve":
@@ -369,7 +400,7 @@ def decide(snapshot, tool_name, args=None):
     return Decision("allow", "", capability, level)
 
 
-def decide_interpreted(interpreted, tool_name, args=None):
+def decide_interpreted(interpreted, tool_name, args=None, attachments_dir=None):
     """A cache-értelmezés eredménye: revoked / bound / snapshot."""
     kind = (interpreted or {}).get("kind")
     if kind == "revoked":
@@ -378,8 +409,8 @@ def decide_interpreted(interpreted, tool_name, args=None):
             "Ehhez az asszisztenshez már nincs hozzáférésed, ezért semmilyen műveletet nem engedek. Kérd a rendszergazdát.",
         )
     if kind == "bound":
-        return decide(bound_snapshot(), tool_name, args)
-    return decide((interpreted or {}).get("snapshot"), tool_name, args)
+        return decide(bound_snapshot(), tool_name, args, attachments_dir)
+    return decide((interpreted or {}).get("snapshot"), tool_name, args, attachments_dir)
 
 
 def interpret_cache(state, now, offline_ttl=OFFLINE_TTL_SECONDS):

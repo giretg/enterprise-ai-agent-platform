@@ -110,7 +110,7 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy, toolOpt
                   {capabilityLevels(key).map(level => <option key={level} value={level}>{t(`levels.${level}`)}</option>)}
                 </select>
                 <p className="mt-1 text-xs text-ink-faint">{t(selected ? 'custom' : scope === 'user' && !preset ? 'fromTenant' : scope === 'agent' && !preset ? 'noCeiling' : 'fromPreset')}</p>
-                {displayLevel ? <p className="mt-1 text-xs text-ink-soft">{t(key === 'local_files' && displayLevel === 'none' ? 'noFileHelp' : key === 'human_approval' && displayLevel === 'none' ? 'noApprovalHelp' : `help.${displayLevel}`)}</p> : null}
+                {displayLevel ? <p className="mt-1 text-xs text-ink-soft">{t(key === 'local_files' && displayLevel === 'none' ? 'noFileHelp' : key === 'human_approval' && displayLevel === 'none' ? 'noApprovalHelp' : key === 'external_services' && displayLevel === 'denied' ? 'noExternalHelp' : `help.${displayLevel}`)}</p> : null}
               </div>
             )
           })}

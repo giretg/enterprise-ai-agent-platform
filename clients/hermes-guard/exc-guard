@@ -113,7 +113,7 @@ def main():
     except Exception:
         status, snapshot = "down", None
     interpreted = {"kind": "snapshot", "snapshot": snapshot} if status == "ok" else {"kind": "revoked" if status == "revoked" else "bound"}
-    decision = policy.decide_interpreted(interpreted, tool, args)
+    decision = policy.decide_interpreted(interpreted, tool, args, os.path.join(home, "attachments"))
     sys.stdout.write(json.dumps(policy.hook_body(decision), ensure_ascii=False) + "\n")
     return 0
 
