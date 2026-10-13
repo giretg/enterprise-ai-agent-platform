@@ -7,6 +7,78 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-13 — Connector válasz-törzs olvasás korlátlan `res.text()` → OOM (http_api + NAV/Számlázz protokoll)
+
+**Scope-választás (kockázati alapon):** a 10-12-i NAV-dekompressziós-bomba kör (#854)
+ledgere **explicit residualként** rögzítette: „`maxResponseChars` nincs a protokoll-ágra
+kötve + uncapped `res.text()`" (spawn-task `task_3db5205b`). A `res.text()` a teljes
+választ a memóriába húzza **mérettől függetlenül**, a `maxResponseChars` csak **utána**
+csonkol. Egy connector **tetszőleges külső hostra** mutathat (generikus http_api motor,
+NAV, Számlázz) — a válasz-törzs mérete a platform kontrollján kívül esik. Ez a legmagasabb
+nem-auditált, **több-bérlős kiesést** okozó felület (ugyanaz az OOM-osztály, mint a #854,
+de **nyers törzsméret**-vektoron, és **szélesebb**: minden http_api connector + mindkét XML
+protokoll). `gh pr list` (#854 OPEN) + ledger-residual alapján ezt vettem; a #854 a
+dekompresszált `invoiceXml`-t plafonozza, a **nyers `res.text()`-et nem** — diff-fel igazolva.
+
+**Coverage (minden agent-elérhető, tetszőleges-hostú olvasási hely a connector-rétegben):**
+`HttpApiClient.request()` közvetlen ág (`http-api-client.ts`), `parseSzamlazzResponse` +
+`parseNavResponse` (`xml-protocols.ts`). A paginate-helper és a tool-handler a
+`client.request()`-en keresztül mennek (nem nyers olvasók). A Secret Manager / OAuth-token
+`res.json()` (Google-/config-host, protokoll-kicsi) tudatosan kívül (l. residual).
+
+### Bizonyított finding (reliability / DoS) — javítva (PR **#878**)
+
+**Korlátlan válasz-törzs olvasás → OOM a közös Cloud Run példányon.** Mindhárom hely
+`await res.text()`-tel a teljes törzset a memóriába húzta, mielőtt a `maxResponseChars`
+csonkolás futott volna. Egy hibás/rosszindulatú upstream több-GB-os (chunked, Content-Length
+nélküli) válasza kimeríti a megosztott példány memóriáját → **minden ott futó bérlő AI-hívása
+megakad**. **Súlyosság:** közepes-magas (hitelesített, de több-bérlős szolgáltatáskiesés;
+nincs cross-tenant adat-szivárgás).
+
+### Javítás (root-cause, a határon — egy helyen)
+- Új `readResponseTextCapped` (`response-cap.ts`): a választ **stream-elve** olvassa, a kemény
+  **10 MiB** bájt-plafon átlépésekor **leállítja az olvasást és `reader.cancel()`-lel lezárja
+  a streamet** — a csúcs-memória = plafon + egy hálózati chunk. A `maxResponseChars` (modell-
+  kontextus) csonkolás ezután, a már kötött méretű szövegen fut.
+- **http_api közvetlen ág:** a plafon fölötti törzs **csonkolt** (a meglévő „túl nagy válasz"
+  UX-et használva) — fail-soft, a hívás nem dől össze.
+- **Számlázz/NAV protokoll-ág** (`readProtocolText` burkoló): a plafon átlépése **fail-closed**,
+  tiszta `response_too_large` hiba — sosem parse-ol csonkolt (és így félreértett) XML-t.
+
+### Ellenőrzések
+- Új `test:connector-response-cap` (4 eset): a 20 MiB-ot kiadni akaró stream **nem olvasódik
+  végig** (a producer a 2 MiB plafonnál megáll — `pulls <= 4`, a teherhordó assert), a plafon
+  alatti törzs sértetlen, a pontosan-plafon méret nem csonkolt, üres 204-törzs nem dob. **Zöld.**
+- `test:http-api` (28 eset, köztük a base64-dekód és csonkolás-jelzés) **regresszió nélkül zöld.**
+- A `test:connector-response-cap` **és** a korábban **CI-ben NEM futó** `test:http-api` mostantól
+  a CI pipeline része (coverage-nyereség önmagában).
+- `tsc`/`eslint` tiszta a módosított fájlokra.
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis): **Standards** — 0 hard violation,
+  idiomatikus, a reader-loop/`cancel()`/chunk-slice/`TextDecoder` helyes; egyetlen actionable nit
+  (használatlan `bytes` return-mező = dead output) **átvezetve** (`2aa54327`). **Spec** — mindhárom
+  nyers-olvasó hely lefedve, a stream valóban leáll (nem read-then-slice), direct=fail-soft /
+  protokoll=fail-closed, a teszt bizonyítja a nem-teljes olvasást; 0 scope-creep, 0 blokkoló rés.
+
+### PR
+- **#878** — `fix(connector): cap http_api/protocol response body reads to prevent OOM`
+  (branch `fix/connector-response-body-cap`, `origin/main`-ről, külön worktree). A ledger-frissítés
+  ugyanebben a PR-ben utazik a fixszel (atomikus merge).
+
+### Residual risk / következő audithoz
+- **🟠 `res.json()` testvér-olvasók kapu nélkül:** Secret Manager (`http-api-client.ts` ~625,
+  Google-host) és az OAuth-token végpont (~1250/1257, config-vezérelt `tokenUrl`). Protokoll-kicsi
+  válaszok, de a token-host a connector-configból jön — ha egy connector-config kompromittálódik,
+  egy rosszindulatú token-végpont nagy JSON-t adhat. Alacsony kockázat, de a **következő kör**
+  jelöltje: a `readResponseTextCapped`-mintát a `res.json()` olvasókra is kiterjeszteni.
+- **🟡 Google Drive-export olvasás** (`google-drive-api-client.ts` export-ág, `res.text()`):
+  Google-hostú és `file.size`-metaadattal előre kapuzott (az export-ágon viszont nincs size-meta),
+  kisebb kockázat — nem e körben. Ha szigorítani kell, ugyanez a capped-reader az út.
+- **🟡 10 MiB plafon fixen kódolt:** a házi normát követi (Drive 10 MiB, ai-audit/skill-zip 8 MiB).
+  Ha egy legitim connector nagyobb egyedi választ ad, a plafon connector-configból paraméterezhető
+  lenne — YAGNI-ig nem.
+- Új nyers válasz-olvasó connector-réteg bevezetésekor a `readResponseTextCapped`-mintát kell
+  követni (a #854 `decodeInvoiceXml` dekompressziós-plafon ezt kiegészíti, nem helyettesíti).
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
