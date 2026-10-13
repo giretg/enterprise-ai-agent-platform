@@ -76,14 +76,47 @@ class Policy(unittest.TestCase):
         self.assertIn("olvasni viszont engedett", write.message)
 
     def test_unclassified_tool_is_denied_unless_explicit_rule(self):
-        bound = p.decide(snap(p.BOUND), "image_generate")
+        bound = p.decide(snap(p.BOUND), "ha_call_service")
         self.assertEqual(bound.action, "block")
+        self.assertTrue(bound.unclassified)
         self.assertIn("még nem ismeri", bound.message)
         self.assertNotIn("céges szabály ezt nem engedi", bound.message)
         free = p.decide(snap(p.FREE), "ha_call_service")
         self.assertEqual(free.action, "block")
+        allowed = snap(p.FREE, ({"pattern": "ha_call_service", "action": "allow", "source": "user"},))
+        self.assertEqual(p.decide(allowed, "ha_call_service").action, "allow")
+        self.assertFalse(p.decide(snap(p.BOUND), "terminal").unclassified)
+
+    def test_external_services_blocked_until_axis_exists_unless_tool_rule(self):
+        blocked = p.decide(snap(p.FREE), "image_generate")
+        self.assertEqual(blocked.action, "block")
+        self.assertFalse(blocked.unclassified)
+        self.assertIn("felhős szolgáltatás", blocked.message)
         allowed = snap(p.FREE, ({"pattern": "image_generate", "action": "allow", "source": "user"},))
         self.assertEqual(p.decide(allowed, "image_generate").action, "allow")
+
+    def test_snapshot_catalog_reclassifies_without_guard_release(self):
+        # #872: a snapshot katalógusa felülírja a beépített tartalékot.
+        catalog = [{"pattern": "ha_call_service", "class": "capability:local_files:read"},
+                   {"pattern": "terminal", "class": "denied"}]
+        s = {**snap(p.FREE), "toolCatalog": catalog}
+        self.assertEqual(p.decide(s, "ha_call_service").action, "allow")
+        self.assertEqual(p.decide({**s, "capabilities": {**p.FREE, "local_files": "none"}}, "ha_call_service").action, "block")
+        # Ami a snapshot-katalógusban nincs, az ott besorolatlan, akkor is, ha a tartalékban szerepel.
+        self.assertTrue(p.decide(s, "read_file").unclassified)
+        # A végleges tiltás nyer az eszközönkénti engedéllyel szemben.
+        allow_terminal = {**s, "toolRules": [{"pattern": "terminal", "action": "allow", "source": "user"}]}
+        denied = p.decide(allow_terminal, "terminal")
+        self.assertEqual(denied.action, "block")
+        self.assertIn("véglegesen letiltotta", denied.message)
+
+    def test_catalog_matches_exact_before_longest_prefix(self):
+        catalog = [("browser_*", "capability:browser:use"), ("browser_vault_*", "denied"), ("browser_vault_list", "always")]
+        self.assertEqual(p.tool_class(catalog, "browser_click"), "capability:browser:use")
+        self.assertEqual(p.tool_class(catalog, "browser_vault_fill"), "denied")
+        self.assertEqual(p.tool_class(catalog, "browser_vault_list"), "always")
+        self.assertIsNone(p.tool_class(catalog, "brows"))
+        self.assertEqual(p.catalog_of({"toolCatalog": "garbage"}), p.FALLBACK_CATALOG)
 
     def test_explicit_tool_rule_beats_capability_and_deny_wins(self):
         rules = (

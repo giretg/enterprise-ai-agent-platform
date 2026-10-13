@@ -6,6 +6,9 @@ import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
 import { Card } from '@/components/ui/shell'
 import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
+import { UnclassifiedTools } from '@/components/client-policy/unclassified-tools'
+import { effectiveToolCatalog, parseTenantToolCatalog, stillUnclassified } from '@/domain/client-policy/tool-catalog'
+import { aiInteractionStore } from '@/auth/ai-audit-deps'
 
 export const dynamic = 'force-dynamic'
 
@@ -20,6 +23,10 @@ export default async function AiClientPolicyPage() {
   ])
   const tenantPolicy = policies.find(p => p.scope === 'tenant' && p.scopeId === tenantId) ?? null
   const tenantView = adminPolicyView(tenantPolicy)
+  const catalog = effectiveToolCatalog(parseTenantToolCatalog(tenantPolicy?.capabilities))
+  const unclassified = stillUnclassified(await aiInteractionStore.unclassifiedTools(tenantId), catalog)
+    .map(r => ({ ...r, lastSeenAt: r.lastSeenAt.toISOString() }))
+  const toolOptions = catalog.filter(e => e.class !== 'passthrough' && e.class !== 'always').map(e => e.pattern)
   const hasUserOverrides = memberships.some(({ user }) => {
     const policy = adminPolicyView(policies.find(p => p.scope === 'user' && p.scopeId === user.id) ?? null)
     return policy && (policy.preset || Object.keys(policy.capabilities).length)
@@ -29,7 +36,10 @@ export default async function AiClientPolicyPage() {
     <div className="mx-auto max-w-5xl space-y-6">
       <header><h1 className="font-display text-3xl font-semibold">{t('title')}</h1><p className="mt-2 text-ink-soft">{t('body')}</p></header>
       <Card title={t('tenantTitle')}>
-        <ClientPolicyForm key="tenant" scope="tenant" scopeId={tenantId} policy={adminPolicyView(tenantPolicy)} tenantPolicy={adminPolicyView(tenantPolicy)} />
+        <ClientPolicyForm key={`tenant-${tenantPolicy?.version ?? 0}`} scope="tenant" scopeId={tenantId} policy={adminPolicyView(tenantPolicy)} tenantPolicy={adminPolicyView(tenantPolicy)} toolOptions={toolOptions} />
+      </Card>
+      <Card title={t('unclassifiedTitle')}>
+        <UnclassifiedTools rows={unclassified} />
       </Card>
       <section className="space-y-3" aria-labelledby="users-title">
         <h2 id="users-title" className="font-display text-2xl font-semibold">{t('usersTitle')}</h2>
@@ -38,7 +48,7 @@ export default async function AiClientPolicyPage() {
           const policy = policies.find(p => p.scope === 'user' && p.scopeId === user.id) ?? null
           return <details key={user.id} className="rounded-xl border border-line bg-card p-4">
             <summary className="cursor-pointer font-semibold">{user.name} <span className="break-all text-sm font-normal text-ink-soft">({user.email})</span></summary>
-            <div className="mt-4"><ClientPolicyForm key={`${user.id}-${tenantPolicy?.version ?? 0}`} scope="user" scopeId={user.id} policy={adminPolicyView(policy)} tenantPolicy={adminPolicyView(tenantPolicy)} /></div>
+            <div className="mt-4"><ClientPolicyForm key={`${user.id}-${tenantPolicy?.version ?? 0}`} scope="user" scopeId={user.id} policy={adminPolicyView(policy)} tenantPolicy={adminPolicyView(tenantPolicy)} toolOptions={toolOptions} /></div>
           </details>
         })}
       </section>

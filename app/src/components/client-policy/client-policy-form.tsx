@@ -8,14 +8,19 @@ import { CAPABILITY_KEYS, PRESET_IDS, PRESETS, capabilityLevels, type PresetId }
 import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
 import { InstallerOsField } from '@/components/client-policy/installer-os-field'
 import type { InstallerPlatform } from '@/domain/client-policy/installer-filename'
+import { DEFAULT_TOOL_CATALOG, TOOL_ACTIONS } from '@/domain/client-policy/tool-catalog'
 
-export type EditableClientPolicy = { preset: string | null; capabilities: unknown; version: number }
+export type EditableClientPolicy = { preset: string | null; capabilities: unknown; version: number; toolOverrides?: Record<string, string> }
 
-export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
+/** A kivétel a katalógusból választható (#872); a híd és a beszélgetés-eszköz nem döntési pont. */
+const DEFAULT_TOOL_OPTIONS = DEFAULT_TOOL_CATALOG.filter((e) => e.class !== 'passthrough' && e.class !== 'always').map((e) => e.pattern)
+
+export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy, toolOptions = DEFAULT_TOOL_OPTIONS }: {
   scope: 'tenant' | 'user' | 'agent'
   scopeId: string
   policy: EditableClientPolicy | null
   tenantPolicy: EditableClientPolicy | null
+  toolOptions?: readonly string[]
 }) {
   const t = asTranslate(useTranslations('ClientPolicy'))
   const router = useRouter()
@@ -25,6 +30,8 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
     policy?.capabilities && typeof policy.capabilities === 'object' && !Array.isArray(policy.capabilities)
       ? policy.capabilities as Record<string, unknown> : {},
   )
+  const [toolRules, setToolRules] = useState<[string, string][]>(Object.entries(policy?.toolOverrides ?? {}))
+  const [newTool, setNewTool] = useState('')
   const [pending, setPending] = useState(false)
   const [message, setMessage] = useState('')
   const [widened, setWidened] = useState<string[]>([])
@@ -43,7 +50,7 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
     try {
       const response = await fetch('/api/client-policy/admin', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, scopeId, preset: preset || null, capabilities: overrides, version: savedVersion, confirmWidening: confirmed }),
+        body: JSON.stringify({ scope, scopeId, preset: preset || null, capabilities: overrides, toolOverrides: Object.fromEntries(toolRules), version: savedVersion, confirmWidening: confirmed }),
       })
       const result = await response.json()
       if (response.status === 409 && result.error === 'confirmation_required') {
@@ -108,11 +115,42 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy }: {
             )
           })}
         </div>
+        <details className="rounded-xl border border-line p-3" open={toolRules.length > 0}>
+          <summary className="cursor-pointer text-sm font-semibold">{t('toolRulesTitle')}</summary>
+          <p className="mt-2 text-xs text-ink-soft">{t('toolRulesHelp')}</p>
+          {toolRules.length === 0 ? <p className="mt-2 text-sm text-ink-soft">{t('toolRulesEmpty')}</p> : (
+            <ul className="mt-2 space-y-2">
+              {toolRules.map(([tool, action], i) => (
+                <li key={tool} className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1 break-all font-mono text-sm">{tool}</span>
+                  <label className="sr-only" htmlFor={`${id}-rule-${i}`}>{t('toolRuleAction', { tool })}</label>
+                  <select id={`${id}-rule-${i}`} value={action} onChange={e => {
+                    setToolRules(toolRules.map(([k, v]) => [k, k === tool ? e.target.value : v]))
+                    resetConfirmation()
+                  }} className="rounded-lg border border-line bg-card px-2 py-1 text-sm">
+                    {TOOL_ACTIONS.map(a => <option key={a} value={a}>{t(`toolActions.${a}`)}</option>)}
+                  </select>
+                  <button type="button" onClick={() => { setToolRules(toolRules.filter(([k]) => k !== tool)); resetConfirmation() }}
+                    className="text-sm text-ink-soft underline">{t('toolRuleRemove')}</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor={`${id}-new-tool`}>{t('toolRuleAdd')}</label>
+            <select id={`${id}-new-tool`} value={newTool} onChange={e => setNewTool(e.target.value)} className="rounded-lg border border-line bg-card px-2 py-1 text-sm">
+              <option value="">{t('toolRulePick')}</option>
+              {toolOptions.filter(o => !toolRules.some(([k]) => k === o)).map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <button type="button" disabled={!newTool} onClick={() => { setToolRules([...toolRules, [newTool, 'deny']]); setNewTool(''); resetConfirmation() }}
+              className="rounded-full border border-line px-3 py-1 text-sm font-semibold disabled:opacity-50">{t('toolRuleAdd')}</button>
+          </div>
+        </details>
       </fieldset>
       {widened.length > 0 ? (
         <div role="alert" className="space-y-2 rounded-xl border border-coral/40 bg-coral/5 p-3 text-sm">
           <p>{t('widenWarning')}</p>
-          <ul className="list-disc pl-5">{widened.map(key => <li key={key}>{t(`capabilities.${key.replace('.', '_')}`)}</li>)}</ul>
+          <ul className="list-disc pl-5">{widened.map(key => <li key={key}>{key.startsWith('tool:') ? t('toolException', { tool: key.slice(5) }) : t(`capabilities.${key.replace('.', '_')}`)}</li>)}</ul>
           <label className="flex items-start gap-2"><input type="checkbox" checked={confirmed} disabled={pending} onChange={e => setConfirmed(e.target.checked)} className="mt-1" />{t('confirmWidening')}</label>
         </div>
       ) : null}

@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { openAesGcm, sealAesGcm } from '@/domain/privacy/aes-gcm-envelope'
 import { resolveSecret } from '@/lib/crypto/secret-resolver'
 import type { ModelCallAuditSink, ModelCallEvent } from '@/domain/model-gateway/proxy'
+import type { UnclassifiedToolUse } from '@/domain/client-policy/tool-catalog'
 
 export const MAX_EVENTS_PER_BATCH = 100
 export const MAX_CONTENT_BYTES = 256 * 1024
@@ -21,7 +22,8 @@ export const MAX_SWEEP_BATCHES = 100
 export const MAX_LIST_LIMIT = 500
 
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
-export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final'
+/** `tool_unclassified` (#872): a Guard a katalógusban nem szereplő eszközt blokkolta; tartalom soha. */
+export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final' | 'tool_unclassified'
 export type AuditSource = 'gateway' | 'guard'
 
 const DEPTH_RANK: Record<AuditDepth, number> = { metadata: 0, prompt_and_response: 1, plus_tool_results: 2 }
@@ -33,6 +35,7 @@ export function normalizeDepth(value: unknown): AuditDepth {
 
 /** A tool-hívás tartalma (argumentum + eredmény) a „+ tool-eredmények" szinthez tartozik. */
 export function contentAllowed(depth: AuditDepth, kind: AuditKind): boolean {
+  if (kind === 'tool_unclassified') return false
   return DEPTH_RANK[depth] >= (kind === 'tool_call' ? 2 : 1)
 }
 
@@ -68,6 +71,8 @@ export interface AiInteractionStore {
   /** A már létező `(tenantId, id)` kimarad (idempotens); a ténylegesen beírt sorok számát adja. */
   insertMany(rows: AiInteractionRow[]): Promise<number>
   list(filter: AiInteractionFilter): Promise<AiInteractionRow[]>
+  /** #872: a tenant `tool_unclassified` eseményei eszköznévenként (próbák száma, utolsó időpont). */
+  unclassifiedTools(tenantId: string): Promise<UnclassifiedToolUse[]>
   /** Lejárt sorok törlése, legfeljebb `limit` darab. A ténylegesen töröltek számát adja. */
   deleteExpired(now: Date, limit: number): Promise<number>
 }
@@ -139,7 +144,7 @@ const ingestEventSchema = z.object({
   sessionId: z.string().min(1).max(200),
   turnId: z.string().max(200).nullish(),
   // `model_call` csak a gatewayé: a Guard nem hamisíthat gateway-rekordot (megkerülés-észlelés alapja).
-  kind: z.enum(['user_prompt', 'tool_call', 'final']),
+  kind: z.enum(['user_prompt', 'tool_call', 'final', 'tool_unclassified']),
   content: z.unknown().optional(),
   meta: z.record(z.string(), z.unknown()).default({}),
 })
