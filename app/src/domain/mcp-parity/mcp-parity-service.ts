@@ -8,6 +8,7 @@ import {
   buildParityTrend,
   computeSessionMetrics,
   groupMcpSessions,
+  sessionKeyOf,
   type McpParityEvent,
   type McpParityReport,
   type McpParityTrendPoint,
@@ -23,8 +24,6 @@ const PARITY_ACTIONS = [
   'enterprise.tool.ok',
   'enterprise.tool.denied',
   'enterprise.tool.error',
-  'project.work_file.write',
-  'project.project_memory.write',
 ]
 
 function toEvent(row: {
@@ -63,17 +62,20 @@ export async function getMcpParityReport(
   audit: Pick<AuditRepository, 'findMany'>,
   input: { tenantId: string; since?: Date; limit?: number },
 ): Promise<McpParityReport & { sessionsDetail: McpSessionMetrics[] }> {
-  // ponytail: 5000-row cap; paginate / session-index if MCP traffic exceeds this.
+  const limit = input.limit ?? 5000
+  // ponytail: recent 5000-row sample; paginate / session-index if MCP traffic exceeds this.
   const rows = await audit.findMany({
     tenantId: input.tenantId,
     since: input.since,
-    order: 'asc',
+    order: 'desc',
     action: PARITY_ACTIONS,
-    limit: input.limit ?? 5000,
+    limit: limit + 1,
   })
-  const parityRows = rows.filter((r) => PARITY_ACTIONS.includes(r.action))
+  const limited = rows.length > limit
+  const parityRows = rows.slice(0, limit).filter((r) => PARITY_ACTIONS.includes(r.action))
   const events = parityRows.map(toEvent)
-  const groups = groupMcpSessions(events)
+  const attributable = events.filter((e) => sessionKeyOf(e) !== 'unknown')
+  const groups = groupMcpSessions(attributable)
   const detail = groups.map((list, i) =>
     computeSessionMetrics(`session-${i + 1}`, list),
   )
@@ -96,5 +98,5 @@ export async function getMcpParityReport(
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([day, sessions]) => ({ day, sessions })),
   )
-  return { ...agg, trend, sessionsDetail: withRealIds }
+  return { ...agg, trend, sessionsDetail: withRealIds, limited, unattributedEvents: events.length - attributable.length }
 }
