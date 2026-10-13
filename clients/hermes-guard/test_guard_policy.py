@@ -118,10 +118,12 @@ class Policy(unittest.TestCase):
                 return p.decide(caps, tool, args, att)
 
             self.assertEqual(run("read_file", {"path": csv}).action, "allow")
+            self.assertEqual(run("read_file", {"path": "re_EloRend.csv"}).action, "allow")
             self.assertEqual(run("search_files", {"pattern": "x", "path": att}).action, "allow")
             self.assertEqual(run("vision_analyze", {"image_url": os.path.join(att, "a.png")}).action, "allow")
             for path in (os.path.expanduser("~/Documents/x.csv"), os.path.join(att, "..", "config.yaml"),
-                         os.path.join(att, "link", "secret.csv"), "re_EloRend.csv", "", None):
+                         os.path.join(att, "link", "secret.csv"), "../config.yaml", "",
+                         "https://x.example/a.png", "data:image/png;base64,xx", "file:///etc/passwd", None):
                 blocked = run("read_file", {"path": path})
                 self.assertEqual(blocked.action, "block", path)
                 self.assertIn("csak csatolmány", blocked.message)

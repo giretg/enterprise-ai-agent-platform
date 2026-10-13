@@ -290,14 +290,19 @@ def _is_risky(kind):
 
 
 def in_attachments(path, attachments_dir):
-    """#873: abszolút (vagy `~`) útvonal, `..` nélkül, symlinkek feloldása után a csatolmány-mappán belül."""
+    """#873: a csatolmány-mappán belüli útvonal, symlinkek feloldása után. A relatív nevet a mappa alatt értjük."""
     if not attachments_dir or not isinstance(path, str) or not path:
         return False
     try:
+        base = os.path.expanduser(attachments_dir)
         raw = os.path.expanduser(path)
-        if not os.path.isabs(raw) or ".." in re.split(r"[\\/]", raw):
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", raw):
+            return False  # URL / data: URI nem helyi fájl (#873: szándékosan blokkolt)
+        if not os.path.isabs(raw):
+            raw = os.path.join(base, raw)
+        if ".." in re.split(r"[\\/]", raw):
             return False
-        root = os.path.normcase(os.path.realpath(attachments_dir))
+        root = os.path.normcase(os.path.realpath(base))
         target = os.path.normcase(os.path.realpath(raw))
         return os.path.commonpath([root, target]) == root
     except (ValueError, OSError):
