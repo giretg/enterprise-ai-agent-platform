@@ -32,6 +32,7 @@ import {
   buildHttpApiTruncationBody,
 } from './http-api-prompt'
 import { buildProtocolRequest, parseProtocolResponse } from './xml-protocols'
+import { readResponseTextCapped } from './response-cap'
 
 export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
@@ -200,6 +201,14 @@ export function riskFromHttpMethod(method: string): HttpApiRisk {
 const READ_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const DEFAULT_MAX_RESPONSE_CHARS = 20_000
+/**
+ * A válasz-törzs olvasásának KEMÉNY bájt-plafonja (a `maxResponseChars` soft modell-kontextus
+ * csonkolás fölött). A `res.text()` korlátlanul a memóriába húzná a törzset; egy connector
+ * tetszőleges hostra mutathat, így egy hibás/rosszindulatú, több-GB-os válasz OOM-ot okozna
+ * a közös Cloud Run példányon. 10 MiB bőven elég egyetlen API-válaszra (a házi norma:
+ * Drive-letöltés 10 MiB, skill-zip/ai-audit 8 MiB), az ezt meghaladó törzs csonkolt.
+ */
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 /** Runtime által injektált idempotencia-fejléc (kisbetűs egyeztetéshez). */
 const IDEMPOTENCY_HEADER_LOWER = 'idempotency-key'
 /**
@@ -940,13 +949,16 @@ export class HttpApiClient {
     // retry kettős bizonylatot/dupla megrendelést okozna. Írásnál csak a 429-et
     // ismételjük; az olvasások tartják a teljes 5xx-retryt. Ua., mint a protokoll-ág.
     const res = await this.fetchWithBackoff(url, init, READ_METHODS.has(method))
-    const text = await res.text()
+    // Kemény bájt-plafonnal olvasunk: egy korlátlan válasz-törzs különben OOM-ot okozna a
+    // közös futtatón. A plafon fölötti rész csonkolt; a `maxResponseChars` soft csonkolás
+    // ezután, a már kötött méretű szövegen fut.
+    const { text, truncated: bodyCapped } = await readResponseTextCapped(res, MAX_RESPONSE_BYTES)
     const max = this.config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
-    const overLimit = text.length > max
+    const overLimit = bodyCapped || text.length > max
     const previewText = overLimit ? `${text.slice(0, max)}…[truncated]` : text
 
     let body: unknown = previewText
-    let truncated = false
+    let truncated = bodyCapped
     let oversizedSoftHint: string | undefined
     const contentType = res.headers.get('content-type') ?? ''
     if (contentType.includes('application/json')) {

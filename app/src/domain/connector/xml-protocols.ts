@@ -12,6 +12,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { gunzipSync } from 'node:zlib'
 import type { HttpApiProtocol } from '@/domain/provisioning/connector-config'
 import type { NavSoftware } from '@/lib/nav-online-invoice-software'
+import { readResponseTextCapped } from './response-cap'
 
 export type ProtocolCall = {
   method: string
@@ -36,6 +37,23 @@ export class ProtocolRequestError extends Error {
     super(message)
     this.name = 'ProtocolRequestError'
   }
+}
+
+/**
+ * A protokoll-válasz (Számlázz/NAV XML) olvasásának kemény bájt-plafonja. A `res.text()`
+ * korlátlanul a memóriába húzná a törzset — egy hibás/rosszindulatú upstream több-GB-os
+ * válasza OOM-ot okozna a közös Cloud Run példányon. Egy számla-lekérdezés XML-je ennél
+ * nagyságrendekkel kisebb; a plafon átlépése tiszta hiba, nem csonkolt (és így félre-parse-olt)
+ * XML. A NAV `invoiceData` kibontott mérete külön, a `decodeInvoiceXml`-ben is plafonos.
+ */
+const MAX_PROTOCOL_RESPONSE_BYTES = 10 * 1024 * 1024
+
+async function readProtocolText(res: Response): Promise<string> {
+  const { text, truncated } = await readResponseTextCapped(res, MAX_PROTOCOL_RESPONSE_BYTES)
+  if (truncated) {
+    throw new ProtocolRequestError('A számlázási API válasza túllépte a méretkorlátot.', 'response_too_large')
+  }
+  return text
 }
 
 type Query = NonNullable<ProtocolCall['query']>
@@ -232,7 +250,7 @@ function safeDecode(value: string | null): string | undefined {
 }
 
 async function parseSzamlazzResponse(res: Response): Promise<ProtocolResult> {
-  const text = await res.text()
+  const text = await readProtocolText(res)
   const errorCode = res.headers.get('szlahu_error_code') ?? xmlText(text, 'hibakod')
   const message = safeDecode(res.headers.get('szlahu_error')) ?? xmlText(text, 'hibauzenet')
   const failed = !res.ok || Boolean(errorCode) || /<sikeres>\s*false/.test(text) || text.startsWith('[ERR]')
@@ -388,7 +406,7 @@ async function buildNavRequest(baseUrl: string, call: ProtocolCall, secret: stri
 }
 
 async function parseNavResponse(res: Response): Promise<ProtocolResult> {
-  const text = await res.text()
+  const text = await readProtocolText(res)
   const funcCode = xmlText(text, 'funcCode')
   const errorCode = xmlText(text, 'errorCode')
   const ok = res.ok && funcCode !== 'ERROR'
