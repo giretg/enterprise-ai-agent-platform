@@ -1,8 +1,9 @@
 /**
  * Model Gateway tartalomszűrő (#746 V1-4) — a #769 proxy `filterRequest`/`transformResponse` horgainak tartalma.
  *
- * 1. PAN → blokk: a teljes kimenő kérésen (system/user/assistant/tool üzenet, tool-argumentum), slotonként
- *    szkennelve (üzenethatáron át nincs hamis PAN-találat). Találatnál nincs provider-hívás (D15).
+ * 1. PAN → blokk: a teljes kimenő kérésen (`messages` + `stop`), slotonként szkennelve
+ *    (üzenethatáron át nincs hamis PAN-találat). Találatnál nincs provider-hívás (D15).
+ *    A `stop` (string | string[]) a proxy `FORWARDED_PARAMS` része — szabad szöveg, nem skáláris.
  * 2. E-mail + személynév → álnév, `hermes_session` hatókörben, bijektíven és stabilan (prompt-cache).
  *    Személynév csak ott ismerhető fel katalógus nélkül, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
  *    a session ezután bárhol, magyar raggal is felismeri (known-value matcher). A teljes katalógus: #747.
@@ -170,7 +171,14 @@ type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; 
 
 const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
 
-/** Minden string a `messages`-ben (content, content-részek, tool_calls argumentumok, reasoning…). */
+/**
+ * A proxy által továbbított szabad szöveges body-mezők. A `stop` string | string[] —
+ * ha csak a `messages`-t szűrnénk, PAN/PII a stop-szekvenciában eljutna a providerhez.
+ * (A tools/response_format/reasoning rés a #802-ben zárul.)
+ */
+const SCANNED_BODY_KEYS = ['messages', 'stop'] as const
+
+/** Minden string a bejárt fában (content, content-részek, tool_calls argumentumok, stop-elemek…). */
 function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
   if (Array.isArray(value) || (value && typeof value === 'object')) {
     const owner = value as Record<string, unknown> | unknown[]
@@ -181,6 +189,19 @@ function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
     }
   }
   return out
+}
+
+/** Top-level string mező (pl. `stop: "…"`) is kapjon slotot — a `collectSlots` csak objektumot/tömböt jár. */
+function collectScannedBodySlots(scanned: Record<string, unknown>): Slot[] {
+  const slots: Slot[] = []
+  for (const [key, value] of Object.entries(scanned)) {
+    if (typeof value === 'string') {
+      if (!value.startsWith('data:')) slots.push({ owner: scanned, key, text: value })
+    } else {
+      collectSlots(value, slots)
+    }
+  }
+  return slots
 }
 
 export function containsPan(text: string): boolean {
@@ -246,8 +267,11 @@ export function createContentFilterHooks(deps: {
 
   return {
     async filterRequest(ctx, body) {
-      const messages = structuredClone(body.messages)
-      const slots = collectSlots(messages)
+      const scanned: Record<string, unknown> = {}
+      for (const key of SCANNED_BODY_KEYS) {
+        if (body[key] !== undefined) scanned[key] = structuredClone(body[key])
+      }
+      const slots = collectScannedBodySlots(scanned)
       try {
         const capabilities = await deps.getCapabilities?.(ctx)
         // Without a policy loader retain the original V1 filter contract for standalone callers.
@@ -290,7 +314,7 @@ export function createContentFilterHooks(deps: {
         logger.error({ event: 'model_gateway.tokenize_failed', error: String(error) }, 'Gateway tokenization failed')
         return { block: PRIVACY_UNAVAILABLE_MESSAGE, reason: 'privacy_unavailable' }
       }
-      return { body: { ...body, messages } }
+      return { body: { ...body, ...scanned } }
     },
 
     transformResponse: (ctx) => sessions.has(ctx)
