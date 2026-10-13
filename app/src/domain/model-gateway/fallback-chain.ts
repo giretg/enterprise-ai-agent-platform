@@ -49,8 +49,11 @@ export function classifyProviderError(error: unknown): FallbackErrorClass {
   if (/\b(401|403)\b/.test(message) || has(message, 'unauthorized', 'forbidden', 'invalid api key', 'authentication')) {
     return 'auth_error'
   }
-  // Keret / költségkeret: szándékos limit, másik modellre váltva megkerülnénk.
+  // Keret / költségkeret / provider-számla: szándékos limit, másik modellre váltva megkerülnénk.
+  // OpenRouter gyakran 402 / "Insufficient credits" (nem "quota") — a "provider failed" catch-all
+  // előtt kell elkapni, különben a tartalék lánc továbbkölt a következő fizetős modellre.
   if (
+    /\b402\b/.test(message) ||
     has(
       message,
       'keret',
@@ -59,6 +62,10 @@ export function classifyProviderError(error: unknown): FallbackErrorClass {
       'spend limit',
       'quota',
       'insufficient_quota',
+      'insufficient_credits',
+      'insufficient credits',
+      'payment required',
+      'out of credits',
     )
   ) {
     return 'blocked'
