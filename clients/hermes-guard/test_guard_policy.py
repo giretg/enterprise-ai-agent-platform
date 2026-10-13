@@ -50,10 +50,34 @@ class Policy(unittest.TestCase):
         self.assertEqual(p.decide(risky, "terminal").action, "approve")
         self.assertEqual(p.decide(risky, "read_file").action, "allow")
 
+    def test_bridge_and_conversation_tools_pass_in_every_preset(self):
+        deny_all = ({"pattern": "*", "action": "deny", "source": "admin"},)
+        for preset in (p.BOUND, p.STANDARD, p.FREE, {**p.FREE, "human_approval": "always"}):
+            for tool in ("tool_search", "tool_describe", "clarify", "todo_list"):
+                self.assertEqual(p.decide(snap(preset), tool).action, "allow", tool)
+                self.assertEqual(p.decide(snap(preset, deny_all), tool).action, "allow", tool)
+        self.assertEqual(p.decide_interpreted({"kind": "bound"}, "clarify").action, "allow")
+
+    def test_unwrapped_tool_call_is_left_to_hermes(self):
+        # Két helyi elem: a Hermes nem csomagolja ki, a saját local_batch_error-ja jut a modellhez.
+        batch = {"calls": [{"name": "read_file", "arguments": {"path": "a.csv"}},
+                           {"name": "read_file", "arguments": {"path": "b.csv"}}]}
+        self.assertEqual(p.hook_body(p.decide(snap(p.BOUND), "tool_call", batch)), {})
+        # A kicsomagolt belső eszköz továbbra is a képesség szerint dől el.
+        self.assertEqual(p.decide(snap(p.BOUND), "read_file").action, "block")
+
+    def test_capability_block_names_axis_not_unknown_tool(self):
+        bound = p.decide(snap(p.BOUND), "read_file")
+        self.assertIn("helyi fájlt", bound.message)
+        self.assertNotIn("nem ismeri", bound.message)
+        write = p.decide(snap(p.FREE), "write_file")
+        self.assertIn("olvasni viszont engedett", write.message)
+
     def test_unclassified_tool_is_denied_unless_explicit_rule(self):
         bound = p.decide(snap(p.BOUND), "image_generate")
         self.assertEqual(bound.action, "block")
-        self.assertIn("nincs engedve", bound.message)
+        self.assertIn("még nem ismeri", bound.message)
+        self.assertNotIn("céges szabály ezt nem engedi", bound.message)
         free = p.decide(snap(p.FREE), "ha_call_service")
         self.assertEqual(free.action, "block")
         allowed = snap(p.FREE, ({"pattern": "image_generate", "action": "allow", "source": "user"},))
