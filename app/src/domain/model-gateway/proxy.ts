@@ -249,6 +249,24 @@ class SseCollector {
 
 const matchesRequested = (ref: ModelRef, requested: string) => modelRefKey(ref) === requested || ref.model === requested
 
+async function readRequestText(request: Request): Promise<string | null> {
+  if (!request.body) return ''
+  const reader = request.body.getReader()
+  const decoder = new TextDecoder()
+  const chunks: string[] = []
+  let bytes = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return chunks.join('') + decoder.decode()
+    bytes += value.byteLength
+    if (bytes > MAX_REQUEST_BYTES) {
+      void reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(decoder.decode(value, { stream: true }))
+  }
+}
+
 /** Az első `data:` sor megérkezéséig puffereli a streamet: addig a tartalék-váltás még szabad. */
 async function peekFirstData(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -290,8 +308,8 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
 
   const declared = Number(request.headers.get('content-length') ?? 0)
   if (declared > MAX_REQUEST_BYTES) return errorResponse(413, 'request_too_large', 'A kérés túl nagy.')
-  const text = await request.text()
-  if (text.length > MAX_REQUEST_BYTES) return errorResponse(413, 'request_too_large', 'A kérés túl nagy.')
+  const text = await readRequestText(request)
+  if (text === null) return errorResponse(413, 'request_too_large', 'A kérés túl nagy.')
   let body: Record<string, unknown> | null = null
   try {
     const parsed = JSON.parse(text)
@@ -376,10 +394,11 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
 
   const failed: ModelCallEvent['failedCandidates'] = []
   let lastError: unknown = null
+  let lastSentRequest: Record<string, unknown> | null = null
   for (const candidate of chain) {
     const upstream = upstreamFor(candidate)
     try {
-      return await callProvider(deps, request, candidate, upstream, ctx, (outcome, collected) => {
+      return await callProvider(deps, request, candidate, upstream, ctx, () => { lastSentRequest = upstream }, (outcome, collected) => {
         const substituted = !!requestedModel && !matchesRequested(candidate, requestedModel)
         void record({
           outcome,
@@ -401,7 +420,7 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
   }
 
   const errorClass = classifyProviderError(lastError)
-  void record({ outcome: 'error', errorClass, failedCandidates: failed, request: null })
+  void record({ outcome: 'error', errorClass, failedCandidates: failed, request: lastSentRequest })
   if (lastError instanceof ProviderHttpError && !isFallbackEligible(errorClass)) {
     return new Response(lastError.body, {
       status: lastError.status,
@@ -425,6 +444,7 @@ async function callProvider(
   candidate: ModelRef,
   upstream: Record<string, unknown>,
   ctx: GatewayCallContext,
+  onSending: () => void,
   onDone: (
     outcome: 'ok' | 'aborted' | 'error',
     collected: { response: ModelCallEvent['response']; usage: ModelCallEvent['usage'] },
@@ -437,6 +457,7 @@ async function callProvider(
   const timer = setTimeout(() => controller.abort(), PROVIDER_CONNECT_TIMEOUT_MS)
   let res: Response
   try {
+    onSending()
     res = await (deps.fetchImpl ?? fetch)(`${endpoint.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -445,6 +466,7 @@ async function callProvider(
         ...endpoint.headers,
       },
       body: JSON.stringify(upstream),
+      redirect: 'error',
       signal: AbortSignal.any([controller.signal, request.signal]),
     })
   } catch (error) {
