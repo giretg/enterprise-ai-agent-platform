@@ -9,6 +9,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { logger } from '@/lib/observability'
+import { AuditContentTooLargeError } from '@/domain/ai-audit/ai-audit-service'
 import { parseAgentModelConfig, resolveAgentPrimary } from '@/lib/agent-model-config'
 import { modelRefKey, sameModel, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
 import {
@@ -25,6 +26,7 @@ import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrout
 export const SESSION_HEADER = 'x-excellence-session'
 export const TURN_HEADER = 'x-excellence-turn'
 export const MAX_REQUEST_BYTES = 16 * 1024 * 1024
+const MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
 const PROVIDER_CONNECT_TIMEOUT_MS = 120_000
 
 /**
@@ -83,6 +85,8 @@ export type GatewayCallContext = {
 }
 
 export type ModelCallEvent = GatewayCallContext & {
+  /** Egy kérés minden szolgáltatói próbálkozását és eredményét összeköti. */
+  callId: string
   requestedModel: string | null
   /** A ténylegesen válaszoló modell (`provider/model`); blokknál null. */
   model: string | null
@@ -90,12 +94,14 @@ export type ModelCallEvent = GatewayCallContext & {
   substituted: boolean
   /** A tartalék-váltás előtt sikertelen jelöltek. */
   failedCandidates: Array<{ model: string; errorClass: FallbackErrorClass }>
-  outcome: 'ok' | 'blocked' | 'error' | 'aborted'
+  outcome: 'started' | 'ok' | 'blocked' | 'error' | 'aborted'
   blockReason?: string
   errorClass?: FallbackErrorClass
   /** A providernek ténylegesen elküldött kérés (szűrés után). Az audit-mélység dönt a tárolásról (V1-5). */
   request: unknown
   response: { content: string; toolCalls: unknown[]; finishReason: string | null } | null
+  /** A provider nyers JSON-válasza vagy SSE-szövege, a tartalomnaplóhoz. */
+  providerResponse?: unknown
   usage: { promptTokens?: number; completionTokens?: number } | null
   latencyMs: number
 }
@@ -147,6 +153,27 @@ class ProviderHttpError extends Error {
   ) {
     super(`${provider} provider failed: ${status} ${body.slice(0, 200)}`)
     this.name = 'ProviderHttpError'
+  }
+}
+
+class AuditWriteError extends Error {
+  constructor(readonly tooLarge: boolean) { super('AI audit write failed') }
+}
+
+async function readProviderText(res: Response): Promise<string> {
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return new TextDecoder().decode(Buffer.concat(chunks))
+    size += value.byteLength
+    if (size > MAX_PROVIDER_RESPONSE_BYTES) {
+      await reader.cancel()
+      throw new Error('provider response exceeds service limit')
+    }
+    chunks.push(value)
   }
 }
 
@@ -207,17 +234,25 @@ class SseCollector {
   finishReason: string | null = null
   usage: ModelCallEvent['usage'] = null
   model: string | null = null
+  doneSeen = false
+  raw = ''
   private calls = new Map<number, { id?: string; name: string; arguments: string }>()
   private pending = ''
   private decoder = new TextDecoder()
+  private bytes = 0
 
   push(chunk: Uint8Array): void {
-    this.pending += this.decoder.decode(chunk, { stream: true })
+    this.bytes += chunk.byteLength
+    if (this.bytes > MAX_PROVIDER_RESPONSE_BYTES) throw new Error('provider response exceeds service limit')
+    const decoded = this.decoder.decode(chunk, { stream: true })
+    this.raw += decoded
+    this.pending += decoded
     const lines = this.pending.split('\n')
     this.pending = lines.pop() ?? ''
     for (const line of lines) {
       const data = line.trim().startsWith('data:') ? line.trim().slice(5).trim() : ''
-      if (!data || data === '[DONE]') continue
+      if (data === '[DONE]') { this.doneSeen = true; continue }
+      if (!data) continue
       try {
         this.add(JSON.parse(data))
       } catch {
@@ -257,9 +292,12 @@ async function peekFirstData(
   const decoder = new TextDecoder()
   const buffered: Uint8Array[] = []
   let text = ''
+  let bytes = 0
   for (;;) {
     const { done, value } = await reader.read()
     if (done) throw new Error(`${provider} provider failed: empty stream`)
+    bytes += value.byteLength
+    if (bytes > MAX_PROVIDER_RESPONSE_BYTES) throw new Error('provider response exceeds service limit')
     buffered.push(value)
     text += decoder.decode(value, { stream: true })
     const first = /(?:^|\n)data:[ \t]*([^\n]*)/.exec(text)
@@ -316,16 +354,41 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
     stream,
   }
   const requestedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null
-  const record = (e: Partial<ModelCallEvent> & Pick<ModelCallEvent, 'outcome'>) =>
-    deps.audit
-      .record({
-        ...ctx, requestedModel, model: null, substituted: false, failedCandidates: [], request: null,
-        response: null, usage: null, latencyMs: Date.now() - started, ...e,
-      })
-      // ponytail: az audit-hiba nem állítja meg a hívást; fail-closed audit, ha a V1-7 megkerülés-észlelés megköveteli.
-      .catch((err) => logger.error({ event: 'model_gateway.audit_failed', error: String(err) }, 'Model call audit failed'))
-  const blocked = (reason: string, message: string) => {
-    void record({ outcome: 'blocked', blockReason: reason })
+  const callId = randomUUID()
+  const record = async (e: Partial<ModelCallEvent> & Pick<ModelCallEvent, 'outcome'>): Promise<void> => {
+    const event: ModelCallEvent = {
+      ...ctx, requestedModel, model: null, substituted: false, failedCandidates: [], request: null,
+      response: null, providerResponse: null, usage: null, latencyMs: Date.now() - started, callId, ...e,
+    }
+    try {
+      await deps.audit.record(event)
+    } catch (err) {
+      logger.error({ event: 'model_gateway.audit_failed', error: String(err) }, 'Model call audit failed')
+      if (err instanceof AuditContentTooLargeError) {
+        try {
+          await deps.audit.record({
+            ...event, outcome: event.outcome === 'started' ? 'blocked' : 'error',
+            request: null, response: null, providerResponse: null,
+            blockReason: 'audit_content_too_large', errorClass: 'content_error',
+          })
+        } catch {
+          throw new AuditWriteError(false)
+        }
+        throw new AuditWriteError(true)
+      }
+      throw new AuditWriteError(false)
+    }
+  }
+  const auditUnavailable = (err?: unknown) =>
+    err instanceof AuditWriteError && err.tooLarge
+      ? errorResponse(413, 'audit_content_too_large', 'A kérés vagy válasz túl nagy a kötelező naplózáshoz.')
+      : errorResponse(503, 'audit_unavailable', 'A vállalati AI-használat naplózása most nem működik. Próbáld újra később.')
+  const blocked = async (reason: string, message: string) => {
+    try {
+      await record({ outcome: 'blocked', blockReason: reason })
+    } catch (err) {
+      return auditUnavailable(err)
+    }
     return syntheticCompletion(message, { stream, model: requestedModel ?? 'excellence' })
   }
 
@@ -378,30 +441,53 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
   let lastError: unknown = null
   for (const candidate of chain) {
     const upstream = upstreamFor(candidate)
+    const model = modelRefKey(candidate)
+    const substituted = !!requestedModel && !matchesRequested(candidate, requestedModel)
     try {
-      return await callProvider(deps, request, candidate, upstream, ctx, (outcome, collected) => {
-        const substituted = !!requestedModel && !matchesRequested(candidate, requestedModel)
-        void record({
+      // A tartós kezdő rekord az utolsó kapu: enélkül provider-hívás nem indulhat.
+      await record({ outcome: 'started', model, substituted, failedCandidates: [...failed], request: upstream })
+    } catch (err) {
+      return auditUnavailable(err)
+    }
+    try {
+      return await callProvider(deps, request, candidate, upstream, ctx, async (outcome, collected) => {
+        await record({
           outcome,
-          model: modelRefKey(candidate),
+          model,
           substituted,
-          failedCandidates: failed,
-          request: upstream,
+          failedCandidates: [...failed],
           response: collected.response,
+          providerResponse: collected.providerResponse,
           usage: collected.usage,
         })
       })
     } catch (error) {
+      if (error instanceof AuditWriteError) return auditUnavailable(error)
+      if (request.signal.aborted) {
+        try {
+          await record({ outcome: 'aborted', model, substituted, failedCandidates: [...failed] })
+        } catch (err) {
+          return auditUnavailable(err)
+        }
+        return errorResponse(499, 'client_aborted', 'A kérés megszakadt.')
+      }
       lastError = error
       const errorClass = classifyProviderError(error)
-      failed.push({ model: modelRefKey(candidate), errorClass })
+      failed.push({ model, errorClass })
+      try {
+        await record({
+          outcome: 'error', model, substituted, errorClass, failedCandidates: [...failed],
+          providerResponse: error instanceof ProviderHttpError ? error.body : null,
+        })
+      } catch (err) {
+        return auditUnavailable(err)
+      }
       // Első token előtt vagyunk (a callProvider csak sikeres elsőre tér vissza): csak provider-oldali hiba vált.
       if (!isFallbackEligible(errorClass)) break
     }
   }
 
   const errorClass = classifyProviderError(lastError)
-  void record({ outcome: 'error', errorClass, failedCandidates: failed, request: null })
   if (lastError instanceof ProviderHttpError && !isFallbackEligible(errorClass)) {
     return new Response(lastError.body, {
       status: lastError.status,
@@ -427,8 +513,8 @@ async function callProvider(
   ctx: GatewayCallContext,
   onDone: (
     outcome: 'ok' | 'aborted' | 'error',
-    collected: { response: ModelCallEvent['response']; usage: ModelCallEvent['usage'] },
-  ) => void,
+    collected: { response: ModelCallEvent['response']; providerResponse: unknown; usage: ModelCallEvent['usage'] },
+  ) => Promise<void>,
 ): Promise<Response> {
   const endpoint = await deps.providers(candidate.provider, ctx.tenantId)
   if (!endpoint) throw new Error(`${candidate.provider} provider is not configured`)
@@ -455,7 +541,7 @@ async function callProvider(
   } finally {
     clearTimeout(timer)
   }
-  if (!res.ok) throw new ProviderHttpError(candidate.provider, res.status, await res.text())
+  if (!res.ok) throw new ProviderHttpError(candidate.provider, res.status, await readProviderText(res))
 
   const transform = deps.hooks?.transformResponse?.(ctx)
   const out = (body: ReadableStream<Uint8Array> | string, contentType: string, extra: HeadersInit = {}) => {
@@ -467,7 +553,7 @@ async function callProvider(
   }
 
   if (!ctx.stream) {
-    const text = await res.text()
+    const text = await readProviderText(res)
     let data: OpenAiPayload
     try {
       data = JSON.parse(text)
@@ -479,8 +565,9 @@ async function callProvider(
       throw new Error(`${candidate.provider} provider failed: ${data?.error?.code ?? ''} ${data?.error?.message ?? 'no choices'}`)
     }
     const msg = data.choices[0]?.message
-    onDone('ok', {
+    await onDone('ok', {
       response: { content: typeof msg?.content === 'string' ? msg.content : '', toolCalls: msg?.tool_calls ?? [], finishReason: data.choices[0]?.finish_reason ?? null },
+      providerResponse: data,
       usage: data.usage ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } : null,
     })
     return out(text, 'application/json')
@@ -497,37 +584,60 @@ async function callProvider(
   }
 
   const collector = new SseCollector()
-  let finished = false
-  const finish = (outcome: 'ok' | 'aborted' | 'error') => {
-    if (finished) return
-    finished = true
-    onDone(outcome, { response: collector.response(), usage: collector.usage })
+  let finishPromise: Promise<void> | null = null
+  let clientCancelled = false
+  const finish = (outcome: 'ok' | 'aborted' | 'error') =>
+    finishPromise ??= onDone(outcome, { response: collector.response(), providerResponse: collector.raw, usage: collector.usage })
+  const held: Uint8Array[] = []
+  const complete = async (controller: ReadableStreamDefaultController<Uint8Array>, cancelProvider = false) => {
+    await finish('ok')
+    for (const chunk of held) controller.enqueue(chunk)
+    controller.close()
+    if (cancelProvider) await reader.cancel().catch(() => {})
   }
   const body = new ReadableStream<Uint8Array>({
-    start(controller) {
+    start() {
       for (const chunk of buffered) {
         collector.push(chunk)
-        controller.enqueue(chunk)
+        held.push(chunk)
       }
     },
     async pull(controller) {
       try {
+        if (collector.doneSeen) {
+          await complete(controller, true)
+          return
+        }
         const { done, value } = await reader.read()
         if (done) {
-          controller.close()
-          finish('ok')
+          if (clientCancelled || request.signal.aborted) {
+            await finish('aborted')
+            return
+          }
+          if (!collector.doneSeen) throw new Error('provider stream ended before [DONE]')
+          await complete(controller)
         } else {
           collector.push(value)
-          controller.enqueue(value)
+          held.push(value)
+          // Az utolsó chunkot visszatartjuk: ha [DONE]-t hordoz, csak a tartós audit után mehet ki.
+          if (collector.doneSeen) {
+            await complete(controller, true)
+          } else if (held.length > 1) controller.enqueue(held.shift()!)
         }
       } catch (error) {
-        finish(request.signal.aborted ? 'aborted' : 'error')
+        try {
+          await finish(request.signal.aborted ? 'aborted' : 'error')
+        } catch { /* a kezdő rekord tartós; a stream hibával zárul */ }
         controller.error(error)
       }
     },
-    cancel(reason) {
-      finish('aborted')
-      return reader.cancel(reason)
+    async cancel(reason) {
+      clientCancelled = true
+      try {
+        await reader.cancel(reason)
+      } finally {
+        await finish('aborted')
+      }
     },
   })
   return out(body, 'text/event-stream; charset=utf-8', { 'cache-control': 'no-cache', 'x-accel-buffering': 'no' })

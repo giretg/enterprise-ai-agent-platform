@@ -10,6 +10,7 @@ import {
   type ModelGatewayDeps,
 } from '../src/domain/model-gateway/proxy'
 import type { ModelRef } from '../src/lib/model-policy'
+import { createGatewayAuditSink, MAX_CONTENT_BYTES } from '../src/domain/ai-audit/ai-audit-service'
 
 const TENANT = '22222222-2222-4222-8222-222222222222'
 const USER = '11111111-1111-4111-8111-111111111111'
@@ -38,6 +39,7 @@ function setup(opts: {
   hooks?: GatewayPipelineHooks
   global?: ModelRef[]
   verifyOk?: boolean
+  audit?: ModelGatewayDeps['audit']
 }) {
   const calls: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
   const events: ModelCallEvent[] = []
@@ -57,7 +59,7 @@ function setup(opts: {
     getGlobalFallbackChain: async () => opts.global ?? [],
     getAllowedModels: async () => opts.allowedModels ?? null,
     providers: (p) => (p === 'openrouter' ? { baseUrl: 'https://or.test/v1', apiKey: 'sk-test' } : p === 'ollama' ? { baseUrl: 'http://ollama.test/v1' } : null),
-    audit: { record: async (e) => void events.push(e) },
+    audit: opts.audit ?? { record: async (e) => void events.push(e) },
     hooks: opts.hooks,
     maxAttempts: 3,
     fetchImpl: (async (url: string, init: RequestInit) => {
@@ -93,6 +95,154 @@ const ask = { model: 'vendor/model-a', messages: [{ role: 'user', content: 'szia
 const flush = () => new Promise((r) => setTimeout(r, 5))
 
 async function main() {
+  await check('audit-tároló hibája: sem normál, sem stream kérés nem indul a providernél', async () => {
+    const s = setup({ agent: { primary: A }, audit: createGatewayAuditSink({
+      depthFor: async () => 'metadata',
+      store: { insertMany: async () => { throw new Error('database unavailable') }, list: async () => [], deleteExpired: async () => 0 },
+    }) })
+    for (const stream of [false, true]) {
+      const res = await s.call({ ...ask, stream })
+      assert.equal(res.status, 503)
+      assert.equal((await res.json()).error.code, 'audit_unavailable')
+    }
+    assert.equal(s.calls.length, 0)
+  })
+
+  await check('nullás beszúrás sem igazolja a tartós auditot', async () => {
+    const s = setup({ agent: { primary: A }, audit: createGatewayAuditSink({
+      depthFor: async () => 'metadata',
+      store: { insertMany: async () => 0, list: async () => [], deleteExpired: async () => 0 },
+    }) })
+    assert.equal((await s.call(ask)).status, 503)
+    assert.equal(s.calls.length, 0)
+  })
+
+  await check('provider csak a kezdő audit-írás tartós befejezése után indul', async () => {
+    let release!: () => void
+    const persisted = new Promise<void>((resolve) => { release = resolve })
+    let records = 0
+    const s = setup({ agent: { primary: A }, scripts: [completion('ok')], audit: {
+      record: async () => { if (++records === 1) await persisted },
+    } })
+    const pending = s.call(ask)
+    await flush()
+    assert.equal(s.calls.length, 0)
+    release()
+    assert.equal((await pending).status, 200)
+    assert.equal(s.calls.length, 1)
+    assert.equal(records, 2)
+  })
+
+  await check('sikertelen eredmény-audit: normál válasz 503, stream hibával zárul', async () => {
+    for (const stream of [false, true]) {
+      let records = 0
+      const s = setup({ agent: { primary: A }, scripts: [stream ? sse(sseChunk({ content: 'fél' }), 'data: [DONE]\n\n') : completion('ok')], audit: {
+        record: async () => { if (++records === 2) throw new Error('database unavailable') },
+      } })
+      const res = await s.call({ ...ask, stream })
+      if (stream) await assert.rejects(res.text())
+      else assert.equal(res.status, 503)
+      assert.equal(s.calls.length, 1)
+      assert.equal(records, 2)
+    }
+  })
+
+  await check('a stream [DONE] jelzése megvárja az eredmény-audit tartós írását', async () => {
+    let release!: () => void
+    const persisted = new Promise<void>((resolve) => { release = resolve })
+    let records = 0
+    const s = setup({ agent: { primary: A }, scripts: [sse(sseChunk({ content: 'ok' }), 'data: [DONE]\n\n')], audit: {
+      record: async () => { if (++records === 2) await persisted },
+    } })
+    const res = await s.call({ ...ask, stream: true })
+    let complete = false
+    const output = res.text().then((text) => { complete = true; return text })
+    await flush()
+    assert.equal(complete, false)
+    release()
+    assert.match(await output, /data: \[DONE\]/)
+    assert.equal(records, 2)
+  })
+
+  await check('kliens megszakításakor az audit eredménye aborted', async () => {
+    const open = new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode(sseChunk({ content: 'fél' }))) } }), { status: 200 })
+    const s = setup({ agent: { primary: A }, scripts: [open] })
+    const res = await s.call({ ...ask, stream: true })
+    await res.body!.cancel()
+    assert.equal(s.events.at(-1)!.outcome, 'aborted')
+    assert.equal(s.events[0].outcome, 'started')
+    assert.equal(s.events[0].callId, s.events.at(-1)!.callId)
+  })
+
+  await check('fetch közbeni kliens-megszakítás nem indít tartalék modellt', async () => {
+    const s = setup({ agent: { primary: A, fallbacks: [B] } })
+    let providerCalls = 0
+    s.deps.fetchImpl = (async (_url: string, init: RequestInit) => {
+      providerCalls++
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      })
+    }) as never
+    const controller = new AbortController()
+    const pending = handleChatCompletion(s.deps, new Request('https://app.test/x', {
+      method: 'POST', headers: { authorization: 'Bearer t' }, body: JSON.stringify(ask), signal: controller.signal,
+    }))
+    await flush()
+    controller.abort()
+    assert.equal((await pending).status, 499)
+    assert.equal(providerCalls, 1)
+    assert.deepEqual(s.events.map((e) => e.outcome), ['started', 'aborted'])
+  })
+
+  await check('nagy promptot a kötelező audit-méretkapu megállít a provider előtt', async () => {
+    const outcomes: string[] = []
+    const s = setup({ agent: { primary: A }, audit: createGatewayAuditSink({
+      depthFor: async () => 'prompt_and_response',
+      store: { insertMany: async (rows) => { outcomes.push(String(rows[0].meta.outcome)); return 1 }, list: async () => [], deleteExpired: async () => 0 },
+    }) })
+    const res = await s.call({ ...ask, messages: [{ role: 'user', content: 'x'.repeat(MAX_CONTENT_BYTES) }] })
+    assert.equal(res.status, 413)
+    assert.equal((await res.json()).error.code, 'audit_content_too_large')
+    assert.equal(s.calls.length, 0)
+    assert.deepEqual(outcomes, ['blocked'])
+  })
+
+  await check('túlméretes tartalomnaplózott válasz hibával zár, a kezdő audit megmarad', async () => {
+    const large = 'x'.repeat(MAX_CONTENT_BYTES)
+    const saved: ModelCallEvent[] = []
+    const sink = createGatewayAuditSink({
+      depthFor: async () => 'prompt_and_response',
+      store: { insertMany: async () => 1, list: async () => [], deleteExpired: async () => 0 },
+    })
+    const audit: ModelGatewayDeps['audit'] = { record: async (e) => { await sink.record(e); saved.push(e) } }
+    const plain = setup({ agent: { primary: A }, scripts: [completion(large)], audit })
+    assert.equal((await plain.call(ask)).status, 413)
+    assert.deepEqual(saved.map((e) => e.outcome), ['started', 'error'])
+    assert.equal(saved[1].blockReason, 'audit_content_too_large')
+    saved.length = 0
+    const stream = setup({ agent: { primary: A }, scripts: [sse(sseChunk({ content: 'fél' }), sseChunk({ content: large }))], audit })
+    const res = await stream.call({ ...ask, stream: true })
+    await assert.rejects(res.text())
+    assert.deepEqual(saved.map((e) => e.outcome), ['started', 'error'])
+  })
+
+  await check('metaadat-mélységnél a 256 KiB-os tartalomplafon nem korlátozza a választ', async () => {
+    const audit = createGatewayAuditSink({
+      depthFor: async () => 'metadata',
+      store: { insertMany: async () => 1, list: async () => [], deleteExpired: async () => 0 },
+    })
+    const s = setup({ agent: { primary: A }, scripts: [completion('x'.repeat(MAX_CONTENT_BYTES))], audit })
+    assert.equal((await s.call(ask)).status, 200)
+    assert.equal(s.calls.length, 1)
+  })
+
+  await check('a 16 MiB-os provider-válaszplafon a beolvasás közben megállítja a választ', async () => {
+    const huge = new Response(new ReadableStream({ start(c) { c.enqueue(enc.encode('x'.repeat(16 * 1024 * 1024 + 1))); c.close() } }), { status: 200 })
+    const s = setup({ agent: { primary: A }, scripts: [huge] })
+    assert.equal((await s.call(ask)).status, 502)
+    assert.deepEqual(s.events.map((e) => e.outcome), ['started', 'error'])
+  })
+
   await check('lejárt/hibás token → 401, provider nem hívódik', async () => {
     const s = setup({ verifyOk: false, agent: { primary: A } })
     const res = await s.call(ask)
@@ -112,12 +262,12 @@ async function main() {
     assert.equal(s.calls[0].body.model, 'vendor/model-b')
     assert.equal(s.calls[0].headers.authorization, 'Bearer sk-test')
     await flush()
-    assert.equal(s.events[0].model, 'openrouter/vendor/model-b')
-    assert.equal(s.events[0].substituted, false)
-    assert.equal(s.events[0].agentId, AGENT) // a tokenből, nem headerből (D1)
-    assert.equal(s.events[0].sessionId, 'sess-1')
-    assert.equal(s.events[0].turnId, 'turn-9')
-    assert.deepEqual(s.events[0].usage, { promptTokens: 7, completionTokens: 3 })
+    assert.equal(s.events.at(-1)!.model, 'openrouter/vendor/model-b')
+    assert.equal(s.events.at(-1)!.substituted, false)
+    assert.equal(s.events.at(-1)!.agentId, AGENT) // a tokenből, nem headerből (D1)
+    assert.equal(s.events.at(-1)!.sessionId, 'sess-1')
+    assert.equal(s.events.at(-1)!.turnId, 'turn-9')
+    assert.deepEqual(s.events.at(-1)!.usage, { promptTokens: 7, completionTokens: 3 })
   })
 
   await check('D12: nem engedett (user-szűkítés) modellnél az agent modellje fut, a helyettesítés naplózva', async () => {
@@ -125,8 +275,8 @@ async function main() {
     await s.call({ ...ask, model: 'vendor/model-b' })
     assert.equal(s.calls[0].body.model, 'vendor/model-a')
     await flush()
-    assert.equal(s.events[0].substituted, true)
-    assert.equal(s.events[0].requestedModel, 'vendor/model-b')
+    assert.equal(s.events.at(-1)!.substituted, true)
+    assert.equal(s.events.at(-1)!.requestedModel, 'vendor/model-b')
   })
 
   await check('D12: a tenant listáján nem szereplő modell sem fut', async () => {
@@ -155,7 +305,7 @@ async function main() {
     const out = await res.json()
     assert.deepEqual(out.choices[0].message.tool_calls, toolCalls)
     await flush()
-    assert.equal(s.events[0].response?.toolCalls.length, 2)
+    assert.equal(s.events.at(-1)!.response?.toolCalls.length, 2)
   })
 
   await check('streamelés: SSE bájt-azonosan átmegy, a tool_calls delta és a usage az auditba gyűlik', async () => {
@@ -173,11 +323,29 @@ async function main() {
     assert.equal(await res.text(), lines.join(''))
     assert.deepEqual(s.calls[0].body.stream_options, { include_usage: true })
     await flush()
-    const e = s.events[0]
+    const e = s.events.at(-1)!
     assert.equal(e.outcome, 'ok')
     assert.equal(e.response?.content, 'Szia')
     assert.deepEqual(e.response?.toolCalls, [{ id: 'c1', name: 'f', arguments: '{"a":1}' }])
     assert.deepEqual(e.usage, { promptTokens: 5, completionTokens: 2 })
+    assert.equal(e.providerResponse, lines.join(''))
+  })
+
+  await check('nem-stream válasz minden choice/reasoning mezője a tartalom-auditba kerül', async () => {
+    const raw = { choices: [
+      { message: { content: 'első', reasoning: 'magyarázat' }, finish_reason: 'stop' },
+      { message: { content: 'második' }, finish_reason: 'stop' },
+    ] }
+    const s = setup({ agent: { primary: A }, scripts: [new Response(JSON.stringify(raw), { status: 200 })] })
+    assert.equal((await s.call(ask)).status, 200)
+    assert.deepEqual(s.events.at(-1)!.providerResponse, raw)
+  })
+
+  await check('[DONE] nélküli stream hálózati hibának számít, nem sikeres válasznak', async () => {
+    const s = setup({ agent: { primary: A }, scripts: [sse(sseChunk({ content: 'fél' }))] })
+    const res = await s.call({ ...ask, stream: true })
+    await assert.rejects(res.text(), /before \[DONE\]/)
+    assert.deepEqual(s.events.map((e) => e.outcome), ['started', 'error'])
   })
 
   await check('tartalék: provider-hiba (503) az első token előtt → következő jelölt, a váltás auditálva', async () => {
@@ -186,8 +354,8 @@ async function main() {
     assert.equal((await res.json()).choices[0].message.content, 'tartalék')
     assert.equal(s.calls[1].body.model, 'vendor/model-b')
     await flush()
-    assert.deepEqual(s.events[0].failedCandidates, [{ model: 'openrouter/vendor/model-a', errorClass: 'provider_unavailable' }])
-    assert.equal(s.events[0].model, 'openrouter/vendor/model-b')
+    assert.deepEqual(s.events.at(-1)!.failedCandidates, [{ model: 'openrouter/vendor/model-a', errorClass: 'provider_unavailable' }])
+    assert.equal(s.events.at(-1)!.model, 'openrouter/vendor/model-b')
   })
 
   await check('tartalék: nem bekötött provider kimarad, a következő válaszol', async () => {
@@ -223,7 +391,7 @@ async function main() {
     await assert.rejects(res.text())
     assert.equal(s.calls.length, 1)
     await flush()
-    assert.equal(s.events[0].outcome, 'error')
+    assert.equal(s.events.at(-1)!.outcome, 'error')
   })
 
   await check('nem váltó hiba (400 túl hosszú kontextus) → változatlanul vissza, nincs tartalék', async () => {
@@ -232,6 +400,7 @@ async function main() {
     assert.equal(res.status, 400)
     assert.match(await res.text(), /maximum context/)
     assert.equal(s.calls.length, 1)
+    assert.match(String(s.events.at(-1)!.providerResponse), /maximum context/)
   })
 
   await check('lánc kimerül: 502, rate limit: 429', async () => {
@@ -256,8 +425,8 @@ async function main() {
     assert.ok(text.trim().endsWith('data: [DONE]'))
     assert.equal(s.calls.length, 0)
     await flush()
-    assert.equal(s.events[0].outcome, 'blocked')
-    assert.equal(s.events[0].blockReason, 'pan')
+    assert.equal(s.events.at(-1)!.outcome, 'blocked')
+    assert.equal(s.events.at(-1)!.blockReason, 'pan')
   })
 
   await check('Managed/Open kapu: gate blokkol → 200 üzenet', async () => {
