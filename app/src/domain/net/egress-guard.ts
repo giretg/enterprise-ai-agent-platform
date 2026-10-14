@@ -301,6 +301,12 @@ export class ResponseTooLargeError extends Error {
  * átlépésének pillanatában lezárja, így a feldolgozott memória sosem lépi túl a `maxBytes`-t,
  * függetlenül a tényleges/hazudott `content-length`-től. Méret miatt SOHA nem dob —
  * a `truncated` jelzi, hogy a törzs a plafonnál el lett vágva (diagnosztikai olvasáshoz).
+ *
+ * ponytail: ez a bájt-pumpa a harmadik másolata ugyanennek a loopnak (l. spec-sync.ts
+ * `readCapped`, skill-package-fetcher.ts). Azok fail-closed `AbortController`-rel bontják a
+ * socketet és `{ok:false}`-t adnak; ez fail-soft részleges törzzsel. Összevonás útja: ez
+ * legyen a közös pumpa, a két `readCapped` pedig injektált controllerrel burkolja
+ * (truncated → abort). Nem e (biztonsági) kör scope-ja — a blast-radiust szűken tartom.
  */
 export async function readResponseBodyCapped(
   res: Response,
@@ -310,6 +316,9 @@ export async function readResponseBodyCapped(
   if (!reader) {
     // Nincs streamelhető törzs (pl. test-stub/undici edge): a content-length alapján
     // elutasítjuk a túl nagy választ, különben a teljes arrayBuffer-t olvassuk.
+    // ponytail: az arrayBuffer-fallback csak azért biztonságos, mert az éles fetch (undici)
+    // MINDIG ad `res.body` streamet → a fenti plafonozott ág fut; ide csak bodyless/stub
+    // válasz jut, aminek nincs pufferelendő törzse. Ha ez változna, itt is streamelni kell.
     const declared = Number(res.headers.get('content-length') ?? '')
     if (Number.isFinite(declared) && declared > maxBytes) return { text: '', truncated: true }
     const buf = new Uint8Array(await res.arrayBuffer())
