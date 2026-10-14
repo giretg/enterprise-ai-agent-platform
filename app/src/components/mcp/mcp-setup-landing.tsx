@@ -359,6 +359,16 @@ export function McpSetupLanding({
                 <HermesStep n={3} title={t('hermesEntBotsTitle')}>
                   <p>{t('hermesEntBotsBody')}</p>
                   <p className="text-xs text-ink-faint">{t('hermesEntBotsHint')}</p>
+                  <details className="rounded-xl border border-line bg-card/40 text-sm text-ink-soft">
+                    <summary className="cursor-pointer px-3 py-2 font-semibold text-ink">{t('hermesEntTroubleshootTitle')}</summary>
+                    <div className="space-y-3 border-t border-line px-3 py-3">
+                      <p>{t('hermesEntTroubleshootBody')}</p>
+                      <p className="font-semibold text-ink">{t('hermesEntTroubleshootPosix')}</p>
+                      <CodeBlock value={t('hermesEntTroubleshootCommandPosix')} copyLabel={t('copyCommand')} />
+                      <p className="font-semibold text-ink">{t('hermesEntTroubleshootWindows')}</p>
+                      <CodeBlock value={t('hermesEntTroubleshootCommandWindows')} copyLabel={t('copyCommand')} />
+                    </div>
+                  </details>
                 </HermesStep>
                 <HermesStep n={4} title={t('hermesStep5Title')}>
                   <p>{t('hermesStep5Body')}</p>

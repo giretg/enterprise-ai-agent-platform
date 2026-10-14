@@ -12,9 +12,27 @@ A munkatárs gépére kerülő, rendszergazdai Hermes-beállítás. A munkatárs
 sudo bash excellence-telepito.sh
 ```
 
-4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`), és átmásolja a default profil Excellence MCP belépőjét, hogy a Botnak ne kelljen külön `hermes mcp login`. A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
+4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`), és átmásolja a default profil Excellence MCP belépőjét. A belépő lejárhat, ezért a Bot első használatakor vagy később újra be kellhet jelentkezni. A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
 
-Macen és Linuxon működik. Windowsos számítógépen ez a telepítő még nem működik.
+## Ha egy Bot nem válaszol
+
+Nyisd meg a Hermes-hiba **Részletek** paneljét. Ha ezt látod: `key_cmd for provider 'excellence' exited 1`, töltsd le és futtasd újra a legfrissebb céges telepítőt, majd indítsd újra a Hermest. Ha a hiba megmarad, az érintett Bot profiljában kell frissíteni az Excellence MCP-belépést — nem a default profilban:
+
+Mac / Linux:
+
+```sh
+HERMES_HOME="$HOME/.hermes/profiles/<bot-profil>" hermes mcp login excellence
+```
+
+Windows PowerShell:
+
+```powershell
+$env:HERMES_HOME="$env:LOCALAPPDATA\hermes\profiles\<bot-profil>"; hermes mcp login excellence
+```
+
+A `<bot-profil>` helyére a Bot profilkönyvtárának neve kerüljön, például `exc-alfred`. A bejelentkezést a böngészőben kell jóváhagyni.
+
+Macen és Linuxon a fenti `.sh` telepítőt használd; natív Windowson az alábbi PowerShell-telepítőt. A Windowsos számítógépen futó WSL-ben a Linuxos telepítés érvényes.
 
 Ugyanez a gomb a **Hermes céges kontroll** oldalon a munkatárs sorában is ott van. A telepítő újrafuttatható: engedélybővítés után töltsd le újra, és futtasd megint. Az `installId` ugyanaz marad.
 
