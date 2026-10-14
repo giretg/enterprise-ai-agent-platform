@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { executeHttpApiTool } from '../src/domain/enterprise-tools/handlers/http-api'
+import { capHttpApiResultForModel } from '../src/domain/connector/http-api-prompt'
 import {
   HttpApiClient as RuntimeHttpApiClient,
   HttpApiError,
@@ -1343,6 +1344,72 @@ async function main() {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  await test('MCP http_api_get: a 20k fölötti JSON nem megy a modellnek, csak preview', async () => {
+    const rows = Array.from({ length: 800 }, (_, i) => ({
+      productId: `p-${i}`,
+      name: `Birtok 0,75l ${i}`,
+      netValue: 1234.5 + i,
+    }))
+    const payload = JSON.stringify({ rows })
+    assert.ok(payload.length > 20_000)
+    const connector = {
+      id: 'crm-1',
+      tenantId: 't1',
+      type: 'http_api',
+      authMode: 'api_key',
+      lifecycleState: 'active',
+      name: 'Ostoros CRM',
+      config: {
+        baseUrl: 'https://posnavigator.eu/api/v1',
+        auth: { scheme: 'bearer' },
+        maxResponseChars: 5_000,
+        endpoints: [{ method: 'GET', path: '/reports/query' }],
+      },
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(payload, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch
+    try {
+      const result = (await executeHttpApiTool(
+        'http_api_get',
+        { path: '/reports/query', query: { dataset: 'order_lines', limit: 100 } },
+        connector,
+        'crm-key',
+        null,
+        { id: 'reka' },
+      )) as {
+        truncated?: boolean
+        originalChars?: number
+        preview?: string
+        body?: { rows?: unknown[] }
+        hint?: string
+      }
+      assert.equal(result.truncated, true)
+      assert.ok((result.originalChars ?? 0) > 5_000)
+      assert.ok((result.preview ?? '').length <= 5_000)
+      assert.equal(result.body?.rows, undefined)
+      assert.match(result.hint ?? '', /ne hívd újra|Do not retry/)
+      assert.ok(JSON.stringify(result).length < payload.length)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('capHttpApiResultForModel: hibás nagy get_all megtartja az error-t és a hint-et', async () => {
+    const items = Array.from({ length: 4000 }, (_, i) => ({ id: i }))
+    const capped = capHttpApiResultForModel({
+      result: { ok: false, path: '/x', items, error: 'page 7: 503', hint: 'retry later' },
+      maxChars: 5_000,
+    }) as { ok: boolean; error?: string; hint: string; items?: unknown }
+    assert.equal(capped.ok, false)
+    assert.equal(capped.items, undefined)
+    assert.equal(capped.error, 'page 7: 503')
+    assert.match(capped.hint, /^retry later /)
   })
 
   if (failures > 0) {

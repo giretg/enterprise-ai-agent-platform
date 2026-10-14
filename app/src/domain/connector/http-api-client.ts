@@ -214,7 +214,7 @@ export function riskFromHttpMethod(method: string): HttpApiRisk {
 
 const READ_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
-const DEFAULT_MAX_RESPONSE_CHARS = 20_000
+export const DEFAULT_MAX_RESPONSE_CHARS = 20_000
 /** Runtime által injektált idempotencia-fejléc (kisbetűs egyeztetéshez). */
 const IDEMPOTENCY_HEADER_LOWER = 'idempotency-key'
 /**
@@ -1022,8 +1022,8 @@ export class HttpApiClient {
     let oversizedSoftHint: string | undefined
     const contentType = res.headers.get('content-type') ?? ''
     if (contentType.includes('application/json')) {
-      // Sikeres / parse-olható JSON: a teljes body megmarad (get_all + archive + extract).
-      // A maxResponseChars soft jelzés: ne dumpold a modell kontextusába.
+      // Parse-olt JSON a get_all lapozásnak teljesben kell. A modell/MCP plafont
+      // az executeHttpApiTool kapja (capHttpApiResultForModel) — itt ne vágjunk.
       try {
         const parsed: unknown = JSON.parse(text)
         body = decodeGitHubContentsBody(parsed)

@@ -133,7 +133,7 @@ export function buildHttpApiClientErrorHint(input: {
   return parts.join(' ')
 }
 
-/** Túl nagy JSON: soft jelzés — a teljes body megmarad (get_all / archive / extract). */
+/** Túl nagy JSON a get_all lapozás belső ágán: a teljes page-body megmarad, a modellnek hint. */
 export function buildHttpApiOversizedResponseHint(input: {
   originalChars: number
   maxChars: number
@@ -141,23 +141,32 @@ export function buildHttpApiOversizedResponseHint(input: {
 }): string {
   if ((input.language ?? 'hu') === 'en') {
     return (
-      `Large response (${input.originalChars} chars, soft limit ${input.maxChars}). ` +
-      'The full body is preserved for the tool pipeline (get_all / archive). For the model: ' +
-      "don't dump it into context — use the documented query/filter, http_api_get_all, " +
-      'or tool_result_extract on the workspace copy; no chunked file_read.'
+      `Large response (${input.originalChars} chars, limit ${input.maxChars}). ` +
+      'The full page is kept for pagination. For the model: do not dump it into context — ' +
+      'use a documented query/filter or an aggregated/report endpoint.'
     )
   }
   return (
-    `A válasz nagy (${input.originalChars} karakter, soft limit ${input.maxChars}). ` +
-    'A teljes body megmaradt a tool-pipeline számára (get_all / archive). A modellnek: ' +
-    'ne dumpold a kontextusba — használd a dokumentált query/szűrőt, http_api_get_all-t, ' +
-    'vagy tool_result_extract-et a munkaterületi másolaton; ne chunkolt file_read-et.'
+    `A válasz nagy (${input.originalChars} karakter, limit ${input.maxChars}). ` +
+    'A teljes oldal a lapozáshoz megmaradt. A modellnek: ne dumpold a kontextusba — ' +
+    'használj dokumentált query/szűrőt vagy aggregált/report végpontot.'
   )
 }
 
+function truncationHint(input: { originalChars: number; maxChars: number; en: boolean }): string {
+  return input.en
+    ? `Response too large (${input.originalChars} chars, limit ${input.maxChars}). ` +
+      'The full body was not sent to the model. Use a documented query/filter, ' +
+      'or an aggregated/report endpoint (a smaller pageSize does not help: the limit is on the whole output). ' +
+      'Do not retry the same unfiltered path.'
+    : `A válasz túl nagy (${input.originalChars} karakter, limit ${input.maxChars}). ` +
+      'A teljes body nem megy a modell-kontextusba. Használj dokumentált query/szűrőt, ' +
+      'vagy aggregált/report végpontot (kisebb pageSize nem segít: a limit a teljes kimenetre vonatkozik). ' +
+      'Ugyanazt a szűretlen path-ot ne hívd újra.'
+}
+
 /**
- * Hard truncate meta — csak ha a JSON nem parse-olható / nem-JSON túl nagy.
- * Sikeres parse-olt JSON-nál NE ezt használd: a get_all+extract a teljes body-t igényli.
+ * Hard truncate meta a modellnek / MCP-válasznak. A teljes JSON nem kerül a kontextusba.
  */
 export function buildHttpApiTruncationBody(input: {
   originalChars: number
@@ -177,15 +186,54 @@ export function buildHttpApiTruncationBody(input: {
     originalChars: input.originalChars,
     maxChars: input.maxChars,
     preview: input.preview,
-    hint: en
-      ? `Response too large (${input.originalChars} chars, limit ${input.maxChars}), and it could not be ` +
-        'preserved as full JSON. Use: (1) a documented query/filter, ' +
-        '(2) http_api_get_all with a smaller pageSize, (3) a more specific path (single record), ' +
-        '(4) for a list: tool_result_extract on the workspace copy.'
-      : `A válasz túl nagy (${input.originalChars} karakter, limit ${input.maxChars}), és nem sikerült ` +
-        'teljes JSON-ként megőrizni. Használj: (1) dokumentált query/szűrőt, ' +
-        '(2) http_api_get_all kisebb pageSize-zal, (3) specifikusabb path-ot (egyedi rekord), ' +
-        '(4) ha lista kell: tool_result_extract a munkaterületi másolaton.',
+    hint: truncationHint({ originalChars: input.originalChars, maxChars: input.maxChars, en }),
+  }
+}
+
+/**
+ * MCP / modell-válasz kemény plafonja. A get_all belső lapozás a teljes page-body-t
+ * megkaphatja; amit a modell lát, az soha nem lehet maxChars fölött.
+ */
+export function capHttpApiResultForModel(input: {
+  result: unknown
+  maxChars: number
+  language?: TenantLanguage
+}): unknown {
+  const maxChars = Math.max(1, Math.floor(input.maxChars))
+  let json: string
+  try {
+    json = JSON.stringify(input.result) ?? ''
+  } catch {
+    return input.result
+  }
+  if (json.length <= maxChars) return input.result
+  const truncated = buildHttpApiTruncationBody({
+    originalChars: json.length,
+    maxChars,
+    preview: json.slice(0, maxChars),
+    language: input.language,
+  })
+  const src =
+    input.result && typeof input.result === 'object' && !Array.isArray(input.result)
+      ? (input.result as Record<string, unknown>)
+      : null
+  return {
+    ...(typeof src?.ok === 'boolean' ? { ok: src.ok } : { ok: true }),
+    ...(typeof src?.status === 'number' ? { status: src.status } : {}),
+    ...(typeof src?.path === 'string' ? { path: src.path } : {}),
+    ...(typeof src?.itemCount === 'number' ? { itemCount: src.itemCount } : {}),
+    ...(typeof src?.pageCount === 'number' ? { pageCount: src.pageCount } : {}),
+    // A hibaüzenet rövid és a modellnek kell — a vágás ne nyelje el.
+    ...(typeof src?.error === 'string' ? { error: src.error.slice(0, 2_000) } : {}),
+    truncated: true,
+    originalChars: truncated.originalChars,
+    maxChars: truncated.maxChars,
+    preview: truncated.preview,
+    // Hiba-hint (4xx/5xx magyarázat) marad; sikeres ágon a kliens soft-hintje ellentmondana.
+    hint:
+      src?.ok === false && typeof src.hint === 'string'
+        ? `${src.hint.slice(0, 2_000)} ${truncated.hint}`
+        : truncated.hint,
   }
 }
 

@@ -103,6 +103,7 @@ jobs:
           npm run test:model-gateway-content-filter
           npm run test:ai-audit
           npm run test:enterprise-tools
+          npm run test:http-api
           npm run test:write-approval-modes
           npm run test:write-approval-ui
           npm run test:pending-args-summary
