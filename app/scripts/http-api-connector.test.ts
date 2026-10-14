@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { executeHttpApiTool } from '../src/domain/enterprise-tools/handlers/http-api'
+import { capHttpApiResultForModel } from '../src/domain/connector/http-api-prompt'
 import {
   HttpApiClient as RuntimeHttpApiClient,
   HttpApiError,
@@ -1397,6 +1398,18 @@ async function main() {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  await test('capHttpApiResultForModel: hibás nagy get_all megtartja az error-t és a hint-et', async () => {
+    const items = Array.from({ length: 4000 }, (_, i) => ({ id: i }))
+    const capped = capHttpApiResultForModel({
+      result: { ok: false, path: '/x', items, error: 'page 7: 503', hint: 'retry later' },
+      maxChars: 5_000,
+    }) as { ok: boolean; error?: string; hint: string; items?: unknown }
+    assert.equal(capped.ok, false)
+    assert.equal(capped.items, undefined)
+    assert.equal(capped.error, 'page 7: 503')
+    assert.match(capped.hint, /^retry later /)
   })
 
   if (failures > 0) {

@@ -157,11 +157,11 @@ function truncationHint(input: { originalChars: number; maxChars: number; en: bo
   return input.en
     ? `Response too large (${input.originalChars} chars, limit ${input.maxChars}). ` +
       'The full body was not sent to the model. Use a documented query/filter, ' +
-      'an aggregated/report endpoint, or http_api_get_all with a smaller pageSize. ' +
+      'or an aggregated/report endpoint (a smaller pageSize does not help: the limit is on the whole output). ' +
       'Do not retry the same unfiltered path.'
     : `A válasz túl nagy (${input.originalChars} karakter, limit ${input.maxChars}). ` +
       'A teljes body nem megy a modell-kontextusba. Használj dokumentált query/szűrőt, ' +
-      'aggregált/report végpontot, vagy http_api_get_all-t kisebb pageSize-zal. ' +
+      'vagy aggregált/report végpontot (kisebb pageSize nem segít: a limit a teljes kimenetre vonatkozik). ' +
       'Ugyanazt a szűretlen path-ot ne hívd újra.'
 }
 
@@ -223,11 +223,17 @@ export function capHttpApiResultForModel(input: {
     ...(typeof src?.path === 'string' ? { path: src.path } : {}),
     ...(typeof src?.itemCount === 'number' ? { itemCount: src.itemCount } : {}),
     ...(typeof src?.pageCount === 'number' ? { pageCount: src.pageCount } : {}),
+    // A hibaüzenet rövid és a modellnek kell — a vágás ne nyelje el.
+    ...(typeof src?.error === 'string' ? { error: src.error.slice(0, 2_000) } : {}),
     truncated: true,
     originalChars: truncated.originalChars,
     maxChars: truncated.maxChars,
     preview: truncated.preview,
-    hint: truncated.hint,
+    // Hiba-hint (4xx/5xx magyarázat) marad; sikeres ágon a kliens soft-hintje ellentmondana.
+    hint:
+      src?.ok === false && typeof src.hint === 'string'
+        ? `${src.hint.slice(0, 2_000)} ${truncated.hint}`
+        : truncated.hint,
   }
 }
 
