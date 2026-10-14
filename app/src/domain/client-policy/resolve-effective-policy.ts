@@ -62,16 +62,24 @@ export type EffectivePolicy = {
 
 type Overrides = { levels: Partial<CapabilityMap>; models: string[] | null }
 
+const strictestOverrides = (): Overrides => ({
+  levels: Object.fromEntries(CAPABILITY_KEYS.map((key) => [key, capabilityLevels(key)[0]])),
+  models: [],
+})
+
 function asRecord(raw: unknown): Record<string, unknown> {
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
 }
 
 function parseOverrides(raw: unknown): Overrides {
+  if (raw !== undefined && (raw === null || typeof raw !== 'object' || Array.isArray(raw))) {
+    return strictestOverrides()
+  }
   const levels: Partial<CapabilityMap> = {}
   let models: string[] | null = null
   for (const [key, value] of Object.entries(asRecord(raw))) {
     if (key === 'models') {
-      if (Array.isArray(value)) models = value.filter((m): m is string => typeof m === 'string' && m !== '')
+      models = Array.isArray(value) ? value.filter((m): m is string => typeof m === 'string' && m !== '') : []
     } else if ((CAPABILITY_KEYS as readonly string[]).includes(key)) {
       const k = key as CapabilityKey
       levels[k] = typeof value === 'string' && strictnessOf(k, value) >= 0 ? value : capabilityLevels(k)[0]
@@ -80,11 +88,23 @@ function parseOverrides(raw: unknown): Overrides {
   return { levels, models }
 }
 
+function policyOverrides(row: PolicyRow | null): Overrides {
+  return row && row.preset !== null && !Object.hasOwn(PRESETS, row.preset)
+    ? strictestOverrides()
+    : parseOverrides(row?.capabilities)
+}
+
 function presetOf(row: PolicyRow | null): CapabilityMap | null {
-  return row?.preset && row.preset in PRESETS ? PRESETS[row.preset as PresetId] : null
+  if (row?.preset === null || !row) return null
+  return typeof row.preset === 'string' && Object.hasOwn(PRESETS, row.preset)
+    ? PRESETS[row.preset as PresetId]
+    : PRESETS.bound
 }
 
 function parseToolOverrides(raw: unknown): Map<string, ToolAction> {
+  if (raw !== undefined && (raw === null || typeof raw !== 'object' || Array.isArray(raw))) {
+    return new Map([['*', 'deny']])
+  }
   const out = new Map<string, ToolAction>()
   for (const [pattern, action] of Object.entries(asRecord(raw))) {
     if (pattern) out.set(pattern, (TOOL_ACTIONS as readonly unknown[]).includes(action) ? (action as ToolAction) : 'deny')
@@ -136,9 +156,9 @@ export function resolveEffectivePolicy(input: {
   agent: PolicyRow | null
 }): EffectivePolicy {
   const { tenant, user, agent } = input
-  const tenantOv = parseOverrides(tenant?.capabilities)
-  const userOv = parseOverrides(user?.capabilities)
-  const agentOv = parseOverrides(agent?.capabilities)
+  const tenantOv = policyOverrides(tenant)
+  const userOv = policyOverrides(user)
+  const agentOv = policyOverrides(agent)
 
   const capabilities = {} as CapabilityMap
   const reasons = {} as EffectivePolicy['reasons']
