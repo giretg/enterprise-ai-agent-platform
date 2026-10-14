@@ -8,6 +8,7 @@ import {
   buildHttpApiEfficiencyGuidance,
   buildHttpApiLikelyPaginatedHint,
   buildHttpApiTruncationBody,
+  capHttpApiResultForModel,
   formatHttpApiEndpointCatalogSuffix,
   formatHttpApiQueryParamsHint,
 } from '../src/domain/connector/http-api-prompt'
@@ -315,7 +316,30 @@ async function main() {
     })
     assert.equal(body.truncated, true)
     assert.match(body.hint, /http_api_get_all/)
-    assert.match(body.hint, /tool_result_extract/)
+    assert.match(body.hint, /ne hívd újra|Do not retry/)
+  })
+
+  await check('capHttpApiResultForModel kicsi választ érintetlenül hagy', () => {
+    const result = { ok: true, status: 200, body: { id: 1 } }
+    assert.equal(capHttpApiResultForModel({ result, maxChars: 20_000 }), result)
+  })
+
+  await check('capHttpApiResultForModel nagy JSON-t previewre vág, itemCount megmarad', () => {
+    const items = Array.from({ length: 4000 }, (_, i) => ({ id: i, name: `row-${i}` }))
+    const result = { ok: true, path: '/reports/query', itemCount: items.length, items }
+    const capped = capHttpApiResultForModel({ result, maxChars: 5_000 }) as {
+      truncated: true
+      itemCount: number
+      path: string
+      preview: string
+      items?: unknown
+    }
+    assert.equal(capped.truncated, true)
+    assert.equal(capped.itemCount, 4000)
+    assert.equal(capped.path, '/reports/query')
+    assert.equal(capped.items, undefined)
+    assert.ok(capped.preview.length <= 5_000)
+    assert.ok(JSON.stringify(capped).length < JSON.stringify(result).length)
   })
 
   await check('query hint formázás üres listánál üres string', () => {

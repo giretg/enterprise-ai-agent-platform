@@ -97,8 +97,10 @@ async function main() {
     const yaml = files['config.yaml']
     assert.match(yaml, /model:\n {2}provider: "excellence"\n {2}base_url: "https:\/\/excellence\.example\/api\/model-gateway\/v1"\n {2}api_mode: "chat_completions"/)
     for (const task of AUXILIARY_TASKS) {
-      assert.match(yaml, new RegExp(`${task}:\\n {4}provider: "main"\\n {4}model: ""\\n {4}base_url: ""\\n {4}api_key: ""\\n {4}fallback_chain: \\[\\]`))
+      assert.match(yaml, new RegExp(`${task}:\\n {4}provider: "main"\\n {4}fallback_chain: \\[\\]`))
     }
+    assert.doesNotMatch(yaml, /auxiliary:[\s\S]*model: ""/)
+    assert.doesNotMatch(yaml, /auxiliary:[\s\S]*api_key: ""/)
     assert.match(yaml, /^fallback_providers: \[\]$/m)
     assert.match(yaml, /plugins:\n {2}enabled:\n {4}- "excellence-guard"\n {2}disabled: \[\]/)
     assert.match(yaml, /command: "\/opt\/excellence\/bin\/exc-guard"\n {6}timeout: 30\n {6}fail_closed: true/)

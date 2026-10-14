@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { TenantLanguage } from '@/lib/tenant-language'
 import {
+  DEFAULT_MAX_RESPONSE_CHARS,
   findHttpApiEndpoint,
   HttpApiClient,
   HttpApiError,
@@ -8,6 +9,7 @@ import {
   resolveConnectorApiKey,
   type HttpApiConfig,
 } from '@/domain/connector/http-api-client'
+import { capHttpApiResultForModel } from '@/domain/connector/http-api-prompt'
 import {
   paginateHttpApiGet,
   resolveHttpApiPaginatePlan,
@@ -167,6 +169,12 @@ export async function executeHttpApiTool(
   }
 
   const config = await applyPlatformGoogleAdsDeveloperToken(parseHttpApiConfig(connector.config))
+  const forModel = (result: unknown) =>
+    capHttpApiResultForModel({
+      result,
+      maxChars: config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS,
+      language,
+    })
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
   const client = clientFor(config, apiKey, language, allowedEgressHosts)
   const callId = randomUUID()
@@ -233,16 +241,16 @@ export async function executeHttpApiTool(
       },
     })
     if (!outcome.ok) {
-      return {
+      return forModel({
         ok: false,
         path,
         pageCount: outcome.pageCount,
         itemCount: outcome.items.length,
         items: outcome.items,
         error: outcome.error,
-      }
+      })
     }
-    return {
+    return forModel({
       ok: true,
       path,
       pageCount: outcome.pageCount,
@@ -254,25 +262,29 @@ export async function executeHttpApiTool(
         strategy: outcome.strategy,
         stopReason: outcome.stopReason,
       },
-    }
-  }
-
-  if (toolName === HTTP_API_GET_TOOL) {
-    return client.request({
-      method: 'GET',
-      path,
-      query: scalarQuery(args.query),
-      headers: stringMap(args.headers),
-      context,
     })
   }
 
-  return client.request({
-    method: optionalString(args.method) ?? 'POST',
-    path,
-    query: scalarQuery(args.query),
-    headers: stringMap(args.headers),
-    body: parseBody(args.body),
-    context,
-  })
+  if (toolName === HTTP_API_GET_TOOL) {
+    return forModel(
+      await client.request({
+        method: 'GET',
+        path,
+        query: scalarQuery(args.query),
+        headers: stringMap(args.headers),
+        context,
+      }),
+    )
+  }
+
+  return forModel(
+    await client.request({
+      method: optionalString(args.method) ?? 'POST',
+      path,
+      query: scalarQuery(args.query),
+      headers: stringMap(args.headers),
+      body: parseBody(args.body),
+      context,
+    }),
+  )
 }

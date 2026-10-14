@@ -44,8 +44,10 @@ const TOOLSET_GATES = toolsetGates(DEFAULT_TOOL_CATALOG)
 
 /**
  * Hermes aux feladatok, amelyek saját providerre kaphatnának (2026-10, hermes-agent main).
- * Mindegyik `provider: main`, üres base_url/api_key, üres fallback_chain — a H-1b levél-pin,
- * mert az aux `base_url` felülírja a providert.
+ * Mindegyik `provider: main` + üres `fallback_chain` (H-1b: ne essen OpenRouterre).
+ * Szándékosan nincs `model` / `api_key` / `base_url`: a Hermes az üres `model: ""`
+ * stringet `gpt-4o-mini`-re cseréli, az üres `api_key` pedig JWT nélkül hívja a
+ * gatewayt (`401 invalid_token`), és a tömörítés nem fut.
  */
 export const AUXILIARY_TASKS = [
   'approval',
@@ -201,8 +203,7 @@ export function renderManagedConfig(input: {
   const commands = CLIENT_COMMANDS[input.platform ?? 'posix']
   const url = q(input.gatewayBaseUrl)
   const aux = AUXILIARY_TASKS.map(
-    (task) =>
-      `  ${task}:\n    provider: "main"\n    model: ""\n    base_url: ""\n    api_key: ""\n    fallback_chain: []`,
+    (task) => `  ${task}:\n    provider: "main"\n    fallback_chain: []`,
   ).join('\n')
   const disabled =
     input.disabledToolsets.length === 0
