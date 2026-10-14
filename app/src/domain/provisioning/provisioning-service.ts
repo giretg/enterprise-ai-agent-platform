@@ -17,6 +17,15 @@ import type { ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import {
+  buildGoogleAccountBinding,
+  GoogleAccountBindingError,
+  googleAccountKindLabel,
+  isGoogleAccountBindingProvider,
+  parseGoogleAccountBindingConfig,
+  type GoogleAccountBinding,
+  type GoogleAccountBindingProvider,
+} from '@/domain/connector/google-account-binding'
+import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
 } from '@/domain/connector-template/gmail-connector-config'
@@ -118,6 +127,11 @@ export interface ProvisioningDeps {
    * kell, nem tenant-szintű creds. Hiányzó resolver = nincs beállítva (fail-closed).
    */
   resolvePlatformGoogleOAuth?: (service?: 'gmail' | 'drive' | 'api') => Promise<{ configured: boolean }>
+  /**
+   * Google Ads developer token: PLATFORM-szintű (superadmin), nem tenant-adat. Hiányzó
+   * resolver = nincs beállítva (fail-closed), kivéve a régi, tenant-configban tárolt fejlécet.
+   */
+  resolvePlatformGoogleAdsDeveloperToken?: () => Promise<{ configured: boolean }>
   /**
    * Aktiválás után a forrás privacy-katalógusának behúzása (issue #320). Best-effort:
    * a hibája nem bukhatja el az aktiválást, de a kimenete auditálva van. Enélkül az új
@@ -515,9 +529,12 @@ export class ProvisioningService {
           isGoogleDrive
             ? 'A Google Drive connector a platform Google Drive OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google Drive OAuth oldalon.'
             : usesPlatformGoogleApiOAuth
-              ? 'A Google API konnektorok (Analytics / Search Console / Ads / Calendar / Sheets) a platform Google API OAuth alkalmazását használják — állítsd be a Platform · Beállítások → Google API OAuth oldalon.'
+              ? 'A Google API konnektorok (Analytics / Search Console / Ads / Calendar / Sheets) a platform közös Google API OAuth alkalmazását használják, amelyet a platform üzemeltetője állít be (Platform · Beállítások → Google API). Ez nem cég-szintű beállítás.'
               : 'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
         )
+      }
+      if (usesPlatformGoogleApiOAuth) {
+        await this.assertGoogleAccountActivationReady(draft.connector.config)
       }
     } else if (!hasCredentials) {
       if (!input.confirmKeyless) {
@@ -931,6 +948,88 @@ export class ProvisioningService {
    * Aktív connector visszanyitása draftba, hogy javítható legyen. A connector offline lesz
    * (Tool Broker deny), a gate resetelődik. A javítás után újra végig kell menni a kapun.
    */
+  /**
+   * Tenant-szintű Google-fiókkötés: MELYIK cégfiókot érheti el a Google Ads / Analytics /
+   * Search Console konnektor. Emberi admin-aktus, auditált. Aktív konnektoron is módosítható,
+   * újranyitás nélkül: a felhasználók saját Google-belépése (grant) érvényes marad.
+   */
+  async updateGoogleAccountBinding(
+    input: { draftId: string; accountIds: string[]; managerAccountId?: string | null },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string; binding: GoogleAccountBinding }> {
+    await this.requireHumanAdmin(actor, 'updateGoogleAccountBinding')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+    const provider = readConnectorProvider(draft.connector.config)
+    if (!isGoogleAccountBindingProvider(provider)) {
+      throw new ProvisioningError(
+        'GOOGLE_ACCOUNT_BINDING_UNSUPPORTED',
+        'Fiókkötés csak Google Ads, Google Analytics és Search Console konnektoron állítható.',
+      )
+    }
+    if (draft.connector.lifecycleState === 'archived') {
+      throw new ProvisioningError('CONNECTOR_NOT_ACTIVE', 'archived connector cannot be changed')
+    }
+    let binding: GoogleAccountBinding
+    try {
+      binding = buildGoogleAccountBinding(provider, input)
+    } catch (error) {
+      if (error instanceof GoogleAccountBindingError) {
+        throw new ProvisioningError('PROVISIONING_INVALID_INPUT', error.message)
+      }
+      throw error
+    }
+    const previous = (() => {
+      try {
+        return parseGoogleAccountBindingConfig(
+          provider,
+          (draft.connector.config as Record<string, unknown> | null)?.googleAccountBinding,
+        )
+      } catch {
+        return undefined
+      }
+    })()
+
+    await this.deps.drafts.setGoogleAccountBinding({ draftId: draft.id, binding })
+    await this.appendAudit(actor, 'provisioning.connector.google_account_binding', draft.connectorId, {
+      draft_id: draft.id,
+      connector_id: draft.connectorId,
+      provider,
+      previous_account_ids: previous?.accountIds ?? null,
+      account_ids: binding.accountIds,
+      manager_account_id: binding.managerAccountId ?? null,
+      policyDecision: 'allowed',
+    })
+    return { connectorId: draft.connectorId, binding }
+  }
+
+  /** Aktiválási kapu a Google fiókos konnektorokra: cégfiók kiválasztva + platform-előfeltételek. */
+  private async assertGoogleAccountActivationReady(config: unknown): Promise<void> {
+    const provider = readConnectorProvider(config)
+    if (!isGoogleAccountBindingProvider(provider)) return
+    const raw = (config as Record<string, unknown> | null)?.googleAccountBinding
+    let binding: GoogleAccountBinding | undefined
+    try {
+      binding = parseGoogleAccountBindingConfig(provider, raw)
+    } catch {
+      binding = undefined
+    }
+    if (!binding) {
+      throw new ProvisioningError(
+        'GOOGLE_ACCOUNT_BINDING_MISSING',
+        `Add meg, melyik ${googleAccountKindLabel(provider)} érheti el ez a konnektor (a konnektor „Melyik fiók?” részénél).`,
+      )
+    }
+    if (provider !== 'google-ads') return
+    const platformToken = this.deps.resolvePlatformGoogleAdsDeveloperToken
+      ? await this.deps.resolvePlatformGoogleAdsDeveloperToken()
+      : { configured: false }
+    if (platformToken.configured || hasLegacyDeveloperTokenHeader(config)) return
+    throw new ProvisioningError(
+      'PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING',
+      'A Google Ads konnektorhoz a platform üzemeltetőjének be kell állítania a Google Ads developer tokent (Platform · Beállítások → Google API). Ez nem cég-szintű adat.',
+    )
+  }
+
   async reopenConnector(
     input: { draftId: string },
     actor: ProvisioningActor,
@@ -1314,6 +1413,8 @@ export class ProvisioningService {
       // Fallback nézet, ha a config nem provisioning-ConnectorConfig alakú (pl. az
       // API-szerkesztőn átírt http_api config). Secret-mentes.
       httpApiView: safeHttpApiView(d.connector.config),
+      // Google Ads / Analytics / Search Console: melyik cégfiókot éri el (tenant-szint).
+      googleAccountView: safeGoogleAccountView(d.connector.config),
       sourceType: d.sourceType,
       sourceHash: d.sourceHash,
       createdAt: d.createdAt,
@@ -1464,6 +1565,21 @@ export class ProvisioningService {
   }
 }
 
+function readConnectorProvider(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const provider = (raw as Record<string, unknown>).provider
+  return typeof provider === 'string' ? provider : readConnectorTemplateKey(raw)
+}
+
+function hasLegacyDeveloperTokenHeader(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false
+  const headers = (raw as Record<string, unknown>).requestHeaders
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return false
+  return Object.entries(headers as Record<string, unknown>).some(
+    ([name, value]) => name.toLowerCase() === 'developer-token' && typeof value === 'string' && value.trim() !== '',
+  )
+}
+
 function readConnectorTemplateKey(raw: unknown): string | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const provenance = (raw as Record<string, unknown>).provenance
@@ -1609,6 +1725,43 @@ function safeDelegatedOauthView(connectorType: string, raw: unknown): DelegatedO
  * olvasata a provisioning diff-nézet fallbackjéhez — amikor a config NEM a provisioning
  * ConnectorConfig alakú (pl. az „API-kapcsolat" szerkesztőn keresztül lett átírva).
  */
+export type GoogleAccountView = {
+  provider: GoogleAccountBindingProvider
+  accountIds: string[]
+  managerAccountId: string | null
+  /** Régi konnektor: a cég még nem választott fiókot → az agent bármelyiket elérheti, amit a user. */
+  bound: boolean
+  /** Régi, cég-configban tárolt developer token (a platform-szintű beállítás felülírja). */
+  legacyDeveloperToken: boolean
+}
+
+function safeGoogleAccountView(raw: unknown): GoogleAccountView | null {
+  const provider = readConnectorProvider(raw)
+  if (!isGoogleAccountBindingProvider(provider)) return null
+  const cfg = raw as Record<string, unknown>
+  let binding: GoogleAccountBinding | undefined
+  try {
+    binding = parseGoogleAccountBindingConfig(provider, cfg.googleAccountBinding)
+  } catch {
+    binding = undefined
+  }
+  const legacyManager = (() => {
+    const headers = cfg.requestHeaders
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null
+    const entry = Object.entries(headers as Record<string, unknown>).find(
+      ([name]) => name.toLowerCase() === 'login-customer-id',
+    )
+    return typeof entry?.[1] === 'string' && entry[1].trim() ? entry[1].trim() : null
+  })()
+  return {
+    provider,
+    accountIds: binding?.accountIds ?? [],
+    managerAccountId: binding?.managerAccountId ?? legacyManager,
+    bound: Boolean(binding),
+    legacyDeveloperToken: hasLegacyDeveloperTokenHeader(raw),
+  }
+}
+
 function safeHttpApiView(raw: unknown): HttpApiConfigView | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
   const cfg = raw as Record<string, unknown>

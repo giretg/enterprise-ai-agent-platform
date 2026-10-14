@@ -652,6 +652,24 @@ export async function updateConnectorDraftConfig(input: unknown) {
   }
 }
 
+const googleAccountBindingSchema = z.object({
+  draftId: z.string().min(1),
+  accountIds: z.array(z.string().trim().min(1)).min(1).max(50),
+  managerAccountId: z.string().trim().optional(),
+})
+
+/** Tenant-admin: melyik cég-szintű Google Ads / GA4 / Search Console fiókot érheti el a konnektor. */
+export async function updateGoogleAccountBinding(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = googleAccountBindingSchema.parse(input)
+    const res = await services.provisioning.updateGoogleAccountBinding(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült menteni, melyik Google-fiókot érheti el a konnektor')
+  }
+}
+
 export async function reopenConnector(input: unknown) {
   try {
     const user = await requireTenantRole('admin')

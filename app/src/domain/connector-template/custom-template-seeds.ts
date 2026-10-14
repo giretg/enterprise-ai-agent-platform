@@ -482,14 +482,15 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     connectorType: 'http_api',
     description:
       'Keresési teljesítmény (kattintások, megjelenések), ellenőrzött webhelyek, oldaltérképek és URL-vizsgálat. Saját Google-fiókkal.',
-    activationHelp: `1. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-2. Válaszd ki vagy hozd létre a projektet.
-3. APIs & Services → Library → engedélyezd a „Google Search Console API” szolgáltatást.
-4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat). Vedd fel a webmasters.readonly vagy webmasters scope-ot.
-5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google API OAuth (egy app az Analytics / Search Console / Ads / Calendar / Sheets sablonokhoz).
-7. A hívott felhasználónak verified owner/user jog kell a Search Console property-n.
-8. A siteUrl path-paramétert URL-kódolni kell: https://www.example.com/ → https%3A%2F%2Fwww.example.com%2F; domain-property: sc-domain:example.com.`,
+    activationHelp: `Kinek mi a dolga?
+• Platform (üzemeltető): a Google-kapcsolat technikai alapja (Google OAuth alkalmazás) — itt nincs vele teendőd.
+• Cég (te, admin): add meg, MELYIK Search Console property-t érheti el a konnektor. Az agent csak ezekre hívhat.
+• Felhasználó: mindenki a saját Google-fiókjával csatlakozik. Ennek a fióknak tulajdonosi vagy felhasználói joga kell legyen a fenti property-n.
+
+Hol találod a property-t? Search Console → bal felső property-választó. Kétféle alak van:
+• webcím-előtagos: https://www.example.com/
+• domain-property: sc-domain:example.com
+Több property-t vesszővel elválasztva adhatsz meg.`,
     baseUrl: 'https://searchconsole.googleapis.com',
     egressHosts: ['searchconsole.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -513,7 +514,8 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         method: 'GET',
         path: '/webmasters/v3/sites',
         access: 'read',
-        description: 'A felhasználó Search Console site-jainak listája (permissionLevel + siteUrl).',
+        description:
+          'A felhasználó Search Console site-jainak listája (permissionLevel + siteUrl). Arra jó, hogy kiderüljön: a csatlakoztatott Google-fiók látja-e a cég által kötött property-t.',
         default: true,
       },
       {
@@ -594,7 +596,16 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: false,
       },
     ],
-    instanceFields: [],
+    instanceFields: [
+      {
+        name: 'siteUrls',
+        label: 'Search Console property (pl. https://www.example.com/ vagy sc-domain:example.com)',
+        type: 'string',
+        required: true,
+        example: 'https://www.example.com/',
+        target: 'googleAccountBinding.accountIds',
+      },
+    ],
     rateLimit: { rps: 5, burst: 10 },
   },
   {
@@ -603,14 +614,12 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     connectorType: 'http_api',
     description:
       'GA4-riportok: látogatók, forgalmi források, konverziók és valós idejű adatok. Saját Google-fiókkal.',
-    activationHelp: `1. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-2. Válaszd ki vagy hozd létre a projektet.
-3. APIs & Services → Library → engedélyezd a „Google Analytics Data API” szolgáltatást.
-4. APIs & Services → OAuth consent screen → állítsd be, és vedd fel az analytics.readonly (vagy analytics) scope-ot.
-5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google API OAuth.
-7. A csatlakoztatott Google-fióknak legalább Viewer joga kell a GA4 property-n.
-9. A property ID a GA Admin → Property settings oldalon látható (szám, pl. 123456789). A path-ben: /v1beta/properties/{propertyId}:runReport — a properties/ előtagot a path már tartalmazza, csak a számot add meg.`,
+    activationHelp: `Kinek mi a dolga?
+• Platform (üzemeltető): a Google-kapcsolat technikai alapja (Google OAuth alkalmazás) — itt nincs vele teendőd.
+• Cég (te, admin): add meg, MELYIK GA4 property-t érheti el a konnektor. Az agent csak ezekből kérhet riportot.
+• Felhasználó: mindenki a saját Google-fiókjával csatlakozik. Ennek a fióknak legalább Viewer (Megtekintő) joga kell legyen a fenti property-n.
+
+Hol találod a property ID-t? Google Analytics → Admin → Property settings (Tulajdon beállításai): egy szám, pl. 123456789. Több property-t vesszővel elválasztva adhatsz meg.`,
     baseUrl: 'https://analyticsdata.googleapis.com',
     egressHosts: ['analyticsdata.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -684,7 +693,16 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: false,
       },
     ],
-    instanceFields: [],
+    instanceFields: [
+      {
+        name: 'propertyIds',
+        label: 'GA4 property ID (pl. 123456789)',
+        type: 'string',
+        required: true,
+        example: '123456789',
+        target: 'googleAccountBinding.accountIds',
+      },
+    ],
     rateLimit: { rps: 5, burst: 10 },
   },
   {
@@ -692,16 +710,14 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     displayName: 'Google Ads',
     connectorType: 'http_api',
     description:
-      'Hirdetési fiókok, kampányok és eredményeik lekérdezése; jóváhagyás után kampánymódosítás. Saját Google-fiókkal és Google Ads fejlesztői tokennel.',
-    activationHelp: `1. Kell egy Google Ads manager (MCC) fiók. A developer token az API Centerben van: https://ads.google.com/aw/apicenter
-2. Teszt-hozzáférésű token csak tesztfiókra megy; éles fiókhoz Basic/Standard jóváhagyás kell.
-3. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-4. APIs & Services → Library → engedélyezd a „Google Ads API” szolgáltatást.
-5. OAuth consent screen + Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google API OAuth.
-7. Aktiváláskor add meg: developer token (Google Ads API Center). MCC alatti kliensfiókhoz opcionálisan login-customer-id (kötőjel nélkül).
-8. A customerId path-paraméter mindig kötőjel nélküli 10 jegyű szám.
-9. Olvasáshoz a googleAds:search GAQL-t használd; a mutate végpontok írnak.`,
+      'Hirdetési fiókok, kampányok és eredményeik lekérdezése; jóváhagyás után kampánymódosítás. A cég Google Ads fiókja, a felhasználó saját Google-belépésével.',
+    activationHelp: `Kinek mi a dolga?
+• Platform (üzemeltető): a Google-kapcsolat technikai alapja (Google OAuth alkalmazás) és a Google Ads developer token — itt nincs vele teendőd.
+• Cég (te, admin): add meg, MELYIK Google Ads fiók(ok)at érheti el a konnektor. Az agent csak ezekre hívhat.
+• Felhasználó: mindenki a saját Google-fiókjával csatlakozik. Ennek a fióknak hozzáférése kell legyen a fenti Google Ads fiókhoz (közvetlenül vagy a kezelő/MCC fiókon keresztül).
+
+Hol találod a fiókazonosítót? Google Ads → jobb felső sarok, a fióknév alatt: 123-456-7890. Több fiókot vesszővel elválasztva adhatsz meg.
+Ha a fiókot egy kezelőfiókon (MCC) keresztül éritek el, add meg a kezelőfiók azonosítóját is.`,
     baseUrl: 'https://googleads.googleapis.com',
     egressHosts: ['googleads.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -720,7 +736,7 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         path: '/v25/customers:listAccessibleCustomers',
         access: 'read',
         description:
-          'Az OAuth-tokenhez közvetlenül hozzáférhető Google Ads customer resource name-ek. Ehhez a híváshoz nem kell login-customer-id. Válasz: customers/1234567890.',
+          'A felhasználó Google-fiókjához közvetlenül hozzáférhető Google Ads customer resource name-ek (customers/1234567890). Arra jó, hogy kiderüljön: a csatlakoztatott Google-fiók látja-e a cég által kötött fiókot.',
         default: true,
       },
       {
@@ -780,18 +796,20 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     ],
     instanceFields: [
       {
-        name: 'developerToken',
-        label: 'Google Ads developer token (API Center)',
+        name: 'customerIds',
+        label: 'Google Ads fiókazonosító (pl. 123-456-7890)',
         type: 'string',
         required: true,
-        target: 'requestHeaders.developer-token',
+        example: '123-456-7890',
+        target: 'googleAccountBinding.accountIds',
       },
       {
         name: 'loginCustomerId',
-        label: 'Login-customer-id (MCC, kötőjel nélkül — opcionális)',
+        label: 'Kezelőfiók (MCC) azonosítója — csak ha azon keresztül éritek el',
         type: 'string',
         required: false,
-        target: 'requestHeaders.login-customer-id',
+        example: '987-654-3210',
+        target: 'googleAccountBinding.managerAccountId',
       },
     ],
     rateLimit: { rps: 2, burst: 5 },

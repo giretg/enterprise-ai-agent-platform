@@ -37,6 +37,10 @@ import {
   type ConnectorConfig,
 } from '../src/domain/provisioning/connector-config'
 import { HttpSandboxConnectionTester } from '../src/domain/provisioning/sandbox-connection-tester'
+import {
+  withGoogleAccountBinding,
+  type GoogleAccountBinding,
+} from '../src/domain/connector/google-account-binding'
 
 let failures = 0
 /** Az agentnek grantolható draft-capability-k (a ProvisioningService kapuja ezeket nézi). */
@@ -243,6 +247,14 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.sandboxTestOk = null
     return d
   }
+  async setGoogleAccountBinding(params: { draftId: string; binding: GoogleAccountBinding }) {
+    const d = this.drafts.get(params.draftId)!
+    d.connector.config = withGoogleAccountBinding(
+      (d.connector.config ?? {}) as Record<string, unknown>,
+      params.binding,
+    ) as Prisma.JsonValue
+    return d
+  }
   async reopen(params: { draftId: string }) {
     const d = this.drafts.get(params.draftId)!
     d.validationResult = null
@@ -408,6 +420,32 @@ function googleCalendarConfig() {
   }
 }
 
+function googleAdsConfig(extra: Record<string, unknown> = {}) {
+  return {
+    provider: 'google-ads',
+    baseUrl: 'https://googleads.googleapis.com',
+    egressHosts: ['googleads.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com'],
+    authMode: 'user_delegated',
+    auth: {
+      type: 'oauth2',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+    },
+    scopesSuggested: ['https://www.googleapis.com/auth/adwords'],
+    proposedTools: [
+      {
+        name: 'search',
+        method: 'POST',
+        path: '/v25/customers/{customerId}/googleAds:search',
+        access: 'read',
+      },
+    ],
+    googleAccountBinding: { accountIds: ['1234567890'] },
+    provenance: { templateKey: 'google-ads', templateOrigin: 'custom', templateVersion: 1 },
+    ...extra,
+  }
+}
+
 function makeService(opts?: {
   bankPreset?: boolean
   tester?: SandboxConnectionTester
@@ -420,6 +458,7 @@ function makeService(opts?: {
   /** A külső secret-alias platform-oldali, tenant-scope-os engedélyezésének fake-je. */
   isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
   resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
+  resolvePlatformGoogleAdsDeveloperToken?: () => Promise<{ configured: boolean }>
 }) {
   const audit = opts?.audit ?? new FakeAudit()
   const drafts = opts?.drafts ?? new FakeDraftRepo()
@@ -436,6 +475,7 @@ function makeService(opts?: {
       opts?.verifyApprover ?? (async ({ tenantId }) => tenantId === TENANT),
     isTrustedExternalSecretAlias: opts?.isTrustedExternalSecretAlias ?? (() => true),
     resolvePlatformGoogleOAuth: opts?.resolvePlatformGoogleOAuth,
+    resolvePlatformGoogleAdsDeveloperToken: opts?.resolvePlatformGoogleAdsDeveloperToken,
   })
   return { svc, audit, drafts }
 }
@@ -1674,6 +1714,107 @@ async function run() {
     const created = await gmailActivatable(svc)
     await expectError('PLATFORM_GOOGLE_OAUTH_MISSING', () =>
       svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  // ── Google fiókos konnektorok: platform / cég / felhasználó szintek ─────────
+
+  async function googleAdsDraft(svc: ProvisioningService, config: Record<string, unknown>) {
+    return svc.createConnectorDraft(
+      { name: 'Google Ads', sourceType: 'template', generatedConfig: config },
+      adminActor,
+    )
+  }
+
+  await test('Google Ads: cég-szintű fiókkötés nélkül nem aktiválható', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: true }),
+    })
+    const { googleAccountBinding: _omit, ...unbound } = googleAdsConfig()
+    const created = await googleAdsDraft(svc, unbound)
+    await expectError('GOOGLE_ACCOUNT_BINDING_MISSING', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('Google Ads: platform developer token nélkül nem aktiválható (nem cég-szintű adat)', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: false }),
+    })
+    const created = await googleAdsDraft(svc, googleAdsConfig())
+    await expectError('PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('Google Ads: platform token + kötött fiók mellett aktiválható; régi cég-tokennel is', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: true }),
+    })
+    const created = await googleAdsDraft(svc, googleAdsConfig())
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
+
+    const legacy = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: false }),
+    })
+    const legacyDraft = await googleAdsDraft(
+      legacy.svc,
+      googleAdsConfig({ requestHeaders: { 'developer-token': 'tenant-legacy-token' } }),
+    )
+    const legacyRes = await legacy.svc.activateConnector({ draftId: legacyDraft.draftId }, adminActor)
+    assert.equal(legacyRes.lifecycleState, 'active')
+  })
+
+  await test('Fiókkötés: cég-admin aktív konnektoron módosítja, újranyitás és grant-visszavonás nélkül', async () => {
+    const { svc, drafts, audit } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: true }),
+    })
+    const created = await googleAdsDraft(
+      svc,
+      googleAdsConfig({ requestHeaders: { 'login-customer-id': '1111111111', 'X-Trace': 'x' } }),
+    )
+    await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    const res = await svc.updateGoogleAccountBinding(
+      { draftId: created.draftId, accountIds: ['222-333-4444'], managerAccountId: '987-654-3210' },
+      adminActor,
+    )
+    assert.deepEqual(res.binding, { accountIds: ['2223334444'], managerAccountId: '9876543210' })
+    const stored = drafts.drafts.get(created.draftId)!
+    assert.equal(stored.connector.lifecycleState, 'active')
+    const config = stored.connector.config as Record<string, unknown>
+    assert.deepEqual(config.googleAccountBinding, res.binding)
+    // A régi, cég-configban tárolt MCC fejléc eltűnik — a kötés az egyetlen forrás.
+    assert.deepEqual(config.requestHeaders, { 'X-Trace': 'x' })
+    const event = audit.events.find((e) => e.action === 'provisioning.connector.google_account_binding')
+    assert.ok(event, 'audit event missing')
+    const meta = event.metadata as Record<string, unknown>
+    assert.deepEqual(meta.previous_account_ids, ['1234567890'])
+    assert.deepEqual(meta.account_ids, ['2223334444'])
+  })
+
+  await test('Fiókkötés: hibás azonosító, nem Google konnektor és agent-aktor elutasítva', async () => {
+    const { svc } = makeService({ allowlist: [] })
+    const created = await googleAdsDraft(svc, googleAdsConfig())
+    await expectError('PROVISIONING_INVALID_INPUT', () =>
+      svc.updateGoogleAccountBinding({ draftId: created.draftId, accountIds: ['12-34'] }, adminActor),
+    )
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.updateGoogleAccountBinding({ draftId: created.draftId, accountIds: ['1234567890'] }, agentActor),
+    )
+    const crm = await draftToActivatable(svc)
+    await expectError('GOOGLE_ACCOUNT_BINDING_UNSUPPORTED', () =>
+      svc.updateGoogleAccountBinding({ draftId: crm.draftId, accountIds: ['1234567890'] }, adminActor),
     )
   })
 

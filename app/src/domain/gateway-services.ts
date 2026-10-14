@@ -136,6 +136,9 @@ const provisioningService = new ProvisioningService({
           : await platformSettingsService.getGoogleOAuthConfig()
     return { configured: Boolean(cfg) }
   },
+  resolvePlatformGoogleAdsDeveloperToken: async () => ({
+    configured: Boolean(await platformSettingsService.getGoogleAdsDeveloperToken()),
+  }),
   audit: repositories.audit,
 })
 

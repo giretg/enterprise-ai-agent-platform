@@ -6,6 +6,10 @@ import type {
   ConnectorDraftReviewStatus,
   ConnectorType,
 } from '@prisma/client'
+import {
+  withGoogleAccountBinding,
+  type GoogleAccountBinding,
+} from '@/domain/connector/google-account-binding'
 import { Prisma } from '@prisma/client'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
 import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
@@ -171,6 +175,33 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       where: { agentId: params.agentId, connectorId: params.connectorId },
     })
     return { removed: result.count > 0 }
+  }
+
+  async setGoogleAccountBinding(params: {
+    draftId: string
+    binding: GoogleAccountBinding
+  }): Promise<ConnectorDraftWithConnector> {
+    return prisma.$transaction(async (tx) => {
+      const draft = await tx.connectorDraft.findUnique({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+      if (!draft) throw new Error('draft not found')
+      const current =
+        draft.connector.config && typeof draft.connector.config === 'object' && !Array.isArray(draft.connector.config)
+          ? (draft.connector.config as Record<string, unknown>)
+          : {}
+      await tx.connector.update({
+        where: { id: draft.connectorId },
+        data: {
+          config: withGoogleAccountBinding(current, params.binding) as Prisma.InputJsonValue,
+        },
+      })
+      return tx.connectorDraft.findUniqueOrThrow({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+    })
   }
 
   async updateDraftConfig(params: {

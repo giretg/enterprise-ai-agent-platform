@@ -14,6 +14,10 @@ import {
   type HttpApiPaginateQuery,
 } from '@/domain/connector/http-api-paginate'
 import { requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
+import {
+  loadGoogleAdsDeveloperToken,
+  type GoogleAdsDeveloperTokenResolved,
+} from '@/lib/google-ads-developer-token'
 import type { LiveConnectorRow } from '../authorize-tool-call'
 import {
   HTTP_API_GET_ALL_TOOL,
@@ -85,6 +89,44 @@ function clientFor(
   )
 }
 
+const DEVELOPER_TOKEN_HEADER = 'developer-token'
+
+/**
+ * Google Ads: a developer token platform-szintű (PlatformSetting / env), a platform injektálja
+ * minden hívásra. Régi konnektoron a tenant configjában tárolt fejléc csak tartalék, ha a
+ * platformon még nincs beállítva.
+ */
+export async function applyPlatformGoogleAdsDeveloperToken(
+  config: HttpApiConfig,
+  load: () => Promise<GoogleAdsDeveloperTokenResolved | null> = () => loadGoogleAdsDeveloperToken(),
+): Promise<HttpApiConfig> {
+  if (config.googleAccount?.provider !== 'google-ads') return config
+  let resolved: GoogleAdsDeveloperTokenResolved | null = null
+  try {
+    resolved = await load()
+  } catch {
+    resolved = null
+  }
+  const legacyHeaders = Object.entries(config.requestHeaders ?? {})
+  const hasLegacy = legacyHeaders.some(([name, value]) => name.toLowerCase() === DEVELOPER_TOKEN_HEADER && value.trim())
+  if (!resolved) {
+    if (hasLegacy) return config
+    throw new HttpApiError(
+      'Google Ads developer token is not configured on the platform',
+      'google_ads_developer_token_missing',
+      undefined,
+      'A Google Ads eléréséhez a platform üzemeltetőjének be kell állítania a Google Ads developer tokent (Platform · Beállítások → Google API). Ezt a cég adminja nem tudja pótolni — jelezd a felhasználónak.',
+    )
+  }
+  return {
+    ...config,
+    requestHeaders: {
+      ...Object.fromEntries(legacyHeaders.filter(([name]) => name.toLowerCase() !== DEVELOPER_TOKEN_HEADER)),
+      [DEVELOPER_TOKEN_HEADER]: resolved.developerToken,
+    },
+  }
+}
+
 /** A published definition agentje — nem a modell args.agentId-je. */
 export type HttpApiCallAgent = { id: string; version?: number }
 
@@ -124,7 +166,7 @@ export async function executeHttpApiTool(
     }
   }
 
-  const config = parseHttpApiConfig(connector.config)
+  const config = await applyPlatformGoogleAdsDeveloperToken(parseHttpApiConfig(connector.config))
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
   const client = clientFor(config, apiKey, language, allowedEgressHosts)
   const callId = randomUUID()

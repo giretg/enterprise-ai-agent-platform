@@ -34,6 +34,7 @@ import {
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
+import { GoogleConnectorLevelsPanel, type GoogleAccountViewRow } from './google-connector-levels-panel'
 import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
@@ -141,6 +142,8 @@ type DraftRow = {
   config: DraftConfig
   httpApiView: HttpApiConfigView
   delegatedOauthView: DelegatedOauthConfigView
+  /** Google Ads / Analytics / Search Console: cég-szintű fiókkötés (secret-mentes). */
+  googleAccountView?: GoogleAccountViewRow | null
   sourceType: string
   sourceHash: string
   createdAt: string | Date
@@ -584,6 +587,7 @@ export function ProvisioningPanel({
   const [googleOauthConfigured, setGoogleOauthConfigured] = useState(false)
   const [googleDriveOauthConfigured, setGoogleDriveOauthConfigured] = useState(false)
   const [googleApiOauthConfigured, setGoogleApiOauthConfigured] = useState(false)
+  const [googleAdsDeveloperTokenConfigured, setGoogleAdsDeveloperTokenConfigured] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -699,7 +703,10 @@ export function ProvisioningPanel({
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
-      if (ga.success) setGoogleApiOauthConfigured(ga.data.configured)
+      if (ga.success) {
+        setGoogleApiOauthConfigured(ga.data.configured)
+        setGoogleAdsDeveloperTokenConfigured(ga.data.googleAdsDeveloperTokenConfigured)
+      }
       if (su.success) {
         setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
         setTenantAuto(su.data.tenantAutoApproveEnabled)
@@ -2540,6 +2547,7 @@ export function ProvisioningPanel({
                   googleOauthConfigured={googleOauthConfigured}
                   googleDriveOauthConfigured={googleDriveOauthConfigured}
                   googleApiOauthConfigured={googleApiOauthConfigured}
+                  googleAdsDeveloperTokenConfigured={googleAdsDeveloperTokenConfigured}
                   pending={pending}
                   run={run}
                   isSuperadmin={isSuperadmin}
@@ -2642,6 +2650,7 @@ export function ProvisioningPanel({
                 googleOauthConfigured={googleOauthConfigured}
                 googleDriveOauthConfigured={googleDriveOauthConfigured}
                 googleApiOauthConfigured={googleApiOauthConfigured}
+                googleAdsDeveloperTokenConfigured={googleAdsDeveloperTokenConfigured}
                 pending={pending}
                 run={run}
                 isSuperadmin={isSuperadmin}
@@ -2855,6 +2864,7 @@ function DraftCard({
   googleOauthConfigured,
   googleDriveOauthConfigured,
   googleApiOauthConfigured,
+  googleAdsDeveloperTokenConfigured,
   pending,
   run,
   isSuperadmin,
@@ -2866,6 +2876,7 @@ function DraftCard({
   googleOauthConfigured: boolean
   googleDriveOauthConfigured: boolean
   googleApiOauthConfigured: boolean
+  googleAdsDeveloperTokenConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
   isSuperadmin: boolean
@@ -2964,6 +2975,19 @@ function DraftCard({
     !!secretAlias.trim() &&
     !isResolvableSecretAlias(secretAlias.trim())
 
+  // Google Ads / Analytics / Search Console: a cégnek ki kell választania a fiókot, Ads-nél
+  // a platformon kell developer token (vagy egy régi, cég-szintű tartalék).
+  const googleAccountView = draft.googleAccountView ?? null
+  const googleAccountBlocker = !googleAccountView
+    ? null
+    : !googleAccountView.bound
+      ? t('googleBindingRequired')
+      : googleAccountView.provider === 'google-ads' &&
+          !googleAdsDeveloperTokenConfigured &&
+          !googleAccountView.legacyDeveloperToken
+        ? t('googleAdsTokenRequired')
+        : null
+
   const buildActivationInput = (confirmKeyless?: boolean) => ({
     draftId: draft.draftId,
     ...(isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector
@@ -2987,6 +3011,7 @@ function DraftCard({
     if (isGmailConnector && !googleOauthConfigured) return
     if (isGoogleDriveConnector && !googleDriveOauthConfigured) return
     if (isPlatformGoogleApiConnector && !googleApiOauthConfigured) return
+    if (googleAccountBlocker) return
     if (!isPlatformGoogleConnector && !hasActivationCredentials) {
       void (async () => {
         const confirmed = await confirmDialog({
@@ -3213,6 +3238,16 @@ function DraftCard({
               </Badge>
             ) : null}
           </div>
+          {googleAccountView && draft.lifecycleState !== 'archived' ? (
+            <GoogleConnectorLevelsPanel
+              draftId={draft.draftId}
+              view={googleAccountView}
+              googleApiOauthConfigured={googleApiOauthConfigured}
+              googleAdsDeveloperTokenConfigured={googleAdsDeveloperTokenConfigured}
+              pending={pending}
+              run={run}
+            />
+          ) : null}
           <div className="grid gap-4 lg:grid-cols-[14rem_1fr]">
             <ol className="space-y-2">
               {visibleSteps.map((step, index) => {
@@ -3800,6 +3835,9 @@ function DraftCard({
                         {t('googleApiOauthNeed')}
                       </p>
                     )}
+                    {googleAccountBlocker ? (
+                      <p className="mt-1 text-honey">{googleAccountBlocker}</p>
+                    ) : null}
                   </div>
                 ) : (
                   <>
@@ -3984,7 +4022,8 @@ function DraftCard({
                     hasInvalidSecretAlias ||
                     (isGmailConnector && !googleOauthConfigured) ||
                     (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
-                    (isPlatformGoogleApiConnector && !googleApiOauthConfigured)
+                    (isPlatformGoogleApiConnector && !googleApiOauthConfigured) ||
+                    Boolean(googleAccountBlocker)
                   }
                   onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
@@ -4000,7 +4039,8 @@ function DraftCard({
                       hasInvalidSecretAlias ||
                       (isGmailConnector && !googleOauthConfigured) ||
                       (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
-                      (isPlatformGoogleApiConnector && !googleApiOauthConfigured)
+                      (isPlatformGoogleApiConnector && !googleApiOauthConfigured) ||
+                      Boolean(googleAccountBlocker)
                     }
                     onClick={() => {
                       void (async () => {

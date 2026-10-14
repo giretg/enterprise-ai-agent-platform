@@ -19,6 +19,11 @@ import {
   type ModelRef,
 } from '@/lib/model-policy'
 import { NAV_SOFTWARE_PLATFORM_KEY, parseNavSoftware, type NavSoftware } from '@/lib/nav-online-invoice-software'
+import {
+  GOOGLE_ADS_DEVELOPER_TOKEN_KEY,
+  loadGoogleAdsDeveloperToken,
+  type GoogleAdsDeveloperTokenResolved,
+} from '@/lib/google-ads-developer-token'
 
 export const PROVISIONING_EGRESS_ALLOWLIST_KEY = 'provisioning.egress_allowlist'
 export const MODEL_POLICY_KEY = 'model.policy'
@@ -205,6 +210,27 @@ export class PlatformSettingsService {
     )
 
     return { config, source: 'platform' }
+  }
+
+  /** Google Ads developer token — platform-szintű, a platform Google API OAuth appjához tartozik. */
+  async getGoogleAdsDeveloperToken(): Promise<GoogleAdsDeveloperTokenResolved | null> {
+    return loadGoogleAdsDeveloperToken({
+      getPlatformValue: () => this.settings.get(GOOGLE_ADS_DEVELOPER_TOKEN_KEY),
+    })
+  }
+
+  async upsertGoogleAdsDeveloperToken(
+    input: { developerToken: string },
+    actorId: string,
+  ): Promise<GoogleAdsDeveloperTokenResolved> {
+    const developerToken = input.developerToken.trim()
+    if (!developerToken) throw new Error('A developer token nem lehet üres.')
+    await this.settings.set(
+      GOOGLE_ADS_DEVELOPER_TOKEN_KEY,
+      { developerToken } as Prisma.InputJsonObject,
+      actorId,
+    )
+    return { developerToken, source: 'platform' }
   }
 
   async getNavSoftware(): Promise<NavSoftware | null> {
