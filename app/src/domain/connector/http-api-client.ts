@@ -12,7 +12,7 @@
  */
 import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
-import { guardEgressUrl } from '@/domain/net/egress-guard'
+import { guardEgressUrl, readResponseBodyCapped, readResponseJsonCapped } from '@/domain/net/egress-guard'
 import {
   HTTP_API_PROTOCOLS,
   httpPaginationSchema,
@@ -1235,14 +1235,16 @@ async function resolveOAuth2AccessToken(
     // ezek a diagnózishoz kellenek; a client_secret/refresh_token SOSEM kerül ide.
     let reason = `status ${res.status}`
     try {
-      const errBody = (await res.json()) as { error?: string; error_description?: string }
+      // Diagnosztikai olvasás plafonnal (egy óriás hiba-törzs is OOM-veszély).
+      const { text } = await readResponseBodyCapped(res)
+      const errBody = JSON.parse(text) as { error?: string; error_description?: string }
       if (errBody.error) reason = `${errBody.error}${errBody.error_description ? `: ${errBody.error_description}` : ''}`
     } catch {
       // nem JSON válasz — marad a status kód
     }
     throw new HttpApiError(`oauth2 token refresh failed (${reason})`, 'oauth2_refresh_failed')
   }
-  const data = (await res.json()) as { access_token?: string; expires_in?: number }
+  const data = await readResponseJsonCapped<{ access_token?: string; expires_in?: number }>(res)
   if (!data.access_token) {
     throw new HttpApiError('oauth2 token endpoint returned no access_token', 'oauth2_refresh_failed')
   }
