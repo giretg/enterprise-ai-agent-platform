@@ -145,7 +145,7 @@ function main() {
       ),
     )
     const details = html.match(/<details\b[^>]*>/g) ?? []
-    assert.equal(details.length, 11)
+    assert.equal(details.length, 12)
     assert.equal(details.some((tag) => /\sopen(?:\s|=|>|"")/.test(tag)), false)
     assert.ok(html.indexOf('>Hermes Desktop') < html.indexOf('>Codex<'))
     assert.match(html, /hermes:\/\/mcp\/install\?name=excellence/)
