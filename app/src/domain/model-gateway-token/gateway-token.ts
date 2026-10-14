@@ -99,7 +99,11 @@ async function deny(
       targetId: meta.agentId ?? null,
       policyDecision: 'denied',
       inputRef: failure.code,
-      metadata: { code: failure.code, installId: meta.installId, reason: meta.reason },
+      metadata: {
+        code: failure.code,
+        installId: meta.installId,
+        ...(meta.reason !== undefined ? { denyReason: meta.reason } : {}),
+      },
       tenantId: meta.tenantId ?? null,
     })
   }

@@ -10,6 +10,7 @@ import {
   verifyGatewayToken,
   type GatewayTokenDeps,
 } from '../src/domain/model-gateway-token/gateway-token'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 
 const KEY = 'k'.repeat(40)
 const USER = '11111111-1111-4111-8111-111111111111'
@@ -104,6 +105,33 @@ async function main() {
     assert.deepEqual(await issue(deps(), { ...body, tenantSlug: 'other' }), { ok: false, code: 'forbidden' })
     state.memberActive = false
     assert.deepEqual(await issue(), { ok: false, code: 'forbidden' })
+  })
+
+  await check('megtagadás audit-metadata: denyReason, nem tiltott reason kulcs (#879)', async () => {
+    const rows: { metadata?: unknown }[] = []
+    state.agentVisible = false
+    assert.deepEqual(
+      await issue(deps({ audit: { append: async (a) => void rows.push(a) } })),
+      { ok: false, code: 'agent_not_found' },
+    )
+    assert.equal(rows.length, 1)
+    assertAuditMetadataSafe(rows[0].metadata)
+    assert.deepEqual(rows[0].metadata, { code: 'agent_not_found', installId: 'inst-1' })
+
+    const { agentId: _omit, ...noAgent } = body
+    rows.length = 0
+    state.agentVisible = false
+    assert.deepEqual(await issue(deps({ audit: { append: async (a) => void rows.push(a) } }), noAgent), {
+      ok: false,
+      code: 'agent_not_found',
+    })
+    assert.equal(rows.length, 1)
+    assertAuditMetadataSafe(rows[0].metadata)
+    assert.deepEqual(rows[0].metadata, {
+      code: 'agent_not_found',
+      installId: 'inst-1',
+      denyReason: 'bootstrap_no_agent',
+    })
   })
 
   await check('nem látható / nyugdíjazott / ismeretlen / nem-UUID agent → agent_not_found', async () => {
