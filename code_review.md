@@ -1,5 +1,15 @@
 # Enterprise code review log
 
+## 2026-10-14 - Hermes kliensszabály-feloldás: sérült policy-sorral eltűnhetett a modell- és agent-korlát
+
+- Áttekintett, korábban külön nem naplózott komponens: `app/src/domain/client-policy/resolve-effective-policy.ts`, `policy-service.ts`, `admin-policy.ts`, a hozzájuk tartozó PostgreSQL repositoryk és a snapshot/admin API; továbbá a gép-padló, heartbeat, gateway-token és Guard kapcsolódó belépési pontjai. A változás a közös szabályfeloldóban van, ezért a chatből és ticketből indított használat ugyanazt a döntést kapja.
+- Rendben talált kontrollok: tenant/user/agent szintű feloldás, admin célazonosító- és verzióellenőrzés tranzakcióban, auditált mentés, rövid életű gateway-token és élő hozzáférés-ellenőrzés, kiadott gép-padló hash és session-frissesség kapu.
+- **Lelet (magas, governance):** a DB-ből visszatérő hibás `models` mező (`string`, `null`, nem tömb) `null`-ként oldódott fel, ami a Model Gateway-ben „nincs modell-szűkítés” jelentésű. Egy hibás agent-preset vagy sérült teljes `capabilities`/`toolOverrides` JSON szintén elveszíthette a korlátot. Hibás migráció, kézi javítás vagy adatkorruptálódás így a vártnál bővebb modell- és tool-hozzáférést adhatott.
+- Javítás: a hibás modelllista üres engedélylistává válik; a sérült preset, capability-objektum és tool-szabály objektum a legszigorúbb helyi értékre esik vissza. A hiányzó sor és a szándékosan üres, érvényes objektum továbbra is a dokumentált öröklést követi. Nincs új függőség vagy konfiguráció.
+- Üzleti hatás: sérült vállalati beállítás esetén a munkatárs nem kerülhet észrevétlenül drágább vagy nem jóváhagyott modellre, és egy agent plafonja nem tűnhet el. A hibás szabály javításáig inkább hozzáférési hiba jelentkezik; ez látható és kezelhető.
+- **Nyitott élesítési kockázat:** a kliensoldali heartbeat a felhasználó által megszerezhető gateway-JWT-vel és olvasható gép-padló hash-sel hamisítható, ezért a Managed állapot nem bizonyítja önmagában a Guard futását. Ez külön architekturális megoldást igényel: [#883](https://github.com/giretg/enterprise-ai-agent-platform/issues/883). A jelen PR nem igazolja a kliensoldali kontrollok rosszindulatú felhasználóval szembeni kikényszeríthetőségét.
+- Ellenőrzés: `test:client-policy`, `test:client-policy-admin`, `test:client-install`, `test:machine-floor`, `tsc --noEmit`, célzott ESLint és `git diff --check` zöld (a Prisma kliens újragenerálása után).
+
 ## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
 
 - Áttekintett komponens: a `sandbox_run` **bemeneti** határa — az `inputs` mező validálása, a munkafájl olvasása és a `/work/in/<path>` alá másolás. A 2026-10-01 bejegyzés a kimeneti/átirányítási ágat, a #794 merge pedig a hibakód-leképezést és a Control Plane-feliratot fedte; ez a bejegyzés azt a rést zárja, amit egyik sem ért.
