@@ -25,6 +25,15 @@ import {
   type GitHubRepositoryAccess,
 } from './github-repository-access'
 import { decodeGitHubContentsBody } from './decode-github-contents-body'
+import {
+  checkGoogleAccountAllowed,
+  formatGoogleAccountId,
+  googleAccountKindLabel,
+  isGoogleAccountBindingProvider,
+  parseGoogleAccountBindingConfig,
+  type GoogleAccountBinding,
+  type GoogleAccountBindingProvider,
+} from './google-account-binding'
 import type { TenantLanguage } from '@/lib/tenant-language'
 import {
   buildHttpApiClientErrorHint,
@@ -151,6 +160,12 @@ export type HttpApiConfig = {
   defaultRisk?: HttpApiRisk
   /** GitHub connector repository-határa. Hiánya visszafelé kompatibilisen `any`. */
   githubRepositoryAccess?: GitHubRepositoryAccess
+  /**
+   * Google Ads / Analytics / Search Console: a provider és a tenant által kötött fiók(ok).
+   * `binding` hiányában (régi konnektor) nincs fiókhatár, de a 401/403 hint így is a
+   * felhasználói hozzáférésre mutat.
+   */
+  googleAccount?: { provider: GoogleAccountBindingProvider; binding?: GoogleAccountBinding }
   /** Maximális válasz-méret karakterben (alap: 20000). */
   maxResponseChars?: number
   /** Önfrissítő snapshotból materializált config: minden hívásnál egress-őr. */
@@ -348,6 +363,20 @@ export function parseHttpApiConfig(
 
   const authProfiles = parseAuthProfiles(raw.authProfiles)
   const githubRepositoryAccess = parseGitHubRepositoryAccessConfig(raw.githubRepositoryAccess)
+  const provider = typeof raw.provider === 'string' ? raw.provider : null
+  const googleAccount = isGoogleAccountBindingProvider(provider)
+    ? (() => {
+        const binding = parseGoogleAccountBindingConfig(provider, raw.googleAccountBinding)
+        return { provider, ...(binding ? { binding } : {}) }
+      })()
+    : undefined
+  // A kötött MCC (manager) fiók a Google Ads login-customer-id fejléce — platform injektálja,
+  // a modell nem adhatja meg. Régi konnektoron a requestHeaders-ben már benne lehet.
+  const managerAccountId = googleAccount?.binding?.managerAccountId
+  const effectiveRequestHeaders =
+    managerAccountId && !headerNameSet(requestHeaders).has('login-customer-id')
+      ? { ...(requestHeaders ?? {}), 'login-customer-id': managerAccountId }
+      : requestHeaders
 
   const defaultRisk = parseHttpApiRisk(raw.defaultRisk)
   const protocol = HTTP_API_PROTOCOLS.find((p) => p === raw.protocol)
@@ -364,7 +393,7 @@ export function parseHttpApiConfig(
       typeof raw.defaultAuthProfile === 'string' && raw.defaultAuthProfile.trim()
         ? raw.defaultAuthProfile.trim()
         : undefined,
-    requestHeaders,
+    requestHeaders: effectiveRequestHeaders,
     writeHeaders,
     defaultActingUserEmail:
       typeof raw.defaultActingUserEmail === 'string' && raw.defaultActingUserEmail.trim()
@@ -374,6 +403,7 @@ export function parseHttpApiConfig(
     endpoints,
     restrictToEndpoints: raw.restrictToEndpoints === true,
     ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
+    ...(googleAccount ? { googleAccount } : {}),
     maxResponseChars:
       typeof raw.maxResponseChars === 'number' && raw.maxResponseChars > 0
         ? raw.maxResponseChars
@@ -791,6 +821,47 @@ export class HttpApiClient {
     }
   }
 
+  private assertGoogleAccountAllowed(path: string, body: unknown): void {
+    const google = this.config.googleAccount
+    if (!google?.binding) return
+    let pathname: string
+    try {
+      pathname = this.buildUrl(path).pathname
+    } catch {
+      throw new HttpApiError('Google API path is invalid', 'invalid_path')
+    }
+    const check = checkGoogleAccountAllowed(google.provider, google.binding, pathname, body)
+    if (check.allowed) return
+    const kind = googleAccountKindLabel(google.provider)
+    const bound = check.boundAccounts.map((id) => formatGoogleAccountId(google.provider, id)).join(', ')
+    throw new HttpApiError(
+      `${kind} not bound to this connector: ${check.target || '(missing)'}`,
+      'google_account_not_allowed',
+      undefined,
+      this.language === 'en'
+        ? `This connector may only reach the company's bound ${kind}: ${bound}. Use one of these; a tenant admin can change the binding on the connector.`
+        : `Ez a konnektor csak a cég által kötött ${kind} elérésére jogosult: ${bound}. Ezek egyikét használd; a kötést a cég adminja módosíthatja a konnektornál.`,
+    )
+  }
+
+  /** 401/403 egy Google fiókos API-n: jellemzően a felhasználó saját Google-fiókjának nincs joga. */
+  private googleAccountAccessHint(status: number): string | undefined {
+    const google = this.config.googleAccount
+    if (!google || (status !== 401 && status !== 403)) return undefined
+    const kind = googleAccountKindLabel(google.provider)
+    const bound = google.binding?.accountIds.map((id) => formatGoogleAccountId(google.provider, id)).join(', ')
+    if (this.language === 'en') {
+      return (
+        `The user's own connected Google account probably has no access to the ${kind}${bound ? ` (${bound})` : ''}. ` +
+        'Tell the user to ask the account owner for access, or reconnect with a Google account that has it — do not retry with other account IDs.'
+      )
+    }
+    return (
+      `Valószínűleg a felhasználó saját, csatlakoztatott Google-fiókjának nincs joga a(z) ${kind}${bound ? ` (${bound})` : ''} eléréséhez. ` +
+      'Kérd meg a felhasználót, hogy kérjen hozzáférést a fiók gazdájától, vagy csatlakozzon olyan Google-fiókkal, amelyiknek van — ne próbálkozz más fiókazonosítóval.'
+    )
+  }
+
   private buildUrl(path: string, query?: HttpApiRequestParams['query']): URL {
     const rel = path.startsWith('/') ? path : `/${path}`
     const url = new URL(`${this.config.baseUrl}${rel}`)
@@ -906,6 +977,7 @@ export class HttpApiClient {
       throw new HttpApiError(`unsupported HTTP method: ${method}`, 'invalid_method')
     }
     const endpoint = this.selectEndpoint(method, params.path, params.continuationOf)
+    this.assertGoogleAccountAllowed(params.path, params.body)
     const platformInjected = this.platformInjectedHeaderNames(method, endpoint)
     const parameterHeaders = this.buildParameterHeaders(endpoint, params.headers, platformInjected)
 
@@ -988,12 +1060,17 @@ export class HttpApiClient {
 
     const errorHint =
       !res.ok
-        ? buildHttpApiClientErrorHint({
-            status: res.status,
-            endpoint: endpoint ?? null,
-            usedQueryKeys: params.query ? Object.keys(params.query) : [],
-            language: this.language,
-          })
+        ? [
+            buildHttpApiClientErrorHint({
+              status: res.status,
+              endpoint: endpoint ?? null,
+              usedQueryKeys: params.query ? Object.keys(params.query) : [],
+              language: this.language,
+            }),
+            this.googleAccountAccessHint(res.status),
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined
         : undefined
     const truncationHint =
       truncated && typeof body === 'object' && body && 'hint' in (body as object)

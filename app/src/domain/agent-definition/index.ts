@@ -16,6 +16,7 @@
  */
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
+import { describeGoogleAccountBinding } from '@/domain/connector/google-account-binding'
 import {
   collectSnapshotRules,
   type AgentDefinitionSnapshotRule,
@@ -173,11 +174,16 @@ async function resolveHttpApiConnectorMeta(
     if (!resolved) return undefined
     const parsed = parseHttpApiConfig(resolved.config)
     const catalog = describeConnectorCatalog(resolved.type, resolved.config, null)
-    const description =
+    const baseDescription =
       catalog.description ??
       (typeof parsed.description === 'string' && parsed.description.trim()
         ? parsed.description.trim().slice(0, 500)
         : null)
+    // Google Ads / Analytics / Search Console: a cég által kötött fiók — ne találgasson az agent.
+    const accountNote = parsed.googleAccount
+      ? describeGoogleAccountBinding(parsed.googleAccount.provider, parsed.googleAccount.binding)
+      : null
+    const description = [baseDescription, accountNote].filter(Boolean).join(' ') || null
     return {
       endpoints: summarizeHttpApiEndpoints(parsed.endpoints),
       ...(description ? { description } : {}),

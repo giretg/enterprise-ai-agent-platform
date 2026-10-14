@@ -48,6 +48,7 @@ import type {
   KnowledgeArtifactStatus,
   KnowledgeProcessingMode,
 } from '@prisma/client'
+import type { GoogleAccountBinding } from '@/domain/connector/google-account-binding'
 import type { ListPageResult } from '@/lib/list-pagination'
 import type { AuditAppendInput } from '@/lib/audit/types'
 
@@ -375,6 +376,14 @@ export interface ConnectorDraftRepository {
     authMode: ConnectorAuthMode
     sourceHash: string
     secretAliasSuggested: string | null
+  }): Promise<ConnectorDraftWithConnector>
+  /**
+   * Tenant-szintű Google-fiókkötés cseréje (Ads / Analytics / Search Console). Csak ezt az egy
+   * config-kulcsot írja; a lifecycle-t és a felhasználói granteket nem érinti.
+   */
+  setGoogleAccountBinding(params: {
+    draftId: string
+    binding: GoogleAccountBinding
   }): Promise<ConnectorDraftWithConnector>
   reopen(params: { draftId: string }): Promise<Connector>
   decommission(params: { draftId: string }): Promise<{ connectorId: string; affectedAgentIds: string[] }>

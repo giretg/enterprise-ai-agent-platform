@@ -54,8 +54,9 @@ export function GoogleApiOAuthControlPanel({
         <p className="text-sm text-ink-soft">
           Egy közös Google Cloud OAuth Web application a platform Google Analytics, Search Console,
           Google Ads, Calendar és Sheets konnektor-sablonjaihoz. Egyszer kell beállítani; utána a
-          tenantok csak konnektort hoznak létre és a felhasználók a saját Google-fiókjukkal kötnek be —
-          Client ID/secret nem kell tenant szinten.
+          cégek csak azt adják meg, melyik saját fiókjukat (Google Ads fiók, GA4 property, Search
+          Console property) érje el a konnektor, a felhasználók pedig a saját Google-fiókjukkal lépnek
+          be — Client ID/secret nem kell cég-szinten.
         </p>
         <ol className="list-decimal space-y-1 pl-5 text-sm text-ink-soft">
           <li>

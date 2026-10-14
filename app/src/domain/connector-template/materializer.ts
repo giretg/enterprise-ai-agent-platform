@@ -1,6 +1,11 @@
 import { parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import { gitHubRepositoryAccessFromText } from '@/domain/connector/github-repository-access'
 import {
+  buildGoogleAccountBinding,
+  isGoogleAccountBindingProvider,
+  splitGoogleAccountIds,
+} from '@/domain/connector/google-account-binding'
+import {
   normalizeConnectorConfig,
   type ConnectorConfig,
 } from '@/domain/provisioning/connector-config'
@@ -60,7 +65,9 @@ export function materializeConnectorConfig(
     },
   }
 
-  const withFields = applyInstanceFields(base, descriptor.instanceFields, chosen.instanceValues, secretAliases)
+  const withFields = normalizeGoogleAccountBinding(
+    applyInstanceFields(base, descriptor.instanceFields, chosen.instanceValues, secretAliases),
+  )
   const scopedConfig =
     withFields.githubRepositoryAccess?.mode === 'selected'
       ? {
@@ -298,6 +305,24 @@ function applyInstanceFields(
   return next
 }
 
+/** A sablon-mezőkből összerakott fiókkötést a provider szabályai szerint normalizáljuk. */
+function normalizeGoogleAccountBinding(config: ConnectorConfig): ConnectorConfig {
+  const raw = config.googleAccountBinding
+  if (!raw) return config
+  if (!isGoogleAccountBindingProvider(config.provider)) {
+    throw new ConnectorTemplateMaterializationError(
+      `googleAccountBinding target is not supported for provider: ${config.provider}`,
+    )
+  }
+  try {
+    return { ...config, googleAccountBinding: buildGoogleAccountBinding(config.provider, raw) }
+  } catch (error) {
+    throw new ConnectorTemplateMaterializationError(
+      error instanceof Error ? error.message : 'invalid Google account binding',
+    )
+  }
+}
+
 function validateField(field: InstanceFieldDescriptor, value: string): void {
   if (field.enumValues && !field.enumValues.includes(value)) {
     throw new ConnectorTemplateMaterializationError(`invalid enum value for ${field.name}`)
@@ -357,6 +382,20 @@ function assignTarget(
   }
   if (target === 'github.repositoryAccess') {
     config.githubRepositoryAccess = gitHubRepositoryAccessFromText(interpolated)
+    return
+  }
+  if (target === 'googleAccountBinding.accountIds') {
+    config.googleAccountBinding = {
+      ...config.googleAccountBinding,
+      accountIds: splitGoogleAccountIds(interpolated),
+    }
+    return
+  }
+  if (target === 'googleAccountBinding.managerAccountId') {
+    config.googleAccountBinding = {
+      accountIds: config.googleAccountBinding?.accountIds ?? [],
+      managerAccountId: interpolated,
+    }
     return
   }
   if (target === 'defaultActingUserEmail') {

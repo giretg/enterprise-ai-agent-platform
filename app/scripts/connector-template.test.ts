@@ -257,27 +257,78 @@ async function main() {
     }
   })
 
-  await test('Google Ads template injects developer-token request header', () => {
+  await test('Google Ads template binds the company account; developer token stays platform-level', () => {
     const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-ads')
     assert.ok(rawDescriptor, 'missing google-ads custom template')
+    const descriptor = parseTemplateDescriptor(rawDescriptor)
+    assert.equal(
+      descriptor.instanceFields.some((field) => field.name === 'developerToken'),
+      false,
+      'developer token is a platform setting, not a tenant template field',
+    )
     const config = materializeConnectorConfig(
-      parseTemplateDescriptor(rawDescriptor),
+      descriptor,
       {
         authMethodKind: 'user_delegated_oauth2',
         instanceValues: {
-          developerToken: 'dev-token-example',
-          loginCustomerId: '1234567890',
+          customerIds: '123-456-7890, 111-222-3333',
+          loginCustomerId: '987-654-3210',
         },
       },
       {},
     )
     assert.equal(config.baseUrl, 'https://googleads.googleapis.com')
-    assert.equal(config.requestHeaders?.['developer-token'], 'dev-token-example')
-    assert.equal(config.requestHeaders?.['login-customer-id'], '1234567890')
+    assert.deepEqual(config.googleAccountBinding, {
+      accountIds: ['1234567890', '1112223333'],
+      managerAccountId: '9876543210',
+    })
+    assert.equal(config.requestHeaders?.['developer-token'], undefined)
+    const runtime = parseHttpApiConfig(config, { allowMissingOAuthClientId: true })
+    assert.equal(runtime.requestHeaders?.['login-customer-id'], '9876543210')
+    assert.equal(runtime.googleAccount?.provider, 'google-ads')
     assert.equal(config.auth.type, 'oauth2')
     assert.equal(config.auth.scope, 'https://www.googleapis.com/auth/adwords')
     assert.equal(config.restrictToEndpoints, true)
     assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'search'))
+  })
+
+  await test('Google Analytics / Search Console templates require and normalize the bound account', () => {
+    const ga = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-analytics'))
+    assert.deepEqual(
+      materializeConnectorConfig(
+        ga,
+        { authMethodKind: 'user_delegated_oauth2', instanceValues: { propertyIds: 'properties/123456789' } },
+        {},
+      ).googleAccountBinding,
+      { accountIds: ['123456789'] },
+    )
+    assert.throws(
+      () => materializeConnectorConfig(ga, { authMethodKind: 'user_delegated_oauth2', instanceValues: {} }, {}),
+      /missing template field: propertyIds/,
+    )
+    const sc = parseTemplateDescriptor(
+      CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-search-console'),
+    )
+    assert.deepEqual(
+      materializeConnectorConfig(
+        sc,
+        {
+          authMethodKind: 'user_delegated_oauth2',
+          instanceValues: { siteUrls: 'https://WWW.Example.com sc-domain:Example.hu' },
+        },
+        {},
+      ).googleAccountBinding,
+      { accountIds: ['https://www.example.com/', 'sc-domain:example.hu'] },
+    )
+    assert.throws(
+      () =>
+        materializeConnectorConfig(
+          ga,
+          { authMethodKind: 'user_delegated_oauth2', instanceValues: { propertyIds: 'UA-1234-1' } },
+          {},
+        ),
+      /GA4 property ID/,
+    )
   })
 
   await test('marketing custom templates expose documented hosts and default read tools', () => {

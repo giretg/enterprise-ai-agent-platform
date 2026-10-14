@@ -4,6 +4,7 @@ import {
   getPlatformGoogleOAuth,
   getPlatformGoogleDriveOAuthConfig,
   getPlatformGoogleApiOAuth,
+  getPlatformGoogleAdsDeveloperToken,
   getPlatformGoogleDrivePickerConfig,
   getPlatformNavSoftware,
 } from '@/app/actions/connector-grants'
@@ -14,6 +15,7 @@ import { NavOnlineInvoiceControlPanel } from '@/app/control-plane/system/nav-onl
 import { GoogleOAuthControlPanel } from '@/app/control-plane/system/google-oauth-control-panel'
 import { GoogleDriveOAuthControlPanel } from '@/app/control-plane/system/google-drive-oauth-control-panel'
 import { GoogleApiOAuthControlPanel } from '@/app/control-plane/system/google-api-oauth-control-panel'
+import { GoogleAdsDeveloperTokenPanel } from '@/app/control-plane/system/google-ads-developer-token-panel'
 import { GoogleDrivePickerControlPanel } from '@/app/control-plane/system/google-drive-picker-control-panel'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { hasMinimumPlatformRole } from '@/lib/tenant-policy'
@@ -22,10 +24,11 @@ export default async function PlatformSettingsPage() {
   const ctx = await getAuthContext()
   const canEdit = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'platform_operator')
   const canEditChain = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'superadmin')
-  const [gmail, drive, googleApi, picker, nav, fallbackChain, jwtKey] = await Promise.all([
+  const [gmail, drive, googleApi, googleAdsToken, picker, nav, fallbackChain, jwtKey] = await Promise.all([
     getPlatformGoogleOAuth(),
     getPlatformGoogleDriveOAuthConfig(),
     getPlatformGoogleApiOAuth(),
+    getPlatformGoogleAdsDeveloperToken(),
     getPlatformGoogleDrivePickerConfig(),
     getPlatformNavSoftware(),
     getGlobalFallbackChain(),
@@ -64,10 +67,19 @@ export default async function PlatformSettingsPage() {
           {
             id: 'google-api-oauth',
             label: t('googleApi'),
-            content: googleApi.success ? (
-              <GoogleApiOAuthControlPanel initial={googleApi.data} canEdit={canEdit} />
-            ) : (
-              <p className="text-sm text-coral-deep">{googleApi.error}</p>
+            content: (
+              <div className="space-y-6">
+                {googleApi.success ? (
+                  <GoogleApiOAuthControlPanel initial={googleApi.data} canEdit={canEdit} />
+                ) : (
+                  <p className="text-sm text-coral-deep">{googleApi.error}</p>
+                )}
+                {googleAdsToken.success ? (
+                  <GoogleAdsDeveloperTokenPanel initial={googleAdsToken.data} canEdit={canEdit} />
+                ) : (
+                  <p className="text-sm text-coral-deep">{googleAdsToken.error}</p>
+                )}
+              </div>
             ),
           },
           {

@@ -16,6 +16,7 @@ import {
 } from '@/lib/validators/actions'
 import { navSoftwareSchema } from '@/lib/nav-online-invoice-software'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
+import { toGoogleAdsDeveloperTokenPublicView } from '@/lib/google-ads-developer-token'
 import { agentDisplayName } from '@/lib/agent-persona'
 import { iconDataUrlByTemplateKey, provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
@@ -299,8 +300,11 @@ export async function getGoogleDriveOAuthConfiguredStatus() {
 export async function getGoogleApiOAuthConfiguredStatus() {
   try {
     await requireTenantRole('viewer')
-    const resolved = await services.platformSettings.getGoogleApiOAuthConfig()
-    return ok({ configured: Boolean(resolved) })
+    const [resolved, adsToken] = await Promise.all([
+      services.platformSettings.getGoogleApiOAuthConfig(),
+      services.platformSettings.getGoogleAdsDeveloperToken(),
+    ])
+    return ok({ configured: Boolean(resolved), googleAdsDeveloperTokenConfigured: Boolean(adsToken) })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load Google API OAuth status')
   }
@@ -404,6 +408,27 @@ export async function upsertPlatformGoogleApiOAuth(input: {
     return ok(toGoogleOAuthPublicView(resolved))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to save platform Google API OAuth config')
+  }
+}
+
+export async function getPlatformGoogleAdsDeveloperToken() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const resolved = await services.platformSettings.getGoogleAdsDeveloperToken()
+    return ok(toGoogleAdsDeveloperTokenPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Google Ads developer token status')
+  }
+}
+
+export async function upsertPlatformGoogleAdsDeveloperToken(input: { developerToken: string }) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = z.object({ developerToken: z.string().trim().min(1) }).parse(input)
+    const resolved = await services.platformSettings.upsertGoogleAdsDeveloperToken(parsed, ctx.user.id)
+    return ok(toGoogleAdsDeveloperTokenPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save Google Ads developer token')
   }
 }
 

@@ -78,3 +78,17 @@ _Avoid_: global pack, published catalog item
 **Hermes Bot csatlakozó**:
 A munkatárs gépén lévő vékony Hermes-profil (név, MCP URL, `X-Excellence-Agent-Id`). Szerep, skill, memória és céges tények élőben a platform `get_definition` válaszából jönnek — a lemezre nem másolódnak.
 _Avoid_: checkout-mappa, helyi skill-másolat, szinkronizált SOUL-briefing
+
+## Konnektor-szintek
+
+**Platform-szintű konnektor-beállítás**:
+Amit a platform üzemeltetője (superadmin) egyszer állít be, hogy egy konnektorfajta egyáltalán létrehozható legyen: pl. a közös Google OAuth alkalmazás vagy a Google Ads developer token. Nem cégadat; a tenant nem látja és nem pótolhatja.
+_Avoid_: tenant OAuth app, cég-szintű developer token
+
+**Fiókkötés**:
+A tenant admin döntése arról, hogy egy konnektor a cég MELYIK külső fiókját érheti el (Google Ads fiók, GA4 property, Search Console property). Futásidejű határ: az agent csak a kötött fiók(ok)ra hívhat. Módosítása nem vonja vissza a felhasználók belépését.
+_Avoid_: platform-fiók, alapértelmezett fiók, account scope
+
+**Felhasználói belépés (grant)**:
+Egy tenant-felhasználó saját hitelesítése egy delegált konnektorhoz (pl. a saját Google-fiókjával). Ezzel a felhasználó jogosultsága érvényesül: csak akkor ér el adatot, ha a saját fiókjának is van hozzáférése a kötött cégfiókhoz.
+_Avoid_: tenant-token, közös fiók

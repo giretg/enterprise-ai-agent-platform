@@ -17,6 +17,9 @@ export type ProvisioningErrorCode =
   | 'SECRET_ALIAS_MISSING'
   | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId
   | 'PLATFORM_GOOGLE_OAUTH_MISSING' // Gmail: a platform Google OAuth app nincs beállítva
+  | 'PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING' // Google Ads: a platform developer tokenje nincs beállítva
+  | 'GOOGLE_ACCOUNT_BINDING_MISSING' // Ads / Analytics / Search Console: a cég nem választott fiókot
+  | 'GOOGLE_ACCOUNT_BINDING_UNSUPPORTED' // fiókkötés nem Google fiókos konnektoron
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver
   | 'DUAL_CONTROL_REQUIRED'
   | 'APPROVER_NOT_AUTHORIZED' // dual-control: a második jóváhagyó nem aktív, azonos-tenant admin
