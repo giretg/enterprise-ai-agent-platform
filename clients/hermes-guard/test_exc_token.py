@@ -41,6 +41,19 @@ class T(unittest.TestCase):
         self.assertEqual(get(), "jwt2")
         self.assertEqual(len(calls), 2)
 
+    def test_key_cmd_payload_tells_hermes_the_real_lifetime(self):
+        # Hermes bare tokenre 900 s-ot feltételez (nincs TTL); a JWT 600 s → az expires_in-nek kell hordoznia.
+        self.assertEqual(json.loads(x.key_cmd_payload("jwt", 1600, now=lambda: 1000)), {"access_token": "jwt", "expires_in": 600})
+        self.assertEqual(json.loads(x.key_cmd_payload("jwt", 900, now=lambda: 1000))["expires_in"], 1)
+
+    def test_get_token_exp_returns_expiry_from_cache_and_fetch(self):
+        home, calls, clock = profile(), [], [1000]
+        f = lambda *a: (calls.append(a) or "jwt1", 1600)
+        self.assertEqual(x.get_token_exp(home, now=lambda: clock[0], fetcher=f), ("jwt1", 1600))
+        clock[0] = 1200
+        self.assertEqual(x.get_token_exp(home, now=lambda: clock[0], fetcher=f), ("jwt1", 1600))
+        self.assertEqual(len(calls), 1)
+
     def test_other_agent_misses_cache(self):
         home, calls = profile(), []
         f = lambda *a: (calls.append(a) or "j", 9999999999)

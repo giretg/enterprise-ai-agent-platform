@@ -3,7 +3,7 @@
 
 A kiszolgált Bot-profil MCP OAuth tokenjét 10 perces Model Gateway JWT-re cseréli, és
 `exp - 60 s`-ig cache-eli a profil könyvtárában (a key_cmd kérésenként fut, K11).
-Stdout = a token; hibánál nem nulla exit kód + hétköznapi nyelvű stderr. Csak stdlib.
+Stdout = JSON (access_token + expires_in); hibánál nem nulla exit kód + hétköznapi nyelvű stderr. Csak stdlib.
 """
 import calendar
 import importlib.util
@@ -179,6 +179,10 @@ def fetch(origin, tenant, agent, inst, access):
 
 
 def get_token(home, now=time.time, fetcher=fetch):
+    return get_token_exp(home, now, fetcher)[0]
+
+
+def get_token_exp(home, now=time.time, fetcher=fetch):
     origin, tenant, agent = read_profile(home)
     inst = install_id(home)
     cache = os.path.join(home, CACHE_NAME)
@@ -186,7 +190,7 @@ def get_token(home, now=time.time, fetcher=fetch):
     try:
         c = json.load(open(cache))
         if c["exp"] - LEEWAY > now() and all(c[k] == v for k, v in key.items()):
-            return c["token"]
+            return c["token"], c["exp"]
     except (OSError, ValueError, KeyError):
         pass
     token, exp = fetcher(origin, tenant, agent, inst, mcp_access_token(home))
@@ -198,13 +202,18 @@ def get_token(home, now=time.time, fetcher=fetch):
         os.replace(tmp, cache)
     except OSError:
         pass  # a cache csak gyorsítás
-    return token
+    return token, exp
+
+
+def key_cmd_payload(token, exp, now=time.time):
+    # JSON `expires_in`-nel: a Hermes bare tokenre 900 s-ot feltételez, a gateway-JWT 600 s → lejárt tokennel 401.
+    return json.dumps({"access_token": token, "expires_in": max(1, int(exp - now()))})
 
 
 def main():
     home = os.environ.get("HERMES_HOME") or default_home()
     try:
-        sys.stdout.write(get_token(home))
+        sys.stdout.write(key_cmd_payload(*get_token_exp(home)))
     except Fail as e:
         sys.stderr.write(f"{e}\n")
         return 1
