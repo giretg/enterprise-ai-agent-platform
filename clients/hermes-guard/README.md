@@ -12,13 +12,34 @@ A munkatárs gépére kerülő, rendszergazdai Hermes-beállítás. A munkatárs
 sudo bash excellence-telepito.sh
 ```
 
-4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`), és átmásolja a default profil Excellence MCP belépőjét, hogy a Botnak ne kelljen külön `hermes mcp login`. A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
+4. Indítsd újra a Hermest. A telepítő a látható AI-munkatársakból vékony Bot-csatlakozókat is kirak (`~/.hermes/profiles/exc-…`), és átmásolja a default profil Excellence MCP belépőjét. A belépő lejárhat, ezért a Bot első használatakor vagy később újra be kellhet jelentkezni. A munkatárs Bot Mode-ban nyitja meg őket; a „Töltsd le az AI munkatársaimat” mondatot ne írja be.
 
-Macen és Linuxon működik. Windowsos számítógépen ez a telepítő még nem működik.
+Macen és Linuxon a fenti `.sh` telepítőt használd; natív Windowson a PowerShell-telepítőt (lásd [Telepítés Windowson](#telepítés-windowson-755)). A Windowsos számítógépen futó WSL-ben a Linuxos telepítés érvényes.
 
 Ugyanez a gomb a **Hermes céges kontroll** oldalon a munkatárs sorában is ott van. A telepítő újrafuttatható: engedélybővítés után töltsd le újra, és futtasd megint. Az `installId` ugyanaz marad.
 
 Adj a munkatársnak hozzáférést legalább egy éles AI-munkatárshoz, mielőtt telepítesz; üres hozzáférésnél a gép minden helyi műveletet tilt.
+
+## Ha egy Bot nem válaszol
+
+A munkatárs a Hermes-hibaüzenetnél a **Részletek** gombra kattintva látja a hiba okát. Ha ott ez áll: `key_cmd for provider 'excellence' exited 1`, lejárt a Bot belépése a platformra.
+
+1. Töltsd le és futtasd újra a legfrissebb céges telepítőt, majd a munkatárs zárja be és nyissa meg újra a Hermest.
+2. Ha a hiba megmarad, léptesd be újra a Botot a saját profiljában (nem a default profilban). A `<bot-profil>` helyére a Bot mappájának neve kerül, például `exc-alfred`.
+
+Mac / Linux (Terminál):
+
+```sh
+HERMES_HOME="$HOME/.hermes/profiles/<bot-profil>" hermes mcp login excellence
+```
+
+Windows (PowerShell):
+
+```powershell
+$env:HERMES_HOME="$env:LOCALAPPDATA\hermes\profiles\<bot-profil>"; hermes mcp login excellence
+```
+
+Ezután megnyílik a böngésző: a munkatárs jelentkezzen be, és fogadja el.
 
 ## Céges kontroll az adminfelületről
 

@@ -831,6 +831,12 @@
     "hermesEntBotsTitle": "Open your Bots",
     "hermesEntBotsBody": "The company installer already laid down the Bot connectors. Do not create Bots from chat on this computer — the chat cannot write Bot profiles. Open Bot Mode.",
     "hermesEntBotsHint": "For each Bot the browser opens once for platform sign-in: sign in and accept.",
+    "hermesEntTroubleshootTitle": "If a Bot does not respond",
+    "hermesEntTroubleshootBody": "Click Details on the error message. If it says `key_cmd for provider 'excellence' exited 1`, the Bot's sign-in to the platform has expired. Ask IT to run the latest company installer again, then close and reopen Hermes. If the error remains, IT can sign the Bot in again on your computer with the command below. Replace `<bot-profile>` with the Bot's folder name (for example, `exc-alfred`). The browser then opens: sign in and accept.",
+    "hermesEntTroubleshootPosix": "Mac / Linux (Terminal):",
+    "hermesEntTroubleshootCommandPosix": "HERMES_HOME=\"$HOME/.hermes/profiles/<bot-profile>\" hermes mcp login excellence",
+    "hermesEntTroubleshootWindows": "Windows (PowerShell):",
+    "hermesEntTroubleshootCommandWindows": "$env:HERMES_HOME=\"$env:LOCALAPPDATA\\hermes\\profiles\\<bot-profile>\"; hermes mcp login excellence",
     "hermesEntUpdateBody": "Role, skills and memory come live from the platform; there is no local copy. When a new AI coworker is added or access changes, run the installer again."
   },
   "TenantSwitcher": {

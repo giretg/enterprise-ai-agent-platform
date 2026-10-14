@@ -831,6 +831,12 @@
     "hermesEntBotsTitle": "Nyisd meg a Botjaidat",
     "hermesEntBotsBody": "A céges telepítő már kirakta a Bot-csatlakozókat. Ezen a gépen ne a chatből hozz létre Botokat — a chat nem írhatja a profilokat. Nyisd meg a Bot Mode-ot.",
     "hermesEntBotsHint": "Botonként egyszer megnyílik a böngésző a platformos belépéshez: jelentkezz be, és fogadd el.",
+    "hermesEntTroubleshootTitle": "Ha a Bot nem válaszol",
+    "hermesEntTroubleshootBody": "Kattints a hibaüzenetnél a Részletek gombra. Ha ott ez áll: `key_cmd for provider 'excellence' exited 1`, akkor lejárt a Bot belépése a platformra. Kérd meg az informatikust, hogy futtassa újra a legfrissebb céges telepítőt, utána zárd be és nyisd meg újra a Hermest. Ha a hiba ezután is megmarad, az informatikus az alábbi paranccsal léptetheti be újra a Botot a te gépeden. A `<bot-profil>` helyére a Bot mappájának neve kerül (például `exc-alfred`). Ezután megnyílik a böngésző: jelentkezz be, és fogadd el.",
+    "hermesEntTroubleshootPosix": "Mac / Linux (Terminál):",
+    "hermesEntTroubleshootCommandPosix": "HERMES_HOME=\"$HOME/.hermes/profiles/<bot-profil>\" hermes mcp login excellence",
+    "hermesEntTroubleshootWindows": "Windows (PowerShell):",
+    "hermesEntTroubleshootCommandWindows": "$env:HERMES_HOME=\"$env:LOCALAPPDATA\\hermes\\profiles\\<bot-profil>\"; hermes mcp login excellence",
     "hermesEntUpdateBody": "A szerep, a skillek és a memória élőben jönnek a platformról, nincs helyi másolat. Új AI-munkatársnál vagy hozzáférés-változáskor futtassátok újra a telepítőt."
   },
   "TenantSwitcher": {
