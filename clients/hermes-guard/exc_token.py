@@ -125,6 +125,10 @@ def share_mcp_tokens(dest_home, source_home=None):
     for name in os.listdir(src_dir):
         if not name.startswith(SERVER) or name.endswith(".lock"):
             continue
+        # A Bot Hermese maga is frissít: régebbi belépő ne írja felül a frissebbet (#895). Token+client+meta együtt.
+        stem = name.split(".")[0] + ".json"
+        if os.path.exists(os.path.join(dest_dir, stem)) and _expires_at(os.path.join(src_dir, stem)) <= _expires_at(os.path.join(dest_dir, stem)):
+            continue
         src = os.path.join(src_dir, name)
         if os.path.islink(src) or not os.path.isfile(src):
             continue
@@ -142,18 +146,30 @@ def share_mcp_tokens(dest_home, source_home=None):
     return copied
 
 
+def _expires_at(path):
+    try:
+        return float(json.load(open(path, encoding="utf-8")).get("expires_at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0.0
+
+
 def mcp_access_token(home):
     homes = [home]
     parent = parent_hermes_home(home)
     if parent:
         homes.append(parent)
+    best, best_exp = None, -1.0
     for candidate in homes:
+        path = os.path.join(candidate, "mcp-tokens", f"{SERVER}.json")
         try:
-            tok = json.load(open(os.path.join(candidate, "mcp-tokens", f"{SERVER}.json"), encoding="utf-8"))["access_token"]
-            if tok:
-                return tok
-        except (OSError, ValueError, KeyError):
-            pass
+            tok = json.load(open(path, encoding="utf-8"))["access_token"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        # A Bot és a default profil közül a később lejáró belépő (a Bot Hermese maga is frissíthet).
+        if tok and _expires_at(path) > best_exp:
+            best, best_exp = tok, _expires_at(path)
+    if best:
+        return best
     raise Fail("Jelentkezz be újra a Hermes Excellence-kapcsolatába.")
 
 
