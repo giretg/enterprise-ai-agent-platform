@@ -7,7 +7,7 @@
  */
 import { safeSecretEquals } from '@/lib/crypto/timing-safe'
 
-export type RetentionSweepRunner = () => Promise<{ deleted: number }>
+export type RetentionSweepRunner = () => Promise<{ deleted: number; complete: boolean }>
 
 export type RetentionHttpRequest = {
   providedToken: string | null
@@ -16,7 +16,7 @@ export type RetentionHttpRequest = {
 
 export type RetentionHttpResponse = {
   status: number
-  body: { ok: true; deleted: number } | { ok: false; error: string }
+  body: { ok: true; deleted: number } | { ok: false; error: string; deleted?: number }
 }
 
 function failure(status: number, error: string): RetentionHttpResponse {
@@ -39,8 +39,11 @@ export async function handleAiAuditRetentionRequest(
   }
   try {
     const result = await sweep()
+    if (!result.complete) {
+      return { status: 503, body: { ok: false, error: 'retention_sweep_incomplete', deleted: result.deleted } }
+    }
     return { status: 200, body: { ok: true, deleted: result.deleted } }
-  } catch (e) {
-    return failure(500, e instanceof Error ? e.message : 'retention sweep failed')
+  } catch {
+    return failure(500, 'retention_sweep_failed')
   }
 }

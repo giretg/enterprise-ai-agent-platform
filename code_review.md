@@ -1,5 +1,15 @@
 # Enterprise code review log
 
+## 2026-10-15 - AI-használati audit retenciós járat: a részleges törlés sikernek látszott
+
+- Áttekintett, korábban külön nem naplózott modulok: `app/src/domain/ai-audit/ai-audit-service.ts` (lejárat, kötegelt törlés, admin olvasás), `app/src/domain/ai-audit/retention-request.ts` (Scheduler-token és HTTP-eredmény), `app/src/app/api/v1/internal/ai-audit-retention/route.ts` (élő hívó és audit), `app/src/repositories/postgres/ai-interaction-event-repository.ts` (lejárt sorok fizikai törlése), `app/src/auth/ai-audit-deps.ts`, a Prisma `AiInteractionEvent` séma, az AI-audit olvasó API, az App Hosting titokbekötése és a `DEPLOY.md` 3.2 pontja. A #759 elfogadási feltételéhez és a DPIA-hoz viszonyítottam.
+- Rendben talált kontrollok: a járat Clerk nélkül is elérhető, de konstans idejű tokenellenőrzés után fut; hiányzó tokent elutasít; a lejárt sorokat 5000-es kötegekben fizikailag törli, a törlést hash-láncolt auditban számlálja; a lejárt sorok a felületi listából már a járat előtt kimaradnak; a lekérdezéshez `expires_at` index van.
+- **Lelet (magas, adatmegőrzés és üzemeltetés):** 100 tele köteg után a törlő `complete: false` eredménnyel áll meg, de a HTTP-szerződés ezt eldobta és 200-as `ok: true` választ adott. A Scheduler így sikernek tekinthette a futást, miközben lejárt, akár promptot tartalmazó sorok maradtak az adatbázisban. Egy törlési hiba belső kivételszövege a publikus HTTP-válaszba került.
+- Javítás: a részleges futás 503-at és a már törölt sorok számát adja, így az üzemeltetési felügyelet és a Scheduler újrapróbálása észlelheti a hátralékot. A belső hiba válasza csak stabil, tartalommentes kód. A törlés és az auditírás sorrendje változatlan.
+- Üzleti hatás: a 90 napos megőrzés túllépése nem bújik sikeres háttérfeladat mögé, és az üzemeltetési hibák nem fednek fel belső adatbázis-részleteket. Az éles megfeleléshez a `DEPLOY.md` szerinti napi Cloud Scheduler-job meglétét és riasztását külön ellenőrizni kell; a repository ezt nem telepíti automatikusan.
+- Ellenőrzés: `test:ai-audit` regresszió a javítás előtt a részleges futás 200-as válaszán elbukott, utána zöld; külön ellenőrzi a kivétel szövegének elrejtését. Célzott ESLint, teljes TypeScript-ellenőrzés és `git diff --check` zöld.
+- Megmaradó korlát (#893): a fizikai törlés és az összegző AuditLog-írás nem közös tranzakció. Ha éppen az auditírás hibázik, a már törölt sorok pontos száma nem állítható helyre a következő futásból; az 500-as válasz legalább láthatóvá teszi a hibát. Ennek atomizálása külön adatbázis-módosítás és terhelési ellenőrzés tárgya.
+
 ## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
 
 - Áttekintett komponens: a `sandbox_run` **bemeneti** határa — az `inputs` mező validálása, a munkafájl olvasása és a `/work/in/<path>` alá másolás. A 2026-10-01 bejegyzés a kimeneti/átirányítási ágat, a #794 merge pedig a hibakód-leképezést és a Control Plane-feliratot fedte; ez a bejegyzés azt a rést zárja, amit egyik sem ért.
