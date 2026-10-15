@@ -175,6 +175,10 @@ Ugyanaz a `DISPATCHER_CONTROL_TOKEN` Secret Manager-titok, mint a 3.1-es ciklus�
 a tokent a handler ellenőrzi. A handler 5000-es kötegekben töröl, amíg van lejárt sor (legfeljebb 100 köteg /
 hívás, hogy a Cloud Run timeout előtt végezzen). A járat `ai_audit.retention_sweep`
 AuditLog-sort ír (hány sort törölt, `complete`). A DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
+Csak a teljes törlés ad HTTP 200-at. Ha a 100 köteges korlát után még marad lejárt sor,
+a válasz 503 (`retention_sweep_incomplete`) és tartalmazza az addig törölt sorok számát;
+a Scheduler újrapróbálása és az 5xx-riasztás így jelzi a hátralékot. Az üzemeltető
+ellenőrizze, hogy a napi Scheduler-job létezik és az 5xx válaszokra van riasztás.
 
 ## 4. Clerk webhook regisztrálás
 
