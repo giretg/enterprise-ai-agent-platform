@@ -70,8 +70,10 @@ def read_profile(home):
     try:
         cfg = open(os.path.join(home, "config.yaml"), encoding="utf-8").read()
         block = server_block(cfg, SERVER)
-        url = next(m.group(1) for ln in block if (m := re.match(r"url:\s*['\"]?(\S+?)['\"]?$", ln)))
-    except (OSError, StopIteration):
+        url = _server_url(cfg, SERVER)
+        if not url:
+            raise OSError
+    except OSError:
         raise Fail("Ennek a Hermes-profilnak nincs beállított Excellence-kapcsolata. Kapcsold össze újra a Hermes Excellence-kapcsolatát.")
     # Az alap profilhoz nincs asszisztens kötve (#858): agent nélkül a szerver választ egyet az elérhetők közül.
     agent = next((m.group(1) for ln in block if (m := re.match(r"['\"]?X-Excellence-Agent-Id['\"]?:\s*['\"]?([\w-]+)", ln, re.I))), None)
@@ -108,34 +110,55 @@ def parent_hermes_home(home):
     return None
 
 
-def share_mcp_tokens(dest_home, source_home=None):
-    """A default profil Excellence MCP OAuth fájljait a Bot HERMES_HOME-jába másolja.
+def _server_url(config_text, name):
+    return next((m.group(1) for ln in server_block(config_text, name) if (m := re.match(r"url:\s*['\"]?(\S+?)['\"]?$", ln))), None)
 
-    A Hermes MCP és a key_cmd a Bot saját `mcp-tokens/` könyvtárát olvassa; symlinket
-    nem írunk, a telepítő azt elutasítja.
+
+def _server_names(config_text):
+    names, child, in_servers = [], None, False
+    for ln in config_text.splitlines():
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        indent = len(ln) - len(ln.lstrip())
+        if indent == 0:
+            in_servers, child = ln.strip() == "mcp_servers:", None
+        elif in_servers and (child is None or indent == child) and ln.strip().endswith(":"):
+            child = indent
+            names.append(ln.strip()[:-1].strip("'\""))
+    return names
+
+
+def parent_server_name(home, parent):
+    """A default profil azon MCP-szervere, amely a Bot szerverével azonos URL-re mutat.
+
+    A default profilban az `excellence` név más bérlőt is jelenthet (pl. saját tenant), a Bot
+    tenantjára tett belépés pedig `excellence-<tenant>` néven áll. Más URL belépőjét nem vesszük át.
     """
-    source_home = source_home or parent_hermes_home(dest_home)
-    if not source_home:
-        return False
-    src_dir = os.path.join(source_home, "mcp-tokens")
-    dest_dir = os.path.join(dest_home, "mcp-tokens")
-    if not os.path.isdir(src_dir):
-        return False
+    try:
+        url = _server_url(open(os.path.join(home, "config.yaml"), encoding="utf-8").read(), SERVER)
+    except OSError:
+        url = None
+    try:
+        cfg = open(os.path.join(parent, "config.yaml"), encoding="utf-8").read()
+    except OSError:
+        return SERVER
+    names = _server_names(cfg)
+    matches = [n for n in names if url and _server_url(cfg, n) == url]
+    if SERVER in matches:
+        return SERVER
+    if matches:
+        return matches[0]
+    return None if SERVER in names else SERVER
+
+
+def _copy_login(src_dir, src_name, dest_dir, dest_name):
+    """Token + client + meta együtt; symlinket nem követünk és nem írunk."""
     copied = False
-    for name in os.listdir(src_dir):
-        if not name.startswith(SERVER) or name.endswith(".lock"):
-            continue
-        # A Bot Hermese maga is frissít: régebbi belépő ne írja felül a frissebbet (#895). Token+client+meta együtt.
-        stem = name.split(".")[0] + ".json"
-        if os.path.exists(os.path.join(dest_dir, stem)) and _expires_at(os.path.join(src_dir, stem)) <= _expires_at(os.path.join(dest_dir, stem)):
-            continue
-        src = os.path.join(src_dir, name)
-        if os.path.islink(src) or not os.path.isfile(src):
+    for suffix in (".json", ".client.json", ".meta.json"):
+        src, dest = os.path.join(src_dir, src_name + suffix), os.path.join(dest_dir, dest_name + suffix)
+        if os.path.islink(src) or not os.path.isfile(src) or os.path.islink(dest):
             continue
         os.makedirs(dest_dir, exist_ok=True)
-        dest = os.path.join(dest_dir, name)
-        if os.path.islink(dest):
-            continue
         data = open(src, "rb").read()
         tmp = f"{dest}.{os.getpid()}"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -146,6 +169,31 @@ def share_mcp_tokens(dest_home, source_home=None):
     return copied
 
 
+def share_mcp_tokens(dest_home, source_home=None):
+    """A default profil és a Bot Excellence MCP-belépőjét szinkronizálja: a később lejáró nyer.
+
+    A Hermes MCP és a key_cmd a Bot saját `mcp-tokens/` könyvtárát olvassa. Kétirányú, mert
+    az OAuth-szerver frissítéskor elforgatja a refresh tokent: ha a Bot frissített, a default
+    profil (és rajta át a többi Bot) régi refresh tokenje már érvénytelen (400). True = a Bot kapott újat.
+    """
+    source_home = source_home or parent_hermes_home(dest_home)
+    if not source_home:
+        return False
+    src_name = parent_server_name(dest_home, source_home)
+    if not src_name:
+        return False
+    src_dir, dest_dir = os.path.join(source_home, "mcp-tokens"), os.path.join(dest_home, "mcp-tokens")
+    src, dest = os.path.join(src_dir, f"{src_name}.json"), os.path.join(dest_dir, f"{SERVER}.json")
+    if not os.path.isfile(src):
+        return False
+    if not os.path.exists(dest) or _expires_at(src) > _expires_at(dest):
+        return _copy_login(src_dir, src_name, dest_dir, SERVER)
+    # ponytail: a frissítés és a visszamásolás között egy másik Bot még a régi tokennel frissíthet (ritka verseny); akkor újra-belépés.
+    if _expires_at(dest) > _expires_at(src):
+        _copy_login(dest_dir, SERVER, src_dir, src_name)
+    return False
+
+
 def _expires_at(path):
     try:
         return float(json.load(open(path, encoding="utf-8")).get("expires_at") or 0)
@@ -154,13 +202,13 @@ def _expires_at(path):
 
 
 def mcp_access_token(home):
-    homes = [home]
+    candidates = [os.path.join(home, "mcp-tokens", f"{SERVER}.json")]
     parent = parent_hermes_home(home)
-    if parent:
-        homes.append(parent)
+    name = parent and parent_server_name(home, parent)
+    if name:
+        candidates.append(os.path.join(parent, "mcp-tokens", f"{name}.json"))
     best, best_exp = None, -1.0
-    for candidate in homes:
-        path = os.path.join(candidate, "mcp-tokens", f"{SERVER}.json")
+    for path in candidates:
         try:
             tok = json.load(open(path, encoding="utf-8"))["access_token"]
         except (OSError, ValueError, KeyError, TypeError):

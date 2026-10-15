@@ -113,11 +113,40 @@ class T(unittest.TestCase):
         self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.json")))["access_token"], "oauth-new")
         self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "new")
         self.assertEqual(x.mcp_access_token(bot), "oauth-new")
+        # A Bot frissítése elforgatta a refresh tokent: visszakerül a default profilba (a többi Bot onnan kapja).
+        self.assertEqual(json.load(open(os.path.join(root, "mcp-tokens", "excellence.json")))["access_token"], "oauth-new")
+        self.assertEqual(json.load(open(os.path.join(root, "mcp-tokens", "excellence.client.json")))["client_id"], "new")
         # Újra-belépés a default profilban: az a frissebb, átmegy.
         write(root, "excellence.json", {"access_token": "oauth-relogin", "expires_at": 300})
         self.assertTrue(x.share_mcp_tokens(bot))
         self.assertEqual(x.mcp_access_token(bot), "oauth-relogin")
-        self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "old")
+
+    def test_bot_takes_parent_login_by_url_not_by_name(self):
+        # Valós eset: a default `excellence` saját tenantra mutat (lejárt), a Bot tenantjára tett
+        # belépés `excellence-acme` néven áll. A Bot csak az azonos URL-ű belépőt veheti át.
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        for d in (os.path.join(root, "mcp-tokens"), os.path.join(bot, "mcp-tokens")):
+            os.makedirs(d)
+        open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        open(os.path.join(root, "config.yaml"), "w").write(
+            "mcp_servers:\n  excellence:\n    url: https://ai.example.com/api/mcp/own\n    auth: oauth\n"
+            "  excellence-acme:\n    url: https://ai.example.com/api/mcp/acme\n    auth: oauth\n    oauth:\n      client_id: cid\n"
+        )
+        write = lambda home, name, body: json.dump(body, open(os.path.join(home, "mcp-tokens", name), "w"))
+        write(root, "excellence.json", {"access_token": "oauth-own", "expires_at": 900})
+        write(root, "excellence-acme.json", {"access_token": "oauth-acme", "expires_at": 500})
+        write(root, "excellence-acme.client.json", {"client_id": "cid"})
+        write(bot, "excellence.json", {"access_token": "oauth-stale", "expires_at": 100})
+        self.assertEqual(x.parent_server_name(bot, root), "excellence-acme")
+        self.assertTrue(x.share_mcp_tokens(bot))
+        self.assertEqual(x.mcp_access_token(bot), "oauth-acme")
+        self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "cid")
+        self.assertFalse(os.path.exists(os.path.join(bot, "mcp-tokens", "excellence-acme.json")))
+        # Ha a default profilban nincs azonos URL-ű belépő, más tenant tokenje nem kerül át.
+        open(os.path.join(root, "config.yaml"), "w").write("mcp_servers:\n  excellence:\n    url: https://ai.example.com/api/mcp/own\n")
+        self.assertIsNone(x.parent_server_name(bot, root))
+        self.assertFalse(x.share_mcp_tokens(bot))
 
     def test_profile_without_agent_asks_for_bootstrap_token(self):
         # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.
