@@ -97,6 +97,28 @@ class T(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(dest, "other.json")))
         self.assertFalse(x.share_mcp_tokens(root))
 
+    def test_fresher_bot_login_is_not_overwritten_by_parent(self):
+        # #895: 24 h után a Bot Hermese frissít; a default profil lejárt másolata ne írja vissza.
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        for d in (os.path.join(root, "mcp-tokens"), os.path.join(bot, "mcp-tokens")):
+            os.makedirs(d)
+        open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        write = lambda home, name, body: json.dump(body, open(os.path.join(home, "mcp-tokens", name), "w"))
+        write(root, "excellence.json", {"access_token": "oauth-old", "expires_at": 100})
+        write(root, "excellence.client.json", {"client_id": "old"})
+        write(bot, "excellence.json", {"access_token": "oauth-new", "expires_at": 200})
+        write(bot, "excellence.client.json", {"client_id": "new"})
+        self.assertFalse(x.share_mcp_tokens(bot))
+        self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.json")))["access_token"], "oauth-new")
+        self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "new")
+        self.assertEqual(x.mcp_access_token(bot), "oauth-new")
+        # Újra-belépés a default profilban: az a frissebb, átmegy.
+        write(root, "excellence.json", {"access_token": "oauth-relogin", "expires_at": 300})
+        self.assertTrue(x.share_mcp_tokens(bot))
+        self.assertEqual(x.mcp_access_token(bot), "oauth-relogin")
+        self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "old")
+
     def test_profile_without_agent_asks_for_bootstrap_token(self):
         # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.
         home, calls = profile(config="mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n"), []
