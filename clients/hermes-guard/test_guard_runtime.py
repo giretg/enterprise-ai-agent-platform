@@ -140,7 +140,7 @@ class Runtime(unittest.TestCase):
         with open(os.path.join(home, "config.yaml"), "w") as fh:
             fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
         guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
-        guard._origin_and_token = lambda: ("https://ai.example", "jwt")
+        guard._gateway_token = lambda: ("jwt", None)
         called = []
         blocked = guard.llm_execution(request={"model": "x"}, next_call=lambda req: called.append(req) or "live", provider="openrouter", base_url="https://openrouter.ai/api")
         self.assertEqual(called, [])
@@ -213,6 +213,7 @@ class Runtime(unittest.TestCase):
             fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n")
         guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
         guard._origin_and_token = lambda: ("https://ai.example", "jwt")
+        guard._gateway_token = lambda: ("jwt", None)
         order, original_post = [], runtime.post_json
         runtime.post_json = lambda url, token, payload, timeout=5: (order.append(("beat", payload["sessions"])) or 200, {})
         try:
@@ -231,7 +232,7 @@ class Runtime(unittest.TestCase):
         with open(os.path.join(home, "config.yaml"), "w") as fh:
             fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
         guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
-        guard._origin_and_token = lambda: ("https://ai.example", "fresh-jwt")
+        guard._gateway_token = lambda: ("fresh-jwt", None)
         os.environ["EXC_GUARD_OFFLINE"] = "1"
         forwarded = guard.llm_execution(
             request={"extra_headers": {"Authorization": "Bearer stale"}},
@@ -242,6 +243,32 @@ class Runtime(unittest.TestCase):
         )
         self.assertEqual(forwarded["extra_headers"]["Authorization"], "Bearer fresh-jwt")
         self.assertEqual(forwarded["extra_headers"]["X-Excellence-Session"], "s-1")
+
+    def test_llm_execution_token_failure_never_forwards_without_jwt(self):
+        # #895: első get_token hiba, második siker → régen JWT nélkül ment ki (401 invalid_token).
+        class Fail(Exception):
+            pass
+
+        calls = []
+
+        def get_token(_home):
+            calls.append(1)
+            if len(calls) == 1:
+                raise Fail("A belépés nem sikerült, próbáld újra.")
+            return "late-jwt"
+
+        helper = type("Helper", (), {"Fail": Fail, "get_token": staticmethod(get_token), "read_profile": staticmethod(lambda _h: ("https://ai.example", "agent-1"))})
+        guard = runtime.Guard(tempfile.mkdtemp(), client=runtime.SnapshotClient(tempfile.mkdtemp(), fetcher=lambda: ("down", None)))
+        forwarded = []
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        try:
+            with patch.object(runtime, "load_exc_token", return_value=helper):
+                response = guard.llm_execution(request={"extra_headers": {"Authorization": "Bearer oauth"}}, next_call=forwarded.append, provider="custom", base_url="https://ai.example/api/model-gateway/v1")
+        finally:
+            os.environ.pop("EXC_GUARD_OFFLINE", None)
+        self.assertEqual(forwarded, [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(response.choices[0].message.content, "A belépés nem sikerült, próbáld újra.")
 
     def test_llm_execution_without_mcp_login_shows_login_error(self):
         # Réka-bot: van agent-id, nincs MCP token → ne „AI service returned an error” legyen.
