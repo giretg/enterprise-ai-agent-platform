@@ -132,6 +132,7 @@ jobs:
           npm run test:provisioning
           npm run test:web-discovery
           npm run test:iam-tenant-boundary
+          npm run test:iam-invitation-tenant-scope
           npm run test:iam-membership-scope
           npm run test:clerk-invitation-membership
           npm run test:tenant-management
