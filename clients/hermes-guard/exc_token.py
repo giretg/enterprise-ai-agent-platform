@@ -6,6 +6,7 @@ A kiszolgált Bot-profil MCP OAuth tokenjét 10 perces Model Gateway JWT-re cser
 Stdout = JSON (access_token + expires_in); hibánál nem nulla exit kód + hétköznapi nyelvű stderr. Csak stdlib.
 """
 import calendar
+import hashlib
 import importlib.util
 import json
 import os
@@ -45,6 +46,11 @@ def default_home():
 
 class Fail(Exception):
     pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def server_block(config_text, name):
@@ -214,7 +220,7 @@ def mcp_access_token(home):
         except (OSError, ValueError, KeyError, TypeError):
             continue
         # A Bot és a default profil közül a később lejáró belépő (a Bot Hermese maga is frissíthet).
-        if tok and _expires_at(path) > best_exp:
+        if isinstance(tok, str) and tok and _expires_at(path) > best_exp:
             best, best_exp = tok, _expires_at(path)
     if best:
         return best
@@ -229,7 +235,7 @@ def fetch(origin, tenant, agent, inst, access):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=10) as r:
             body = json.load(r)
         return body["token"], calendar.timegm(time.strptime(body["expiresAt"][:19], "%Y-%m-%dT%H:%M:%S"))
     except urllib.error.HTTPError as e:
@@ -249,15 +255,17 @@ def get_token(home, now=time.time, fetcher=fetch):
 def get_token_exp(home, now=time.time, fetcher=fetch):
     origin, tenant, agent = read_profile(home)
     inst = install_id(home)
+    access = mcp_access_token(home)
     cache = os.path.join(home, CACHE_NAME)
-    key = {"tenant": tenant, "agentId": agent, "installId": inst, "origin": origin}
+    key = {"tenant": tenant, "agentId": agent, "installId": inst, "origin": origin,
+           "accessHash": hashlib.sha256(access.encode()).hexdigest()}
     try:
         c = json.load(open(cache))
         if c["exp"] - LEEWAY > now() and all(c[k] == v for k, v in key.items()):
             return c["token"], c["exp"]
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         pass
-    token, exp = fetcher(origin, tenant, agent, inst, mcp_access_token(home))
+    token, exp = fetcher(origin, tenant, agent, inst, access)
     tmp = f"{cache}.{os.getpid()}"
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

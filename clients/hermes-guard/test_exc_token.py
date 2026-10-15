@@ -1,5 +1,7 @@
 """exc-token cache + hibaágak. Futtatás: python3 clients/hermes-guard/test_exc_token.py"""
 import json, os, tempfile, unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 import exc_token as x
 
 CONFIG = """model:
@@ -61,6 +63,20 @@ class T(unittest.TestCase):
         open(os.path.join(home, "config.yaml"), "w").write(CONFIG.replace("33333333", "44444444"))
         x.get_token(home, now=lambda: 2, fetcher=f)
         self.assertEqual(len(calls), 2)
+
+    def test_new_login_cannot_reuse_previous_users_gateway_token(self):
+        home, calls = profile(), []
+        def fetcher(*args):
+            calls.append(args[-1])
+            return f"jwt-{args[-1]}", 9999999999
+        self.assertEqual(x.get_token(home, now=lambda: 1, fetcher=fetcher), "jwt-oauth-abc")
+        token_file = os.path.join(home, "mcp-tokens", "excellence.json")
+        json.dump({"access_token": "oauth-new-user"}, open(token_file, "w"))
+        self.assertEqual(x.get_token(home, now=lambda: 2, fetcher=fetcher), "jwt-oauth-new-user")
+        self.assertEqual(calls, ["oauth-abc", "oauth-new-user"])
+        os.remove(token_file)
+        with self.assertRaisesRegex(x.Fail, "Jelentkezz be újra"):
+            x.get_token(home, now=lambda: 3, fetcher=fetcher)
 
     def test_missing_pieces_fail_in_plain_language(self):
         with self.assertRaisesRegex(x.Fail, "Jelentkezz be újra"):
@@ -161,12 +177,44 @@ class T(unittest.TestCase):
         def urlopen(req, timeout):
             sent.update(json.loads(req.data))
             return R()
-        orig, x.urllib.request.urlopen = x.urllib.request.urlopen, urlopen
+        orig = x.urllib.request.build_opener
+        class Opener:
+            def open(self, req, timeout): return urlopen(req, timeout)
+        x.urllib.request.build_opener = lambda *args: Opener()
         try:
             x.fetch("https://a", "t", None, "inst-1", "oauth-abc")
         finally:
-            x.urllib.request.urlopen = orig
+            x.urllib.request.build_opener = orig
         self.assertEqual(sent, {"tenantSlug": "t", "installId": "inst-1"})
+
+    def test_token_exchange_does_not_forward_oauth_bearer_on_redirect(self):
+        received = []
+        class Sink(BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"token":"stolen","expiresAt":"2030-01-01T00:00:00Z"}')
+            def log_message(self, *args): pass
+        sink = HTTPServer(("127.0.0.1", 0), Sink)
+        class Redirect(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{sink.server_port}/steal")
+                self.end_headers()
+            def log_message(self, *args): pass
+        redirect = HTTPServer(("127.0.0.1", 0), Redirect)
+        for server in (sink, redirect):
+            Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with self.assertRaises(x.Fail):
+                x.fetch(f"http://127.0.0.1:{redirect.server_port}", "t", None, "i", "oauth-secret")
+            self.assertEqual(received, [])
+        finally:
+            redirect.shutdown()
+            sink.shutdown()
+            redirect.server_close()
+            sink.server_close()
 
 
 if __name__ == "__main__":
