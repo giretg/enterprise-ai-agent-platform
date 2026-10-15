@@ -171,11 +171,16 @@ type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; 
 const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
 
 /**
- * Csak a base64-kódolt (bináris) data-URI-t hagyjuk ki a szkennelésből: a kép/hang/PDF törzsén
- * nincs olvasható PAN/e-mail (a base64 blobban a `\b` határok miatt a mintáink sem illeszkednek),
- * viszont nagy, ezért a kihagyás kíméli a futásidőt. A SZÖVEGES `data:text/...,` URI és a prózában
+ * Csak a base64-kódolt (bináris) data-URI törzsét hagyjuk ki a szkennelésből: egy kép/hang/PDF
+ * nyers base64 blobjában a mintáink a `\b` határok miatt gyakorlatilag nem illeszkednek, viszont
+ * a blob nagy, ezért a kihagyás kíméli a futásidőt. A SZÖVEGES `data:text/...,` URI és a prózában
  * `data:`-vel kezdődő tartalom VISZONT átmegy a szűrőn — abban lehet nyers kártyaszám/e-mail, amit
  * a `data:`-prefix önmagában nem tehet láthatatlanná a kimenő kérésben.
+ *
+ * ponytail: a SZÁNDÉKOSAN base64-kódolt szöveges adat (pl. `data:text/plain;base64,<PAN base64-je>`)
+ * így is kimarad — a modell vissza tudja fejteni. Gyenge támadó-modell (a user a SAJÁT kártyáját
+ * kódolná be), és a `data:`-összes-kihagyás óta fennálló reziduum, nem e javítás regressziója.
+ * Lezárás, ha kell: a nem-bináris mediatype-os (`text/*`, üres) base64 URI-t dekódolni és szkennelni.
  */
 const BASE64_DATA_URI_RE = /^data:[^,]*;base64,/i
 
