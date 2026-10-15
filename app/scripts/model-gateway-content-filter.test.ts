@@ -191,6 +191,29 @@ async function main() {
     }
   })
 
+  await check('`data:`-prefixszel kezdődő szöveg-slot sem kerüli meg a szűrőt (csak a base64-blob marad ki)', async () => {
+    // Regresszió: korábban BÁRMELY `data:`-vel kezdődő slot teljesen kimaradt a szkennelésből,
+    // így a `data:text/plain,...` vagy egy prózában `data:`-vel kezdődő tartalom nyers PAN-t vihetett ki.
+    const blocked = setup()
+    const data = await (await blocked.call({ messages: [user('data:text/plain,a kártyám 4111 1111 1111 1111')] })).json()
+    assert.equal(data.choices[0].message.content, PAN_BLOCK_MESSAGE)
+    assert.equal(blocked.calls.length, 0)
+
+    // Szöveges data-URI-ben lévő e-mail most már tokenizálódik (nem megy ki nyersen).
+    const tok = setup({ scripts: [completion({ content: 'ok' })] })
+    await tok.call({ messages: [user('data:text/plain,írj ide: kiss@example.hu')] })
+    assert.equal(tok.calls.length, 1)
+    assert.doesNotMatch(sentTo(tok.calls), /kiss@example\.hu/)
+
+    // A base64 (bináris) kép-URI VISZONT továbbra is kimarad: nem blokkol, változatlanul megy tovább.
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+    const img = setup({ scripts: [completion({ content: 'ok' })] })
+    const imgRes = await img.call({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: png } }] }] })
+    assert.equal((await imgRes.json()).choices[0].message.content, 'ok')
+    assert.equal(img.calls.length, 1)
+    assert.match(sentTo(img.calls), /iVBORw0KGgo/)
+  })
+
   await check('audit: blocked + pan_detected, a PAN értéke nélkül (V1-5 sink a kérés nélkül kapja)', async () => {
     const s = setup()
     await s.call({ messages: [user('4012 8888 8888 1881')] })
