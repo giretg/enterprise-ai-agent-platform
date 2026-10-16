@@ -404,6 +404,7 @@ async function tryDirectWrite(
       connector,
       accessToken,
       actingUser,
+      agent: { id: definition.agentId, version: definition.version },
     })
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&

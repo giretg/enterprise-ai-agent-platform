@@ -32,7 +32,7 @@ async function check(name: string, fn: () => Promise<void>) {
 type Scripted = Response | Error | (() => Response)
 function setup(opts: {
   scripts?: Scripted[]
-  agent?: { primary: ModelRef; fallbacks?: ModelRef[]; temperature?: number }
+  agent?: { primary: ModelRef; fallbacks?: ModelRef[]; temperature?: number; maxTokens?: number }
   enabled?: ModelRef[]
   allowedModels?: string[] | null
   hooks?: GatewayPipelineHooks
@@ -52,7 +52,7 @@ function setup(opts: {
             principal: { userId: USER, tenantId: TENANT, tenantSlug: 'acme', role: 'operator', assumed: false },
           } as never),
     loadAgentModelConfig: async () =>
-      opts.agent ? { ...opts.agent.primary, fallbackModels: opts.agent.fallbacks ?? [], temperature: opts.agent.temperature } : null,
+      opts.agent ? { ...opts.agent.primary, fallbackModels: opts.agent.fallbacks ?? [], temperature: opts.agent.temperature, maxTokens: opts.agent.maxTokens } : null,
     getTenantPolicy: async () => ({ enabled: opts.enabled ?? [A, B, C] }),
     getGlobalFallbackChain: async () => opts.global ?? [],
     getAllowedModels: async () => opts.allowedModels ?? null,
@@ -293,6 +293,15 @@ async function main() {
     await s.call({ ...ask, temperature: 0.9 })
     assert.equal(s.calls[0].body.temperature, 0.2)
     assert.equal(s.calls[1].body.temperature, 0.9)
+  })
+
+  await check('helyettesített segédhívás (kért modell nem engedett) nem kapja az agent max_tokens-ét', async () => {
+    const s = setup({ agent: { primary: A, maxTokens: 4096 }, scripts: [completion('a'), completion('b')] })
+    await s.call({ ...ask, model: 'gpt-4o-mini' })
+    await s.call({ ...ask, model: undefined })
+    assert.equal(s.calls[0].body.model, 'vendor/model-a')
+    assert.equal(s.calls[0].body.max_tokens, undefined)
+    assert.equal(s.calls[1].body.max_tokens, 4096)
   })
 
   if (failures) {

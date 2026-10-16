@@ -51,7 +51,7 @@ export function UpdateModelConfigForm({
   const [addKey, setAddKey] = useState('')
   const [modelType, setModelType] = useState<ModelType>(config?.modelType ?? DEFAULT_MODEL_TYPE)
   const [temperature, setTemperature] = useState(String(config?.temperature ?? 0.2))
-  const [maxTokens, setMaxTokens] = useState(String(config?.maxTokens ?? 4096))
+  const [maxTokens, setMaxTokens] = useState(config?.maxTokens ? String(config.maxTokens) : '')
 
   if (policy.enabled.length === 0) {
     return (
@@ -227,6 +227,7 @@ export function UpdateModelConfigForm({
               <input
                 type="number"
                 min={1}
+                placeholder={t('maxTokensPlaceholder')}
                 value={maxTokens}
                 disabled={!canEdit || pending}
                 onChange={(e) => setMaxTokens(e.target.value)}
