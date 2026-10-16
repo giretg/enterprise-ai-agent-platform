@@ -158,9 +158,9 @@ elif [ -n "${SUDO_USER:-}" ]; then
   TARGET_USER="$SUDO_USER"
 fi
 if [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME" ]; then
-  python3 - "$PKG" "$TARGET_HOME" "$TARGET_USER" <<'PYBOTS'
-import os, pathlib, pwd, re, shutil, sys, json
-pkg_path, home, user = sys.argv[1:4]
+  python3 - "$PKG" "$TARGET_HOME" "$TARGET_USER" "$SCRIPT_DIR" <<'PYBOTS'
+import importlib.util, os, pathlib, pwd, re, shutil, sys, json
+pkg_path, home, user, script_dir = sys.argv[1:5]
 pkg = json.load(open(pkg_path, encoding="utf-8"))
 bots = pkg.get("bots") or []
 if not isinstance(bots, list):
@@ -198,26 +198,16 @@ for bot in bots:
             raise ValueError("A Bot-profil nem tartalmazhat symlinket")
         with open(target, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(content)
-    src_tokens = pathlib.Path(home) / ".hermes" / "mcp-tokens"
-    if src_tokens.is_dir() and not src_tokens.is_symlink():
-        dest_tokens = dest / "mcp-tokens"
-        dest_tokens.mkdir(parents=True, exist_ok=True)
-        for path in src_tokens.iterdir():
-            if path.is_symlink() or not path.is_file():
-                continue
-            if not path.name.startswith("excellence") or path.name.endswith(".lock"):
-                continue
-            target = dest_tokens / path.name
-            if target.is_symlink():
-                raise ValueError("A Bot-profil nem tartalmazhat symlinket")
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(path.read_bytes())
     for leftover in (dest / ".enterprise-agent", dest / "skills" / "excellence"):
         if leftover.is_symlink():
             raise ValueError("A Bot-profil nem tartalmazhat symlinket")
         if leftover.exists():
             shutil.rmtree(leftover)
+# A Bot az azonos MCP-URL-ű default belépőt kapja; név szerint a default `excellence` más tenanté lehet.
+spec = importlib.util.spec_from_file_location("exc_token_install", os.path.join(script_dir, "exc_token.py"))
+exc_token = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(exc_token)
+exc_token.share_all_mcp_tokens(str(pathlib.Path(home) / ".hermes"))
 PYBOTS
   copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard" "$TARGET_USER"
   if [ -d "$TARGET_HOME/.hermes/profiles" ]; then

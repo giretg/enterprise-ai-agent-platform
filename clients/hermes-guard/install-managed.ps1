@@ -176,21 +176,14 @@ if ($HermesHome) {
         [IO.File]::WriteAllText((Join-Path $dest $name), $text, $Utf8)
       }
     }
-    $srcTokens = Join-Path $HermesHome 'mcp-tokens'
-    if (Test-Path -LiteralPath $srcTokens -PathType Container) {
-      $destTokens = Join-Path $dest 'mcp-tokens'
-      New-Item -ItemType Directory -Force -Path $destTokens | Out-Null
-      Get-ChildItem -LiteralPath $srcTokens -File -Force | Where-Object {
-        $_.Name -like 'excellence*' -and $_.Name -notlike '*.lock'
-      } | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $destTokens $_.Name) -Force
-      }
-    }
     foreach ($leftover in @('.enterprise-agent', (Join-Path 'skills' 'excellence'))) {
       $path = Join-Path $dest $leftover
       if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
   }
+  # A Bot az azonos MCP-URL-ű default belépőt kapja; név szerint a default `excellence` más tenanté lehet.
+  & $Python -I -X utf8 (Join-Path $Bin 'exc-token') --share $HermesHome
+  if ($LASTEXITCODE -ne 0) { Fail 'A Bot-belépők szinkronja nem sikerült.' }
   Copy-Plugin $HermesHome (Join-Path $HermesHome 'plugins/excellence-guard')
   if (Test-Path -LiteralPath $profilesDir -PathType Container) {
     foreach ($botProfile in Get-ChildItem -LiteralPath $profilesDir -Directory -Force) {

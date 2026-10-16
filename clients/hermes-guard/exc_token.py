@@ -154,6 +154,8 @@ def parent_server_name(home, parent):
 def _copy_login(src_dir, src_name, dest_dir, dest_name):
     """Token + client + meta együtt; symlinket nem követünk és nem írunk."""
     copied = False
+    if os.path.islink(src_dir) or os.path.islink(dest_dir):
+        return False
     for suffix in (".json", ".client.json", ".meta.json"):
         src, dest = os.path.join(src_dir, src_name + suffix), os.path.join(dest_dir, dest_name + suffix)
         if os.path.islink(src) or not os.path.isfile(src) or os.path.islink(dest):
@@ -192,6 +194,27 @@ def share_mcp_tokens(dest_home, source_home=None):
     if _expires_at(dest) > _expires_at(src):
         _copy_login(dest_dir, SERVER, src_dir, src_name)
     return False
+
+
+def share_all_mcp_tokens(home):
+    """`share_mcp_tokens` a Bot-profilra, vagy a default profilból indulva minden `exc-*` Botra.
+
+    A Hermes asztali app egy folyamatban, `HERMES_HOME=~/.hermes`-szel szolgálja ki az összes
+    profilt, így a Guard a default profilt látja; a telepítő is innen indul. Visszaad: kapott-e újat Bot.
+    """
+    if parent_hermes_home(home):
+        return share_mcp_tokens(home)
+    profiles = os.path.join(home, "profiles")
+    try:
+        names = sorted(os.listdir(profiles))
+    except OSError:
+        return False
+    got = False
+    for name in names:
+        bot = os.path.join(profiles, name)
+        if name.startswith("exc-") and os.path.isdir(bot) and not os.path.islink(bot):
+            got = share_mcp_tokens(bot, home) or got
+    return got
 
 
 def _expires_at(path):
@@ -275,6 +298,10 @@ def key_cmd_payload(token, exp, now=time.time):
 
 
 def main():
+    if sys.argv[1:2] == ["--share"]:
+        # Telepítő: a frissen kirakott Bot-profilok az azonos URL-ű default belépőt kapják.
+        share_all_mcp_tokens(sys.argv[2] if len(sys.argv) > 2 else default_home())
+        return 0
     home = os.environ.get("HERMES_HOME") or default_home()
     try:
         sys.stdout.write(key_cmd_payload(*get_token_exp(home)))
