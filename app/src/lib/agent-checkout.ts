@@ -24,6 +24,8 @@ const SKILL_DIR = '.enterprise-agent/skills'
 const HERMES_SKILL_DIR = 'skills/excellence'
 /** Must match MCP_AGENT_ID_HEADER in auth/mcp-server.ts (#682 WP-2). */
 const AGENT_ID_HEADER = 'X-Excellence-Agent-Id'
+/** Hermes' published CIMD client: the Bot's `mcp login` must not fall back to DCR (our AS has no registration_endpoint). */
+const HERMES_OAUTH_CLIENT_ID = 'https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json'
 /** Platform tools a Hermes Bot needs besides the agent's own capabilities (#682 WP-1). */
 const HERMES_BASE_TOOLS = [
   'platform.whoami',
@@ -188,6 +190,7 @@ export function renderHermesBotConnector(input: {
           excellence: {
             url: input.mcpUrl,
             auth: 'oauth',
+            oauth: { client_id: HERMES_OAUTH_CLIENT_ID },
             headers: { [AGENT_ID_HEADER]: input.agentId },
             tools: { include: tools },
           },

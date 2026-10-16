@@ -148,6 +148,31 @@ class T(unittest.TestCase):
         self.assertIsNone(x.parent_server_name(bot, root))
         self.assertFalse(x.share_mcp_tokens(bot))
 
+    def test_share_all_from_default_home_reaches_every_bot(self):
+        # Hermes desktop: egy folyamat, HERMES_HOME=~/.hermes. A Guard és a telepítő innen indul;
+        # minden exc-* Bot az azonos URL-ű belépőt kapja, név szerint nem.
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        open(os.path.join(root, "config.yaml"), "w").write(
+            "mcp_servers:\n  excellence:\n    url: https://ai.example.com/api/mcp/own\n"
+            "  excellence-acme:\n    url: https://ai.example.com/api/mcp/acme\n"
+        )
+        write = lambda path, body: json.dump(body, open(path, "w"))
+        write(os.path.join(root, "mcp-tokens", "excellence.json"), {"access_token": "oauth-own", "expires_at": 900})
+        write(os.path.join(root, "mcp-tokens", "excellence-acme.json"), {"access_token": "oauth-acme", "expires_at": 500})
+        bots = {}
+        for name in ("exc-alfred", "exc-reka", "plain"):
+            bots[name] = os.path.join(root, "profiles", name)
+            os.makedirs(os.path.join(bots[name], "mcp-tokens"))
+            open(os.path.join(bots[name], "config.yaml"), "w").write(CONFIG)
+            write(os.path.join(bots[name], "mcp-tokens", "excellence.json"), {"access_token": "oauth-own", "expires_at": 100})
+        self.assertTrue(x.share_all_mcp_tokens(root))
+        self.assertEqual(x.mcp_access_token(bots["exc-alfred"]), "oauth-acme")
+        self.assertEqual(x.mcp_access_token(bots["exc-reka"]), "oauth-acme")
+        self.assertEqual(json.load(open(os.path.join(bots["plain"], "mcp-tokens", "excellence.json")))["access_token"], "oauth-own")
+        # Bot-profilból hívva csak az az egy Bot.
+        self.assertFalse(x.share_all_mcp_tokens(bots["exc-reka"]))
+
     def test_profile_without_agent_asks_for_bootstrap_token(self):
         # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.
         home, calls = profile(config="mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n"), []

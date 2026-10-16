@@ -479,10 +479,11 @@ class Guard:
 
     def _share_mcp_tokens(self):
         mod = load_exc_token()
-        if mod is None or not hasattr(mod, "share_mcp_tokens"):
+        share = getattr(mod, "share_all_mcp_tokens", None) or getattr(mod, "share_mcp_tokens", None)
+        if share is None:
             return
         try:
-            mod.share_mcp_tokens(self.home)
+            share(self.home)
         except Exception:
             log.exception("share_mcp_tokens")
 
