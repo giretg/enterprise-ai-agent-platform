@@ -27,12 +27,23 @@ export async function generateMetadata() {
   return { title: t('metaTitle') }
 }
 
-/** Még beváltható meghívók olyan cégbe, ahol a user még nem tag. */
+/** Még beváltható meghívók olyan cégbe, ahol a user még nem aktív tag. */
 async function pendingInvitationsFor(ctx: AuthContext): Promise<PendingInvitationView[]> {
-  const memberOf = new Set(ctx.memberships.filter((m) => m.status === 'active').map((m) => m.tenantId))
-  const invitations = (await services.iam.listPendingInvitationsForEmail(ctx.user.email)).filter(
-    (invitation) => invitation.tenantId && !memberOf.has(invitation.tenantId),
+  // updatedAt kell a felfüggesztett tagság × stale meghívó szűréshez (MembershipView nem hordozza).
+  const membershipRows = await repositories.tenantMemberships.findByUser(ctx.user.id)
+  const activeTenantsOfUser = new Set(
+    membershipRows.filter((m) => m.status === 'active').map((m) => m.tenantId),
   )
+  const suspendedByTenant = new Map(
+    membershipRows.filter((m) => m.status === 'suspended').map((m) => [m.tenantId, m] as const),
+  )
+  const invitations = (await services.iam.listPendingInvitationsForEmail(ctx.user.email)).filter((invitation) => {
+    if (!invitation.tenantId || activeTenantsOfUser.has(invitation.tenantId)) return false
+    const suspended = suspendedByTenant.get(invitation.tenantId)
+    // Stale meghívó (felfüggesztéskor / előtte) ne jelenjen meg Join-ként.
+    if (suspended && invitation.createdAt.getTime() <= suspended.updatedAt.getTime()) return false
+    return true
+  })
   if (invitations.length === 0) return []
   const tenants = await repositories.tenants.findByIds(invitations.map((invitation) => invitation.tenantId!))
   const activeTenants = new Map(tenants.filter((tenant) => tenant.status === 'active').map((tenant) => [tenant.id, tenant]))
