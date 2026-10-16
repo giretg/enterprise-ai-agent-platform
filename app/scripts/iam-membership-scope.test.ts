@@ -31,11 +31,30 @@ type StoredMembership = {
   status: 'pending' | 'active' | 'suspended'
   invitedById: string | null
   activatedAt: Date | null
+  updatedAt?: Date
 }
 
-function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership[] = []) {
+type StoredInvitation = {
+  id: string
+  tenantId: string | null
+  email: string
+  role: StoredMembership['role']
+  status: 'pending' | 'redeemed' | 'revoked' | 'expired'
+  createdAt: Date
+  revokedAt: Date | null
+}
+
+function fixture(
+  seedUsers: StoredUser[] = [],
+  seedMemberships: StoredMembership[] = [],
+  seedInvitations: StoredInvitation[] = [],
+) {
   const users = [...seedUsers]
-  const memberships = [...seedMemberships]
+  const memberships = seedMemberships.map((m) => ({
+    ...m,
+    updatedAt: m.updatedAt ?? new Date(),
+  }))
+  const invitations = [...seedInvitations]
   let membershipSeq = seedMemberships.length
 
   const service = new IamService(
@@ -68,7 +87,20 @@ function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership
         return users[idx]
       },
     } as never,
-    {} as never,
+    {
+      async findPendingByEmail(email: string, _now: Date) {
+        const normalized = email.trim().toLowerCase()
+        return invitations.filter(
+          (i) => i.email === normalized && i.status === 'pending',
+        ) as never
+      },
+      async revokePending(id: string, revokedAt: Date) {
+        const idx = invitations.findIndex((i) => i.id === id && i.status === 'pending')
+        if (idx < 0) return null
+        invitations[idx] = { ...invitations[idx], status: 'revoked', revokedAt }
+        return invitations[idx] as never
+      },
+    } as never,
     {} as never,
     undefined,
     {
@@ -93,7 +125,7 @@ function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership
       async update(id: string, data: Partial<StoredMembership>) {
         const idx = memberships.findIndex((m) => m.id === id)
         assert.ok(idx >= 0)
-        memberships[idx] = { ...memberships[idx], ...data }
+        memberships[idx] = { ...memberships[idx], ...data, updatedAt: new Date() }
         return memberships[idx] as never
       },
       async create(data: {
@@ -111,6 +143,7 @@ function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership
           status: data.status ?? 'pending',
           invitedById: data.invitedById ?? null,
           activatedAt: null,
+          updatedAt: new Date(),
         }
         memberships.push(created)
         return created as never
@@ -122,6 +155,7 @@ function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership
     service,
     getUsers: () => users,
     getMemberships: () => memberships,
+    getInvitations: () => invitations,
   }
 }
 
@@ -323,6 +357,60 @@ async function main() {
     assert.equal(reactivated.status, 'active')
     assert.equal(getMemberships().find((m) => m.id === 'm-a')?.status, 'active')
     assert.equal(getUsers()[0]?.status, 'active')
+  })
+
+  await check('suspend revokes pending invites for that tenant email (blocks onboarding self-restore)', async () => {
+    const user = makeUser({
+      id: 'user-stale-invite',
+      email: 'stale@ceg.hu',
+      tenantId: null,
+      status: 'active',
+    })
+    const { service, getMemberships, getInvitations } = fixture(
+      [user],
+      [
+        {
+          id: 'm-stale',
+          tenantId: 'tenant-a',
+          userId: 'user-stale-invite',
+          role: 'operator',
+          status: 'active',
+          invitedById: null,
+          activatedAt: new Date(),
+        },
+      ],
+      [
+        {
+          id: 'inv-a',
+          tenantId: 'tenant-a',
+          email: 'stale@ceg.hu',
+          role: 'admin',
+          status: 'pending',
+          createdAt: new Date(Date.now() - 60_000),
+          revokedAt: null,
+        },
+        {
+          id: 'inv-b',
+          tenantId: 'tenant-b',
+          email: 'stale@ceg.hu',
+          role: 'viewer',
+          status: 'pending',
+          createdAt: new Date(Date.now() - 60_000),
+          revokedAt: null,
+        },
+      ],
+    )
+
+    await service.suspendUser({
+      targetUserId: 'user-stale-invite',
+      reason: 'off',
+      actorId: 'admin-1',
+      actorTenantId: 'tenant-a',
+    })
+
+    assert.equal(getMemberships().find((m) => m.id === 'm-stale')?.status, 'suspended')
+    assert.equal(getInvitations().find((i) => i.id === 'inv-a')?.status, 'revoked')
+    assert.equal(getInvitations().find((i) => i.id === 'inv-b')?.status, 'pending')
   })
 
   await check('loadTenantScopedTarget rejects users without membership in actor tenant', async () => {
