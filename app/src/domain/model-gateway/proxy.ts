@@ -367,7 +367,10 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
   const upstreamFor = (candidate: ModelRef): Record<string, unknown> => {
     const out: Record<string, unknown> = {}
     for (const key of FORWARDED_PARAMS) if (clientBody[key] !== undefined) out[key] = clientBody[key]
-    if (config && sameModel(candidate, config)) {
+    // Helyettesített hívásnál (pl. a kliens segédmodellt kért a tömörítéshez) az agent
+    // keretei nem érvényesek: az agent 4096-os kerete csonkolta a Hermes-összefoglalót.
+    const substituted = !!requestedModel && !matchesRequested(candidate, requestedModel)
+    if (config && sameModel(candidate, config) && !substituted) {
       out.temperature ??= config.temperature
       if (out.max_completion_tokens === undefined) out.max_tokens ??= config.maxTokens
     }

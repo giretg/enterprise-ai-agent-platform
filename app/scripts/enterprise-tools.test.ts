@@ -1418,6 +1418,7 @@ async function main() {
   await check('http_api_request direct mode executes without enqueue', async () => {
     const enqueued: string[] = []
     let executed = false
+    let executedAgent: { id: string } | undefined
     const result = await invokeEnterpriseTool(
       {
         ...invokeDeps({
@@ -1436,8 +1437,9 @@ async function main() {
               capabilities: [{ toolName: HTTP_API_REQUEST_TOOL, allowed: true }],
             },
           }),
-          executeHttpApiTool: async () => {
+          executeHttpApiTool: async (_tool, _args, _connector, _token, _actingUser, agent) => {
             executed = true
+            executedAgent = agent
             return { ok: true, status: 200 }
           },
         }),
@@ -1463,6 +1465,8 @@ async function main() {
     )
     assert.equal(result.isError, undefined)
     assert.equal(executed, true)
+    // Enélkül az X-Agent-Id sablon üres → template_variable_missing minden közvetlen írásnál.
+    assert.ok(executedAgent?.id)
     assert.deepEqual(enqueued, [])
     assert.equal(parsePayload(result).ok, true)
   })
