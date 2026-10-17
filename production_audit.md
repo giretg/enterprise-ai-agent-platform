@@ -7,6 +7,110 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-09 — Több kapcsolt Google-fiók (#816): fiók-token kiválasztás + jóváhagyás-határ confused-deputy
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legfrissebb, **credential-osztályú**
+felület a **több kapcsolt Gmail/Drive fiók per user** (#816, main-tető `cc80ac47`+`eee5e067`,
+PR #816 MERGED 10-08, +1426 sor): user-enként több OAuth-grant ugyanazon a connectoron, a tool-híváskor
+egy `account` becenév/e-mail argumentummal kiválasztva. Friss + komplex + OAuth-token-kiválasztás
+(cross-user/cross-tenant token-tévesztés klasszikus helye) = a legnagyobb új kockázat; nincs rá nyitott
+in-flight fix (szemben a sok nyitott Model Gateway DRAFT-tal, amit a 10-07 kör és a #804–#814 stack érint).
+
+**Coverage (teljes bizalmi-határ + token-kiválasztás trace, kézi end-to-end + kötelező scoped Codex scan):**
+`authorizeToolCall` (`loadActiveGrants`→`findActiveGrants` tenant+user+connector+status-szűrés →
+`resolveLinkedAccountGrant` becenév/e-mail egyezés) → `invokeEnterpriseTool` (a kiválasztott `tokenRef`
+használata) → `executeApprovedOperation` (write-approval újra-authorizál, `authorized.grant`) →
+`completeOAuthCallback` (account-egyezés, tokenRef-újrahasználat/-ütközés, 0026 partial-unique) →
+`updateConnectorGrantNickname` IDOR-kapuk → `buildGrantTokenRef`/`uniqueAccountKey` vault-kulcs →
+`mcp-server.ts` whoami `listLinkedAccounts` + `account` arg séma. Eszköz: `codex exec` read-only
+scoped scan a két #816-commitra, 5 fenyegetési osztály.
+
+### Bizonyított finding (security, Codex scan, confidence 9/10) — DOKUMENTÁLVA, külön fix (migráció kell)
+
+**Jóváhagyás-határon átívelő confused-deputy: a függő jóváhagyás alatt fiókot lehet cserélni.**
+Az `enqueueGatewayOperation` eltárolja az `args`-ot (benne `account`), de **nem köti le a feloldott
+`grantId`/`tokenRef`-et** (a `GatewayOperation` sémán nincs ilyen mező). Az `executeApprovedOperation`
+az `account`-ot az **aktuális** aktív grantokhoz oldja fel újra (`authorized.grant`). **Támadás** (kérő =
+támadó, külön jóváhagyóval, 2 azonos-scope-ú fiók): „céges"-re enqueue (A fiók) → a jóváhagyás ELŐTT a
+kérő visszavonja A-t és egy másik fiókját (B) „céges"-re nevezi át (engedélyezett nickname-action) →
+a jóváhagyás **B-ből** küld. `account`-elhagyásos variáns még tisztább: egyetlen fiókkal enqueue, majd
+B belinkelése + A visszavonása → a jóváhagyás az egyetlen aktív B-ből küld. A jóváhagyó **mást** hagy
+jóvá, mint ami lefut → az „auditálható, ember-kontrollált AI-írás" (AGENTS.md) invariáns sérül.
+**Súlyosság: közepes** — a támadó SAJÁT postafiókjai közt vált, **nincs** cross-tenant/cross-user határ-sértés
+(a Codex verdict is ezt mondja); de a jóváhagyás-integritás valós rés. Rokon a 09-24 „következmény-kártya
+nem mutatja a címzettet válasznál" residuallal (azonos osztály: approval ↔ végrehajtás kötés).
+
+- **Miért nem lett most javítva:** a tiszta gyökér-ok fix **sémamigrációt** igényel (új nullable
+  `account_grant_id` oszlop a `GatewayOperation`-ön, enqueue köti le, execute a lekötött grantra
+  authorizál/verifikál, eltérésnél fail-closed). A memória **#1 visszatérő 🔴 incidense a „deploy nem
+  migrál" drift** → egy migráció-függő fix a jóváhagyás-kritikus úton, felügyelet nélkül szállítva, pont
+  platform-szintű kiesést kockáztatna (új oszlopot olvasó kód + nem-migrált prod = minden gateway-művelet
+  elbukik). A migráció-mentes variánsok (grantId az `argsJson`-be injektálva) törik az idempotens retry
+  arg-fingerprintet VAGY a jóváhagyó-kártyát/tool-executort. **Precedens:** 09-24 szintén dokumentálta,
+  nem szállította a viselkedésváltó approval-path fixet felügyelet nélkül. → **HIGH residual** (lentebb).
+
+### Manuális end-to-end trace — a többi osztály helytáll (Codex verdictekkel egyezik)
+
+- **Cross-user / cross-tenant token-kiválasztás — nincs.** `findActiveGrants` `tenantId+userId+connectorId+
+  status`-ra szűr (`connector-grant-repository.ts:20`); a `grants[]` a **szerver-feloldott** principalból
+  (soha args), az `account` arg csak e halmazon belül válogat (becenév/e-mail egyezés). A token-feloldás
+  (`connector-grant-service.ts:795`) újra-ellenőrzi tulajdon+connector+tokenRef+aktív státusz. Az `account`
+  bounded (`max 80`), nincs injekció.
+- **Nickname IDOR — nincs.** `updateConnectorGrantNickname` kétszer is ellenőrzi `grant.userId===ctx.user.id`
+  ÉS `grant.tenantId===ctx.activeTenantId`; a service `loadGrantForAccess` `expectedUserId/TenantId`-vel.
+- **Vault-kulcs — nincs.** `buildGrantTokenRef` tenant/user/connector + random `uniqueAccountKey()` (8 bájt);
+  a hívó nem tud `account`-on át vault-refet megadni. A CodeQL token-ref hash a `eee5e067`-ben zárva.
+- **OAuth callback — nincs ≥8 exploit.** `completeOAuthCallback` az **aláírt+verifikált** state-ből veszi a
+  `nickname`/`addAccount`-ot (nem manipulálható); account-egyezés aktor/connector/tenant-scope-olt;
+  null-email fallback az egyetlen aktív grantot használja újra (🟡 residual, nincs támadó-kontrollált trigger).
+
+### Javítás e körben (reliability/coverage) — PR **#823** (csak teszt)
+
+A write-approval végrehajtó #816-ban átállt a régi `findActiveGrant` (grants[0]=legrégebbi fiók) útról a
+`account`-szelekciós `authorized.grant`-ra — de **nem volt rá futó, CI-ben lévő regressziós teszt**. Egy
+refaktor némán visszahozhatná a confused-deputyt (jóváhagyott levél/fájl a **rossz postafiókból**). Két eset
+a CI-ben futó `gateway-operation.test.ts`-hez (közös `multiAccountDeps()` helper):
+1. a jóváhagyott `create_folder` a kiválasztott (céges) fiók `tokenRef`-jét (`token-work`) oldja fel, nem a
+   grants[0] (magán) fiókét;
+2. ha a kiválasztott fiókot a jóváhagyás előtt visszavonják, fail-closed (`status=failed`,
+   `errorCode=unknown_account`), a magán token **soha** nem oldódik fel.
+
+### Ellenőrzések
+- `npm run test:gateway-operation` — 42 meglévő + 2 új **zöld**; `eslint` tiszta a módosított fájlra.
+- **Regresszió-őr bizonyítva:** a production sort ideiglenesen a régi `findActiveGrant` útra visszaállítva az
+  1. eset elhasal → valódi guard (nem false-green).
+- Kötelező scoped security scan: `codex exec` read-only, 5 fenyegetési osztály → **1 confirmed (9/10, fent)**,
+  a többi 4 osztály SAFE, soronkénti verdictekkel.
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis): **Standards** — 0 hard violation; judgement-call
+  Duplicated Code (két közel-azonos eset) + `WORK_GRANT_ID` felemelés **átvezetve** (`multiAccountDeps` helper).
+  **Spec** — hű, running, CI-included; a revert-verifikáció megerősítve; `errorCode==='unknown_account'`
+  assert nit **átvezetve**. Mindkét axis: „ship".
+
+### PR
+- **#823** — `test(gateway): lock selected linked account on approved delegated writes`
+  (branch `test/multi-account-write-approval-grant`, main-ről). A PR leírása kiemeli a Codex 9/10 findingot
+  mint KÜLÖN, migrációt igénylő residualt.
+
+### Residual risk / következő audithoz
+- **🟠 HIGH — jóváhagyás-határ fiók-swap (Codex 9/10, fent).** A függő jóváhagyás alatt a kiválasztott fiók
+  átcserélhető (revoke + rename, vagy single-account swap). **Fix (külön PR, human):** `account_grant_id`
+  oszlop (0027 migráció) → enqueue köti le a feloldott grantId-t → execute a lekötött grantra authorizál,
+  eltérésnél fail-closed. Migráció-drift-érzékeny (l. `prod-db-migration-drift-regression`), ezért nem
+  felügyelet nélkül. Az **enqueue-kori következmény-kártyának** a sending-accountot is mutatnia kellene
+  (transzparencia, rokon a 09-24 residuallal).
+- **🟠 `per-user-connector.test.ts` HALOTT (pre-existing, nem #816).** Az 1133 soros per-user connector
+  **governance** mag-teszt (kétrétegű grant, acting-user, scope least-privilege, G1/G2/G4/G5 negatívok) a
+  „Phase 0 repository surgery" (`8a6f60a5`) óta a **törölt** `tool-broker-service`/`AllowlistAuthorizer`-re
+  importál → exit 1, és **nincs a CI-ben**. #816 még új (szintén nem futó) multi-account eseteket is rakott rá.
+  A biztonság-kritikus `authorizeToolCall` account-szelekciót viszont a CI-s `enterprise-tools.test.ts` **fedi**,
+  így nem fedetlen felület. Feltámasztás = teljes rewrite a `authorizeToolCall` API-ra (törölt architektúra) →
+  önálló issue/kör, felügyelet nélkül kockázatos. Olcsóbb alternatíva: a dead fájl + a hozzá tartozó
+  `test:per-user-connector` script törlése, ha a governance-esetek máshol lefedettek (verifikálandó).
+- **🟡 null-email OAuth fallback:** ha a provider nem ad e-mailt és 2+ aktív grant van `addAccount` nélkül,
+  új, `accountLabel:null` duplikátum-grant jöhet létre. Google-nál ritka; nincs támadó-trigger.
+- **A Model Gateway tartalomszűrő/Hermes Guard stack (#773/#774/#775/#776/#759 + #804–#814 DRAFT-ok) aktívan
+  churn-ölődik** — külön kör, in-flight fixekkel; nem e scope.
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
