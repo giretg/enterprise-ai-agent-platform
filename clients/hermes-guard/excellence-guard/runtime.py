@@ -43,6 +43,8 @@ ManagedDirRedirected = _paths.ManagedDirRedirected
 DEFAULT_MANAGED_DIR = _paths.default_managed_dir()
 TOKEN_HELPER_PATH = _paths.token_helper_path()
 _lock = threading.Lock()
+# Gyakrabban, mint az exc-token 60 s-os LEEWAY-e: a fejlécben sosem marad lejárt JWT.
+TOKEN_REFRESH_SECONDS = 30
 
 
 def sha256_bytes(data):
@@ -474,8 +476,23 @@ class Guard:
             headers = {name: value for name, value in headers.items() if name.lower() != "authorization"}
             headers["Authorization"] = f"Bearer {token}"
             request = {**request, "extra_headers": headers}
+            # A Hermes stream-újrapróbálása a next_call-on belül ugyanezt a header-dictet küldi újra
+            # (elakadt stream után 5+ perccel is) → a hívás alatt frissen tartjuk, különben lejárt JWT, 401.
+            stop = threading.Event()
+            threading.Thread(target=self._keep_token_fresh, args=(headers, stop), name="excellence-guard-token", daemon=True).start()
+            try:
+                return next_call(request)
+            finally:
+                stop.set()
         # A provider hibája a Hermes újrapróbálási/tömörítési útjára tartozik.
         return next_call(request)
+
+    def _keep_token_fresh(self, headers, stop):
+        # Az exc-token cache-ből ad, csak `exp - 60 s` után kér újat; hibánál a régi marad (a 401 úgyis látszik).
+        while not stop.wait(TOKEN_REFRESH_SECONDS):
+            token, refused = self._gateway_token()
+            if refused is None:
+                headers["Authorization"] = f"Bearer {token}"
 
     def _share_mcp_tokens(self):
         mod = load_exc_token()

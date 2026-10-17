@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -243,6 +244,36 @@ class Runtime(unittest.TestCase):
         )
         self.assertEqual(forwarded["extra_headers"]["Authorization"], "Bearer fresh-jwt")
         self.assertEqual(forwarded["extra_headers"]["X-Excellence-Session"], "s-1")
+
+    def test_llm_execution_keeps_token_fresh_for_in_call_stream_retry(self):
+        # 10-17 Réka: elakadt stream után a Hermes a next_call-on belül ugyanazt a fejlécet küldte újra → lejárt JWT, 401.
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
+        guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        tokens = iter(["jwt-1", "jwt-2", "jwt-3", "jwt-4"])
+        guard._gateway_token = lambda: (next(tokens, "jwt-last"), None)
+        sent = []
+
+        def provider_with_retry(req):
+            sent.append(req["extra_headers"]["Authorization"])
+            deadline = time.time() + 2
+            while req["extra_headers"]["Authorization"] == sent[0] and time.time() < deadline:
+                time.sleep(0.01)
+            sent.append(req["extra_headers"]["Authorization"])  # az újrapróbálás ugyanazt a dictet olvassa
+            return req
+
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        with patch.object(runtime, "TOKEN_REFRESH_SECONDS", 0.05):
+            try:
+                forwarded = guard.llm_execution(request={}, next_call=provider_with_retry, provider="custom", base_url="https://ai.example/api/model-gateway/v1")
+            finally:
+                os.environ.pop("EXC_GUARD_OFFLINE", None)
+        self.assertEqual(sent[0], "Bearer jwt-1")
+        self.assertNotEqual(sent[1], sent[0])
+        after = forwarded["extra_headers"]["Authorization"]
+        time.sleep(0.2)
+        self.assertEqual(forwarded["extra_headers"]["Authorization"], after)  # a hívás végén a frissítés leáll
 
     def test_llm_execution_token_failure_never_forwards_without_jwt(self):
         # #895: első get_token hiba, második siker → régen JWT nélkül ment ki (401 invalid_token).
