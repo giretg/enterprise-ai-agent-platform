@@ -164,13 +164,14 @@ function authFailureDetail(config: ConnectorConfig, status: number): string {
 }
 
 /**
- * CRM-connector (Ostorosbor): az acting user fejléc vagy a acting user e-mail mező
+ * CRM-connector (Ostorosbor): az acting user fejléc vagy az acting user e-mail mező
  * jelenléte azonosítja. Csak ennél értelmes a 404 → "acting user nem található"
  * jelentés; más connectornál a 404 a próbált végpont hiányát jelenti.
  */
 function isCrmConnector(config: ConnectorConfig): boolean {
   return Boolean(
-    config.defaultActingUserEmail?.trim() || config.requestHeaders?.['X-Acting-User'],
+    config.defaultActingUserEmail?.trim() ||
+      Object.keys(config.requestHeaders ?? {}).some((h) => h.toLowerCase() === 'x-acting-user'),
   )
 }
 
