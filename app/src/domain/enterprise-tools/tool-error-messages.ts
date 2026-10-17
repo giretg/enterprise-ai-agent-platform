@@ -40,6 +40,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'Several linked accounts match; pass account (nickname or email from platform.whoami linkedAccounts, see accounts in the error payload)',
   unknown_account:
     'No linked account matches that account nickname or email; pass one from platform.whoami linkedAccounts (see accounts in the error payload)',
+  grant_changed:
+    'The linked account for this approval changed before it ran (renamed or re-linked); the write was not executed — submit it again and re-approve',
   connector_id_required:
     'Multiple HTTP API connectors match; pass connectorName (from connectors[].name in the published definition), connectorId, or a path that appears on only one connector\'s endpoint list (see connectors in the error payload)',
   acting_user_required: 'This tool requires a delegated user grant',

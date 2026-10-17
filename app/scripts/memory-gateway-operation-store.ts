@@ -38,6 +38,7 @@ export class MemoryGatewayOperationStore implements GatewayOperationStore {
       idempotencyKey: input.idempotencyKey,
       status: 'awaiting_approval',
       connectorId: input.connectorId,
+      grantId: input.grantId ?? null,
       designatedApproverUserId: input.designatedApproverUserId ?? null,
       designatedApproverName: input.designatedApproverName ?? null,
       errorCode: null,
