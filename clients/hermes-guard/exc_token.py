@@ -218,8 +218,23 @@ def share_all_mcp_tokens(home):
 
 
 def _expires_at(path):
+    """Mikor jár le a belépő? Nagyobb = frissebb a share számára.
+
+    A modern Hermes abszolút ``expires_at``-et ír. Régi / telepítő-másolt fájlokban
+    ez hiányzik — a 0-ra esés azt jelentette, hogy egy lejárt, de ``expires_at``-es
+    szülő belépő felülírta a Bot friss (expires_at nélküli) loginját. A Hermeshez
+    igazodva: hiányzó ``expires_at`` esetén ``mtime + expires_in`` (vagy mtime).
+    """
     try:
-        return float(json.load(open(path, encoding="utf-8")).get("expires_at") or 0)
+        data = json.load(open(path, encoding="utf-8"))
+        exp = data.get("expires_at")
+        if exp is not None and exp != "":
+            return float(exp)
+        mtime = os.path.getmtime(path)
+        extra = data.get("expires_in")
+        if extra is not None and extra != "":
+            return mtime + float(extra)
+        return mtime
     except (OSError, ValueError, TypeError, AttributeError):
         return 0.0
 

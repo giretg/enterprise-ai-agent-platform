@@ -121,6 +121,26 @@ class T(unittest.TestCase):
         self.assertTrue(x.share_mcp_tokens(bot))
         self.assertEqual(x.mcp_access_token(bot), "oauth-relogin")
 
+    def test_legacy_bot_login_without_expires_at_beats_expired_parent(self):
+        # Telepítő / pre-Fix-A Hermes: nincs expires_at. A 0-ra esés miatt a szülő
+        # lejárt, de expires_at-es másolata felülírta a Bot friss belépőjét (#895 lyuk).
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        for d in (os.path.join(root, "mcp-tokens"), os.path.join(bot, "mcp-tokens")):
+            os.makedirs(d)
+        open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        parent = os.path.join(root, "mcp-tokens", "excellence.json")
+        child = os.path.join(bot, "mcp-tokens", "excellence.json")
+        json.dump({"access_token": "stale-parent", "refresh_token": "dead", "expires_at": 100}, open(parent, "w"))
+        json.dump({"access_token": "fresh-bot", "refresh_token": "live", "expires_in": 3600}, open(child, "w"))
+        os.utime(parent, (1_700_000_000, 1_700_000_000))
+        os.utime(child, (1_800_000_000, 1_800_000_000))
+        self.assertFalse(x.share_mcp_tokens(bot))
+        self.assertEqual(json.load(open(child))["access_token"], "fresh-bot")
+        self.assertEqual(x.mcp_access_token(bot), "fresh-bot")
+        # A Bot frissebb → visszamegy a default profilba (refresh-forgás).
+        self.assertEqual(json.load(open(parent))["access_token"], "fresh-bot")
+
     def test_bot_takes_parent_login_by_url_not_by_name(self):
         # Valós eset: a default `excellence` saját tenantra mutat (lejárt), a Bot tenantjára tett
         # belépés `excellence-acme` néven áll. A Bot csak az azonos URL-ű belépőt veheti át.
