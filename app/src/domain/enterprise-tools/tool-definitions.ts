@@ -212,7 +212,9 @@ export const googleDriveSearchInputSchema = z
       .string()
       .max(1000)
       .optional()
-      .describe('Google Drive search query. Omit with nameContains to list recent files.'),
+      .describe(
+        "Plain words search file names and contents (e.g. 'Birtok árlista'). Drive query syntax (name contains 'x') also works. Omit with nameContains to list recent files.",
+      ),
     nameContains: z.string().max(200).optional().describe('Substring match on file name.'),
     // ponytail: string not string[] — Claude.ai drops MCP tools whose advertised schema has arrays
     mimeTypes: z
