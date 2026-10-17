@@ -173,6 +173,36 @@ JSONL download on `/audit` is tenant-scoped (same rows as the table). Unauthenti
 
 Record `codex --version`, `claude --version`, and Clerk instance type (dev/prod) on the PR.
 
+## External MCP servers (#395)
+
+The platform can proxy tools of an external MCP server through two fixed tools on the tenant endpoint:
+`mcp_list_tools` and `mcp_call`. Credentials stay on the platform; every call goes through the same
+gate as other enterprise tools (definition pin → agent access → `authorizeToolCall` → write gate → audit).
+
+1. **Platform admin** (Platform → Beállítások → MCP-szolgáltatók): allow the server host, and the OAuth
+   host if login runs elsewhere. No wildcards. Revoking a host stops every connector on it at the next call.
+2. **Tenant admin** (Kapcsolatok → Külső MCP-szerverek): name + `https://` address + mode.
+   - *Közös céges fiókkal* (`service`): optional token, stored in the connector secret store.
+     „Ellenőrzés és mentés” runs `initialize` + `tools/list`.
+   - *Mindenki a saját fiókjával* (`user_delegated`): client ID from the vendor (optional secret,
+     optional scopes). The platform discovers the authorization server (RFC 9728 → RFC 8414) and sends
+     `resource=<server address>` on the authorize and token requests. The admin then logs in once with
+     their own account and fetches the tool list. Dynamic client registration is not supported yet.
+3. Review the tools: full description, parameters, risk (`read` runs at once, `write` waits for
+   approval unless the agent's „Céges API” write mode is direct, `danger` always waits). New tools start
+   as `danger` and unapproved. Marking a write-like name as `read` needs an extra confirmation.
+4. Try a read tool (real call), then bind the connector to an agent on the usual screen and publish.
+
+Changes on the server never take effect on their own: „Újraellenőrzés” stores a `proposed` version with
+a diff; the old approved list stays active until an admin approves the new one. A changed description or
+schema needs re-approval.
+
+Error codes the client may see: `mcp_tool_not_approved`, `mcp_domain_not_allowed`, `mcp_auth_failed`
+(with `authorizationUrl`), `connector_grant_missing` (with `authorizationUrl`), `missing_mcp_connector_write`,
+`mcp_server_error`, `mcp_tool_error`, `mcp_outcome_uncertain` (write timed out — not retried).
+
+Tests: `npm run test:mcp-connector`.
+
 ## Import notes
 
 Clerk’s Next example may still show `mcp-adapter` / `experimental_withMcpAuth`. This app uses the maintained names: `mcp-handler@2.1.1` `createMcpHandler` + `withMcpAuth`. `@clerk/mcp-tools@0.6.0` still depends on `@modelcontextprotocol/sdk@1.30.0` (security floor ≥ 1.26.0) for `verifyClerkToken`; the transport uses `@modelcontextprotocol/server@2.0.0`.

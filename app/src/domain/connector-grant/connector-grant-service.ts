@@ -84,6 +84,8 @@ export type ConnectorOAuthConfig = {
     accountEmailField?: string
     offlineParams?: Record<string, string>
     scopeTransform?: 'none' | 'gmailAlias'
+    /** RFC 8707 resource indicator — MCP-connectoron a szerver kanonikus címe (#395 D5). */
+    resource?: string
   }
 }
 
@@ -105,6 +107,7 @@ type ResolvedOAuthConfig = {
   userInfoUrl?: string
   accountEmailField: string
   offlineParams: Record<string, string>
+  resource?: string
 }
 
 async function oauthErrorDetail(res: Response): Promise<string> {
@@ -140,7 +143,8 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
   const authScopes = auth.scope?.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
   const configuredScopes = oauth.scopes ?? authScopes ?? config.scopesSuggested ?? []
   const scopes = configuredScopes.length > 0 ? configuredScopes : []
-  if (scopes.length === 0) {
+  // MCP-szerver scope nélkül is adhat tokent (#395): ott az üres lista érvényes.
+  if (scopes.length === 0 && connector.type !== 'mcp') {
     throw new Error('connector oauth config missing scopes')
   }
 
@@ -164,6 +168,7 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
     userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
     accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',
     offlineParams: oauth.offlineParams ?? auth.offlineParams ?? {},
+    ...(oauth.resource ? { resource: oauth.resource } : {}),
   }
 }
 
@@ -264,6 +269,8 @@ async function resolveClientSecret(connector: Connector): Promise<string> {
     if (platformGoogle?.clientSecret) return platformGoogle.clientSecret
   }
   const alias = connector.secretAlias
+  // MCP: publikus PKCE-kliens titok nélkül (a felderített szerverek többsége ilyen).
+  if (!alias && connector.type === 'mcp') return ''
   if (!alias) throw new Error('connector missing client secret alias')
 
   // A generikus (nem-Google) delegált connectoroknál a client_secret a connector
@@ -290,6 +297,8 @@ type OAuthEgressPolicy = {
 
 function pinsOAuthToEndpointHost(connector: Connector): boolean {
   if (connector.type === 'gmail' || connector.type === 'google_drive') return true
+  // MCP: az auth/token hostot létrehozáskor az MCP-allowlisthez mértük (#395 D10).
+  if (connector.type === 'mcp') return true
   return isPlatformGoogleApiConnectorTemplateKey(provenanceTemplateKey(connector.config))
 }
 
@@ -325,6 +334,18 @@ async function fetchOAuthEndpoint(
   return response
 }
 
+/** Token-kérés törzse; üres titok (publikus PKCE-kliens) nem kerül bele, a `resource` igen. */
+function oauthTokenBody(
+  fields: Record<string, string>,
+  clientSecret: string,
+  resource: string | undefined,
+): URLSearchParams {
+  const body = new URLSearchParams(fields)
+  if (clientSecret) body.set('client_secret', clientSecret)
+  if (resource) body.set('resource', resource)
+  return body
+}
+
 async function exchangeCodeForTokens(params: {
   connector: Connector
   code: string
@@ -346,14 +367,17 @@ async function exchangeCodeForTokens(params: {
   }
 
   const clientSecret = await resolveClientSecret(params.connector)
-  const body = new URLSearchParams({
-    code: params.code,
-    client_id: oauth.clientId,
-    client_secret: clientSecret,
-    redirect_uri: oauth.redirectUri,
-    grant_type: 'authorization_code',
-    code_verifier: params.codeVerifier,
-  })
+  const body = oauthTokenBody(
+    {
+      code: params.code,
+      client_id: oauth.clientId,
+      redirect_uri: oauth.redirectUri,
+      grant_type: 'authorization_code',
+      code_verifier: params.codeVerifier,
+    },
+    clientSecret,
+    oauth.resource,
+  )
 
   const oauthPolicy = oauthEgressPolicy(params.connector, params.tenantAllowlist)
   const res = await fetchOAuthEndpoint(oauth.tokenUrl, {
@@ -428,12 +452,15 @@ async function refreshGrantTokens(
 
   const oauth = await resolveOAuthConfig(connector)
   const clientSecret = await resolveClientSecret(connector)
-  const body = new URLSearchParams({
-    refresh_token: current.refreshToken,
-    client_id: oauth.clientId,
-    client_secret: clientSecret,
-    grant_type: 'refresh_token',
-  })
+  const body = oauthTokenBody(
+    {
+      refresh_token: current.refreshToken,
+      client_id: oauth.clientId,
+      grant_type: 'refresh_token',
+    },
+    clientSecret,
+    oauth.resource,
+  )
 
   const res = await fetchOAuthEndpoint(oauth.tokenUrl, {
     method: 'POST',
@@ -526,7 +553,8 @@ export class ConnectorGrantService {
     url.searchParams.set('client_id', oauth.clientId)
     url.searchParams.set('redirect_uri', oauth.redirectUri)
     url.searchParams.set('response_type', 'code')
-    url.searchParams.set('scope', scopes.join(' '))
+    if (scopes.length > 0) url.searchParams.set('scope', scopes.join(' '))
+    if (oauth.resource) url.searchParams.set('resource', oauth.resource)
     for (const [key, value] of Object.entries(oauth.offlineParams)) {
       url.searchParams.set(key, value)
     }

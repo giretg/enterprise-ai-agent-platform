@@ -66,6 +66,17 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   sandbox_input_total_size_exceeded: 'Input files are too large in total for the sandbox',
   sandbox_input_file_too_large: 'An input file is too large for the sandbox',
   tool_execution_failed: 'Tool execution failed',
+  missing_mcp_connector_read: 'Published definition has no MCP server connector',
+  missing_mcp_connector_write:
+    'This MCP tool changes data, but the MCP connector is bound read-only on this agent — set it to write and publish',
+  mcp_tool_not_approved:
+    'This tool is not approved on the MCP connector — call mcp_list_tools for the approved tools; an admin must approve new ones',
+  mcp_domain_not_allowed: 'The platform administrator has not allowed this MCP server domain',
+  mcp_auth_failed: 'The MCP server rejected the credentials',
+  mcp_server_error: 'The MCP server request failed',
+  mcp_tool_error: 'The MCP tool returned an error',
+  mcp_outcome_uncertain:
+    'The MCP server did not answer in time; the change may or may not have happened — check before retrying',
 }
 
 export function enterpriseToolErrorMessage(code: string, fallback = 'Tool call denied'): string {

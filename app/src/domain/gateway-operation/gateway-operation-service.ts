@@ -13,6 +13,16 @@ import {
 import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
 import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
 import { executeGmailTool } from '@/domain/enterprise-tools/handlers/gmail'
+import {
+  checkMcpCallGate,
+  executeMcpTool as defaultExecuteMcpTool,
+  mcpErrorCode,
+  type ExecuteMcpToolInput,
+  type McpGateDeps,
+} from '@/domain/enterprise-tools/handlers/mcp'
+import { auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
+import type { McpCallResult } from '@/domain/connector/mcp-client'
+import { mcpResultForModel } from '@/domain/connector/mcp-tools'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
 import { HttpApiError } from '@/domain/connector/http-api-client'
 import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
@@ -34,6 +44,7 @@ import {
   isEnterpriseGmailWriteTool,
   isEnterpriseHttpWriteTool,
   isEnterpriseWriteTool,
+  MCP_CALL_TOOL,
   schemaForEnterpriseTool,
 } from '@/domain/enterprise-tools/tool-definitions'
 import {
@@ -58,7 +69,8 @@ export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: 
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
 export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
-  DefinitionPinDeps & {
+  DefinitionPinDeps &
+  McpGateDeps & {
   loadDefinition: (input: {
     tenantId: string
     definitionId: string
@@ -116,6 +128,8 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     grantId: string
     files: Array<{ fileId: string; name: string; mimeType: string }>
   }) => Promise<void>
+  /** #395: külső MCP-hívás jóváhagyás után; tesztben cserélhető. */
+  executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
   commitProjectMemory?: (input: {
     tenantId: string
     agentId: string
@@ -380,7 +394,10 @@ async function loadAuthorizedWrite(
     ...ids,
   })
   const memoryWrite = isProjectMemoryWriteTool(toolName)
-  if (!memoryWrite && !isEnterpriseWriteTool(toolName)) return fail('tool_not_configured')
+  // mcp_call: a kockázati besorolás (write/danger) küldte ide az invokeEnterpriseTool (#395 §3.3).
+  if (!memoryWrite && !isEnterpriseWriteTool(toolName) && toolName !== MCP_CALL_TOOL) {
+    return fail('tool_not_configured')
+  }
 
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) return fail('definition_not_found')
@@ -900,11 +917,17 @@ async function executeApprovedOperation(
       return fail(
         authorized.connector.type === 'http_api'
           ? 'http_api_error'
-          : authorized.connector.type === 'gmail'
+          : authorized.connector.type === 'mcp'
+            ? 'mcp_auth_failed'
+            : authorized.connector.type === 'gmail'
             ? 'gmail_auth_failed'
             : 'google_drive_auth_failed',
       )
     }
+  }
+
+  if (operation.toolName === MCP_CALL_TOOL) {
+    return executeApprovedMcpCall(deps, operation, args, authorized.connector, accessToken, fail)
   }
 
   try {
@@ -970,6 +993,78 @@ async function executeApprovedOperation(
   } catch (error) {
     return fail(mapWriteError(error))
   }
+}
+
+/**
+ * #395: jóváhagyott `mcp_call`. A kaput újra lefuttatjuk — a jóváhagyás óta
+ * visszavont domain vagy újrajóváhagyásra váró eszköz nem futhat. Timeout
+ * esetén nincs újrapróbálás, a kimenetel bizonytalan (D11).
+ */
+async function executeApprovedMcpCall(
+  deps: GatewayOperationServiceDeps,
+  operation: GatewayOperationRecord,
+  args: Record<string, unknown>,
+  connector: LiveConnectorRow,
+  accessToken: string | undefined,
+  fail: (code: string) => Promise<GatewayOperationRecord>,
+): Promise<GatewayOperationRecord> {
+  const tool = typeof args.tool === 'string' ? args.tool : ''
+  const gate = await checkMcpCallGate(deps, { connector, tool })
+  if (!gate.ok) return fail(gate.code)
+  const serverRequests = new Set<string>()
+  const audit = () =>
+    auditMcpServerRequests(
+      deps,
+      { userId: operation.principalUserId, tenantId: operation.tenantId },
+      operation.agentId,
+      connector.id,
+      serverRequests,
+    )
+  let result: McpCallResult
+  try {
+    result = await (deps.executeMcpTool ?? defaultExecuteMcpTool)({
+      connector,
+      accessToken,
+      tool,
+      arguments: asRecord(args.arguments),
+      allowedHosts: gate.allowedHosts,
+      onServerRequest: (method) => serverRequests.add(method),
+    })
+  } catch (error) {
+    await audit()
+    return fail(mcpErrorCode(error, gate.risk))
+  }
+  await audit()
+  if (result.isError) return fail('mcp_tool_error')
+  const resultJson = mcpResultForModel(result)
+  const updated = await deps.operations.update(operation.id, {
+    status: 'succeeded',
+    resultJson,
+    errorCode: null,
+  })
+  const payload = {
+    operationId: operation.id,
+    connectorId: connector.id,
+    tenantId: operation.tenantId,
+    mcpTool: tool,
+    risk: gate.risk,
+  }
+  console.info('gateway.operation.succeeded', payload)
+  await writeAudit(deps.audit, {
+    actorType: 'system',
+    actorId: null,
+    agentVersion: null,
+    action: 'gateway.operation.succeeded',
+    targetType: 'gateway_operation',
+    targetId: operation.id,
+    modelUsed: null,
+    inputRef: operation.toolName,
+    outputRef: tool,
+    policyDecision: 'allowed',
+    metadata: payload,
+    tenantId: operation.tenantId,
+  })
+  return updated ?? { ...operation, status: 'succeeded', resultJson, errorCode: null }
 }
 
 function mapWriteError(error: unknown): string {

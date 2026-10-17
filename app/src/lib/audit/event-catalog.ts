@@ -105,6 +105,16 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'connector.self_update.version.reject',
   'connector.self_update.version.rollback',
   'connector.self_update.api_key.rotate',
+  // #395 MCP-connector
+  'mcp.connector.create',
+  'mcp.connector.archive',
+  'mcp.tools.sync.proposed',
+  'mcp.tools.sync.no_change',
+  'mcp.tools.approve',
+  'mcp.tool.try',
+  'mcp.server_request.denied',
+  'platform.mcp_host.allow',
+  'platform.mcp_host.revoke',
   'tenant.self_update.policy.update',
 
   'privacy.connector.capability.absent',

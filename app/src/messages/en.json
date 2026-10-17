@@ -692,6 +692,7 @@
       "picker": "Drive Picker",
       "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)",
       "nav": "NAV Online Invoice",
+      "mcpHosts": "MCP providers",
       "fallbackChain": "Fallback chain",
       "fallbackTitle": "Shared fallback chain",
       "fallbackBody": "If a provider goes down, the system first tries the teammate’s own backup models, then this shared list — but only models the company has allowed. The switch is written to the log.",

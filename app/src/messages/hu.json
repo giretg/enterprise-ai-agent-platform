@@ -692,6 +692,7 @@
       "picker": "Drive Picker",
       "googleApi": "Google API (Analytics / Ads / Calendar / Sheets)",
       "nav": "NAV Online Számla",
+      "mcpHosts": "MCP-szolgáltatók",
       "fallbackChain": "Tartalék-lánc",
       "fallbackTitle": "Közös tartalék-lánc",
       "fallbackBody": "Ha egy szolgáltató kiesik, a rendszer először a munkatárs saját tartalék modelljeit próbálja, utána ezt a közös listát — de csak azokat, amiket az adott cég engedélyezett. A váltás a naplóban látszik.",

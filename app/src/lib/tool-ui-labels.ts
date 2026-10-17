@@ -386,6 +386,15 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'API írás',
     description: 'Író (POST/PUT/PATCH/DELETE) hívás a hozzárendelt külső REST API-n.',
   },
+  mcp_list_tools: {
+    label: 'Külső MCP-eszközök listája',
+    description: 'A hozzárendelt külső MCP-szerverek jóváhagyott eszközeinek listája (név, kockázat, paraméterek).',
+  },
+  mcp_call: {
+    label: 'Külső MCP-eszköz hívása',
+    description:
+      'Egy jóváhagyott külső MCP-eszköz futtatása. Az olvasó eszköz azonnal fut, az író és a veszélyes jóváhagyást kérhet.',
+  },
   sandbox_exec: {
     label: 'Kód futtatása',
     description: 'Izolált, hívásonként új sandbox futtatása kontrollált workspace inputtal és outputtal.',

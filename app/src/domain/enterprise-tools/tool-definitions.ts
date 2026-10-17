@@ -75,6 +75,11 @@ export const ENTERPRISE_KB_TOOLS = [
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
 export const ENTERPRISE_SANDBOX_TOOLS = [SANDBOX_RUN_TOOL] as const
 
+/** #395 D1: két fix eszköz minden külső MCP-szerverhez — a nevek futásidőben nem változnak. */
+export const MCP_LIST_TOOLS_TOOL = 'mcp_list_tools'
+export const MCP_CALL_TOOL = 'mcp_call'
+export const ENTERPRISE_MCP_TOOLS = [MCP_LIST_TOOLS_TOOL, MCP_CALL_TOOL] as const
+
 export const ENTERPRISE_WRITE_TOOLS = [
   ...ENTERPRISE_DRIVE_WRITE_TOOLS,
   ...ENTERPRISE_GMAIL_WRITE_TOOLS,
@@ -87,6 +92,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_HTTP_TOOLS,
   ...ENTERPRISE_KB_TOOLS,
   ...ENTERPRISE_SANDBOX_TOOLS,
+  ...ENTERPRISE_MCP_TOOLS,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -97,6 +103,7 @@ export type EnterpriseHttpWriteTool = (typeof ENTERPRISE_HTTP_WRITE_TOOLS)[numbe
 export type EnterpriseHttpTool = (typeof ENTERPRISE_HTTP_TOOLS)[number]
 export type EnterpriseKbTool = (typeof ENTERPRISE_KB_TOOLS)[number]
 export type EnterpriseSandboxTool = (typeof ENTERPRISE_SANDBOX_TOOLS)[number]
+export type EnterpriseMcpTool = (typeof ENTERPRISE_MCP_TOOLS)[number]
 export type EnterpriseWriteTool = (typeof ENTERPRISE_WRITE_TOOLS)[number]
 export type EnterpriseTool = (typeof ENTERPRISE_TOOLS)[number]
 
@@ -141,6 +148,10 @@ export function isEnterpriseKbTool(toolName: string): toolName is EnterpriseKbTo
 
 export function isEnterpriseSandboxTool(toolName: string): toolName is EnterpriseSandboxTool {
   return ENTERPRISE_SANDBOX_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcpTool {
+  return toolName === MCP_LIST_TOOLS_TOOL || toolName === MCP_CALL_TOOL
 }
 
 export function isEnterpriseWriteTool(toolName: string): toolName is EnterpriseWriteTool {
@@ -619,7 +630,46 @@ export function schemaForEnterpriseSandboxTool(_toolName: EnterpriseSandboxTool)
   return sandboxRunInputSchema
 }
 
+const optionalMcpConnectorId = z
+  .string()
+  .uuid()
+  .optional()
+  .describe('MCP connector id from mcp_list_tools (connectors[].connectorId). Required when several MCP servers are bound.')
+
+export const mcpListToolsInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    connectorId: optionalMcpConnectorId,
+    connectorName: optionalConnectorName,
+    query: z.string().max(200).optional().describe('Filter tools by name or description substring.'),
+  })
+  .passthrough()
+
+export const mcpCallInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    connectorId: optionalMcpConnectorId,
+    connectorName: optionalConnectorName,
+    account: optionalLinkedAccount,
+    tool: z.string().min(1).max(200).describe('Tool name exactly as returned by mcp_list_tools.'),
+    arguments: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('Arguments object matching the tool inputSchema from mcp_list_tools.'),
+    idempotencyKey: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Required for tools whose risk is write or danger (they go to human approval).'),
+  })
+  .passthrough()
+
 export function schemaForEnterpriseTool(toolName: string) {
+  if (toolName === MCP_LIST_TOOLS_TOOL) return mcpListToolsInputSchema
+  if (toolName === MCP_CALL_TOOL) return mcpCallInputSchema
   if (isEnterpriseDriveTool(toolName)) return schemaForEnterpriseDriveTool(toolName)
   if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
   if (isEnterpriseSandboxTool(toolName)) return schemaForEnterpriseSandboxTool(toolName)
