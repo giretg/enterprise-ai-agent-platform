@@ -51,6 +51,14 @@ def pycopy_source() -> str:
     return text[start:end]
 
 
+def pybots_source() -> str:
+    text = SCRIPT.read_text(encoding="utf-8")
+    marker = "<<'PYBOTS'\n"
+    start = text.index(marker) + len(marker)
+    end = text.index("\nPYBOTS\n", start)
+    return text[start:end]
+
+
 def assert_copy_survives_unreadable_source() -> None:
     """sudo mktemp a root tempjébe (0700) tesz. setuid után a user onnan nem tud olvasni."""
     import pwd
@@ -85,8 +93,45 @@ def assert_copy_survives_unreadable_source() -> None:
                 os.chmod(src, 0o755)
 
 
+def assert_pybots_loads_token_before_setuid() -> None:
+    """A PYBOTS betölti az exc_token.py-t setuid előtt, mert a script_dir 0700."""
+    import pwd
+
+    user = pwd.getpwuid(os.getuid()).pw_name
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        script_dir = root / "installer"
+        script_dir.mkdir()
+        (script_dir / "exc_token.py").write_text(
+            "def share_all_mcp_tokens(_home):\n    pass\n", encoding="utf-8"
+        )
+        pkg_path = root / "floor.json"
+        pkg_path.write_text(json.dumps({"bots": []}), encoding="utf-8")
+        home = root / "home"
+        home.mkdir()
+        prelude = (
+            "import os, sys\n"
+            "def _lock(_uid):\n"
+            "    os.chmod(sys.argv[4], 0)\n"
+            "os.setuid = _lock\n"
+            "os.setgid = lambda _gid: None\n"
+            "os.initgroups = lambda _user, _gid: None\n"
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", prelude + pybots_source(), str(pkg_path), str(home), user, str(script_dir)],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+        finally:
+            if script_dir.exists():
+                os.chmod(script_dir, 0o755)
+
+
 def main() -> None:
     assert_copy_survives_unreadable_source()
+    assert_pybots_loads_token_before_setuid()
     with tempfile.TemporaryDirectory() as tmp:
         blob = Path(tmp) / "floor.json"
         blob.write_text(json.dumps(PKG), encoding="utf-8")

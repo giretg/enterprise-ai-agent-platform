@@ -167,6 +167,11 @@ if not isinstance(bots, list):
     raise ValueError("Hibás bots lista")
 SAFE_PROFILE = re.compile(r"^exc-[a-z0-9][a-z0-9-]{0,54}$")
 SAFE_FILES = ("SOUL.md", "profile.yaml", "config.yaml", "distribution.yaml")
+# A modult rootként töltjük be, mielőtt jogot dobunk: a script_dir a sudo
+# temp könyvtára (0700), amit a user nem olvashat.
+spec = importlib.util.spec_from_file_location("exc_token_install", os.path.join(script_dir, "exc_token.py"))
+exc_token = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(exc_token)
 if user:
     account = pwd.getpwnam(user)
     os.initgroups(user, account.pw_gid)
@@ -204,9 +209,6 @@ for bot in bots:
         if leftover.exists():
             shutil.rmtree(leftover)
 # A Bot az azonos MCP-URL-ű default belépőt kapja; név szerint a default `excellence` más tenanté lehet.
-spec = importlib.util.spec_from_file_location("exc_token_install", os.path.join(script_dir, "exc_token.py"))
-exc_token = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(exc_token)
 exc_token.share_all_mcp_tokens(str(pathlib.Path(home) / ".hermes"))
 PYBOTS
   copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard" "$TARGET_USER"
