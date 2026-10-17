@@ -277,7 +277,7 @@ async function main() {
     const again = setup({ capabilities: caps, scripts: [completion({ content: 'a' })], enabled: [{ provider: 'ollama', model: 'llama' }] })
     await again.call({ messages: [user('TAJ: 123-456-789')] })
     await again.call({ messages: [user('TAJ: 123-456-789'), { role: 'assistant', content: 'a' }, user('és?')] }).catch(() => null)
-    assert.ok(again.urls.every((u) => u.startsWith('https://ollama.test')))
+    assert.ok(again.urls.every((u) => new URL(u).hostname === 'ollama.test'))
   })
 
   console.log('Prompt-cache stabilitás (K10, inkrementális szűrés)')
