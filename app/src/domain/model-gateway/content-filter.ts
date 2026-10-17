@@ -1,8 +1,9 @@
 /**
  * Model Gateway tartalomszűrő (#746 V1-4, #747 teljes port) — a #769 proxy `filterRequest`/`transformResponse` horgai.
  *
- * Üzemmód (`content_filter.mode`, tenant → user → agent-plafon): `off` = nem nézzük át; `observe` = felismer és
- * naplóz, de semmit nem módosít; `enforce` = kategóriánként `block / local_only / tokenize / warn / off`.
+ * Üzemmód (`content_filter.mode`, tenant → user → agent-plafon): `off` = nem nézzük át (kivéve titkos kulcs,
+ * az mindig blokk); `observe` = felismer és naplóz, de semmit nem módosít és nem blokkol; `enforce` =
+ * kategóriánként `block / local_only / tokenize / warn / off`.
  *
  * 1. Felismerés slotonként (system/user/assistant/tool üzenet, tool-argumentum): nincs üzenethatáron átnyúló
  *    hamis PAN-találat. Személynév katalógus nélkül ott, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
@@ -278,10 +279,10 @@ export class SlotMemo {
 
 export type FilterPolicy = { mode: ContentFilterMode; level: (category: string) => string }
 
-/** A V1 szerződés getCapabilities nélkül: PAN blokk, e-mail/név álnév, más nem. */
+/** A V1 szerződés getCapabilities nélkül: PAN és titkos kulcs blokk, e-mail/név álnév, más nem. */
 const STANDALONE_POLICY: FilterPolicy = {
   mode: 'enforce',
-  level: (c) => (c === 'pan' ? 'block' : c === 'email' || c === 'person' ? 'tokenize' : 'off'),
+  level: (c) => (c === 'pan' || c === 'secret_key' ? 'block' : c === 'email' || c === 'person' ? 'tokenize' : 'off'),
 }
 
 export function filterPolicyFrom(capabilities: Record<string, string> | undefined): FilterPolicy {
@@ -289,8 +290,8 @@ export function filterPolicyFrom(capabilities: Record<string, string> | undefine
   const mode = capabilities[CONTENT_FILTER_MODE_KEY]
   return {
     mode: mode === 'off' || mode === 'observe' ? mode : 'enforce',
-    // Ismeretlen kategória (nincs a policyben) a legszigorúbb: nem mehet ki felülvizsgálat nélkül.
-    level: (c) => capabilities[`content_filter.${c}`] ?? 'block',
+    // Ismeretlen kategória a legszigorúbb. Titkos kulcs mentett warn/off értéke is block (§7.1/5).
+    level: (c) => (c === 'secret_key' ? 'block' : capabilities[`content_filter.${c}`] ?? 'block'),
   }
 }
 
@@ -318,7 +319,14 @@ export async function filterMessages(input: {
 }): Promise<FilterResult> {
   const { policy } = input
   const messages = structuredClone(input.messages)
-  if (policy.mode === 'off') return { kind: 'send', messages, categories: [], fresh: {}, privateOnly: [] }
+  if (policy.mode === 'off') {
+    for (const slot of collectSlots(messages)) {
+      if (findCandidates(slot.text).some((c) => c.category === 'secret_key')) {
+        return { kind: 'block', category: 'secret_key', message: blockMessage('secret_key'), reason: 'content_filter_block:secret_key' }
+      }
+    }
+    return { kind: 'send', messages, categories: [], fresh: {}, privateOnly: [] }
+  }
 
   const signature = `${policy.mode}|${CONTENT_FILTER_CATEGORIES.map(policy.level).join(',')}`
   const memoKey = (text: string) => input.memo && createHash('sha256').update(`${input.memo.scopeKey}\0${signature}\0${text}`).digest('base64url')
@@ -439,17 +447,22 @@ export function createContentFilterHooks(deps: {
         })
         if (result.kind === 'block') return { block: result.message, reason: result.reason }
         const freshCategories = Object.keys(result.fresh)
-        if (policy.mode === 'observe' && freshCategories.length) {
-          // Csak jelez: a kérés változatlanul megy ki. Érték nem kerül a naplóba, csak a fajta és a darabszám.
-          await audit(ctx, 'client_policy.content_observed', {
-            categories: result.fresh,
-            wouldBlock: freshCategories.filter((c) => policy.level(c) === 'block' || (policy.level(c) === 'tokenize' && NOT_TOKENIZABLE.has(c))),
-          })
+        try {
+          if (policy.mode === 'observe' && freshCategories.length) {
+            // Csak jelez: a kérés változatlanul megy ki. Érték nem kerül a naplóba, csak a fajta és a darabszám.
+            await audit(ctx, 'client_policy.content_observed', {
+              categories: result.fresh,
+              wouldBlock: freshCategories.filter((c) => policy.level(c) === 'block' || (policy.level(c) === 'tokenize' && NOT_TOKENIZABLE.has(c))),
+            })
+          }
+          const warned = policy.mode === 'enforce'
+            ? freshCategories.filter((c) => policy.level(c) === 'warn' || (policy.level(c) === 'off' && RAW_EGRESS_AUDITED.has(c)))
+            : []
+          if (warned.length) await audit(ctx, 'client_policy.content_warning', { categories: warned })
+        } catch (error) {
+          // A naplóhiba a már átengedett kérést nem blokkolhatja (observe soha nem blokkol).
+          logger.error({ event: 'model_gateway.content_audit_failed', error: String(error) }, 'Content-filter audit failed')
         }
-        const warned = policy.mode === 'enforce'
-          ? freshCategories.filter((c) => policy.level(c) === 'warn' || (policy.level(c) === 'off' && RAW_EGRESS_AUDITED.has(c)))
-          : []
-        if (warned.length) await audit(ctx, 'client_policy.content_warning', { categories: warned })
         return {
           body: { ...body, messages: result.messages },
           ...(result.privateOnly.length

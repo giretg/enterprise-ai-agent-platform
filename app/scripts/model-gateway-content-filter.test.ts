@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import { handleChatCompletion, type ModelCallEvent, type ModelGatewayDeps } from '../src/domain/model-gateway/proxy'
 import { createContentFilterHooks, dryRunContentFilter, PAN_BLOCK_MESSAGE, type GatewayValVault } from '../src/domain/model-gateway/content-filter'
 import { SurrogateTakenError, type InsertValInput, type ValVaultRecord } from '../src/domain/privacy/surrogate-vault'
-import { PRESETS, type CapabilityMap } from '../src/domain/client-policy/capabilities'
+import { PRESETS, contentFilterLevels, type CapabilityMap } from '../src/domain/client-policy/capabilities'
+import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type { AuditAppendInput } from '../src/lib/audit/types'
 
 const TENANT = '22222222-2222-4222-8222-222222222222'
@@ -61,7 +62,13 @@ const chunk = (delta: object, finish: string | null = null) => sseData({ id: 'c1
 const streamOf = (text: string, size: number) =>
   new Response(new ReadableStream({ start(c) { for (let i = 0; i < text.length; i += size) c.enqueue(enc.encode(text.slice(i, i + size))); c.close() } }), { status: 200 })
 
-function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<Response | (() => Response)>; capabilities?: CapabilityMap; enabled?: Array<{ provider: string; model: string }> } = {}) {
+function setup(opts: {
+  vault?: ReturnType<typeof memoryVault>
+  scripts?: Array<Response | (() => Response)>
+  capabilities?: CapabilityMap
+  enabled?: Array<{ provider: string; model: string }>
+  auditAppend?: (event: AuditAppendInput) => Promise<void>
+} = {}) {
   const vault = opts.vault ?? memoryVault()
   const calls: Array<Record<string, unknown>> = []
   const urls: string[] = []
@@ -81,7 +88,17 @@ function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<R
     getAllowedModels: async () => null,
     providers: (provider) => ({ baseUrl: `https://${provider}.test/v1`, apiKey: 'sk' }),
     audit: { record: async (e) => void events.push(e) },
-    hooks: createContentFilterHooks({ vault, ...(opts.capabilities ? { getCapabilities: async () => opts.capabilities! } : {}), audit: { append: async (event) => void warnings.push(event) } }),
+    hooks: createContentFilterHooks({
+      vault,
+      ...(opts.capabilities ? { getCapabilities: async () => opts.capabilities! } : {}),
+      audit: {
+        append: async (event) => {
+          if (opts.auditAppend) return opts.auditAppend(event)
+          assertAuditActionRegistered(event.action)
+          warnings.push(event)
+        },
+      },
+    }),
     maxAttempts: 1,
     privateProviders: new Set(['ollama']),
     fetchImpl: (async (url: string, init: RequestInit) => {
@@ -186,6 +203,38 @@ async function main() {
     assert.equal(PRESETS.standard['content_filter.mode'], 'observe')
     assert.equal(PRESETS.bound['content_filter.mode'], 'enforce')
     assert.equal(PRESETS.free['content_filter.mode'], 'off')
+    assert.deepEqual(contentFilterLevels('secret_key'), ['block'])
+  })
+
+  await check('figyelő mód: a naplóhiba nem blokkolja a kérést', async () => {
+    const s = setup({
+      capabilities: { ...PRESETS.bound, 'content_filter.mode': 'observe' },
+      scripts: [completion({ content: 'ok' })],
+      auditAppend: async () => {
+        throw new Error('Unregistered audit action: client_policy.content_observed')
+      },
+    })
+    const data = await (await s.call({ messages: [user('Kártya: 4111 1111 1111 1111')] })).json()
+    assert.equal(s.calls.length, 1)
+    assert.equal(data.choices[0].message.content, 'ok')
+  })
+
+  await check('Szabad preset: e-mail kimegy, titkos kulcs akkor is blokkol', async () => {
+    const s = setup({ capabilities: PRESETS.free, scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user('írj a kiss@x.hu-ra')] })
+    assert.equal(s.calls.length, 1)
+    const secret = setup({ capabilities: PRESETS.free })
+    const data = await (await secret.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })).json()
+    assert.match(data.choices[0].message.content, /titkos kulcsot vagy jelszót/)
+    assert.equal(secret.calls.length, 0)
+  })
+
+  await check('titkos kulcs warn/off is blokkol (kemény invariáns)', async () => {
+    for (const level of ['warn', 'off', 'tokenize', 'block']) {
+      const s = setup({ capabilities: { ...ENFORCE, 'content_filter.secret_key': level } })
+      await s.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })
+      assert.equal(s.calls.length, 0, level)
+    }
   })
 
   console.log('Minden kategória (#747)')

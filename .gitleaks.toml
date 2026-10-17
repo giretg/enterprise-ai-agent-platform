@@ -7,11 +7,12 @@ useDefault = true
 # értékek (AWS dokumentált AKIAIOSFODNN7EXAMPLE példakulcsa, `0123456789...` minták,
 # 4 karakterre csonkolt `MIIE` kulcstörzs) — nem élő hitelesítő adatok.
 #
-# Kizárólag erre a két fájlra szűkítve; minden más útvonal szkennelése változatlan.
+# Kizárólag ezekre a tesztfájlokra szűkítve; minden más útvonal szkennelése változatlan.
 # Ha ide valaha valódi titok kerülne, azt a kód-review-nak kell elkapnia.
 [allowlist]
 description = "Titok-detektor tesztek szintetikus fixture-jei"
 paths = [
   '''app/scripts/memory-content-guard\.test\.ts''',
   '''app/scripts/chat-thinking-trace\.test\.ts''',
+  '''app/scripts/model-gateway-content-filter\.test\.ts''',
 ]
