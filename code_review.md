@@ -1,5 +1,15 @@
 # Enterprise code review log
 
+## 2026-10-17 - Nyilvános üzemkészségi és metrika-végpontok: belső hiba és működési adatok kiszivárgása
+
+- Áttekintett, korábban külön nem naplózott komponens: a **publikus operatív HTTP-határ** — `/api/healthz`, `/api/readyz`, `/api/metrics`, a Clerk-et megkerülő route-lista és proxy, a metrika-regiszter kimenete, a megosztott titok összevetése, a kapcsolódó tesztek és a telepítési környezeti beállítások. A belső logger és az egyes metrikák előállítóinak teljes körű auditja nem része ennek a bejegyzésnek.
+- Rendben talált kontrollok: a liveness olcsó és DB-független; a readiness DB-hibára 503-at ad; beállított scrape-token esetén a metrika-végpont időzítésbiztos összevetést használ. Az operatív route-ok Clerk nélkül elérhetők, hogy az uptime-monitor és a scraper működhessen.
+- **Lelet (közepes, információszivárgás):** DB-hibánál a nyilvános readiness-válasz a nyers kivételszöveget adta vissza. Ez adatbázis- és Prisma-hibarészleteket tett bárki számára lekérdezhetővé, éppen incidens közben.
+- **Lelet (magas, működési adatok kitettsége):** a `/api/metrics` csak akkor kért Bearer-tokent, ha az opcionális `METRICS_TOKEN` be volt állítva. A telepítési konfiguráció nem tartalmazza ezt a titkot; így alapértelmezés szerint bárki olvashatta az agentek, eszközök, hibák és költségjelzők Prometheus-kimenetét.
+- Javítás: a readiness csak az `unready` állapotot adja vissza, a belső hiba a szerveroldali hibakövetésben marad. A metrika-végpont konfiguráció nélkül 503-at, hibás vagy hiányzó Bearer-tokenre 401-et ad; helyes tokennel a korábbi kimenetet adja. Az `.env.example` jelzi a kötelező titkot. Nem került új függőség vagy jogosultsági réteg a rendszerbe.
+- Üzleti hatás: egy külső fél nem láthatja a szolgáltatás belső adatbázishibáját vagy a vállalati AI-használat működési mintáit. Az uptime-monitor továbbra is látja az elérhetőségi státuszt. A Prometheus-scrape üzemeltetőjének `METRICS_TOKEN` titkot kell beállítania és Bearer-fejlécet küldenie; addig a metrikakimenet szándékosan nem érhető el.
+- Ellenőrzés: a két regresszió a javítás előtt elbukott, utána a `health-endpoints` (3/3), `observability` (13/13), `public-routes` (15/15), célzott ESLint, teljes TypeScript és `git diff --check` zöld. A szervernapló saját hozzáférés-kezelése és a több példányra osztott in-process metrikák üzemeltetési ellenőrzése külön feladat.
+
 ## 2026-10-03 - MCP `sandbox_run`: a munkafájl név szerinti behelyezése felülírhatta a pinnelt scriptet
 
 - Áttekintett komponens: a `sandbox_run` **bemeneti** határa — az `inputs` mező validálása, a munkafájl olvasása és a `/work/in/<path>` alá másolás. A 2026-10-01 bejegyzés a kimeneti/átirányítási ágat, a #794 merge pedig a hibakód-leképezést és a Control Plane-feliratot fedte; ez a bejegyzés azt a rést zárja, amit egyik sem ért.
