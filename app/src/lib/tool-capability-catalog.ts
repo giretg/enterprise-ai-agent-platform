@@ -35,6 +35,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
     tools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_get_document', 'kb_ingest'],
   },
   { label: 'Kódfuttatás', tools: ['sandbox_run'] },
+  { label: 'Külső MCP-szerver', tools: ['mcp_list_tools', 'mcp_call'] },
 ]
 
 export const CLOSED_ROLE_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = []

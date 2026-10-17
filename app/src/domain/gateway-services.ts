@@ -59,13 +59,19 @@ import {
 } from '@/domain/project-work/mcp'
 import { findHttpApiEndpoint, parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import { lookup } from 'node:dns/promises'
+import { prisma } from '@/lib/db'
+import { parseMcpCapabilitySet } from '@/domain/connector/mcp-tools'
 
 const platformSettingsService = new PlatformSettingsService(repositories.platformSettings)
 
 const resolveEgressAllowlist = (tenantId: string | null) =>
   platformSettingsService.getEgressAllowlist(tenantId)
 
-const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, resolveEgressAllowlist)
+const connectorGrantService = new ConnectorGrantService(
+  repositories.connectorGrants,
+  resolveEgressAllowlist,
+  () => platformSettingsService.getMcpAllowedHosts(),
+)
 
 const iamService = new IamService(
   repositories.users,
@@ -191,6 +197,19 @@ const projectWorkService = new ProjectWorkService(
 
 const handoffRepository = new PostgresHandoffRepository()
 
+/** #395: az MCP-connector aktív, jóváhagyott eszközlistája (null = nincs aktív verzió → fail-closed). */
+const mcpGateDeps = {
+  async loadMcpActiveTools(input: { connectorId: string; tenantId: string }) {
+    const connector = await prisma.connector.findFirst({
+      where: { id: input.connectorId, tenantId: input.tenantId, type: 'mcp' },
+      select: { activeSpecVersion: { select: { status: true, capabilitySet: true } } },
+    })
+    const active = connector?.activeSpecVersion
+    return active?.status === 'approved' ? parseMcpCapabilitySet(active.capabilitySet) : null
+  },
+  resolveMcpAllowedHosts: () => platformSettingsService.getMcpAllowedHosts(),
+}
+
 function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
 }
@@ -303,6 +322,7 @@ async function startAuthorization(input: {
 
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
   ...sharedToolLookups,
+  ...mcpGateDeps,
   resolveEgressAllowlist,
   operations: repositories.gatewayOperations,
   resolveRequester,
@@ -443,6 +463,7 @@ async function listGatewayOperationHistoryRows(input: {
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
+  ...mcpGateDeps,
   resolveEgressAllowlist,
   audit: repositories.audit,
   startAuthorization,

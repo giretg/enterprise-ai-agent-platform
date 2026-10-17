@@ -159,7 +159,7 @@ async function syncAssignedConnectorCapabilities(
   agentId: string,
   connectorId: string,
   accessMode: 'read' | 'write',
-  connectorType: 'http_api' | 'gmail' | 'google_drive',
+  connectorType: 'http_api' | 'gmail' | 'google_drive' | 'mcp',
 ) {
   const readTools = toolsRequiringConnector(connectorType, 'read')
   const writeTools = toolsRequiringConnector(connectorType, 'write')
@@ -198,7 +198,7 @@ async function syncAssignedConnectorCapabilities(
 
 async function syncConnectorRemovalCapabilities(agentIds: string[]) {
   for (const agentId of agentIds) {
-    for (const type of ['http_api', 'gmail', 'google_drive'] as const) {
+    for (const type of ['http_api', 'gmail', 'google_drive', 'mcp'] as const) {
       const readTools = toolsRequiringConnector(type, 'read')
       const writeTools = toolsRequiringConnector(type, 'write')
       const [anyActive, writeActive] = await Promise.all([
@@ -597,7 +597,12 @@ export async function assignConnectorToAgent(input: {
     })
     if (!connector) return fail('Csak aktivált, tenanton belüli kapcsolat rendelhető agenthez.')
     await services.provisioning.assignConnectorToAgent(parsed, actorOf(user))
-    if (connector.type === 'http_api' || connector.type === 'gmail' || connector.type === 'google_drive') {
+    if (
+      connector.type === 'http_api' ||
+      connector.type === 'gmail' ||
+      connector.type === 'google_drive' ||
+      connector.type === 'mcp'
+    ) {
       await syncAssignedConnectorCapabilities(
         parsed.agentId,
         parsed.connectorId,
@@ -631,7 +636,10 @@ export async function unassignConnectorFromAgent(input: {
     await services.provisioning.unassignConnectorFromAgent(parsed, actorOf(user))
     if (
       connector &&
-      (connector.type === 'http_api' || connector.type === 'gmail' || connector.type === 'google_drive')
+      (connector.type === 'http_api' ||
+        connector.type === 'gmail' ||
+        connector.type === 'google_drive' ||
+        connector.type === 'mcp')
     ) {
       await syncConnectorRemovalCapabilities([parsed.agentId])
     }

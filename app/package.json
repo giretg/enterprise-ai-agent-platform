@@ -169,6 +169,7 @@
     "test:connector-template-icon-map": "tsx scripts/connector-template-icon-map.test.ts",
     "test:sandbox-run": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/sandbox-run.test.ts",
     "test:gmail-mcp-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gmail-mcp-tools.test.ts",
+    "test:mcp-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-connector.test.ts",
     "test:gateway-operation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/gateway-operation.test.ts",
     "test:named-approver": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/named-approver.test.ts",
     "test:audit-log": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audit-log.test.ts",

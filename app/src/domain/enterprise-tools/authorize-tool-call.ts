@@ -277,7 +277,7 @@ export async function authorizeToolCall(
   }
 
   const delegated = connector.authMode === 'user_delegated'
-  if (!delegated && requirement.connectorType !== 'http_api') {
+  if (!delegated && requirement.connectorType !== 'http_api' && requirement.connectorType !== 'mcp') {
     return { allowed: false, reason: 'acting_user_required' }
   }
 

@@ -59,7 +59,7 @@ export class PostgresConnectorRepository implements ConnectorRepository {
       where: {
         tenantId,
         lifecycleState: 'active',
-        type: { in: ['google_drive', 'http_api', 'gmail', 'knowledge_base', 'code_sandbox'] },
+        type: { in: ['google_drive', 'http_api', 'gmail', 'knowledge_base', 'code_sandbox', 'mcp'] },
       },
       orderBy: { name: 'asc' },
     })

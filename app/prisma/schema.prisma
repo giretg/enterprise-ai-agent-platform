@@ -108,6 +108,7 @@ enum ConnectorType {
   gmail
   knowledge_base
   code_sandbox
+  mcp
 }
 
 enum DocumentStatus {

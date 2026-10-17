@@ -86,7 +86,8 @@ export function isAuthorizationLinkReason(reason: string | null | undefined): bo
   return (
     isConnectorGrantNeededReason(reason) ||
     reason === 'google_drive_auth_failed' ||
-    reason === 'gmail_auth_failed'
+    reason === 'gmail_auth_failed' ||
+    reason === 'mcp_auth_failed'
   )
 }
 
