@@ -170,13 +170,27 @@ type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; 
 
 const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
 
+/**
+ * Csak a base64-kódolt (bináris) data-URI törzsét hagyjuk ki a szkennelésből: egy kép/hang/PDF
+ * nyers base64 blobjában a mintáink a `\b` határok miatt gyakorlatilag nem illeszkednek, viszont
+ * a blob nagy, ezért a kihagyás kíméli a futásidőt. A SZÖVEGES `data:text/...,` URI és a prózában
+ * `data:`-vel kezdődő tartalom VISZONT átmegy a szűrőn — abban lehet nyers kártyaszám/e-mail, amit
+ * a `data:`-prefix önmagában nem tehet láthatatlanná a kimenő kérésben.
+ *
+ * ponytail: a SZÁNDÉKOSAN base64-kódolt szöveges adat (pl. `data:text/plain;base64,<PAN base64-je>`)
+ * így is kimarad — a modell vissza tudja fejteni. Gyenge támadó-modell (a user a SAJÁT kártyáját
+ * kódolná be), és a `data:`-összes-kihagyás óta fennálló reziduum, nem e javítás regressziója.
+ * Lezárás, ha kell: a nem-bináris mediatype-os (`text/*`, üres) base64 URI-t dekódolni és szkennelni.
+ */
+const BASE64_DATA_URI_RE = /^data:[^,]*;base64,/i
+
 /** Minden string a `messages`-ben (content, content-részek, tool_calls argumentumok, reasoning…). */
 function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
   if (Array.isArray(value) || (value && typeof value === 'object')) {
     const owner = value as Record<string, unknown> | unknown[]
     for (const [key, child] of Object.entries(owner)) {
       if (typeof child === 'string') {
-        if (!SKIP_KEYS.has(key) && !child.startsWith('data:')) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
+        if (!SKIP_KEYS.has(key) && !BASE64_DATA_URI_RE.test(child)) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
       } else collectSlots(child, out)
     }
   }
