@@ -133,6 +133,15 @@ function sharedDriveParams(extra?: Record<string, string>): Record<string, strin
   }
 }
 
+/**
+ * A modell gyakran sima szót ad `query`-ként („Birtok”), amit a Drive `q` szintaxisként
+ * 400-zal elutasít. Operátor/idézőjel nélküli szöveg → teljes-szöveges keresés.
+ */
+export function driveQueryClause(query: string): string {
+  if (/'|=|<|>|\bcontains\b|\bhas\b/i.test(query)) return `(${query})`
+  return `fullText contains '${query.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+}
+
 export class GoogleDriveApiClient {
   constructor(private accessToken: string) {}
 
@@ -161,7 +170,7 @@ export class GoogleDriveApiClient {
     }
 
     const qParts: string[] = ['trashed = false']
-    if (params.query) qParts.push(`(${params.query})`)
+    if (params.query) qParts.push(driveQueryClause(params.query))
     if (params.nameContains) qParts.push(`name contains '${params.nameContains.replace(/'/g, "\\'")}'`)
     if (params.mimeTypes?.length) {
       const mimeQ = params.mimeTypes.map((m) => `mimeType='${m}'`).join(' or ')
