@@ -1,16 +1,21 @@
 /**
- * Model Gateway tartalomszűrő (#746 V1-4) — a #769 proxy `filterRequest`/`transformResponse` horgainak tartalma.
+ * Model Gateway tartalomszűrő (#746 V1-4, #747 teljes port) — a #769 proxy `filterRequest`/`transformResponse` horgai.
  *
- * 1. PAN → blokk: a teljes kimenő kérésen (system/user/assistant/tool üzenet, tool-argumentum), slotonként
- *    szkennelve (üzenethatáron át nincs hamis PAN-találat). Találatnál nincs provider-hívás (D15).
- * 2. E-mail + személynév → álnév, `hermes_session` hatókörben, bijektíven és stabilan (prompt-cache).
- *    Személynév csak ott ismerhető fel katalógus nélkül, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
- *    a session ezután bárhol, magyar raggal is felismeri (known-value matcher). A teljes katalógus: #747.
- * 3. Visszaállítás a válaszban: lásd response-restorer.ts.
+ * Üzemmód (`content_filter.mode`, tenant → user → agent-plafon): `off` = nem nézzük át; `observe` = felismer és
+ * naplóz, de semmit nem módosít; `enforce` = kategóriánként `block / local_only / tokenize / warn / off`.
  *
- * Fail-closed: ha a vault nem elérhető, a kérés nem megy ki (nyers e-mail nem juthat a modellhez).
+ * 1. Felismerés slotonként (system/user/assistant/tool üzenet, tool-argumentum): nincs üzenethatáron átnyúló
+ *    hamis PAN-találat. Személynév katalógus nélkül ott, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
+ *    a session ezután bárhol, magyar raggal is felismeri (known-value matcher).
+ * 2. `tokenize` → álnév `hermes_session` hatókörben, bijektíven és stabilan; a válaszban visszaáll
+ *    (response-restorer.ts). `local_only` → csak céges (saját üzemeltetésű) modell kaphatja, ha nincs: blokk.
+ * 3. Inkrementális (K10): a már egyszer átengedett slot kimenete memóból jön, így a korábbi üzenetek
+ *    bájtra azonosak maradnak (prompt-cache), akkor is, ha egy nevet a session csak később tanult meg.
+ *    A system prompt (memória, context-fájlok) is szűrt: a bijektív álnév miatt ettől a prefix stabil marad.
+ *
+ * Fail-closed: ha a vault nem elérhető, a kérés nem megy ki.
  */
-import { createHmac, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import { logger } from '@/lib/observability'
 import { findKnownValueMatches } from '@/domain/privacy/known-value-matcher'
 import { applySurrogateReplacements, type SurrogateReplacement } from '@/domain/privacy/apply-replacements'
@@ -32,7 +37,8 @@ import {
 import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
 import type { GatewayCallContext, GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
 import { createRestoreTransform } from '@/domain/model-gateway/response-restorer'
-import { PRIVACY_CATEGORY_ALIASES, type PrivacyPolicyCategory } from '@/domain/privacy/privacy-category-policy'
+import { PRIVACY_CATEGORY_ALIASES } from '@/domain/privacy/privacy-category-policy'
+import { CONTENT_FILTER_CATEGORIES, CONTENT_FILTER_MODE_KEY, type ContentFilterMode } from '@/domain/client-policy/capabilities'
 import { writeAudit, type AuditSink } from '@/lib/audit/types'
 
 /** Az álnév-vault, amit a szűrő használ (Postgres-adapter: `gateway-surrogate-repository.ts`). */
@@ -152,17 +158,36 @@ export class SurrogateSession {
   }
 }
 
-// ── PAN-blokk ───────────────────────────────────────────────────────────────
+// ── Üzenetek ────────────────────────────────────────────────────────────────
 
-const PAN_CATEGORIES = new Set(['pan', 'card_broad'])
+/** Hétköznapi név a blokk-üzenetekhez (tárgyeset). */
+const CATEGORY_LABELS: Record<string, string> = {
+  person: 'személynevet', email: 'e-mail-címet', phone: 'telefonszámot', account: 'bankszámlaszámot',
+  taj: 'TAJ-számot', adoszam: 'adószámot', pan: 'bankkártyaszámot', iban: 'IBAN-számlaszámot',
+  secret_key: 'titkos kulcsot vagy jelszót',
+}
+
+const HISTORY_HINT =
+  'Ha az adat már korábbi üzenetben van, indíts új beszélgetést (/new), mert az előzmény minden kérésnél vele együtt megy.'
 
 export const PAN_BLOCK_MESSAGE =
   'Ezt a kérést nem küldtem el az AI-modellnek: bankkártyaszámot találtam benne. ' +
   'Kártyaszám nem mehet külső AI-modellhez. Töröld ki a számot (vagy írd át, pl. 4111 **** **** 1111), és kérdezd újra. ' +
-  'Ha a szám már korábbi üzenetben van, indíts új beszélgetést (/new), mert az előzmény minden kérésnél vele együtt megy.'
+  HISTORY_HINT
 
 export const PRIVACY_UNAVAILABLE_MESSAGE =
   'Ezt a kérést nem küldtem el az AI-modellnek: a személyes adatok védelme most nem működik. Próbáld újra egy perc múlva; ha marad, szólj a rendszergazdának.'
+
+const labelsOf = (categories: string[]) => categories.map((c) => CATEGORY_LABELS[c] ?? c).join(', ')
+
+export function blockMessage(category: string): string {
+  if (category === 'pan') return PAN_BLOCK_MESSAGE
+  return `Ezt a kérést nem küldtem el az AI-modellnek: ${labelsOf([category])} találtam benne, és a céges adatvédelmi beállítás ezt nem engedi továbbítani. Töröld vagy írd át az adatot, és kérdezd újra. ${HISTORY_HINT}`
+}
+
+export function privateOnlyMessage(categories: string[]): string {
+  return `Ezt a kérést nem küldtem el: ${labelsOf(categories)} találtam benne, amit a céges beállítás szerint csak a cég saját AI-modellje dolgozhat fel, de ilyen modell most nincs beállítva. Töröld vagy írd át az adatot, vagy kérd meg a rendszergazdát, hogy állítson be céges modellt. ${HISTORY_HINT}`
+}
 
 // ── Szöveg-slotok ───────────────────────────────────────────────────────────
 
@@ -184,117 +209,315 @@ function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
 }
 
 export function containsPan(text: string): boolean {
-  return collectSensitivityMatchSpans(text).some((span) => PAN_CATEGORIES.has(span.category))
+  return collectSensitivityMatchSpans(text).some((span) => (PRIVACY_CATEGORY_ALIASES[span.category] ?? span.category) === 'pan')
 }
 
-// ── Tokenizálás ─────────────────────────────────────────────────────────────
+// ── Felismerés ──────────────────────────────────────────────────────────────
 
-type Candidate = { start: number; end: number; entityType: 'email' | 'person'; value: string }
+type Candidate = { start: number; end: number; category: string; value: string }
 
 /** `Kiss János <kiss.janos@x.hu>` / `"Kiss János" <…>`: legalább két nagybetűs szó a `<cím>` előtt. */
 const NAME_BEFORE_EMAIL_RE =
   /((?:^|[\n"',;:(\[]|\\")\s*)(\p{Lu}[\p{L}.'’-]*(?: \p{Lu}[\p{L}.'’-]*){1,3})(?:\\?"|')?\s*<[^<>\s]+@[^<>\s]+>/gu
 
 function findCandidates(text: string): Candidate[] {
-  const found: Candidate[] = collectSensitivityMatchSpans(text)
-    .filter((span) => span.category === 'email')
-    .map((span) => ({ start: span.start, end: span.end, entityType: 'email' as const, value: span.value }))
+  const found: Candidate[] = collectSensitivityMatchSpans(text).map((span) => ({
+    start: span.start, end: span.end, category: PRIVACY_CATEGORY_ALIASES[span.category] ?? span.category, value: span.value,
+  }))
   for (const match of text.matchAll(NAME_BEFORE_EMAIL_RE)) {
     const start = match.index + match[1].length
-    found.push({ start, end: start + match[2].length, entityType: 'person', value: match[2] })
+    found.push({ start, end: start + match[2].length, category: 'person', value: match[2] })
   }
   return found.sort((a, b) => a.start - b.start)
 }
 
-/** Kétlépéses, hogy az eredmény ne függjön az üzenetek sorrendjétől (a név a fejlécben későn is jöhet). */
-async function tokenizeSlots(slots: Slot[], session: SurrogateSession, types: Set<string>): Promise<void> {
-  for (const slot of slots) {
-    for (const candidate of findCandidates(slot.text).filter((c) => types.has(c.entityType))) await session.surrogateFor(candidate.entityType, candidate.value)
+/** A session már ismert nevei a szövegben, ahol nem fednek egy másik találatot (pl. az e-mail-címen belül). */
+function knownNames(text: string, session: SurrogateSession | null, candidates: Candidate[]) {
+  if (!session) return []
+  return findKnownValueMatches(text, session.personReplacements()).filter(
+    (m) => !candidates.some((c) => m.start < c.end && m.end > c.start),
+  )
+}
+
+// ── Inkrementális memó ──────────────────────────────────────────────────────
+
+type MemoEntry = { out: string; categories: string[] }
+
+/**
+ * Slot → szűrt kimenet, (hatókör, policy, szöveg) kulcson. Csak átengedett kérés slotja kerül be.
+ * ponytail: folyamaton belüli, karakterszámra korlátos LRU; több példánynál egy-egy cache-miss lehet
+ * (a másik példány újraszámol). Tartós memó (DB), ha a mért cache-találati arány ezt indokolja.
+ */
+export class SlotMemo {
+  private map = new Map<string, MemoEntry>()
+  private chars = 0
+  constructor(private maxChars = 16_000_000) {}
+
+  get(key: string): MemoEntry | undefined {
+    const entry = this.map.get(key)
+    if (entry) {
+      this.map.delete(key)
+      this.map.set(key, entry)
+    }
+    return entry
   }
-  const known = types.has('person') ? session.personReplacements() : []
+
+  set(key: string, entry: MemoEntry): void {
+    if (this.map.has(key)) return
+    this.map.set(key, entry)
+    this.chars += entry.out.length
+    while (this.chars > this.maxChars && this.map.size > 1) {
+      const [oldest, value] = this.map.entries().next().value!
+      this.map.delete(oldest)
+      this.chars -= value.out.length
+    }
+  }
+}
+
+// ── A szűrő magja (a horgok és a dry-run közös útja) ────────────────────────
+
+export type FilterPolicy = { mode: ContentFilterMode; level: (category: string) => string }
+
+/** A V1 szerződés getCapabilities nélkül: PAN blokk, e-mail/név álnév, más nem. */
+const STANDALONE_POLICY: FilterPolicy = {
+  mode: 'enforce',
+  level: (c) => (c === 'pan' ? 'block' : c === 'email' || c === 'person' ? 'tokenize' : 'off'),
+}
+
+export function filterPolicyFrom(capabilities: Record<string, string> | undefined): FilterPolicy {
+  if (!capabilities) return STANDALONE_POLICY
+  const mode = capabilities[CONTENT_FILTER_MODE_KEY]
+  return {
+    mode: mode === 'off' || mode === 'observe' ? mode : 'enforce',
+    // Ismeretlen kategória (nincs a policyben) a legszigorúbb: nem mehet ki felülvizsgálat nélkül.
+    level: (c) => capabilities[`content_filter.${c}`] ?? 'block',
+  }
+}
+
+const NOT_TOKENIZABLE = new Set(['pan', 'secret_key'])
+
+export type FilterResult =
+  | { kind: 'block'; category: string; message: string; reason: string }
+  | {
+      kind: 'send'
+      messages: unknown
+      /** A kérés (memóval együtt) összes felismert kategóriája. */
+      categories: string[]
+      /** Csak az új (nem memóból jött) slotok kategóriái, darabszámmal — a napló ezekről szól. */
+      fresh: Record<string, number>
+      /** Ezek miatt csak céges modell kaphatja; üres = bármely engedett modell. */
+      privateOnly: string[]
+    }
+
+export async function filterMessages(input: {
+  messages: unknown
+  policy: FilterPolicy
+  /** Lustán: csak ha tényleg kell álnév (a vault-hívás drága és fail-closed). */
+  session: () => Promise<SurrogateSession>
+  memo?: { store: SlotMemo; scopeKey: string }
+}): Promise<FilterResult> {
+  const { policy } = input
+  const messages = structuredClone(input.messages)
+  if (policy.mode === 'off') return { kind: 'send', messages, categories: [], fresh: {}, privateOnly: [] }
+
+  const signature = `${policy.mode}|${CONTENT_FILTER_CATEGORIES.map(policy.level).join(',')}`
+  const memoKey = (text: string) => input.memo && createHash('sha256').update(`${input.memo.scopeKey}\0${signature}\0${text}`).digest('base64url')
+  const slots = collectSlots(messages)
+  const fresh: Array<{ slot: Slot; key: string | undefined; candidates: Candidate[] }> = []
+  const all = new Set<string>()
+  const counts: Record<string, number> = {}
   for (const slot of slots) {
+    const key = memoKey(slot.text)
+    const hit = key ? input.memo!.store.get(key) : undefined
+    if (hit) {
+      hit.categories.forEach((c) => all.add(c))
+      if (hit.out !== slot.text) (slot.owner as Record<string | number, unknown>)[slot.key] = hit.out
+      continue
+    }
     const candidates = findCandidates(slot.text)
-    const own = candidates.filter((c) => types.has(c.entityType))
-    const spans: SurrogateReplacement[] = own.map((c) => ({ start: c.start, end: c.end, surrogate: session.peek(c.entityType, c.value)! }))
-    const bareNames = findKnownValueMatches(slot.text, known).filter(
-      (m) => !candidates.some((c) => m.start < c.end && m.end > c.start),
-    )
-    const replaced = applySurrogateReplacements(slot.text, [...spans, ...bareNames])
-    if (replaced !== slot.text) (slot.owner as Record<string | number, unknown>)[slot.key] = replaced
+    fresh.push({ slot, key, candidates })
+  }
+
+  const enforce = policy.mode === 'enforce'
+  const tokenized = (c: string) => enforce && policy.level(c) === 'tokenize' && !NOT_TOKENIZABLE.has(c)
+  const anyTokenize = fresh.some((f) => f.candidates.some((c) => tokenized(c.category)))
+  // A korábban tanult név fejléc nélkül is felismerendő, ha a név-szűrő aktív.
+  const needSession = anyTokenize || (enforce && policy.level('person') !== 'off' && fresh.length > 0)
+  const session = needSession ? await input.session() : null
+
+  const slotCategories = new Map<Slot, Set<string>>()
+  for (const f of fresh) {
+    const own = new Set(f.candidates.map((c) => c.category))
+    if (knownNames(f.slot.text, session, f.candidates).length) own.add('person')
+    slotCategories.set(f.slot, own)
+    for (const c of own) {
+      all.add(c)
+      counts[c] = (counts[c] ?? 0) + Math.max(1, f.candidates.filter((x) => x.category === c).length)
+    }
+  }
+
+  if (enforce) {
+    for (const c of all) {
+      const level = policy.level(c)
+      // Nem álnevezhető kategóriára a `tokenize` sosem engedheti át a nyers értéket.
+      if (level === 'block' || (level === 'tokenize' && NOT_TOKENIZABLE.has(c))) {
+        return { kind: 'block', category: c, message: blockMessage(c), reason: c === 'pan' ? 'pan_detected' : `content_filter_block:${c}` }
+      }
+    }
+    if (session) {
+      // Kétlépéses, hogy az eredmény ne függjön az üzenetek sorrendjétől (a név a fejlécben későn is jöhet).
+      for (const f of fresh) for (const c of f.candidates) if (tokenized(c.category)) await session.surrogateFor(c.category, c.value)
+      for (const f of fresh) {
+        const spans: SurrogateReplacement[] = f.candidates
+          .filter((c) => tokenized(c.category))
+          .map((c) => ({ start: c.start, end: c.end, surrogate: session.peek(c.category, c.value)! }))
+        const names = tokenized('person') ? knownNames(f.slot.text, session, f.candidates) : []
+        const replaced = applySurrogateReplacements(f.slot.text, [...spans, ...names])
+        if (replaced !== f.slot.text) (f.slot.owner as Record<string | number, unknown>)[f.slot.key] = replaced
+      }
+    }
+  }
+
+  for (const f of fresh) {
+    const out = (f.slot.owner as Record<string | number, unknown>)[f.slot.key] as string
+    if (f.key) input.memo!.store.set(f.key, { out, categories: [...slotCategories.get(f.slot)!] })
+  }
+  const categories = [...all]
+  return {
+    kind: 'send',
+    messages,
+    categories,
+    fresh: counts,
+    privateOnly: enforce ? categories.filter((c) => policy.level(c) === 'local_only') : [],
   }
 }
 
 // ── Horgok ──────────────────────────────────────────────────────────────────
 
+/** A kérésben kimenő nyers kártyaszám/IBAN mindig naplózandó (PR #342). */
+const RAW_EGRESS_AUDITED = new Set(['pan', 'iban'])
+
 export function createContentFilterHooks(deps: {
   vault: GatewayValVault
   getCapabilities?: (ctx: GatewayCallContext) => Promise<Record<string, string>>
   audit?: AuditSink
+  memo?: SlotMemo
 }): Required<Pick<GatewayPipelineHooks, 'filterRequest' | 'transformResponse'>> {
+  const memo = deps.memo ?? new SlotMemo()
   // A kérés session-je a szűrőtől a válasz-visszaállításig ugyanaz az objektum (a ctx azonos).
   const sessions = new WeakMap<GatewayCallContext, Promise<SurrogateSession>>()
+  const sessionIds = new WeakMap<GatewayCallContext, string>()
+  // Header nélkül ne essünk userenkénti „default” vaultba: a sessionök HMAC-tartománya maradjon külön.
+  const sessionIdFor = (ctx: GatewayCallContext) => {
+    let id = sessionIds.get(ctx)
+    if (!id) sessionIds.set(ctx, (id = ctx.sessionId?.trim() || randomUUID()))
+    return id
+  }
   const sessionFor = (ctx: GatewayCallContext) => {
     let session = sessions.get(ctx)
     if (!session) {
-      // Header nélkül ne essünk userenkénti „default” vaultba: a sessionök HMAC-tartománya maradjon külön.
-      const sessionId = ctx.sessionId?.trim() || randomUUID()
-      session = SurrogateSession.load(deps.vault, ctx.tenantId, hermesSessionScope(ctx.userId, sessionId))
+      session = SurrogateSession.load(deps.vault, ctx.tenantId, hermesSessionScope(ctx.userId, sessionIdFor(ctx)))
       sessions.set(ctx, session)
     }
     return session
   }
+  const audit = (ctx: GatewayCallContext, action: string, metadata: Record<string, unknown>) =>
+    writeAudit(deps.audit, {
+      actorType: 'human', actorId: ctx.userId, tenantId: ctx.tenantId,
+      action, targetType: 'agent', targetId: ctx.agentId, policyDecision: 'flagged', metadata,
+    })
 
   return {
     async filterRequest(ctx, body) {
-      const messages = structuredClone(body.messages)
-      const slots = collectSlots(messages)
       try {
-        const capabilities = await deps.getCapabilities?.(ctx)
-        // Without a policy loader retain the original V1 filter contract for standalone callers.
-        const level = (category: string) => capabilities
-          ? capabilities[`content_filter.${category}` as `content_filter.${PrivacyPolicyCategory}`] ?? 'block'
-          : category === 'pan' ? 'block' : ['email', 'person'].includes(category) ? 'tokenize' : 'off'
-        const categories = new Set<string>()
-        for (const slot of slots) {
-          for (const span of collectSensitivityMatchSpans(slot.text)) categories.add(PRIVACY_CATEGORY_ALIASES[span.category] ?? span.category)
-          for (const candidate of findCandidates(slot.text)) categories.add(candidate.entityType)
-        }
-        const blocked = () => [...categories].find((category) => level(category) === 'block'
-          // V1 only has reversible email/person aliases; unsupported tokenization must never leak raw values.
-          || (level(category) === 'tokenize' && !['email', 'person'].includes(category)))
-        const block = (category: string) => ({
-          block: category === 'pan' ? PAN_BLOCK_MESSAGE : 'Ezt a kérést nem küldtem el az AI-modellnek: a céges adatvédelmi beállítás tiltja a benne felismert adat továbbítását. Töröld vagy takard ki az érintett adatot, majd próbáld újra.',
-          reason: category === 'pan' ? 'pan_detected' : `content_filter_block:${category}`,
+        const policy = filterPolicyFrom(await deps.getCapabilities?.(ctx))
+        const result = await filterMessages({
+          messages: body.messages,
+          policy,
+          session: () => sessionFor(ctx),
+          memo: { store: memo, scopeKey: `${ctx.tenantId}\0${ctx.userId}\0${sessionIdFor(ctx)}` },
         })
-        const firstBlocked = blocked()
-        if (firstBlocked) return block(firstBlocked)
-        const types = new Set(['email', 'person'].filter((category) => level(category) === 'tokenize'))
-        // Known names from earlier messages remain governed even when they occur without an email header.
-        const session = types.size || level('person') !== 'off' ? await sessionFor(ctx) : null
-        if (session && level('person') !== 'off' && slots.some((slot) =>
-          findKnownValueMatches(slot.text, session.personReplacements()).some((match) => !findCandidates(slot.text).some((candidate) =>
-            candidate.entityType === 'email' && match.start < candidate.end && match.end > candidate.start)))) categories.add('person')
-        const knownBlocked = blocked()
-        if (knownBlocked) return block(knownBlocked)
-        const warned = [...categories].filter((category) => level(category) === 'warn')
-        if (warned.length) {
-          await writeAudit(deps.audit, {
-            actorType: 'human', actorId: ctx.userId, tenantId: ctx.tenantId,
-            action: 'client_policy.content_warning', targetType: 'agent', targetId: ctx.agentId,
-            policyDecision: 'flagged', metadata: { categories: warned },
+        if (result.kind === 'block') return { block: result.message, reason: result.reason }
+        const freshCategories = Object.keys(result.fresh)
+        if (policy.mode === 'observe' && freshCategories.length) {
+          // Csak jelez: a kérés változatlanul megy ki. Érték nem kerül a naplóba, csak a fajta és a darabszám.
+          await audit(ctx, 'client_policy.content_observed', {
+            categories: result.fresh,
+            wouldBlock: freshCategories.filter((c) => policy.level(c) === 'block' || (policy.level(c) === 'tokenize' && NOT_TOKENIZABLE.has(c))),
           })
         }
-        if (session && types.size) await tokenizeSlots(slots, session, types)
+        const warned = policy.mode === 'enforce'
+          ? freshCategories.filter((c) => policy.level(c) === 'warn' || (policy.level(c) === 'off' && RAW_EGRESS_AUDITED.has(c)))
+          : []
+        if (warned.length) await audit(ctx, 'client_policy.content_warning', { categories: warned })
+        return {
+          body: { ...body, messages: result.messages },
+          ...(result.privateOnly.length
+            ? { requirePrivate: { block: privateOnlyMessage(result.privateOnly), reason: `content_filter_private_only:${result.privateOnly.join(',')}` } }
+            : {}),
+        }
       } catch (error) {
         // Fail-closed, és a hibában sem szerepelhet érték (csak az üzenet).
         logger.error({ event: 'model_gateway.tokenize_failed', error: String(error) }, 'Gateway tokenization failed')
         return { block: PRIVACY_UNAVAILABLE_MESSAGE, reason: 'privacy_unavailable' }
       }
-      return { body: { ...body, messages } }
     },
 
     transformResponse: (ctx) => sessions.has(ctx)
       ? createRestoreTransform({ stream: ctx.stream, session: () => sessionFor(ctx) })
       : new TransformStream<Uint8Array, Uint8Array>(),
   }
+}
+
+// ── Dry-run (admin felület) ─────────────────────────────────────────────────
+
+/** Memória-vault: a próbaszöveg álnevei sehol nem tárolódnak. */
+function ephemeralVault(): GatewayValVault {
+  const rows: ValVaultRecord[] = []
+  return {
+    async list() { return rows },
+    async insert(input) {
+      rows.push({
+        id: String(rows.length), tenantId: input.tenantId, scopeType: input.scope.type, scopeId: input.scope.id,
+        entityType: input.entityType, surrogate: input.surrogate, class: 'val', connectorId: '', sourceId: input.fingerprint,
+        hmac: '', encryptedValue: input.encryptedValue,
+      })
+    },
+  }
+}
+
+export type DryRunResult = {
+  outcome: 'off' | 'observed' | 'sent' | 'private_only' | 'blocked'
+  /** Amit a munkatárs látna (blokk vagy „csak céges modell”). */
+  message: string | null
+  findings: Array<{ category: string; count: number; level: string }>
+  /** Ezt kapná a modell. */
+  modelText: string
+}
+
+/** Egy próbaszöveg útja a szűrőn — ugyanaz a kód, mint élesben, de tárolás és napló nélkül. */
+export async function dryRunContentFilter(tenantId: string, text: string, capabilities: Record<string, string>): Promise<DryRunResult> {
+  const policy = filterPolicyFrom(capabilities)
+  const vault = ephemeralVault()
+  const result = await filterMessages({
+    messages: [{ role: 'user', content: text }],
+    policy,
+    session: () => SurrogateSession.load(vault, tenantId, { type: 'hermes_session', id: `dry-run:${randomUUID()}` }),
+  })
+  if (result.kind === 'block') {
+    const found = findCandidates(text)
+    return { outcome: 'blocked', message: result.message, findings: summarize(found.map((c) => c.category), policy), modelText: '' }
+  }
+  const modelText = (result.messages as Array<{ content: string }>)[0].content
+  const findings = summarize(Object.entries(result.fresh).flatMap(([c, n]) => Array(n).fill(c)), policy)
+  if (policy.mode === 'off') return { outcome: 'off', message: null, findings: [], modelText }
+  if (policy.mode === 'observe') return { outcome: 'observed', message: null, findings, modelText }
+  if (result.privateOnly.length) return { outcome: 'private_only', message: privateOnlyMessage(result.privateOnly), findings, modelText }
+  return { outcome: 'sent', message: null, findings, modelText }
+}
+
+function summarize(categories: string[], policy: FilterPolicy): DryRunResult['findings'] {
+  const counts = new Map<string, number>()
+  for (const c of categories) counts.set(c, (counts.get(c) ?? 0) + 1)
+  return [...counts].map(([category, count]) => ({ category, count, level: policy.level(category) }))
 }

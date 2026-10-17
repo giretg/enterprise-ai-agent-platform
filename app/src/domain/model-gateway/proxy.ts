@@ -115,10 +115,11 @@ export type PipelineBlock = { block: string; reason: string }
  */
 export type GatewayPipelineHooks = {
   gate?: (ctx: GatewayCallContext) => Promise<PipelineBlock | null>
+  /** `requirePrivate`: csak céges (saját üzemeltetésű) providerre mehet; ha nincs ilyen, ez a blokk. */
   filterRequest?: (
     ctx: GatewayCallContext,
     body: Record<string, unknown>,
-  ) => Promise<PipelineBlock | { body: Record<string, unknown> }>
+  ) => Promise<PipelineBlock | { body: Record<string, unknown>; requirePrivate?: PipelineBlock }>
   transformResponse?: (ctx: GatewayCallContext) => TransformStream<Uint8Array, Uint8Array>
 }
 
@@ -137,6 +138,12 @@ export type ModelGatewayDeps = {
   hooks?: GatewayPipelineHooks
   maxAttempts?: number
   fetchImpl?: typeof fetch
+  /** A cég saját üzemeltetésű providerei (`local_only` adat csak ide mehet). Alap: env, vagy `ollama`. */
+  privateProviders?: ReadonlySet<string>
+}
+
+export function privateProvidersFromEnv(env: Record<string, string | undefined> = process.env): ReadonlySet<string> {
+  return new Set((env.MODEL_GATEWAY_PRIVATE_PROVIDERS ?? 'ollama').split(',').map((p) => p.trim()).filter(Boolean))
 }
 
 class ProviderHttpError extends Error {
@@ -360,9 +367,17 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
   const gate = await deps.hooks?.gate?.(ctx)
   if (gate) return blocked(gate.reason, gate.block)
   let clientBody = body
+  let candidates = chain
   const filtered = await deps.hooks?.filterRequest?.(ctx, body)
   if (filtered && 'block' in filtered) return blocked(filtered.reason, filtered.block)
   if (filtered) clientBody = filtered.body
+  if (filtered?.requirePrivate) {
+    const isPrivate = (ref: ModelRef) => (deps.privateProviders ?? privateProvidersFromEnv()).has(ref.provider)
+    candidates = chain.filter(isPrivate)
+    // A láncon kívül is lehet engedett céges modell (pl. csak a tenant listáján szerepel).
+    if (!candidates.length) candidates = userPolicy.enabled.filter(isPrivate).slice(0, deps.maxAttempts ?? fallbackMaxAttemptsFromEnv())
+    if (!candidates.length) return blocked(filtered.requirePrivate.reason, filtered.requirePrivate.block)
+  }
 
   const upstreamFor = (candidate: ModelRef): Record<string, unknown> => {
     const out: Record<string, unknown> = {}
@@ -379,7 +394,7 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
 
   const failed: ModelCallEvent['failedCandidates'] = []
   let lastError: unknown = null
-  for (const candidate of chain) {
+  for (const candidate of candidates) {
     const upstream = upstreamFor(candidate)
     try {
       return await callProvider(deps, request, candidate, upstream, ctx, (outcome, collected) => {

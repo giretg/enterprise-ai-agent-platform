@@ -2018,6 +2018,102 @@
     }
   },
   "ClientPolicy": {
+    "filter": {
+      "title": "Adatvédelmi szűrő",
+      "intro": "Mielőtt a munkatárs kérése az AI-modellhez megy, a céges szerver átnézheti, van-e benne személyes vagy bizalmas adat (pl. kártyaszám, TAJ-szám, e-mail-cím). A szűrő véd, de megnehezíti a munkát: a modell valódi adatok helyett álneveket lát, egyes kéréseket pedig nem küld el. Ezért csak ott kapcsold be, ahol tényleg érzékeny adatokkal dolgoznak (pl. pénzügy, HR, ügyfélszolgálat).",
+      "modeLegend": "Működés",
+      "recommended": "(ajánlott)",
+      "modes": {
+        "off": {
+          "title": "Kikapcsolva",
+          "help": "Nem nézzük át a kéréseket. Semmi nem lassítja a munkát, de nincs adatvédelmi jelzés sem."
+        },
+        "observe": {
+          "title": "Csak figyel",
+          "help": "Minden kérés változatlanul megy ki. Ha érzékeny adatot talál, a naplóba bekerül, hogy milyen fajtát és hányat (magát az adatot nem)."
+        },
+        "enforce": {
+          "title": "Bekapcsolva",
+          "help": "Adatfajtánként álnevet ad, csak céges modellnek engedi, vagy nem küldi el a kérést. Csak indokolt esetben."
+        }
+      },
+      "enforceWarning": "Bekapcsolt szűrőnél a modell álneveket lát (pl. [[PHONE_1]]), a válaszban ezeket visszaírjuk a valódi értékre. Ha egy adatfajta „Letiltja a kérést” beállítású, a munkatárs az adott beszélgetésben nem tud tovább dolgozni, amíg az adatot ki nem törli vagy új beszélgetést nem kezd.",
+      "categoriesTitle": "Mit csináljon az egyes adatfajtákkal?",
+      "categoriesHelp": "A beállítás minden üzenetre vonatkozik: a munkatárs szövegére, a csatolt fájlok tartalmára és az eszközök eredményére is.",
+      "categoriesInactive": "Ezek a beállítások csak bekapcsolt szűrőnél hatnak. „Csak figyel” módban a napló és a próba azt mutatja, mi történne velük.",
+      "limits": "A szűrő ismert mintákat keres. Személynevet csak akkor ismer fel, ha a szövegben e-mail-címmel együtt szerepel (pl. „Kiss János '<'kiss@ceg.hu'>'”); utána a beszélgetésben bárhol, ragozva is. Cégneveket ezen az úton még nem ismer fel.",
+      "levels": {
+        "block": "Letiltja a kérést",
+        "local_only": "Csak céges modell kaphatja",
+        "tokenize": "Álnévvel küldi",
+        "warn": "Átengedi, de naplózza",
+        "off": "Nem foglalkozik vele"
+      },
+      "levelHelp": {
+        "block": "Ha ilyen adat van a kérésben, nem megy ki, és a munkatárs érthető üzenetet kap arról, mit töröljön.",
+        "local_only": "Csak a cég saját üzemeltetésű AI-modellje kaphatja meg. Ha ilyen nincs beállítva, a kérés nem megy ki.",
+        "tokenize": "A modell álnevet lát; a válaszban és az eszközöknek átadott adatokban visszaírjuk a valódi értéket.",
+        "warn": "A kérés változatlanul megy ki, a naplóba bekerül, hogy ilyen adat ment ki.",
+        "off": "Ezt az adatfajtát nem figyeljük. (Kártyaszámnál és IBAN-nál a kimenetel így is naplózódik.)"
+      },
+      "categories": {
+        "person": {
+          "label": "Személynév",
+          "example": "pl. Kiss János"
+        },
+        "email": {
+          "label": "E-mail-cím",
+          "example": "pl. kiss.janos@ceg.hu"
+        },
+        "phone": {
+          "label": "Telefonszám",
+          "example": "pl. +36 30 123 4567"
+        },
+        "account": {
+          "label": "Bankszámlaszám",
+          "example": "pl. 11773016-11111018"
+        },
+        "taj": {
+          "label": "TAJ-szám",
+          "example": "pl. 123-456-789"
+        },
+        "adoszam": {
+          "label": "Adószám",
+          "example": "pl. 12345678-1-23"
+        },
+        "pan": {
+          "label": "Bankkártyaszám",
+          "example": "pl. 4111 1111 1111 1111 (álnév nem adható: nem tárolunk kártyaszámot)"
+        },
+        "iban": {
+          "label": "IBAN",
+          "example": "pl. HU42 1177 3016 1111 1018 0000 0000"
+        },
+        "secret_key": {
+          "label": "Kulcs és jelszó",
+          "example": "pl. api_key: sk-… (a dokumentációs példakulcsokat nem tekintjük titoknak)"
+        }
+      },
+      "tryTitle": "Próbáld ki: mit látna a modell?",
+      "tryHelp": "Illessz be egy mintaszöveget. A fenti, még nem mentett beállításokkal mutatjuk meg, mi történne. A szöveget nem tároljuk és nem naplózzuk.",
+      "tryLabel": "Mintaszöveg",
+      "tryPlaceholder": "pl. Hívd fel Kiss Jánost (kiss.janos@ceg.hu, +36 30 123 4567), a kártyája 4111 1111 1111 1111.",
+      "tryButton": "Mit látna a modell?",
+      "trying": "Ellenőrzés…",
+      "tryFailed": "A próba most nem sikerült. Próbáld újra.",
+      "outcomes": {
+        "off": "A szűrő ki van kapcsolva: a szöveg változatlanul megy a modellhez.",
+        "observed": "Csak figyel: a szöveg változatlanul megy ki, a talált adatfajták a naplóba kerülnek.",
+        "sent": "A kérés kimegy, a felismert adatok helyén álnévvel.",
+        "private_only": "A kérés csak a cég saját AI-modelljéhez mehetne. Ha ilyen nincs beállítva, a munkatárs ezt az üzenetet kapja:",
+        "blocked": "A kérés nem menne ki."
+      },
+      "userSees": "A munkatárs ezt látná:",
+      "nothingFound": "Nem találtunk érzékeny adatot.",
+      "does": "→ {action}",
+      "wouldDo": "bekapcsolva: {action}",
+      "modelSees": "Ezt kapná a modell:"
+    },
     "unclassifiedTitle": "Besorolatlan eszközök",
     "unclassifiedHelp": "Ezeket az eszközöket a Bot használni próbálta, de a céges lista még nem ismeri őket, ezért nem futottak le. Sorold be őket egy képességhez (akkor a beállított szint dönt róluk), vagy tiltsd le véglegesen.",
     "unclassifiedEmpty": "Minden eszköz besorolva. Ha a Bot ismeretlen eszközt próbál használni, itt jelenik meg.",
@@ -2090,6 +2186,7 @@
       "free": "Szabad (fejlesztő)"
     },
     "capabilities": {
+      "content_filter_mode": "Adatvédelmi szűrő",
       "code_execution": "Kódfuttatás",
       "local_files": "Helyi fájlok",
       "browser": "Böngésző és számítógép-kezelés",
@@ -2101,7 +2198,6 @@
       "human_approval": "Emberi jóváhagyás",
       "audit_depth": "Napló részletessége",
       "external_services": "Külső felhős szolgáltatások",
-      "content_filter_company": "Adatvédelem: Cégnév",
       "content_filter_person": "Adatvédelem: Személynév",
       "content_filter_email": "Adatvédelem: E-mail-cím",
       "content_filter_phone": "Adatvédelem: Telefonszám",
@@ -2176,7 +2272,6 @@
       "warn": "A kérés átmehet, az észlelés naplózódik.",
       "off": "Ez a kategóriaszűrő nem korlátozza a kimenő adatot."
     },
-    "filterLimits": "Adatvédelem: az első verzió az ismert mintákat ismeri fel, az e-mailt és az e-mail-fejlécből megismert személynevet képes visszaállíthatóan kitakarni. Más felismert adattípus kitakarás helyett blokkolódik. A cégnév és tetszőleges személynév automatikus felismerése még nincs bekötve.",
     "noFileHelp": "Helyi fájlokat nem olvashat és nem írhat.",
     "noApprovalHelp": "Ez a beállítás nem kér külön jóváhagyást; a többi műveleti korlát érvényes.",
     "noExternalHelp": "A Hermes saját felhős szolgáltatásai (képkészítés, felolvasás, videó, Hermes-fiókkapcsolatok) tiltottak, mert a céges napló és szűrés nélkül vinnének ki adatot."

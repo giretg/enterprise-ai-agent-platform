@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { handleChatCompletion, type ModelCallEvent, type ModelGatewayDeps } from '../src/domain/model-gateway/proxy'
-import { createContentFilterHooks, PAN_BLOCK_MESSAGE, type GatewayValVault } from '../src/domain/model-gateway/content-filter'
+import { createContentFilterHooks, dryRunContentFilter, PAN_BLOCK_MESSAGE, type GatewayValVault } from '../src/domain/model-gateway/content-filter'
 import { SurrogateTakenError, type InsertValInput, type ValVaultRecord } from '../src/domain/privacy/surrogate-vault'
 import { PRESETS, type CapabilityMap } from '../src/domain/client-policy/capabilities'
 import type { AuditAppendInput } from '../src/lib/audit/types'
@@ -13,6 +13,8 @@ const TENANT = '22222222-2222-4222-8222-222222222222'
 const USER = '11111111-1111-4111-8111-111111111111'
 const AGENT = '33333333-3333-4333-8333-333333333333'
 let failures = 0
+/** Szabad preset, de bekapcsolt szűrővel: a kategória-szintek egyenként tesztelhetők. */
+const ENFORCE = { ...PRESETS.free, 'content_filter.mode': 'enforce' } as CapabilityMap
 
 async function check(name: string, fn: () => Promise<void>) {
   try {
@@ -59,9 +61,10 @@ const chunk = (delta: object, finish: string | null = null) => sseData({ id: 'c1
 const streamOf = (text: string, size: number) =>
   new Response(new ReadableStream({ start(c) { for (let i = 0; i < text.length; i += size) c.enqueue(enc.encode(text.slice(i, i + size))); c.close() } }), { status: 200 })
 
-function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<Response | (() => Response)>; capabilities?: CapabilityMap } = {}) {
+function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<Response | (() => Response)>; capabilities?: CapabilityMap; enabled?: Array<{ provider: string; model: string }> } = {}) {
   const vault = opts.vault ?? memoryVault()
   const calls: Array<Record<string, unknown>> = []
+  const urls: string[] = []
   const events: ModelCallEvent[] = []
   const warnings: AuditAppendInput[] = []
   const scripts = [...(opts.scripts ?? [])]
@@ -73,14 +76,16 @@ function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<R
         principal: { userId: USER, tenantId: TENANT, tenantSlug: 'acme', role: 'operator', assumed: false },
       }) as never,
     loadAgentModelConfig: async () => ({ provider: 'openrouter', model: 'vendor/a', fallbackModels: [] }),
-    getTenantPolicy: async () => ({ enabled: [{ provider: 'openrouter', model: 'vendor/a' }] }),
+    getTenantPolicy: async () => ({ enabled: opts.enabled ?? [{ provider: 'openrouter', model: 'vendor/a' }] }),
     getGlobalFallbackChain: async () => [],
     getAllowedModels: async () => null,
-    providers: () => ({ baseUrl: 'https://or.test/v1', apiKey: 'sk' }),
+    providers: (provider) => ({ baseUrl: `https://${provider}.test/v1`, apiKey: 'sk' }),
     audit: { record: async (e) => void events.push(e) },
     hooks: createContentFilterHooks({ vault, ...(opts.capabilities ? { getCapabilities: async () => opts.capabilities! } : {}), audit: { append: async (event) => void warnings.push(event) } }),
     maxAttempts: 1,
-    fetchImpl: (async (_url: string, init: RequestInit) => {
+    privateProviders: new Set(['ollama']),
+    fetchImpl: (async (url: string, init: RequestInit) => {
+      urls.push(url)
       calls.push(JSON.parse(init.body as string))
       const next = scripts.shift()
       if (!next) throw new Error('nincs több szkriptelt válasz')
@@ -99,7 +104,7 @@ function setup(opts: { vault?: ReturnType<typeof memoryVault>; scripts?: Array<R
         body: JSON.stringify(body),
       }),
     )
-  return { call, calls, events, warnings, vault }
+  return { call, calls, events, warnings, vault, urls }
 }
 
 const user = (content: string) => ({ role: 'user', content })
@@ -109,7 +114,7 @@ async function main() {
   console.log('Effektív céges tartalomszűrés')
   await check('email/person szintek: blokk, csak kiválasztott kategória álnevezése, kikapcsolás és tartalommentes audit', async () => {
     const text = 'Kiss János <kiss@example.hu>'
-    const policy = (email: string, person: string) => ({ ...PRESETS.free, 'content_filter.email': email, 'content_filter.person': person })
+    const policy = (email: string, person: string) => ({ ...ENFORCE, 'content_filter.email': email, 'content_filter.person': person })
     for (const category of ['email', 'person']) {
       const capabilities = policy('off', 'off')
       capabilities[`content_filter.${category}` as 'content_filter.email'] = 'block'
@@ -143,18 +148,127 @@ async function main() {
     assert.equal(data.choices[0].message.content, 'válasz')
     assert.equal(s.calls.length, 1)
   })
-  await check('PAN tokenize blokkol, warn auditál, off átenged; más felismert, nem álnevezhető kategória fail-closed', async () => {
+  await check('PAN: érvénytelen tokenize blokkol, warn és off átenged, de mindkettő naplózott (PR #342)', async () => {
     for (const mode of ['block', 'tokenize', 'warn', 'off']) {
-      const s = setup({ capabilities: { ...PRESETS.free, 'content_filter.pan': mode }, scripts: [completion({ content: 'ok' })] })
+      const s = setup({ capabilities: { ...ENFORCE, 'content_filter.pan': mode }, scripts: [completion({ content: 'ok' })] })
       await s.call({ messages: [user('4111 1111 1111 1111')] })
-      assert.equal(s.calls.length, ['block', 'tokenize'].includes(mode) ? 0 : 1)
-      assert.equal(s.warnings.length, mode === 'warn' ? 1 : 0)
+      assert.equal(s.calls.length, ['block', 'tokenize'].includes(mode) ? 0 : 1, mode)
+      assert.equal(s.warnings.length, ['warn', 'off'].includes(mode) ? 1 : 0, mode)
+      assert.doesNotMatch(JSON.stringify(s.warnings.map((w) => w.metadata)), /4111/)
     }
-    const tax = setup({ capabilities: { ...PRESETS.free, 'content_filter.adoszam': 'tokenize' } })
-    await tax.call({ messages: [user('Adószám: 12345678-2-42')] })
-    assert.equal(tax.calls.length, 0)
-    assert.equal(tax.events[0].outcome, 'blocked')
   })
+
+  console.log('Üzemmód (#747)')
+
+  await check('kikapcsolt üzemmód: a kártyaszám is változatlanul megy, nincs vault és nincs napló', async () => {
+    const vault = memoryVault()
+    vault.list = async () => { throw new Error('vault must not be used') }
+    const s = setup({ vault, capabilities: { ...PRESETS.bound, 'content_filter.mode': 'off' }, scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user('4111 1111 1111 1111 és a@x.hu')] })
+    assert.equal(JSON.parse(sentTo(s.calls))[0].content, '4111 1111 1111 1111 és a@x.hu')
+    assert.equal(s.warnings.length, 0)
+  })
+
+  await check('figyelő üzemmód: blokk és csere nélkül megy ki, a napló a fajtát és darabszámot rögzíti, értéket nem; ismételt előzmény nem naplóz újra', async () => {
+    const s = setup({ capabilities: { ...PRESETS.bound, 'content_filter.mode': 'observe' }, scripts: [completion({ content: 'a' }), completion({ content: 'b' })] })
+    const first = [user('Kártya: 4111 1111 1111 1111, írj a kiss@x.hu-ra')]
+    await s.call({ messages: first })
+    assert.equal(JSON.parse(sentTo(s.calls))[0].content, first[0].content)
+    assert.equal(s.warnings.length, 1)
+    assert.equal(s.warnings[0].action, 'client_policy.content_observed')
+    assert.deepEqual(s.warnings[0].metadata, { categories: { pan: 1, email: 1 }, wouldBlock: ['pan'] })
+    assert.doesNotMatch(JSON.stringify(s.warnings.map((w) => w.metadata)), /4111|kiss@x/)
+    await s.call({ messages: [...first, { role: 'assistant', content: 'ok' }, user('köszi')] })
+    assert.equal(s.warnings.length, 1)
+  })
+
+  await check('Standard preset alapból csak figyel; Kötött pálya bekapcsolt szűrő', async () => {
+    assert.equal(PRESETS.standard['content_filter.mode'], 'observe')
+    assert.equal(PRESETS.bound['content_filter.mode'], 'enforce')
+    assert.equal(PRESETS.free['content_filter.mode'], 'off')
+  })
+
+  console.log('Minden kategória (#747)')
+
+  await check('Kötött pálya: telefon, bankszámla, TAJ, adószám, IBAN álnevet kap, a válaszban visszaáll', async () => {
+    const values = ['+36 30 123 4567', '11773016-11111018', '123-456-789', '12345678-1-23', 'HU42117730161111101800000000']
+    const text = `Tel ${values[0]}, számla ${values[1]}, TAJ ${values[2]}, adószám ${values[3]}, IBAN ${values[4]}`
+    const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: '[[PHONE_1]] [[ACCOUNT_1]] [[TAJ_1]] [[ADOSZAM_1]] [[IBAN_1]]' })] })
+    const res = await s.call({ messages: [user(text)] })
+    const sent = sentTo(s.calls)
+    for (const value of values) assert.ok(!sent.includes(value), `kiment: ${value}`)
+    assert.equal((await res.json()).choices[0].message.content, values.join(' '))
+  })
+
+  await check('telefonszám csak álnevet kap, nem blokkol; dokumentációs példakulcs nem blokkol, valódi kulcs igen', async () => {
+    const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user('Hívd: +36 30 123 4567. Példa: X-Api-Key: your_api_key_here')] })
+    assert.equal(s.calls.length, 1)
+    assert.match(sentTo(s.calls), /\[\[PHONE_1\]\].*your_api_key_here/)
+    const secret = setup({ capabilities: PRESETS.bound })
+    const data = await (await secret.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })).json()
+    assert.match(data.choices[0].message.content, /titkos kulcsot vagy jelszót/)
+    assert.equal(secret.calls.length, 0)
+  })
+
+  await check('csak céges modell: ha nincs ilyen, érthető blokk; ha van, csak oda megy (nyersen)', async () => {
+    const caps = { ...ENFORCE, 'content_filter.taj': 'local_only' } as CapabilityMap
+    const none = setup({ capabilities: caps })
+    const data = await (await none.call({ messages: [user('TAJ: 123-456-789')] })).json()
+    assert.match(data.choices[0].message.content, /csak a cég saját AI-modellje/)
+    assert.equal(none.calls.length, 0)
+    const local = setup({
+      capabilities: caps, scripts: [completion({ content: 'ok' })],
+      enabled: [{ provider: 'openrouter', model: 'vendor/a' }, { provider: 'ollama', model: 'llama' }],
+    })
+    await local.call({ messages: [user('TAJ: 123-456-789')] })
+    assert.deepEqual(local.urls, ['https://ollama.test/v1/chat/completions'])
+    assert.match(sentTo(local.calls), /123-456-789/)
+    // A memóból jövő (korábban átengedett) slot is a céges modellre kényszerít.
+    const again = setup({ capabilities: caps, scripts: [completion({ content: 'a' })], enabled: [{ provider: 'ollama', model: 'llama' }] })
+    await again.call({ messages: [user('TAJ: 123-456-789')] })
+    await again.call({ messages: [user('TAJ: 123-456-789'), { role: 'assistant', content: 'a' }, user('és?')] }).catch(() => null)
+    assert.ok(again.urls.every((u) => u.startsWith('https://ollama.test')))
+  })
+
+  console.log('Prompt-cache stabilitás (K10, inkrementális szűrés)')
+
+  await check('40 kéréses session: minden kérés a korábbi szűrt üzeneteket bájtra azonosan ismétli', async () => {
+    const turns = 40
+    const s = setup({ capabilities: PRESETS.bound, scripts: Array.from({ length: turns }, (_, i) => completion({ content: `válasz ${i}` })) })
+    const history: Array<Record<string, unknown>> = [{ role: 'system', content: 'Memória: a főnök Nagy Péter, +36 1 234 5678.' }]
+    let previous: unknown[] = []
+    for (let i = 0; i < turns; i++) {
+      // A 10. fordulóban tanul meg a session egy nevet, ami korábbi üzenetben fejléc nélkül már szerepelt.
+      history.push(user(i === 10 ? 'From: Nagy Péter <nagy.peter@x.hu>' : `#${i}: hívd a +36 30 111 ${String(1000 + i)} számot, írj a u${i}@x.hu-ra`))
+      await s.call({ messages: history })
+      history.push({ role: 'assistant', content: `válasz ${i}` })
+      const sent = JSON.parse(sentTo(s.calls, i)) as unknown[]
+      assert.deepEqual(sent.slice(0, previous.length), previous, `a(z) ${i}. kérés megváltoztatta az előzményt`)
+      previous = sent
+    }
+    assert.doesNotMatch(sentTo(s.calls, turns - 1), /u39@x\.hu|111 1039/)
+  })
+
+  console.log('Próba (dry-run)')
+
+  await check('dry-run: ugyanaz az út, mint élesben, tárolás nélkül; figyelő és kikapcsolt módban is érthető eredmény', async () => {
+    const text = 'Írj a kiss@x.hu-ra, kártya 4111 1111 1111 1111'
+    const blocked = await dryRunContentFilter(TENANT, text, PRESETS.bound)
+    assert.equal(blocked.outcome, 'blocked')
+    assert.equal(blocked.message, PAN_BLOCK_MESSAGE)
+    assert.deepEqual(blocked.findings.map((f) => [f.category, f.level]).sort(), [['email', 'tokenize'], ['pan', 'block']])
+    const sent = await dryRunContentFilter(TENANT, 'Írj a kiss@x.hu-ra', PRESETS.bound)
+    assert.equal(sent.outcome, 'sent')
+    assert.equal(sent.modelText, 'Írj a [[EMAIL_1]]-ra')
+    const observed = await dryRunContentFilter(TENANT, text, PRESETS.standard)
+    assert.equal(observed.outcome, 'observed')
+    assert.equal(observed.modelText, text)
+    assert.equal(observed.findings.length, 2)
+    const off = await dryRunContentFilter(TENANT, text, PRESETS.free)
+    assert.deepEqual([off.outcome, off.findings, off.modelText], ['off', [], text])
+  })
+
   console.log('PAN-blokk')
 
   await check('PAN-t tartalmazó prompt nem jut a providerig; 200 + érthető asszisztens-üzenet', async () => {
@@ -308,11 +422,22 @@ async function main() {
     }
   })
 
-  await check('legacy ft-pat-2 adószám nem tokenizálódik (kategória-policy #747)', async () => {
+  await check('legacy ft-pat-2 adószám: policy nélkül nem, Kötött pályán álnevet kap (kategória-policy #747)', async () => {
     const text = 'Az adószám: 12345678-1-23, kérem ellenőrizze.'
     const s = setup({ scripts: [completion({ content: 'ok' })] })
     await s.call({ messages: [user(text)] })
     assert.equal(JSON.parse(sentTo(s.calls))[0].content, text)
+    const bound = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+    await bound.call({ messages: [user(text)] })
+    assert.equal(JSON.parse(sentTo(bound.calls))[0].content, 'Az adószám: [[ADOSZAM_1]], kérem ellenőrizze.')
+  })
+
+  await check('hamis pozitív nincs Kötött pályán sem: legacy FALSE_POSITIVE_EVAL_CASES', async () => {
+    for (const text of ['A bevétel növekedése pozitív trendet mutat.', 'Az átlagos rendelés értéke 12 500 forint volt.', 'A jelentés 2026. augusztus 20-án készült.', 'A kérés azonosítója: REQ-2026-0819.', 'A növekedés 15,3%-ot ért el az előző negyedévhez képest.']) {
+      const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+      await s.call({ messages: [user(text)] })
+      assert.equal(JSON.parse(sentTo(s.calls))[0].content, text)
+    }
   })
 
   await check('párhuzamos kérés ütközése: újratölt és a már kiosztott álnevet használja', async () => {

@@ -5,10 +5,37 @@
  * A feloldás (`resolve-effective-policy.ts`) erre az indexre épül (agent-plafon = min).
  * Az audit-mélységnél a „szigorú" a mélyebb audit, ezért ott a lista fordított.
  */
-import { PRIVACY_POLICY_CATEGORIES } from '@/domain/privacy/privacy-category-policy'
+import { PRIVACY_POLICY_CATEGORIES, type PrivacyPolicyCategory } from '@/domain/privacy/privacy-category-policy'
 
-/** Tartalomszűrés kategóriánként: blokkol · kitakar/tokenizál · figyelmeztet · ki. */
-export const CONTENT_FILTER_LEVELS = ['block', 'tokenize', 'warn', 'off'] as const
+/**
+ * Tartalomszűrés (#747). Az üzemmód a főkapcsoló: `off` = nincs átnézés, `observe` = csak naplóz
+ * (semmit nem módosít, nem blokkol), `enforce` = a kategória-szintek érvényesülnek. A szűrés megnehezíti
+ * a munkát (álnevek, elutasított kérések), ezért csak a Kötött pálya preset kapcsolja be.
+ */
+export const CONTENT_FILTER_MODES = ['enforce', 'observe', 'off'] as const
+export type ContentFilterMode = (typeof CONTENT_FILTER_MODES)[number]
+
+/** Kategóriánként, szigorútól a szabadig: blokkol · csak céges modell · álnév · naplóz · ki. */
+export const CONTENT_FILTER_LEVELS = ['block', 'local_only', 'tokenize', 'warn', 'off'] as const
+
+/**
+ * A gateway szövegből ismeri fel ezeket. A cégnév csak a forrásrendszer-katalógusból ismerhető fel,
+ * ami a Hermes-útvonalon még nincs: ponytail: `company` kimarad, amíg a katalógus-szinkron ide nem ér.
+ */
+export const CONTENT_FILTER_CATEGORIES = PRIVACY_POLICY_CATEGORIES.filter(
+  (c): c is Exclude<PrivacyPolicyCategory, 'company'> => c !== 'company',
+)
+export type ContentFilterCategory = (typeof CONTENT_FILTER_CATEGORIES)[number]
+
+/**
+ * Kemény invariánsok (legacy §7.1/5): titkos kulcs nem kaphat álnevet és nem mehet „csak céges modellnek”
+ * sem; kártyaszám nem kerül a vaultba (PCI-hatókör), ezért nincs álneve.
+ */
+export function contentFilterLevels(category: string): readonly string[] {
+  if (category === 'secret_key') return ['block', 'warn', 'off']
+  if (category === 'pan') return ['block', 'local_only', 'warn', 'off']
+  return CONTENT_FILTER_LEVELS
+}
 
 const BASE_CAPABILITY_LEVELS = {
   code_execution: ['denied', 'sandbox_only', 'local_with_approval', 'local_free'],
@@ -27,10 +54,14 @@ const BASE_CAPABILITY_LEVELS = {
 } as const
 
 export type BaseCapabilityKey = keyof typeof BASE_CAPABILITY_LEVELS
-export type ContentFilterKey = `content_filter.${(typeof PRIVACY_POLICY_CATEGORIES)[number]}`
+export const CONTENT_FILTER_MODE_KEY = 'content_filter.mode'
+export type ContentFilterKey = `content_filter.${ContentFilterCategory}` | typeof CONTENT_FILTER_MODE_KEY
 export type CapabilityKey = BaseCapabilityKey | ContentFilterKey
 
-export const CONTENT_FILTER_KEYS = PRIVACY_POLICY_CATEGORIES.map((c) => `content_filter.${c}` as ContentFilterKey)
+export const CONTENT_FILTER_KEYS: readonly ContentFilterKey[] = [
+  CONTENT_FILTER_MODE_KEY,
+  ...CONTENT_FILTER_CATEGORIES.map((c) => `content_filter.${c}` as const),
+]
 
 export const CAPABILITY_KEYS: readonly CapabilityKey[] = [
   ...(Object.keys(BASE_CAPABILITY_LEVELS) as BaseCapabilityKey[]),
@@ -38,8 +69,9 @@ export const CAPABILITY_KEYS: readonly CapabilityKey[] = [
 ]
 
 export function capabilityLevels(key: CapabilityKey): readonly string[] {
+  if (key === CONTENT_FILTER_MODE_KEY) return CONTENT_FILTER_MODES
   return key.startsWith('content_filter.')
-    ? CONTENT_FILTER_LEVELS
+    ? contentFilterLevels(key.slice('content_filter.'.length))
     : BASE_CAPABILITY_LEVELS[key as BaseCapabilityKey]
 }
 
@@ -62,11 +94,16 @@ export const PRESET_LABELS: Record<PresetId, string> = {
   free: 'Szabad (fejlesztő)',
 }
 
-function contentFilter(overrides: Partial<Record<(typeof PRIVACY_POLICY_CATEGORIES)[number], string>>, base: string) {
-  return Object.fromEntries(PRIVACY_POLICY_CATEGORIES.map((c) => [`content_filter.${c}`, overrides[c] ?? base]))
+function contentFilter(mode: ContentFilterMode, overrides: Partial<Record<ContentFilterCategory, string>>, base: string) {
+  return {
+    [CONTENT_FILTER_MODE_KEY]: mode,
+    ...Object.fromEntries(CONTENT_FILTER_CATEGORIES.map((c) => [`content_filter.${c}`, overrides[c] ?? base])),
+  }
 }
 
 const SECRETS_BLOCK = { pan: 'block', iban: 'block', secret_key: 'block' } as const
+/** Ha valaki bekapcsolja: a kártyaszám és a titok nem megy ki, a többi álnevet kap. */
+const FILTER_DEFAULTS = { ...SECRETS_BLOCK, iban: 'tokenize' } as const
 
 export const PRESETS: Record<PresetId, CapabilityMap> = {
   bound: {
@@ -81,7 +118,7 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     human_approval: 'risky',
     audit_depth: 'plus_tool_results',
     external_services: 'denied',
-    ...contentFilter({ ...SECRETS_BLOCK, taj: 'block', adoszam: 'block' }, 'tokenize'),
+    ...contentFilter('enforce', FILTER_DEFAULTS, 'tokenize'),
   } as CapabilityMap,
   standard: {
     code_execution: 'sandbox_only',
@@ -95,7 +132,7 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     human_approval: 'risky',
     audit_depth: 'prompt_and_response',
     external_services: 'denied',
-    ...contentFilter(SECRETS_BLOCK, 'tokenize'),
+    ...contentFilter('observe', FILTER_DEFAULTS, 'tokenize'),
   } as CapabilityMap,
   free: {
     code_execution: 'local_free',
@@ -109,7 +146,8 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     human_approval: 'none',
     audit_depth: 'prompt_and_response',
     external_services: 'allowed',
-    ...contentFilter({ secret_key: 'block' }, 'off'),
+    // Agent-plafonként se szűkítsen: a kategóriák is kikapcsolva.
+    ...contentFilter('off', { secret_key: 'block' }, 'off'),
   } as CapabilityMap,
 }
 
