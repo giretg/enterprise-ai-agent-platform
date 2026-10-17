@@ -71,14 +71,19 @@ function substituteProbePath(path: string): string {
 
 /**
  * A próbahívás célja: az első OLVASÓ (GET) tool, path-paraméterek sandbox placeholderrel
- * helyettesítve; különben a `baseUrl` gyökere.
+ * helyettesítve; különben a `baseUrl` gyökere. Kivétel a GitHub: ott mindig a `/user`
+ * végpont a próba — repo-szűrt (kijelölt repók) connectornál a `/repos/{owner}/{repo}`
+ * placeholder-próba garantáltan 404-et adna (nem létező kamurepo), pedig a token érvényes.
  */
 function pickProbeUrl(config: ConnectorConfig): string {
+  const base = config.baseUrl.replace(/\/+$/, '')
+  if (hostOf(config.baseUrl) === 'api.github.com') {
+    return `${base}/user`
+  }
   const readTool: ProposedTool | undefined = config.proposedTools.find(
     (t) => t.method === 'GET' && t.access === 'read',
   )
   if (readTool) {
-    const base = config.baseUrl.replace(/\/+$/, '')
     const path = substituteProbePath(
       readTool.path.startsWith('/') ? readTool.path : `/${readTool.path}`,
     )
@@ -156,6 +161,18 @@ function authFailureDetail(config: ConnectorConfig, status: number): string {
     default:
       return `${prefix} — ellenőrizd a kulcs formátumát, a \`Bearer\` előtagot és a hitelesítő fejléc nevét.${headerHint}`
   }
+}
+
+/**
+ * CRM-connector (Ostorosbor): az acting user fejléc vagy az acting user e-mail mező
+ * jelenléte azonosítja. Csak ennél értelmes a 404 → "acting user nem található"
+ * jelentés; más connectornál a 404 a próbált végpont hiányát jelenti.
+ */
+function isCrmConnector(config: ConnectorConfig): boolean {
+  return Boolean(
+    config.defaultActingUserEmail?.trim() ||
+      Object.keys(config.requestHeaders ?? {}).some((h) => h.toLowerCase() === 'x-acting-user'),
+  )
 }
 
 function actingUserNotFoundDetail(config: ConnectorConfig): string {
@@ -276,9 +293,17 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       //  - Ha a sandbox VALÓDI (non-prod) tokent küldött:
       //      • 401 → auth-formátum / érvénytelen kulcs / hiányzó fejléc (WP-1/B1)
       //      • 403 → kulcs elfogadva, scope/jog korlátozás (Ostorosbor CRM)
-      //      • 404 → acting user nem található a CRM-ben
+      //      • 404 → CRM-nél acting user nem található; másnál generikus 404
       if (res.status === 404 && token) {
-        return { ok: false, statusCode: 404, detail: actingUserNotFoundDetail(config) }
+        // CRM-nél a 404 az acting user hiányát jelenti; minden más connectornál
+        // a próbált végpont nem érhető el (pl. rossz repó-hozzáférés).
+        return {
+          ok: false,
+          statusCode: 404,
+          detail: isCrmConnector(config)
+            ? actingUserNotFoundDetail(config)
+            : 'a szerver 404-et adott a próbahívásra — a próbált olvasó végpont nem érhető el ezzel a hozzáféréssel; ellenőrizd a megadott végpontokat és jogosultságokat.',
+        }
       }
       if (res.status === 403 && token) {
         return { ok: true, statusCode: 403, detail: 'authenticated_scope_limited' }
