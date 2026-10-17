@@ -11,7 +11,32 @@ import {
   isForbiddenHost,
   isPrivateOrReservedIp,
   matchForbiddenHost,
+  readResponseBodyCapped,
+  readResponseJsonCapped,
+  ResponseTooLargeError,
 } from '../src/domain/net/egress-guard'
+
+/** Streamelő Response, ami `chunkBytes`-onként összesen `totalBytes`-ot ad ki, és
+ *  számolja, hány bájtot KÉRTEK le ténylegesen (bizonyíték: a cap megállítja a streamet). */
+function streamingResponse(totalBytes: number, chunkBytes: number, contentLength?: number) {
+  let sent = 0
+  const counter = { pulled: 0 }
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent >= totalBytes) {
+        controller.close()
+        return
+      }
+      const size = Math.min(chunkBytes, totalBytes - sent)
+      sent += size
+      counter.pulled += size
+      controller.enqueue(new Uint8Array(size).fill(65)) // 'A'
+    },
+  })
+  const headers = new Headers()
+  if (contentLength !== undefined) headers.set('content-length', String(contentLength))
+  return { res: new Response(body, { headers }), counter }
+}
 
 let failures = 0
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -226,6 +251,41 @@ async function main() {
       }),
       ['api.crm.example'],
     )
+  })
+
+  console.log('\n=== Válasz-törzs bájt-plafon (OAuth token OOM-védelem) ===')
+
+  await test('CAP-1 plafon alatti JSON → helyesen parse-olódik', async () => {
+    const res = new Response(JSON.stringify({ access_token: 'abc', expires_in: 3600 }))
+    const data = await readResponseJsonCapped<{ access_token?: string; expires_in?: number }>(res, 1024)
+    assert.equal(data.access_token, 'abc')
+    assert.equal(data.expires_in, 3600)
+  })
+
+  await test('CAP-2 plafon fölötti JSON → fail-closed ResponseTooLargeError', async () => {
+    const { res } = streamingResponse(10_000, 1_000)
+    await assert.rejects(() => readResponseJsonCapped(res, 4_096), (e: unknown) => {
+      assert.ok(e instanceof ResponseTooLargeError)
+      assert.equal((e as ResponseTooLargeError).limitBytes, 4_096)
+      return true
+    })
+  })
+
+  await test('CAP-3 a stream a plafonnál MEGÁLL (nem pufferel mindent a memóriába)', async () => {
+    // 100 MB-ot "hazudik" a végpont, de a plafon 4 KB → legfeljebb egy chunkkal túllépve állunk meg.
+    const { res, counter } = streamingResponse(100_000_000, 8_192)
+    const out = await readResponseBodyCapped(res, 4_096)
+    assert.equal(out.truncated, true)
+    assert.equal(out.text.length, 4_096) // pontosan a plafonnál elvágva
+    assert.ok(counter.pulled < 100_000, `legfeljebb egy-két chunk olvasódott, nem a teljes törzs (pulled=${counter.pulled})`)
+  })
+
+  await test('CAP-4 hazudott content-length nem számít — a stream-cap dönt', async () => {
+    // content-length=10 (kicsinek vallja magát), de a törzs 50 KB → mégis elvágjuk.
+    const { res } = streamingResponse(50_000, 5_000, 10)
+    const out = await readResponseBodyCapped(res, 4_096)
+    assert.equal(out.truncated, true)
+    assert.equal(out.text.length, 4_096)
   })
 
   if (failures > 0) {

@@ -279,3 +279,90 @@ export async function guardEgressUrl(input: EgressGuardInput): Promise<EgressGua
 
   return { ok: true, host, url: parsed.toString() }
 }
+
+/**
+ * Felső határ a vezérlősík-JSON válaszok (OAuth token/userinfo-csere) olvasására.
+ * Ezek a törzsek KB-nagyságrendűek; az 1 MiB bőven elég, de megállítja a rosszindulatú
+ * vagy kompromittált végpont többszáz-MB-os/GB-os válaszát, mielőtt a `res.json()` az
+ * egészet a memóriába pufferelné (OOM a megosztott Cloud Run példányon = több-bérlős kiesés).
+ */
+export const OAUTH_JSON_RESPONSE_CAP_BYTES = 1024 * 1024
+
+/** A kapu-túllépést jelző hiba — a token-olvasó hívóknak fail-closed módon kell elbukniuk. */
+export class ResponseTooLargeError extends Error {
+  constructor(public readonly limitBytes: number) {
+    super(`response body exceeds ${limitBytes}-byte cap`)
+    this.name = 'ResponseTooLargeError'
+  }
+}
+
+/**
+ * A válasz-törzs szöveges olvasása KEMÉNY bájt-plafonnal. A stream-et a plafon
+ * átlépésének pillanatában lezárja, így a feldolgozott memória sosem lépi túl a `maxBytes`-t,
+ * függetlenül a tényleges/hazudott `content-length`-től. Méret miatt SOHA nem dob —
+ * a `truncated` jelzi, hogy a törzs a plafonnál el lett vágva (diagnosztikai olvasáshoz).
+ *
+ * ponytail: ez a bájt-pumpa a harmadik másolata ugyanennek a loopnak (l. spec-sync.ts
+ * `readCapped`, skill-package-fetcher.ts). Azok fail-closed `AbortController`-rel bontják a
+ * socketet és `{ok:false}`-t adnak; ez fail-soft részleges törzzsel. Összevonás útja: ez
+ * legyen a közös pumpa, a két `readCapped` pedig injektált controllerrel burkolja
+ * (truncated → abort). Nem e (biztonsági) kör scope-ja — a blast-radiust szűken tartom.
+ */
+export async function readResponseBodyCapped(
+  res: Response,
+  maxBytes: number = OAUTH_JSON_RESPONSE_CAP_BYTES,
+): Promise<{ text: string; truncated: boolean }> {
+  const reader = res.body?.getReader()
+  if (!reader) {
+    // Nincs streamelhető törzs (pl. test-stub/undici edge): a content-length alapján
+    // elutasítjuk a túl nagy választ, különben a teljes arrayBuffer-t olvassuk.
+    // ponytail: az arrayBuffer-fallback csak azért biztonságos, mert az éles fetch (undici)
+    // MINDIG ad `res.body` streamet → a fenti plafonozott ág fut; ide csak bodyless/stub
+    // válasz jut, aminek nincs pufferelendő törzse. Ha ez változna, itt is streamelni kell.
+    const declared = Number(res.headers.get('content-length') ?? '')
+    if (Number.isFinite(declared) && declared > maxBytes) return { text: '', truncated: true }
+    const buf = new Uint8Array(await res.arrayBuffer())
+    if (buf.byteLength > maxBytes) {
+      return { text: new TextDecoder('utf-8', { fatal: false }).decode(buf.subarray(0, maxBytes)), truncated: true }
+    }
+    return { text: new TextDecoder('utf-8', { fatal: false }).decode(buf), truncated: false }
+  }
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let truncated = false
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    total += value.byteLength
+    if (total > maxBytes) {
+      const keep = value.byteLength - (total - maxBytes)
+      if (keep > 0) chunks.push(value.subarray(0, keep))
+      truncated = true
+      await reader.cancel().catch(() => {})
+      break
+    }
+    chunks.push(value)
+  }
+  const kept = truncated ? maxBytes : total
+  const merged = new Uint8Array(kept)
+  let offset = 0
+  for (const c of chunks) {
+    merged.set(c, offset)
+    offset += c.byteLength
+  }
+  return { text: new TextDecoder('utf-8', { fatal: false }).decode(merged), truncated }
+}
+
+/**
+ * A válasz-törzs JSON-ként, KEMÉNY bájt-plafonnal. A plafon átlépésekor fail-closed
+ * `ResponseTooLargeError`-t dob (a token-csere SOHA ne dolgozzon fel részleges törzset).
+ */
+export async function readResponseJsonCapped<T = unknown>(
+  res: Response,
+  maxBytes: number = OAUTH_JSON_RESPONSE_CAP_BYTES,
+): Promise<T> {
+  const { text, truncated } = await readResponseBodyCapped(res, maxBytes)
+  if (truncated) throw new ResponseTooLargeError(maxBytes)
+  return JSON.parse(text) as T
+}

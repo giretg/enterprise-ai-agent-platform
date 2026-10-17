@@ -7,7 +7,72 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
-## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
+## 2026-10-14 — OAuth token-/userinfo-válasz törzs korlátlan olvasása (OOM) — connector-grant + http_api oauth2
+
+**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb nem-auditált
+OOM-felület a **token-út**. A 10-12 (#854 NAV-dekompresszió) és 10-13 (#878 http_api
+válasz-törzs) kör ugyanazt az OOM-osztályt keményítette, és a ledger **explicit „következő
+kör" residualként** jegyezte a `res.json()` testvér-olvasókat (Secret Manager, OAuth-token)
+kapu nélkül. A kettő közül az **OAuth token-csere/-refresh/-userinfo** a valódi kockázat: a
+`tokenUrl`/`userInfoUrl` **connector-konfigurált, KÜLSŐ** host (nem first-party), és a refresh
+**minden OAuth-connectornél** lefut. A Secret Manager / metadata-token first-party, pinelt,
+korlátos törzs → alacsonyabb, residualként átvezetve.
+
+**Coverage (teljes olvasó-mátrix mindkét OAuth-úton):** `fetchOAuthEndpoint` összes fogyasztója
+`connector-grant-service.ts`-ben (token-csere, refresh, userinfo, `oauthErrorDetail`), és a
+`http-api-client.ts` oauth2 token-refresh (`res.json()`) + hiba-törzs. Mindkét út egress-őrzött
+(SSRF/allowlist/redirect-manual), de a **válasz-törzs olvasása felső határ NÉLKÜL** volt.
+
+### Bizonyított finding (reliability / DoS) — javítva (PR **#882**)
+
+**Korlátlan `await res.json()` / `res.text()` külső, connector-konfigurált token-végponton → OOM.**
+Egy rosszindulatú vagy kompromittált `tokenUrl`/`userInfoUrl` több-100 MB-os/GB-os válasza
+egészében a memóriába pufferelődik → OOM a **megosztott** Cloud Run példányon → **több-bérlős
+kiesés**. Ez a #854/#878 OOM-osztály token-úti testvére; a refresh minden OAuth-connectornél fut.
+- **Hatás:** teljes platform-kiesés (nem egy tenant). **Súlyosság:** közepes-magas (hitelesített
+  konfigurációs felület, de a trigger külső upstream, és a hatás több-bérlős szolgáltatáskiesés).
+
+### Javítás (root-cause, a megosztott határon — egyszer)
+- Új közös `readResponseBodyCapped` / `readResponseJsonCapped` + `ResponseTooLargeError` az
+  `egress-guard` modulban (amit mindkét OAuth-út már importál). A választ **streamként** olvassa,
+  és a **bájt-plafon (1 MiB)** átlépésekor azonnal lezárja (`reader.cancel()`): a feldolgozott
+  memória sosem lépi túl a plafont, a (hamis) `content-length`-től függetlenül. Nincs-törzs ágon
+  `arrayBuffer` + plafon-ellenőrzés.
+- **Token-olvasók fail-closed** (`ResponseTooLargeError` dob) — részleges token SOHA nem kerül
+  feldolgozásra. **Diagnosztikai hiba-olvasás csak elvág**, nem bukik (a hiba-diagnózis best-effort).
+- `connector-grant-service`: token-csere, refresh, userinfo, `oauthErrorDetail` — mind a
+  plafonozott olvasón át. `http-api-client`: oauth2 token-refresh + hiba-törzs ugyanígy.
+
+### Ellenőrzések
+- `test:egress-guard` — 4 új eset (CAP-1..4): plafon alatti JSON helyesen parse-ol; plafon fölött
+  fail-closed `ResponseTooLargeError`; a stream **bizonyítottan megáll** a plafonnál (a lekért
+  bájtokat számoljuk → nem pufferel 100 MB-ot); hamis `content-length` nem számít, a stream-cap dönt.
+  **Zöld.**
+- `test:http-api` **zöld**. `tsc`/`eslint` **tiszta** a módosított fájlokra (a 2 eslint-warning és a
+  `platform-google-oauth` 3 bukása **pre-existing** a `main`-en — ellenőrizve tiszta checkouton).
+- Független `/code-review` (Matt Pocock, 2 párhuzamos axis): **Standards** — 0 hard violation
+  (magyar kommentek + üzleti-hatás keret az AGENTS.md szerint); egyetlen érdemi lelet a
+  **Duplicated Code** (a bájt-pumpa a 3. másolat a `spec-sync`/`skill-package-fetcher`
+  `readCapped` mellett) — nem blokkoló, a fail-closed vs fail-soft eltérés miatt nem vonható
+  össze triviálisan → **`ponytail:` kommenttel rögzített adósság** (összevonási út leírva).
+  **Spec** — **ship**: mind a 4 scoped követelmény teljes, 0 scope-creep, nincs lefedetlen
+  OAuth-olvasó; egy minor védekezési rés (`arrayBuffer`-fallback) **`ponytail:` kommenttel**
+  dokumentálva (élesben elérhetetlen, mert az undici mindig streamel).
+
+### PR
+- **#882** — `fix(oauth): cap external token/userinfo response bodies to prevent OOM`
+  (branch `fix/oauth-token-response-cap`, `origin/main`-ről, külön worktree). Fix + ledger atomikus.
+
+### Residual risk / következő audithoz
+- **🟠 Secret Manager payload-olvasások** (`grant-token-vault.ts:186/217`, `connector-secret-store.ts:117`)
+  és **GCP/Cloud Run metadata-token** (`lib/gcp-metadata-token.ts:73`, `net/cloud-run-auth.ts:16`):
+  first-party, pinelt hostok, korlátos (≤64 KB secret) törzsek → **alacsony** kockázat, de a
+  konzisztenciáért ugyanezzel a helperrel egységesíthetők. Nem e kör (YAGNI a kockázathoz képest).
+- **🟡 `google-drive-api-client.ts:190`** (`files`/`nextPageToken` lista) szintén korlátlan `res.json()`,
+  de a Drive host pinelt/első-fél; kis kockázat, ugyanezzel a helperrel zárható.
+- A plafon (1 MiB) bőven a token-törzs KB-nagyságrendje fölött van; ha egy jövőbeli provider nagyobb
+  userinfo-t ad, a `maxBytes` paraméter emelhető hívás-helyenként.
+
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
 non-idempotens 5xx-retry duplikátumát javította, és a ledger **explicit prioritált
