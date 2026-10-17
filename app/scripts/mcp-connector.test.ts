@@ -291,24 +291,15 @@ async function main() {
     assert.equal(mcpHostAllowed([HOST], 'not-a-url'), false)
   })
   await check('token-csere D8: MCP nem pinel a token-hostjára, visszavont AS-host kiesik', () => {
-    assert.deepEqual(
-      allowlistForOAuthEndpoint({
-        connectorType: 'mcp',
-        url: 'https://auth.example.com/token',
-        tenantAllowlist: [HOST],
-        pinToEndpointHost: false,
-      }),
-      [HOST],
-    )
-    assert.equal(
-      allowlistForOAuthEndpoint({
-        connectorType: 'mcp',
-        url: 'https://auth.example.com/token',
-        tenantAllowlist: [HOST],
-        pinToEndpointHost: false,
-      }).includes('auth.example.com'),
-      false,
-    )
+    const tokenUrl = new URL('https://auth.example.com/token')
+    const tokenHosts = allowlistForOAuthEndpoint({
+      connectorType: 'mcp',
+      url: tokenUrl.href,
+      tenantAllowlist: [HOST],
+      pinToEndpointHost: false,
+    })
+    assert.deepEqual(tokenHosts, [HOST])
+    assert.equal(tokenHosts.some((host) => host === tokenUrl.hostname), false)
   })
   await check('más tenant connectora nem érhető el', async () => {
     const h = harness({ connector: connector({ tenantId: OTHER_TENANT }) })
@@ -498,7 +489,16 @@ async function main() {
           { status: 200, headers: { 'content-type': 'application/json' } },
         )
       }
-      if (href === asMeta || href.includes(`/${asHost}/.well-known/`)) {
+      let host = ''
+      let path = ''
+      try {
+        const parsed = new URL(href)
+        host = parsed.hostname
+        path = parsed.pathname
+      } catch {
+        return new Response('missing', { status: 404 })
+      }
+      if (href === asMeta || (host === asHost && path.startsWith('/.well-known/'))) {
         return new Response(
           JSON.stringify({
             issuer: `https://${asHost}`,
