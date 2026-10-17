@@ -8,7 +8,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
-import { discoverOAuthServerInfo } from '@modelcontextprotocol/sdk/client/auth.js'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
@@ -17,13 +16,19 @@ import {
   deleteConnectorApiKey,
   saveConnectorApiKey,
 } from '@/domain/connector/connector-secret-store'
-import { guardedMcpFetch, mcpListTools, McpClientError, type McpRemoteTool } from '@/domain/connector/mcp-client'
+import {
+  discoverMcpOAuthMetadata,
+  mcpListTools,
+  McpClientError,
+  type McpRemoteTool,
+} from '@/domain/connector/mcp-client'
 import {
   applyMcpToolDecisions,
   diffMcpTools,
   isWriteLikeToolName,
   MCP_SPEC_FORMAT,
   MCP_TOOL_RISKS,
+  mcpHostAllowed,
   mcpResultForModel,
   mcpServerHost,
   mcpToolsHash,
@@ -42,11 +47,11 @@ import { appendAuditInTransaction } from '@/repositories/postgres/audit-reposito
 const httpsUrl = z
   .string()
   .trim()
-  .url('Adj meg egy teljes címet, pl. https://mcp.example.com/mcp')
-  .refine((value) => new URL(value).protocol === 'https:', 'Csak https cím használható.')
+  .url('invalid_url')
+  .refine((value) => new URL(value).protocol === 'https:', 'https_only')
 
 const createSchema = z.object({
-  name: z.string().trim().min(1, 'Adj nevet a kapcsolatnak.').max(120),
+  name: z.string().trim().min(1, 'name_required').max(120),
   serverUrl: httpsUrl,
   authMode: z.enum(['service', 'user_delegated']),
   token: z.string().trim().max(10_000).optional(),
@@ -72,30 +77,34 @@ const asJson = (value: unknown) => value as Prisma.InputJsonValue
 
 const hostSchema = z.object({ host: z.string().trim().min(1).max(253), allowed: z.boolean() })
 
-/** Emberi nyelvű hibák (§6) — a nyers kód a felhasználónak nem mond semmit. */
-function humanMcpError(error: unknown): string {
+/** Hibakód a kliens i18n-jének — a UI fordítja emberi nyelvre. */
+function mcpActionError(error: unknown): string {
   if (error instanceof McpClientError) {
     if (error.code === 'egress_blocked') {
       if (error.detail === 'egress_not_allowlisted' || error.detail === 'mcp_domain_not_allowed') {
-        return 'Ezt a szolgáltatót még nem engedélyezte a platform-adminisztrátor.'
+        return 'mcp_domain_not_allowed'
       }
-      if (error.detail === 'scheme_blocked') return 'Csak https cím használható.'
-      return 'Ez a cím belső hálózatra mutat, ezért nem engedélyezett.'
+      if (error.detail === 'scheme_blocked') return 'https_only'
+      return 'internal_address'
     }
-    if (error.code === 'unauthorized') return 'A szerver nem fogadta el a belépést — ellenőrizd a tokent vagy a fiókot.'
-    if (error.code === 'too_large') return 'A szerver válasza túl nagy.'
-    if (error.code === 'redirect_blocked') return 'A szerver másik címre irányít át — add meg a végleges címet.'
-    return 'A cím nem érhető el, vagy nem MCP-szerver.'
+    if (error.code === 'unauthorized' && error.detail === 'oauth_discovery_failed') {
+      return 'oauth_discovery_failed'
+    }
+    if (error.code === 'unauthorized') return 'unauthorized'
+    if (error.code === 'too_large') return 'too_large'
+    if (error.code === 'redirect_blocked') return 'redirect_blocked'
+    if (error.code === 'timeout') return 'unreachable'
+    return 'unreachable'
   }
-  if (error instanceof z.ZodError) return error.issues[0]?.message ?? 'Hibás adat.'
-  return error instanceof Error ? error.message : 'Ismeretlen hiba.'
+  if (error instanceof z.ZodError) return error.issues[0]?.message ?? 'invalid_input'
+  if (error instanceof Error && /^[a-z][a-z0-9_]+$/.test(error.message)) return error.message
+  return 'unknown'
 }
 
 async function allowedHostsOrFail(serverUrl: string): Promise<{ hosts: string[]; host: string }> {
   const hosts = await services.platformSettings.getMcpAllowedHosts()
-  const host = new URL(serverUrl).hostname.toLowerCase()
-  if (!hosts.includes(host)) throw new McpClientError('egress_blocked', 'mcp_domain_not_allowed')
-  return { hosts, host }
+  if (!mcpHostAllowed(hosts, serverUrl)) throw new McpClientError('egress_blocked', 'mcp_domain_not_allowed')
+  return { hosts, host: new URL(serverUrl).hostname.toLowerCase() }
 }
 
 type ConnectorRow = NonNullable<Awaited<ReturnType<typeof loadConnector>>>
@@ -122,7 +131,7 @@ async function adminAccessToken(connector: ConnectorRow, userId: string): Promis
     connectorId: connector.id,
     userId,
   })
-  if (!grant) throw new Error('Saját fiókos módban előbb lépj be a saját fiókoddal („Belépés” gomb).')
+  if (!grant) throw new Error('login_required')
   return services.connectorGrants.resolveAccessToken({
     connector,
     grantId: grant.id,
@@ -134,7 +143,7 @@ async function adminAccessToken(connector: ConnectorRow, userId: string): Promis
 
 async function fetchRemoteTools(connector: ConnectorRow, userId: string): Promise<McpRemoteTool[]> {
   const config = parseMcpConnectorConfig(connector.config)
-  if (!config) throw new Error('A kapcsolat címe hibás.')
+  if (!config) throw new Error('invalid_config')
   const { host } = await allowedHostsOrFail(config.serverUrl)
   const accessToken =
     connector.authMode === 'user_delegated'
@@ -146,37 +155,26 @@ async function fetchRemoteTools(connector: ConnectorRow, userId: string): Promis
 }
 
 /**
- * D5: az authorization server felderítése (RFC 9728 → RFC 8414) az egress-őr mögött;
- * a metadata-ban szereplő minden hostnak az MCP-allowlistben kell lennie (D10).
+ * D5: az authorization server felderítése (RFC 9728 well-known vagy 401 WWW-Authenticate
+ * → RFC 8414) az egress-őr mögött; a metadata minden hostja a D8 allowlisten (D10).
  */
 async function discoverMcpOAuth(
   serverUrl: string,
   allowedHosts: string[],
   input: { clientId: string; scopes: string[] },
 ): Promise<NonNullable<McpConnectorConfig['oauth']>> {
-  const info = await discoverOAuthServerInfo(serverUrl, {
-    fetchFn: guardedMcpFetch({ serverUrl, allowedHosts }),
-  })
-  const metadata = info.authorizationServerMetadata
-  if (!metadata?.authorization_endpoint || !metadata.token_endpoint) {
-    throw new Error('A szerver nem ad meg bejelentkezési címet (OAuth) — használd a közös céges fiókos módot.')
-  }
-  for (const url of [metadata.authorization_endpoint, metadata.token_endpoint]) {
+  const discovered = await discoverMcpOAuthMetadata(serverUrl, allowedHosts)
+  for (const url of [discovered.authUrl, discovered.tokenUrl]) {
     const parsed = new URL(url)
     if (parsed.protocol !== 'https:' || !allowedHosts.includes(parsed.hostname.toLowerCase())) {
-      throw new Error(
-        `A bejelentkezés a(z) ${parsed.hostname} címen történik, amit a platform-adminisztrátor még nem engedélyezett.`,
-      )
+      throw new Error('oauth_host_not_allowed')
     }
   }
-  const scopes =
-    input.scopes.length > 0 ? input.scopes : (info.resourceMetadata?.scopes_supported ?? []).slice(0, 50)
   return {
-    authUrl: metadata.authorization_endpoint,
-    tokenUrl: metadata.token_endpoint,
-    scopes,
+    authUrl: discovered.authUrl,
+    tokenUrl: discovered.tokenUrl,
+    scopes: input.scopes.length > 0 ? input.scopes : discovered.scopes,
     clientId: input.clientId,
-    // MCP auth-spec: a token csak erre a szerverre szóljon (RFC 8707).
     resource: serverUrl,
   }
 }
@@ -240,7 +238,7 @@ export async function listMcpConnectors() {
       }),
     })
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -262,7 +260,7 @@ export async function createMcpConnector(input: unknown) {
       tools = await mcpListTools({ serverUrl: parsed.serverUrl, allowedHosts: [host], accessToken: secret ?? undefined })
     } else {
       if (!parsed.clientId) {
-        throw new Error('Saját fiókos módhoz add meg a szolgáltatónál regisztrált alkalmazás azonosítóját (client ID).')
+        throw new Error('client_id_required')
       }
       secret = parsed.clientSecret || null
       const scopes = (parsed.scopes ?? '').split(/[\s,]+/).filter(Boolean)
@@ -333,7 +331,7 @@ export async function createMcpConnector(input: unknown) {
     return ok({ connectorId: id, toolCount: tools?.length ?? null })
   } catch (error) {
     if (connectorId && savedSecret) await deleteConnectorApiKey(connectorId).catch(() => {})
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -343,7 +341,7 @@ export async function syncMcpConnector(input: unknown) {
     const ctx = await requireTenantRole('admin')
     const { connectorId } = connectorIdSchema.parse(input)
     const connector = await loadConnector(connectorId, ctx.activeTenantId)
-    if (!connector) return fail('A kapcsolat nem található.')
+    if (!connector) return fail('not_found')
     const tools = await fetchRemoteTools(connector, ctx.user.id)
     const rawHash = mcpToolsHash(tools)
     const latest = connector.specVersions[0]
@@ -410,7 +408,7 @@ export async function syncMcpConnector(input: unknown) {
     })
     return ok({ changed: true, toolCount: tools.length, diff })
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -424,20 +422,18 @@ export async function approveMcpTools(input: unknown) {
     const ctx = await requireTenantRole('admin')
     const parsed = approveSchema.parse(input)
     const connector = await loadConnector(parsed.connectorId, ctx.activeTenantId)
-    if (!connector) return fail('A kapcsolat nem található.')
+    if (!connector) return fail('not_found')
     const version = await prisma.connectorSpecVersion.findFirst({
       where: { id: parsed.versionId, connectorId: connector.id },
     })
     const set = version ? parseMcpCapabilitySet(version.capabilitySet) : null
-    if (!version || !set) return fail('A verzió nem található.')
+    if (!version || !set) return fail('not_found')
     const isActive = connector.activeSpecVersionId === version.id
-    if (!isActive && version.status !== 'proposed') return fail('Ez a verzió már nem hagyható jóvá.')
+    if (!isActive && version.status !== 'proposed') return fail('version_not_approvable')
     const tools = applyMcpToolDecisions(set.tools, parsed.decisions)
     const downgraded = tools.filter((tool) => tool.approved && tool.risk === 'read' && isWriteLikeToolName(tool.name))
     if (downgraded.length > 0 && !parsed.confirmReadDowngrade) {
-      return fail(
-        `Írásra utaló nevű eszközt soroltál olvasónak (${downgraded.map((tool) => tool.name).join(', ')}). Ezek jóváhagyás nélkül futnak — erősítsd meg, ha biztos vagy benne.`,
-      )
+      return fail(`read_downgrade_confirm:${downgraded.map((tool) => tool.name).join(', ')}`)
     }
     await prisma.$transaction(async (tx) => {
       if (!isActive && connector.activeSpecVersionId) {
@@ -480,7 +476,7 @@ export async function approveMcpTools(input: unknown) {
     })
     return ok({ approved: tools.filter((tool) => tool.approved).length })
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -490,15 +486,15 @@ export async function tryMcpTool(input: unknown) {
     const ctx = await requireTenantRole('admin')
     const parsed = trySchema.parse(input)
     const connector = await loadConnector(parsed.connectorId, ctx.activeTenantId)
-    if (!connector) return fail('A kapcsolat nem található.')
+    if (!connector) return fail('not_found')
     const latest = parseMcpCapabilitySet(connector.specVersions[0]?.capabilitySet)
     const tool = latest?.tools.find((entry) => entry.name === parsed.tool)
-    if (!tool) return fail('Ez az eszköz nem szerepel a szerver listájában.')
+    if (!tool) return fail('tool_not_found')
     if (tool.suggestedRisk !== 'read' && !(tool.approved && tool.risk === 'read')) {
-      return fail('Kipróbálni csak olvasó eszközt lehet — ez módosíthat adatot.')
+      return fail('try_read_only')
     }
     const config = parseMcpConnectorConfig(connector.config)
-    if (!config) return fail('A kapcsolat címe hibás.')
+    if (!config) return fail('invalid_config')
     const { hosts } = await allowedHostsOrFail(config.serverUrl)
     const result = await executeMcpTool({
       connector,
@@ -523,7 +519,7 @@ export async function tryMcpTool(input: unknown) {
     })
     return ok(mcpResultForModel(result))
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -532,7 +528,7 @@ export async function archiveMcpConnector(input: unknown) {
     const ctx = await requireTenantRole('admin')
     const { connectorId } = connectorIdSchema.parse(input)
     const connector = await loadConnector(connectorId, ctx.activeTenantId)
-    if (!connector) return fail('A kapcsolat nem található.')
+    if (!connector) return fail('not_found')
     await prisma.$transaction(async (tx) => {
       await tx.connector.update({ where: { id: connectorId }, data: { lifecycleState: 'archived' } })
       await appendAuditInTransaction(tx, {
@@ -552,7 +548,7 @@ export async function archiveMcpConnector(input: unknown) {
     })
     return ok({ archived: true })
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -563,7 +559,7 @@ export async function getMcpAllowedHosts() {
     await requirePlatformRole('platform_operator')
     return ok({ hosts: await services.platformSettings.getMcpAllowedHosts() })
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }
 
@@ -573,11 +569,7 @@ export async function setMcpHostAllowed(input: unknown) {
     const parsed = hostSchema.parse(input)
     const result = await services.platformSettings.setMcpHostAllowed(parsed.host, parsed.allowed, ctx.user.id)
     if (!result.ok) {
-      return fail(
-        result.reason === 'forbidden_host'
-          ? 'Ez a cím belső hálózatra vagy tiltott szolgáltatásra mutat.'
-          : 'Adj meg egy domaint, pl. mcp.example.com (csillag nélkül).',
-      )
+      return fail(result.reason === 'forbidden_host' ? 'forbidden_host' : 'invalid_host')
     }
     await repositories.audit.append({
       actorType: 'human',
@@ -595,6 +587,6 @@ export async function setMcpHostAllowed(input: unknown) {
     })
     return ok({ hosts: result.hosts })
   } catch (error) {
-    return fail(humanMcpError(error))
+    return fail(mcpActionError(error))
   }
 }

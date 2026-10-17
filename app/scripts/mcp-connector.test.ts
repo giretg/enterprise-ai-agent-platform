@@ -22,6 +22,7 @@ import {
   diffMcpTools,
   isWriteLikeToolName,
   MCP_RESULT_MAX_CHARS,
+  mcpHostAllowed,
   mcpResultForModel,
   mcpToolListForModel,
   normalizeMcpTools,
@@ -29,7 +30,14 @@ import {
   type McpCapabilitySet,
   type McpToolEntry,
 } from '../src/domain/connector/mcp-tools'
-import { guardedMcpFetch, mcpCallTool, mcpListTools, McpClientError } from '../src/domain/connector/mcp-client'
+import {
+  discoverMcpOAuthMetadata,
+  guardedMcpFetch,
+  mcpCallTool,
+  mcpListTools,
+  McpClientError,
+} from '../src/domain/connector/mcp-client'
+import { allowlistForOAuthEndpoint } from '../src/domain/net/egress-guard'
 import type { ExecuteMcpToolInput } from '../src/domain/enterprise-tools/handlers/mcp'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 import { ConnectorGrantService } from '../src/domain/connector-grant/connector-grant-service'
@@ -277,6 +285,31 @@ async function main() {
     assert.equal(payload(await call(h, 'search_issues')).code, 'mcp_domain_not_allowed')
     assert.equal(h.executed.length, 0)
   })
+  await check('nem engedélyezett domainre connector nem hozható létre (D8, létrehozás)', () => {
+    assert.equal(mcpHostAllowed([HOST], SERVER_URL), true)
+    assert.equal(mcpHostAllowed(['other.example.com'], SERVER_URL), false)
+    assert.equal(mcpHostAllowed([HOST], 'not-a-url'), false)
+  })
+  await check('token-csere D8: MCP nem pinel a token-hostjára, visszavont AS-host kiesik', () => {
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'mcp',
+        url: 'https://auth.example.com/token',
+        tenantAllowlist: [HOST],
+        pinToEndpointHost: false,
+      }),
+      [HOST],
+    )
+    assert.equal(
+      allowlistForOAuthEndpoint({
+        connectorType: 'mcp',
+        url: 'https://auth.example.com/token',
+        tenantAllowlist: [HOST],
+        pinToEndpointHost: false,
+      }).includes('auth.example.com'),
+      false,
+    )
+  })
   await check('más tenant connectora nem érhető el', async () => {
     const h = harness({ connector: connector({ tenantId: OTHER_TENANT }) })
     assert.equal(payload(await call(h, 'search_issues')).code, 'tenant_isolation')
@@ -446,6 +479,47 @@ async function main() {
   })
 
   console.log('saját fiókos OAuth (D5)')
+  await check('401 WWW-Authenticate resource_metadata felderítés (D5/RFC 9728)', async () => {
+    const prmUrl = `https://${HOST}/oauth-prm`
+    const asHost = 'auth.example.com'
+    const asMeta = `https://${asHost}/.well-known/oauth-authorization-server`
+    const prmField = ['resource', 'metadata'].join('_')
+    const fetchImpl = async (url: string | URL) => {
+      const href = String(url)
+      if (href === SERVER_URL) {
+        return new Response('no', {
+          status: 401,
+          headers: { 'WWW-Authenticate': `Bearer realm="mcp", ${prmField}="${prmUrl}"` },
+        })
+      }
+      if (href === prmUrl) {
+        return new Response(
+          JSON.stringify({ resource: SERVER_URL, authorization_servers: [`https://${asHost}`] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      if (href === asMeta || href.includes(`/${asHost}/.well-known/`)) {
+        return new Response(
+          JSON.stringify({
+            issuer: `https://${asHost}`,
+            authorization_endpoint: `https://${asHost}/authorize`,
+            token_endpoint: `https://${asHost}/token`,
+            response_types_supported: ['code'],
+            code_challenge_methods_supported: ['S256'],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response('missing', { status: 404 })
+    }
+    const discovered = await discoverMcpOAuthMetadata(SERVER_URL, [HOST, asHost], {
+      fetchImpl,
+      resolveHostIps: publicIp,
+    })
+    assert.equal(discovered.authUrl, `https://${asHost}/authorize`)
+    assert.equal(discovered.tokenUrl, `https://${asHost}/token`)
+  })
+
   await check('auth-URL: resource = szerver-cím, scope nélkül is indul, PKCE S256', async () => {
     const service = new ConnectorGrantService({ findActiveGrants: async () => [], findActiveGrant: async () => null } as never)
     const started = await service.startUserAuthorization({

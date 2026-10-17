@@ -1,38 +1,42 @@
 'use client'
 
 import { useState, useTransition } from 'react'
+import { useTranslations } from 'next-intl'
 import { Card } from '@/components/ui/shell'
+import { asTranslate } from '@/i18n/translate'
 import { setMcpHostAllowed } from '@/app/actions/mcp-connectors'
+
+function hostError(t: (key: string) => string, raw: string): string {
+  const translated = t(`mcpHostErrors.${raw}`)
+  return translated === `mcpHostErrors.${raw}` ? t('mcpHostErrors.unknown') : translated
+}
 
 /** #395 D8: mely külső MCP-szolgáltatókhoz köthetnek a cégek connectort. */
 export function McpAllowedHostsPanel({ initial, canEdit }: { initial: string[]; canEdit: boolean }) {
+  const t = asTranslate(useTranslations('ControlPlane.platformSettings'))
   const [hosts, setHosts] = useState(initial)
   const [host, setHost] = useState('')
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
   function change(target: string, allowed: boolean) {
-    if (!allowed && !window.confirm(`Visszavonod: ${target}? Az erre épülő kapcsolatok azonnal leállnak.`)) return
+    if (!allowed && !window.confirm(t('mcpHostsRevokeConfirm', { host: target }))) return
     setError(null)
     startTransition(async () => {
       const res = await setMcpHostAllowed({ host: target, allowed })
       if (res.success) {
         setHosts(res.data.hosts)
         setHost('')
-      } else setError(res.error)
+      } else setError(hostError(t, res.error))
     })
   }
 
   return (
-    <Card title="Engedélyezett MCP-szolgáltatók">
+    <Card title={t('mcpHostsTitle')}>
       <div className="space-y-3">
-        <p className="text-sm text-ink-soft">
-          A cégek csak az itt felsorolt domainekre csatolhatnak külső MCP-szervert. Egy új szolgáltató új adatkimeneti
-          cél — engedélyezés előtt nézd meg, ki üzemelteti. Ha a szolgáltató bejelentkezése más domainen fut (pl.
-          auth.example.com), azt is vedd fel. A visszavonás azonnal leállítja a ráépülő kapcsolatokat.
-        </p>
+        <p className="text-sm text-ink-soft">{t('mcpHostsBody')}</p>
         {hosts.length === 0 ? (
-          <p className="text-sm text-ink-soft">Még nincs engedélyezett szolgáltató.</p>
+          <p className="text-sm text-ink-soft">{t('mcpHostsEmpty')}</p>
         ) : (
           <ul className="space-y-1">
             {hosts.map((item) => (
@@ -40,7 +44,7 @@ export function McpAllowedHostsPanel({ initial, canEdit }: { initial: string[]; 
                 <code>{item}</code>
                 {canEdit ? (
                   <button type="button" className="text-xs text-coral-deep" disabled={pending} onClick={() => change(item, false)}>
-                    Visszavonás
+                    {t('mcpHostsRevoke')}
                   </button>
                 ) : null}
               </li>
@@ -52,7 +56,7 @@ export function McpAllowedHostsPanel({ initial, canEdit }: { initial: string[]; 
             <input
               value={host}
               onChange={(e) => setHost(e.target.value)}
-              placeholder="pl. mcp.example.com"
+              placeholder={t('mcpHostsPlaceholder')}
               className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm"
             />
             <button
@@ -61,11 +65,11 @@ export function McpAllowedHostsPanel({ initial, canEdit }: { initial: string[]; 
               disabled={pending || !host.trim()}
               onClick={() => change(host, true)}
             >
-              Engedélyezés
+              {t('mcpHostsAllow')}
             </button>
           </div>
         ) : (
-          <p className="text-sm text-ink-soft">Szerkeszteni csak superadmin tud.</p>
+          <p className="text-sm text-ink-soft">{t('mcpHostsNeedSuperadmin')}</p>
         )}
         {error ? <p className="text-sm text-coral-deep">{error}</p> : null}
       </div>

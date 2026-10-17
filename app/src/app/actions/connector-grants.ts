@@ -48,7 +48,7 @@ function activeDelegatedConnectorWhere(tenantId: string): Prisma.ConnectorWhereI
     authMode: 'user_delegated',
     lifecycleState: 'active',
     tenantId,
-    type: { in: ['google_drive', 'http_api', 'gmail'] },
+    type: { in: ['google_drive', 'http_api', 'gmail', 'mcp'] },
   }
 }
 

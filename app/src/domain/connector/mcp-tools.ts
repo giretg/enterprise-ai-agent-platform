@@ -237,3 +237,13 @@ export function parseMcpConnectorConfig(config: unknown): McpConnectorConfig | n
 export function mcpServerHost(config: McpConnectorConfig): string {
   return new URL(config.serverUrl).hostname.toLowerCase()
 }
+
+/** Létrehozáskor és hívásonként: a szerver hostja az MCP-allowlisten van-e (D8). */
+export function mcpHostAllowed(allowedHosts: readonly string[], serverUrl: string): boolean {
+  try {
+    const host = new URL(serverUrl).hostname.toLowerCase()
+    return allowedHosts.some((item) => item.toLowerCase() === host)
+  } catch {
+    return false
+  }
+}

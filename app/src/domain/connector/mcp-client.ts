@@ -15,6 +15,7 @@
 import { lookup } from 'node:dns/promises'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { discoverOAuthServerInfo } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
 
@@ -65,6 +66,8 @@ export type McpSessionInput = {
   maxResponseBytes?: number
   /** D9: a szerver kliens felé irányuló kérése (sampling, elicitation, roots…). */
   onServerRequest?: (method: string) => void
+  /** OAuth 401-felderítés: a 401-et visszaadjuk, nem dobjuk (RFC 9728 WWW-Authenticate). */
+  passUnauthorized?: boolean
 }
 
 export const MCP_DEFAULT_TIMEOUT_MS = 30_000
@@ -107,7 +110,10 @@ export function guardedMcpFetch(input: McpSessionInput, deps: McpClientDeps = {}
     if (input.accessToken) headers.set('authorization', `Bearer ${input.accessToken}`)
     const res = await fetchImpl(guard.url, { ...init, headers, redirect: 'manual' })
     if (res.status >= 300 && res.status < 400) throw new McpClientError('redirect_blocked')
-    if (res.status === 401 || res.status === 403) throw new McpClientError('unauthorized', String(res.status))
+    if (res.status === 401 || res.status === 403) {
+      if (!input.passUnauthorized) throw new McpClientError('unauthorized', String(res.status))
+      return res
+    }
     const declared = Number(res.headers.get('content-length') ?? '')
     if (Number.isFinite(declared) && declared > maxBytes) throw new McpClientError('too_large')
     if (!res.body) return res
@@ -199,4 +205,67 @@ export async function mcpCallTool(
       (await client.callTool({ name: input.tool, arguments: input.arguments }, undefined, options)) as McpCallResult,
     deps,
   )
+}
+
+export type McpOAuthDiscovery = {
+  authUrl: string
+  tokenUrl: string
+  scopes: string[]
+}
+
+/**
+ * RFC 9728 → RFC 8414 felderítés az egress-őr mögött (D5/D10).
+ * Előbb a well-known PRM, ha az nem ad végpontot: 401 WWW-Authenticate `resource_metadata`.
+ */
+export async function discoverMcpOAuthMetadata(
+  serverUrl: string,
+  allowedHosts: string[],
+  deps: McpClientDeps = {},
+): Promise<McpOAuthDiscovery> {
+  const fetchFn = guardedMcpFetch({ serverUrl, allowedHosts, passUnauthorized: true }, deps)
+  const fromWellKnown = await oauthInfoToDiscovery(
+    await discoverOAuthServerInfo(serverUrl, { fetchFn }).catch(() => null),
+  )
+  if (fromWellKnown) return fromWellKnown
+
+  const probe = await fetchFn(serverUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+  })
+  const resourceMetadataUrl = resourceMetadataUrlFrom401(probe)
+  if (probe.status !== 401 || !resourceMetadataUrl) {
+    throw new McpClientError('unauthorized', 'oauth_discovery_failed')
+  }
+  const fromHeader = await oauthInfoToDiscovery(
+    await discoverOAuthServerInfo(serverUrl, { fetchFn, resourceMetadataUrl }).catch(() => null),
+  )
+  if (!fromHeader) throw new McpClientError('unauthorized', 'oauth_discovery_failed')
+  return fromHeader
+}
+
+/** RFC 9728: 401 WWW-Authenticate `resource_metadata` URL. */
+function resourceMetadataUrlFrom401(res: Response): URL | undefined {
+  const header = res.headers.get('www-authenticate')
+  if (!header) return undefined
+  const match = /(?:^|[\s,])resource_metadata=(?:"([^"]+)"|([^\s,]+))/i.exec(header)
+  const raw = match?.[1] ?? match?.[2]
+  if (!raw) return undefined
+  try {
+    return new URL(raw)
+  } catch {
+    return undefined
+  }
+}
+
+async function oauthInfoToDiscovery(
+  info: Awaited<ReturnType<typeof discoverOAuthServerInfo>> | null,
+): Promise<McpOAuthDiscovery | null> {
+  const metadata = info?.authorizationServerMetadata
+  if (!metadata?.authorization_endpoint || !metadata.token_endpoint) return null
+  return {
+    authUrl: metadata.authorization_endpoint,
+    tokenUrl: metadata.token_endpoint,
+    scopes: (info?.resourceMetadata?.scopes_supported ?? []).slice(0, 50),
+  }
 }

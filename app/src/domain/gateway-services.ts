@@ -67,7 +67,11 @@ const platformSettingsService = new PlatformSettingsService(repositories.platfor
 const resolveEgressAllowlist = (tenantId: string | null) =>
   platformSettingsService.getEgressAllowlist(tenantId)
 
-const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, resolveEgressAllowlist)
+const connectorGrantService = new ConnectorGrantService(
+  repositories.connectorGrants,
+  resolveEgressAllowlist,
+  () => platformSettingsService.getMcpAllowedHosts(),
+)
 
 const iamService = new IamService(
   repositories.users,
