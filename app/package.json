@@ -284,6 +284,7 @@
     "test:control-plane-panel-store": "tsx scripts/control-plane-panel-store.test.ts",
     "test:system-agent-registry": "tsx scripts/system-agent-registry.test.ts",
     "test:clerk-invitation-membership": "tsx scripts/clerk-invitation-membership.test.ts",
+    "test:iam-token-redeem-escalation": "tsx scripts/iam-token-redeem-escalation.test.ts",
     "test:tenant-management": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-management.test.ts",
     "test:tenant-isolation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-isolation.test.ts",
     "test:self-service-tenant": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/self-service-tenant.test.ts",
