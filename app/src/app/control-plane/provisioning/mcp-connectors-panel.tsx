@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { Card } from '@/components/ui/shell'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
@@ -227,8 +227,20 @@ function ConnectorCard({ row, reload }: { row: ConnectorRow; reload: (text?: str
     if (autoSynced.current) return
     if (!delegated || !row.hasOwnGrant || row.active || row.proposed) return
     autoSynced.current = true
-    sync()
-    // Egy belépés után egyszer: initialize + tools/list (§6/1).
+    let cancelled = false
+    // Belépés után egyszer: initialize + tools/list (§6/1). A setState az await után fut.
+    void syncMcpConnector({ connectorId: row.id }).then((res) => {
+      if (cancelled) return
+      if (!res.success) {
+        setMessage({ tone: 'err', text: actionError(t, res.error) })
+        return
+      }
+      reload(res.data.changed ? t('syncChanged', { count: res.data.toolCount }) : t('syncUnchanged'))
+    })
+    return () => {
+      cancelled = true
+    }
+    // t/reload szándékosan kimarad: a fetch egyszer fusson connectoronként.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [delegated, row.hasOwnGrant, row.active, row.proposed, row.id])
 
@@ -423,12 +435,12 @@ export function McpConnectorsPanel({
     initialError ? { tone: 'err', text: actionError(t, initialError) } : null,
   )
 
-  const reload = useCallback(async (text?: string) => {
+  async function reload(text?: string) {
     const res = await listMcpConnectors()
     if (res.success) setData(res.data as McpConnectorsData)
     else setMessage({ tone: 'err', text: actionError(t, res.error) })
     if (text) setMessage({ tone: 'ok', text })
-  }, [t])
+  }
 
   return (
     <Card title={t('title')}>
