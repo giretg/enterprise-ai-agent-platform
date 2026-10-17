@@ -2018,6 +2018,102 @@
     }
   },
   "ClientPolicy": {
+    "filter": {
+      "title": "Privacy filter",
+      "intro": "Before a request reaches the AI model, the company server can check it for personal or confidential data (card numbers, social security numbers, email addresses). The filter protects data but makes work harder: the model sees placeholders instead of real values and some requests are not sent. Turn it on only where people really handle sensitive data (e.g. finance, HR, customer service).",
+      "modeLegend": "Mode",
+      "recommended": "(recommended)",
+      "modes": {
+        "off": {
+          "title": "Off",
+          "help": "Requests are not checked. Nothing slows down work, but there are no privacy signals either."
+        },
+        "observe": {
+          "title": "Observe only",
+          "help": "Every request goes out unchanged. If sensitive data is found, the log records which kind and how many (never the data itself)."
+        },
+        "enforce": {
+          "title": "On",
+          "help": "Per data type: replaces it with a placeholder, allows company models only, or does not send the request. Use only when justified."
+        }
+      },
+      "enforceWarning": "When the filter is on, the model sees placeholders (e.g. [[PHONE_1]]) which we turn back into the real values in the answer. If a data type is set to “Block the request”, the user cannot continue that conversation until they remove the data or start a new conversation.",
+      "categoriesTitle": "What should happen with each data type?",
+      "categoriesHelp": "Applies to every message: the user's text, attached file content and tool results.",
+      "categoriesInactive": "These settings only take effect when the filter is on. In “Observe only” mode the log and the test show what would happen.",
+      "limits": "The filter looks for known patterns. A person's name is only recognised when it appears together with an email address (e.g. “John Smith '<'john@company.com'>'”), and after that anywhere in the conversation. Company names are not recognised on this path yet.",
+      "levels": {
+        "block": "Block the request",
+        "local_only": "Company model only",
+        "tokenize": "Send with placeholder",
+        "warn": "Allow, but log",
+        "off": "Ignore"
+      },
+      "levelHelp": {
+        "block": "If the request contains this data, it is not sent and the user gets a clear message about what to remove.",
+        "local_only": "Only the company's self-hosted AI model may receive it. If none is configured, the request is not sent.",
+        "tokenize": "The model sees a placeholder; the real value is restored in the answer and in data passed to tools.",
+        "warn": "The request goes out unchanged; the log records that such data was sent.",
+        "off": "This data type is not watched. (Card numbers and IBANs going out are still logged.)"
+      },
+      "categories": {
+        "person": {
+          "label": "Person name",
+          "example": "e.g. John Smith"
+        },
+        "email": {
+          "label": "Email address",
+          "example": "e.g. john.smith@company.com"
+        },
+        "phone": {
+          "label": "Phone number",
+          "example": "e.g. +36 30 123 4567"
+        },
+        "account": {
+          "label": "Bank account number",
+          "example": "e.g. 11773016-11111018"
+        },
+        "taj": {
+          "label": "Social security (TAJ) number",
+          "example": "e.g. 123-456-789"
+        },
+        "adoszam": {
+          "label": "Tax number",
+          "example": "e.g. 12345678-1-23"
+        },
+        "pan": {
+          "label": "Card number",
+          "example": "e.g. 4111 1111 1111 1111 (no placeholder: we never store card numbers)"
+        },
+        "iban": {
+          "label": "IBAN",
+          "example": "e.g. HU42 1177 3016 1111 1018 0000 0000"
+        },
+        "secret_key": {
+          "label": "Keys and passwords",
+          "example": "e.g. api_key: sk-… (documentation example keys are not treated as secrets)"
+        }
+      },
+      "tryTitle": "Try it: what would the model see?",
+      "tryHelp": "Paste a sample text. We show what would happen with the settings above, even unsaved. The text is not stored or logged.",
+      "tryLabel": "Sample text",
+      "tryPlaceholder": "e.g. Call John Smith (john.smith@company.com, +36 30 123 4567), his card is 4111 1111 1111 1111.",
+      "tryButton": "What would the model see?",
+      "trying": "Checking…",
+      "tryFailed": "The test failed. Please try again.",
+      "outcomes": {
+        "off": "The filter is off: the text goes to the model unchanged.",
+        "observed": "Observe only: the text goes out unchanged, the data types found are logged.",
+        "sent": "The request goes out with placeholders in place of the recognised data.",
+        "private_only": "The request could only go to the company's own AI model. If none is configured, the user sees this message:",
+        "blocked": "The request would not be sent."
+      },
+      "userSees": "The user would see:",
+      "nothingFound": "No sensitive data found.",
+      "does": "→ {action}",
+      "wouldDo": "when on: {action}",
+      "modelSees": "The model would receive:"
+    },
     "unclassifiedTitle": "Unclassified tools",
     "unclassifiedHelp": "The Bot tried to use these tools, but the company list does not know them yet, so they did not run. Assign each to a capability (its configured level then decides), or block it permanently.",
     "unclassifiedEmpty": "All tools are classified. If the Bot tries an unknown tool, it will show up here.",
@@ -2090,6 +2186,7 @@
       "free": "Free (developer)"
     },
     "capabilities": {
+      "content_filter_mode": "Privacy filter",
       "code_execution": "Code execution",
       "local_files": "Local files",
       "browser": "Browser and computer use",
@@ -2101,7 +2198,6 @@
       "human_approval": "Human approval",
       "audit_depth": "Audit detail",
       "external_services": "External cloud services",
-      "content_filter_company": "Data protection: Company name",
       "content_filter_person": "Data protection: Person name",
       "content_filter_email": "Data protection: Email address",
       "content_filter_phone": "Data protection: Phone number",
@@ -2176,7 +2272,6 @@
       "warn": "The request may proceed; detection is audited.",
       "off": "This category filter does not restrict outgoing content."
     },
-    "filterLimits": "Data protection: this version detects known patterns and restores email and person names learned from email headers. Other detected types are blocked instead of tokenized. Automatic company-name and arbitrary person-name detection is not connected yet.",
     "noFileHelp": "Local files cannot be read or written.",
     "noApprovalHelp": "This setting requires no additional approval; other operation limits apply.",
     "noExternalHelp": "Hermes's own cloud services (image generation, text to speech, video, Hermes account connections) are blocked because they would send data out without company audit and filtering."

@@ -168,6 +168,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'client_policy.tool_classified',
   'client_policy.user_exception',
   'client_policy.content_warning',
+  // Tartalomszűrő figyelő mód (#747): tiltott/érzékeny adat kimegy, a napló csak fajtát és darabszámot ír.
+  'client_policy.content_observed',
 ])
 
 export class UnregisteredAuditActionError extends Error {
