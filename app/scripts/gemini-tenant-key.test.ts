@@ -23,6 +23,7 @@ const TENANT_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const KEY_A = 'AIzaSyTenantAKeyaaaaaaaaaaaaaaa'
 const KEY_B = 'AIzaSyTenantBKeybbbbbbbbbbbbbbb'
 const KEY_ENV = 'AIzaSyPlatformEnvFallbackxxxxxx'
+const KEY_AQ = 'AQ.Ab8TESTONLYGeminiAuthKeyaaaaaaa'
 
 let failures = 0
 
@@ -58,11 +59,25 @@ async function main() {
     assert.equal(geminiSecretId(TENANT_A), `gemini-${TENANT_A}`)
   })
 
-  await check('formátum: AIza… elfogadva, szemét elutasítva', () => {
+  await check('formátum: AIza… és AQ.… elfogadva, szemét elutasítva', () => {
     assert.equal(parseGeminiApiKey(`  ${KEY_A}  `), KEY_A)
+    assert.equal(parseGeminiApiKey(`  ${KEY_AQ}  `), KEY_AQ)
     assert.throws(() => parseGeminiApiKey('sk-or-v1-not-gemini-key-xxxx'), /invalid_gemini_key/)
     assert.throws(() => parseGeminiApiKey('AIza-short'), /invalid_gemini_key/)
+    assert.throws(() => parseGeminiApiKey('AQ.short'), /invalid_gemini_key/)
+    assert.throws(() => parseGeminiApiKey('aq.Ab8TESTONLYGeminiAuthKeyaaaaaaa'), /invalid_gemini_key/)
     assert.throws(() => parseGeminiApiKey(''), /invalid_gemini_key/)
+  })
+
+  await check('auth-kulcs (AQ.) a titoktárba kerül, a gateway OpenAI-kompatibilis végpontot hív', async () => {
+    await withSecretDir(async () => {
+      await saveGeminiTenantKey(TENANT_A, KEY_AQ)
+      assert.equal(await loadGeminiTenantKey(TENANT_A), KEY_AQ)
+      const registry = envProviderRegistry({}, async () => null, loadGeminiTenantKey)
+      const endpoint = await registry('gemini', TENANT_A)
+      assert.equal(endpoint?.apiKey, KEY_AQ)
+      assert.equal(endpoint?.baseUrl, GEMINI_OPENAI_BASE_URL)
+    })
   })
 
   await check('tenant kulcs nyer az env fölött', async () => {
