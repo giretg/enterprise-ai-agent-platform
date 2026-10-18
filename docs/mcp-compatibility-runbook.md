@@ -92,7 +92,7 @@ Set `GOOGLE_DRIVE_API_STUB=true`. Seed keeps a placeholder grant whose `tokenRef
 | 5 | `google_drive_read_file` `{ definitionId, fileId }` from step 4 | `text` or `warnings`; payload has **no** access token / `tokenRef` |
 | 6 | Negative: definition without the capability, or operator with only `view` | HTTP 200, MCP `isError: true`, `code` ∈ `{ capability_not_allowed, agent_access_denied, … }` |
 
-`definitionId` is required (published `AgentDefinitionVersion.id`). Extra JSON keys such as `tenantId` / `userId` are ignored.
+`definitionId` is required for unbound clients (published `AgentDefinitionVersion.id`). Bound clients (`X-Excellence-Agent-Id`) omit it; the server fills the current published definition. Extra JSON keys such as `tenantId` / `userId` are ignored.
 
 ### Agent checkout
 

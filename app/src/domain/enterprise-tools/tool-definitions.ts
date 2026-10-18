@@ -165,7 +165,10 @@ export function isEnterpriseTool(toolName: string): toolName is EnterpriseTool {
 const definitionId = z
   .string()
   .uuid()
-  .describe('Published agent definition id — from platform.agent.get_definition for the chosen agentId (required on every enterprise tool)')
+  .optional()
+  .describe(
+    'Published agent definition id from platform.agent.get_definition. Omit it when this client sends X-Excellence-Agent-Id — the server uses the current published definition. Unbound clients must pass it.',
+  )
 const optionalAgentId = z
   .string()
   .uuid()
