@@ -107,8 +107,9 @@ def install_llm_egress_gate(expected_url_fn):
         import httpx
     except ImportError:
         return
+    # A send() belső redirect-ciklusa nem hívja újra a send()-et: minden HTTP-kérésnél zárunk.
     if _EGRESS["httpx_send"] is None:
-        _EGRESS["httpx_send"] = httpx.Client.send
+        _EGRESS["httpx_send"] = httpx.Client._send_single_request
 
         def send_gated(self, request, *args, **kwargs):
             url = str(getattr(request, "url", request))
@@ -116,9 +117,9 @@ def install_llm_egress_gate(expected_url_fn):
                 raise httpx.RequestError(policy.PROVIDER_BLOCK, request=request)
             return _EGRESS["httpx_send"](self, request, *args, **kwargs)
 
-        httpx.Client.send = send_gated
+        httpx.Client._send_single_request = send_gated
     if _EGRESS["httpx_asend"] is None and hasattr(httpx, "AsyncClient"):
-        _EGRESS["httpx_asend"] = httpx.AsyncClient.send
+        _EGRESS["httpx_asend"] = httpx.AsyncClient._send_single_request
 
         async def asend_gated(self, request, *args, **kwargs):
             url = str(getattr(request, "url", request))
@@ -126,7 +127,7 @@ def install_llm_egress_gate(expected_url_fn):
                 raise httpx.RequestError(policy.PROVIDER_BLOCK, request=request)
             return await _EGRESS["httpx_asend"](self, request, *args, **kwargs)
 
-        httpx.AsyncClient.send = asend_gated
+        httpx.AsyncClient._send_single_request = asend_gated
 
 
 def uninstall_llm_egress_gate():
@@ -138,10 +139,10 @@ def uninstall_llm_egress_gate():
     except ImportError:
         httpx = None
     if httpx is not None and _EGRESS["httpx_send"] is not None:
-        httpx.Client.send = _EGRESS["httpx_send"]
+        httpx.Client._send_single_request = _EGRESS["httpx_send"]
         _EGRESS["httpx_send"] = None
     if httpx is not None and _EGRESS["httpx_asend"] is not None:
-        httpx.AsyncClient.send = _EGRESS["httpx_asend"]
+        httpx.AsyncClient._send_single_request = _EGRESS["httpx_asend"]
         _EGRESS["httpx_asend"] = None
     _EGRESS["expected"] = lambda: None
 

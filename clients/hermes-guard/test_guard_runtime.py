@@ -1,4 +1,5 @@
 """D4 cache, audit-sor, managed-dir hash. Futtatás: python3 clients/hermes-guard/test_guard_runtime.py"""
+import asyncio
 import json
 import os
 import stat
@@ -230,6 +231,38 @@ class Runtime(unittest.TestCase):
         finally:
             runtime.uninstall_llm_egress_gate()
             urllib.request.OpenerDirector.open = original_open
+
+    def test_httpx_gate_checks_sync_and_async_redirects(self):
+        try:
+            import httpx
+        except ImportError:
+            self.skipTest("httpx nincs telepítve")
+        gateway = "https://ai.example/api/model-gateway/v1/chat/completions"
+        foreign = "https://openrouter.ai/api/v1/chat/completions"
+        hits = []
+
+        def respond(request):
+            hits.append(str(request.url))
+            if str(request.url) == gateway:
+                return httpx.Response(307, headers={"location": foreign})
+            return httpx.Response(200, json={})
+
+        async def check_async():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
+                for url in (foreign, gateway):
+                    with self.assertRaises(httpx.RequestError):
+                        await client.post(url, json={"messages": ["confidential"]})
+
+        runtime.install_llm_egress_gate(lambda: gateway.rsplit("/chat/completions", 1)[0])
+        try:
+            with httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
+                for url in (foreign, gateway):
+                    with self.assertRaises(httpx.RequestError):
+                        client.post(url, json={"messages": ["confidential"]})
+            asyncio.run(check_async())
+            self.assertEqual(hits, [gateway, gateway])
+        finally:
+            runtime.uninstall_llm_egress_gate()
 
     def test_llm_execution_without_company_profile_fails_closed(self):
         with tempfile.TemporaryDirectory() as home:

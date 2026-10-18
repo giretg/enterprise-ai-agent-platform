@@ -227,6 +227,13 @@ class Policy(unittest.TestCase):
         self.assertTrue(p.should_block_llm_egress("https://openrouter.ai/api/v1/models", gateway))
         self.assertTrue(p.should_block_llm_egress("https://api.openai.com/v1/chat/completions", gateway))
         self.assertTrue(p.should_block_llm_egress("https://evil.example/v1/chat/completions", gateway))
+        for url in (
+            "https://other.ai.example/v1/chat/completions",
+            "http://ai.example/api/model-gateway/v1/chat/completions",
+            "https://ai.example:8443/api/model-gateway/v1/chat/completions",
+            "https://ai.example/other/v1/chat/completions",
+        ):
+            self.assertTrue(p.should_block_llm_egress(url, gateway), url)
         self.assertFalse(p.should_block_llm_egress("https://ai.example/api/model-gateway/v1/chat/completions", gateway))
         self.assertFalse(p.should_block_llm_egress("https://ai.example/api/client-policy/heartbeat", gateway))
         self.assertFalse(p.should_block_llm_egress("https://ai.example/api/mcp/tenant", gateway))

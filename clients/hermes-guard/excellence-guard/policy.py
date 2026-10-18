@@ -515,8 +515,17 @@ def should_block_llm_egress(url, expected_gateway_url=None):
     host = hostname_of(url)
     if not host:
         return False
-    if _host_matches(host, hostname_of(expected_gateway_url)):
-        return False
+    try:
+        actual = urlsplit(str(url or ""))
+        gateway = urlsplit(str(expected_gateway_url or ""))
+        if (host == hostname_of(expected_gateway_url)
+                and actual.scheme == gateway.scheme
+                and (actual.port or (443 if actual.scheme == "https" else 80))
+                == (gateway.port or (443 if gateway.scheme == "https" else 80))
+                and actual.path.startswith(gateway.path.rstrip("/") + "/")):
+            return False
+    except ValueError:
+        pass
     if is_foreign_llm_host(host):
         return True
     try:
