@@ -459,10 +459,8 @@ async function tryDirectWrite(
     return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
-    const auditDetails =
-      mapped.code === 'google_drive_api_error' || mapped.code === 'google_drive_auth_failed'
-        ? mapped.extra
-        : undefined
+    const extra = { ...mapped.extra, ...driveUploadLogMeta(toolName, parsedArgs) }
+    const auditDetails = Object.keys(extra).length ? extra : undefined
     await auditDenied(
       deps,
       principal,
@@ -472,7 +470,7 @@ async function tryDirectWrite(
       definition.agentId,
       auditDetails,
     )
-    return errorResult(mapped.code, mapped.extra)
+    return errorResult(mapped.code, extra)
   }
 }
 
@@ -712,10 +710,11 @@ export async function invokeEnterpriseTool(
     return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
-    const auditDetails =
-      mapped.code === 'google_drive_api_error' || mapped.code === 'google_drive_auth_failed'
-        ? mapped.extra
-        : undefined
+    const mappedExtra = {
+      ...mapped.extra,
+      ...driveUploadLogMeta(toolName, parsed.data as Record<string, unknown>),
+    }
+    const auditDetails = Object.keys(mappedExtra).length ? mappedExtra : undefined
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -749,7 +748,7 @@ export async function invokeEnterpriseTool(
       role: principal.role,
       toolName,
     })
-    return errorResult(mapped.code, { ...mapped.extra, ...extra })
+    return errorResult(mapped.code, { ...mappedExtra, ...extra })
   }
 }
 
@@ -806,6 +805,7 @@ function googleDriveMappedExtra(error: {
   googleStatus?: string
   googleReasonCodes?: string[]
   googleLocations?: string[]
+  googleMessage?: string
 }): Record<string, unknown> {
   return {
     status: error.status,
@@ -813,6 +813,27 @@ function googleDriveMappedExtra(error: {
     ...(typeof error.googleStatus === 'string' ? { googleStatus: error.googleStatus } : {}),
     ...(Array.isArray(error.googleReasonCodes) ? { googleReasonCodes: error.googleReasonCodes } : {}),
     ...(Array.isArray(error.googleLocations) ? { googleLocations: error.googleLocations } : {}),
+    ...(typeof error.googleMessage === 'string' ? { googleMessage: error.googleMessage } : {}),
+  }
+}
+
+function driveUploadLogMeta(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL) return {}
+  const name = typeof args.name === 'string' ? args.name.slice(0, 120) : undefined
+  const mimeType = typeof args.mimeType === 'string' ? args.mimeType.slice(0, 100) : undefined
+  const parent = typeof args.parentFolderId === 'string' ? args.parentFolderId.trim() : ''
+  let uploadContentLength: number | undefined
+  if (typeof args.textContent === 'string') {
+    uploadContentLength = Buffer.byteLength(args.textContent, 'utf8')
+  } else if (typeof args.contentBase64 === 'string') {
+    const padded = args.contentBase64.endsWith('==') ? 2 : args.contentBase64.endsWith('=') ? 1 : 0
+    uploadContentLength = Math.floor((args.contentBase64.length * 3) / 4) - padded
+  }
+  return {
+    ...(name ? { uploadName: name } : {}),
+    ...(mimeType ? { uploadMimeType: mimeType } : {}),
+    hasParentFolderId: parent.length > 0,
+    ...(uploadContentLength != null ? { uploadContentLength } : {}),
   }
 }
 

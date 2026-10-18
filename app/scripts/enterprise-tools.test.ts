@@ -656,6 +656,7 @@ async function main() {
               'INVALID_ARGUMENT',
               ['invalid'],
               ['q'],
+              'Invalid Query',
             )
           },
         }),
@@ -672,12 +673,91 @@ async function main() {
       assert.equal(payload.googleStatus, 'INVALID_ARGUMENT')
       assert.deepEqual(payload.googleReasonCodes, ['invalid'])
       assert.deepEqual(payload.googleLocations, ['q'])
+      assert.equal(payload.googleMessage, 'Invalid Query')
       const serialized = result.content[0]?.text ?? ''
       assert.equal(serialized.includes('secret-content'), false)
       const logged = logs.events.find((row) => row.event === 'enterprise.tool.error')
       assert.equal(logged?.payload.googleStatus, 'INVALID_ARGUMENT')
       assert.deepEqual(logged?.payload.googleReasonCodes, ['invalid'])
       assert.deepEqual(logged?.payload.googleLocations, ['q'])
+      assert.equal(logged?.payload.googleMessage, 'Invalid Query')
+    } finally {
+      logs.restore()
+    }
+  })
+
+  await check('Drive upload 400 logs googleMessage and upload meta without file body', async () => {
+    const logs = captureInfo()
+    const html = '<h1>secret-report-body</h1>'
+    try {
+      const result = await invokeEnterpriseTool(
+        {
+          ...invokeDeps({
+            grant: grant({
+              scopes: [
+                'https://www.googleapis.com/auth/drive.readonly',
+                'https://www.googleapis.com/auth/drive.file',
+              ],
+            }),
+            definition: definition({
+              snapshot: {
+                name: 'Writer',
+                roleInstruction: 'Write',
+                skills: [],
+                connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+                capabilities: [{ toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL, allowed: true }],
+              },
+            }),
+            executeDriveTool: async () => {
+              throw new GoogleDriveApiError(
+                'google_drive.upload_file failed: 400',
+                400,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'Invalid multipart request with 0 mime parts',
+              )
+            },
+          }),
+          async findAgentWriteModes() {
+            return { memory: 'approval', httpApi: 'approval', gmail: 'approval', drive: 'direct' }
+          },
+          async enqueueWrite() {
+            throw new Error('direct Drive upload must not enqueue')
+          },
+        },
+        {
+          principal: principal({ role: 'admin' }),
+          toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+          args: {
+            definitionId: DEFINITION_ID,
+            name: 'birtok-arharmonizacio-nagyker-2026-09.html',
+            mimeType: 'text/html',
+            textContent: html,
+            idempotencyKey: 'upload-400-1',
+          },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, 'google_drive_api_error')
+      assert.equal(payload.status, 400)
+      assert.equal(payload.googleMessage, 'Invalid multipart request with 0 mime parts')
+      assert.equal(payload.uploadName, 'birtok-arharmonizacio-nagyker-2026-09.html')
+      assert.equal(payload.uploadMimeType, 'text/html')
+      assert.equal(payload.hasParentFolderId, false)
+      assert.equal(payload.uploadContentLength, Buffer.byteLength(html, 'utf8'))
+      assert.equal(payload.textContent, undefined)
+      const serialized = result.content[0]?.text ?? ''
+      assert.equal(serialized.includes('secret-report-body'), false)
+      const logged = logs.events.find((row) => row.event === 'enterprise.tool.denied')
+      assert.equal(logged?.payload.googleMessage, 'Invalid multipart request with 0 mime parts')
+      assert.equal(logged?.payload.uploadName, 'birtok-arharmonizacio-nagyker-2026-09.html')
+      assert.equal(logged?.payload.uploadMimeType, 'text/html')
+      assert.equal(logged?.payload.hasParentFolderId, false)
+      assert.equal(logged?.payload.uploadContentLength, Buffer.byteLength(html, 'utf8'))
+      assert.equal(logged?.payload.textContent, undefined)
     } finally {
       logs.restore()
     }

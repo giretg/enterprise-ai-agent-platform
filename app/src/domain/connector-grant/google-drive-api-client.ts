@@ -52,6 +52,8 @@ const GOOGLE_WORKSPACE_EXPORT: Record<string, string> = {
 const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_CHARS = 200_000
 
+const GOOGLE_MESSAGE_MAX = 120
+
 export class GoogleDriveApiAuthError extends Error {
   constructor(
     message: string,
@@ -59,6 +61,7 @@ export class GoogleDriveApiAuthError extends Error {
     readonly googleStatus?: string,
     readonly googleReasonCodes?: string[],
     readonly googleLocations?: string[],
+    readonly googleMessage?: string,
   ) {
     super(message)
     this.name = 'GoogleDriveApiAuthError'
@@ -73,6 +76,7 @@ export class GoogleDriveApiError extends Error {
     readonly googleStatus?: string,
     readonly googleReasonCodes?: string[],
     readonly googleLocations?: string[],
+    readonly googleMessage?: string,
   ) {
     super(message)
     this.name = 'GoogleDriveApiError'
@@ -83,10 +87,18 @@ function pushTrimmed(target: string[], value: unknown) {
   if (typeof value === 'string' && value) target.push(value.slice(0, 100))
 }
 
+function sanitizeGoogleMessage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const collapsed = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!collapsed) return undefined
+  return collapsed.slice(0, GOOGLE_MESSAGE_MAX)
+}
+
 function googleDriveErrorDetails(body?: string): {
   status?: string
   reasonCodes?: string[]
   locations?: string[]
+  message?: string
 } {
   if (!body) return {}
   try {
@@ -112,10 +124,12 @@ function googleDriveErrorDetails(body?: string): {
         pushTrimmed(locations, (violation as Record<string, unknown>).field)
       }
     }
+    const googleMessage = sanitizeGoogleMessage(error.message)
     return {
       ...(typeof error.status === 'string' ? { status: error.status.slice(0, 100) } : {}),
       ...(reasonCodes.length ? { reasonCodes: [...new Set(reasonCodes)].slice(0, 10) } : {}),
       ...(locations.length ? { locations: [...new Set(locations)].slice(0, 10) } : {}),
+      ...(googleMessage ? { message: googleMessage } : {}),
     }
   } catch {
     return {}
@@ -131,6 +145,7 @@ function driveApiError(operation: string, status: number, body?: string): Error 
       details.status,
       details.reasonCodes,
       details.locations,
+      details.message,
     )
   }
   return new GoogleDriveApiError(
@@ -140,6 +155,7 @@ function driveApiError(operation: string, status: number, body?: string): Error 
     details.status,
     details.reasonCodes,
     details.locations,
+    details.message,
   )
 }
 
@@ -188,12 +204,17 @@ function parseFileSummary(raw: Record<string, unknown>): DriveFileSummary | null
   }
 }
 
+/** files.create / upload / get / patch: a Google csak a supportsAllDrives-t dokumentálja. */
 function sharedDriveParams(extra?: Record<string, string>): Record<string, string> {
   return {
     supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
     ...extra,
   }
+}
+
+/** files.list: az includeItemsFromAllDrives csak listázós query param. */
+function listDriveParams(extra?: Record<string, string>): Record<string, string> {
+  return sharedDriveParams({ includeItemsFromAllDrives: 'true', ...extra })
 }
 
 /**
@@ -253,7 +274,7 @@ export class GoogleDriveApiClient {
       url.searchParams.set('corpora', 'drive')
       url.searchParams.set('driveId', params.driveId)
     }
-    for (const [key, value] of Object.entries(sharedDriveParams())) {
+    for (const [key, value] of Object.entries(listDriveParams())) {
       url.searchParams.set(key, value)
     }
 
