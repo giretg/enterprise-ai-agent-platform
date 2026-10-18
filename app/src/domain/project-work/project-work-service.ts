@@ -85,13 +85,6 @@ export function resolveWorkFileBody(input: {
   return { ok: true, content }
 }
 
-function quotaAfter(quota: { count: number; bytes: number }, existingBytes: number, nextBytes: number, isNew: boolean) {
-  return {
-    nextCount: quota.count + (isNew ? 1 : 0),
-    nextBytes: quota.bytes - existingBytes + nextBytes,
-  }
-}
-
 const MESSAGES: Record<string, string> = {
   invalid_project_key: 'Invalid projectKey',
   reserved_project_key: 'The built-in general project cannot be created or renamed',
@@ -319,20 +312,18 @@ export class ProjectWorkService {
     if (!body.ok) return err(body.code)
     const byteSize = Buffer.byteLength(body.content, 'utf8')
     if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
-    const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
-    const quota = await this.files.quota(input.tenantId, scoped.projectKey)
-    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
-    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
-      return err('quota_exceeded')
-    }
-    const row = await this.files.upsert({
+    const row = await this.files.saveWithinQuota({
       tenantId: input.tenantId,
       projectKey: scoped.projectKey,
       path,
       content: body.content,
-      byteSize,
       lastWriterUserId: input.userId,
+      append: false,
+      maxFileBytes: WORK_FILE_MAX_BYTES,
+      maxProjectBytes: WORK_FILE_MAX_PROJECT_BYTES,
+      maxCount: WORK_FILE_MAX_COUNT,
     })
+    if (typeof row === 'string') return err(row)
     return ok({
       file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
     })
@@ -356,23 +347,18 @@ export class ProjectWorkService {
     if (!path) return err('invalid_path')
     const chunk = resolveWorkFileBody({ content: input.content, contentBase64: input.contentBase64 })
     if (!chunk.ok) return err(chunk.code)
-    const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
-    const content = `${existing?.content ?? ''}${chunk.content}`
-    const byteSize = Buffer.byteLength(content, 'utf8')
-    if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
-    const quota = await this.files.quota(input.tenantId, scoped.projectKey)
-    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
-    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
-      return err('quota_exceeded')
-    }
-    const row = await this.files.upsert({
+    const row = await this.files.saveWithinQuota({
       tenantId: input.tenantId,
       projectKey: scoped.projectKey,
       path,
-      content,
-      byteSize,
+      content: chunk.content,
       lastWriterUserId: input.userId,
+      append: true,
+      maxFileBytes: WORK_FILE_MAX_BYTES,
+      maxProjectBytes: WORK_FILE_MAX_PROJECT_BYTES,
+      maxCount: WORK_FILE_MAX_COUNT,
     })
+    if (typeof row === 'string') return err(row)
     return ok({
       file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
     })
