@@ -46,7 +46,12 @@ import { normalizeGmailScope } from './gmail-scopes'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { lookup } from 'node:dns/promises'
-import { allowlistForOAuthEndpoint, guardEgressUrl } from '@/domain/net/egress-guard'
+import {
+  allowlistForOAuthEndpoint,
+  guardEgressUrl,
+  readResponseBodyCapped,
+  readResponseJsonCapped,
+} from '@/domain/net/egress-guard'
 
 class OAuthEgressBlockedError extends Error {
   constructor(message = 'OAuth endpoint blocked by egress policy') {
@@ -114,13 +119,16 @@ async function oauthErrorDetail(res: Response): Promise<string> {
   const fallback = `HTTP ${res.status}`
   try {
     const contentType = res.headers.get('content-type') ?? ''
+    // Diagnosztikai olvasás: a hiba-törzset is plafonozzuk (egy rosszindulatú 5xx +
+    // óriás törzs ugyanúgy OOM-ot okozna); méret miatt nem bukunk, csak elvágjuk.
+    const { text: capped } = await readResponseBodyCapped(res)
     if (contentType.includes('application/json')) {
-      const body = (await res.json()) as { error?: unknown; error_description?: unknown }
+      const body = JSON.parse(capped) as { error?: unknown; error_description?: unknown }
       const error = typeof body.error === 'string' ? body.error : null
       const description = typeof body.error_description === 'string' ? body.error_description : null
       return [fallback, error, description].filter(Boolean).join(' · ')
     }
-    const text = (await res.text()).trim()
+    const text = capped.trim()
     return text ? `${fallback} · ${text.slice(0, 300)}` : fallback
   } catch {
     return fallback
@@ -386,12 +394,12 @@ async function exchangeCodeForTokens(params: {
     body,
   }, oauthPolicy)
   if (!res.ok) throw new Error(`OAuth token exchange failed: ${await oauthErrorDetail(res)}`)
-  const data = (await res.json()) as {
+  const data = await readResponseJsonCapped<{
     access_token?: string
     refresh_token?: string
     expires_in?: number
     scope?: string
-  }
+  }>(res)
   if (!data.access_token) throw new Error('OAuth token exchange missing access_token')
   // A grant-vault (és az aszinkron agent-hozzáférés) refresh_tokent igényel; ha a
   // provider nem adott, a hozzájárulás offline hozzáférés nélkül készült.
@@ -410,7 +418,7 @@ async function exchangeCodeForTokens(params: {
         headers: { authorization: `Bearer ${data.access_token}` },
       }, oauthPolicy)
       if (profileRes.ok) {
-        const profile = (await profileRes.json()) as Record<string, unknown>
+        const profile = await readResponseJsonCapped<Record<string, unknown>>(profileRes)
         const raw = profile[oauth.accountEmailField]
         if (typeof raw === 'string' && raw.trim()) accountEmail = raw.trim()
       }
@@ -468,7 +476,11 @@ async function refreshGrantTokens(
     body,
   }, oauthEgressPolicy(connector, tenantAllowlist))
   if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status}`)
-  const data = (await res.json()) as { access_token?: string; expires_in?: number; refresh_token?: string }
+  const data = await readResponseJsonCapped<{
+    access_token?: string
+    expires_in?: number
+    refresh_token?: string
+  }>(res)
   if (!data.access_token) throw new Error('OAuth refresh missing access_token')
 
   return {
