@@ -25,9 +25,9 @@ type ToolRow = {
   writeLikeName: boolean
 }
 type Diff = { added: string[]; removed: string[]; schemaChanged: string[]; descriptionChanged: string[] }
-export type McpConnectorsData = { allowedHosts: string[]; connectors: ConnectorRow[] }
+export type McpConnectorsData = { allowedHosts: string[]; connectors: McpConnectorRow[] }
 
-type ConnectorRow = {
+export type McpConnectorRow = {
   id: string
   name: string
   serverUrl: string
@@ -207,7 +207,32 @@ function ToolReview({
   )
 }
 
-function ConnectorCard({ row, reload }: { row: ConnectorRow; reload: (text?: string) => void }) {
+export function mcpHasApprovedTools(row: McpConnectorRow): boolean {
+  return Boolean(row.active?.tools.some((tool) => tool.approved))
+}
+
+export function McpConnectorCard({
+  row,
+  reload,
+  autoFocus,
+}: {
+  row: McpConnectorRow
+  reload: (text?: string) => void
+  autoFocus?: boolean
+}) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!autoFocus) return
+    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [autoFocus])
+  return (
+    <div ref={rootRef} className="scroll-mt-24">
+      <McpConnectorCardBody row={row} reload={reload} />
+    </div>
+  )
+}
+
+function McpConnectorCardBody({ row, reload }: { row: McpConnectorRow; reload: (text?: string) => void }) {
   const t = asTranslate(useTranslations('McpConnectors'))
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
@@ -433,12 +458,14 @@ export function McpConnectorsPanel({
   initialError,
   mode = 'manage',
   onChanged,
+  onCreatedConnector,
 }: {
   canManage: boolean
   initial: McpConnectorsData | null
   initialError?: string
   mode?: 'manage' | 'setup'
   onChanged?: () => void
+  onCreatedConnector?: (connectorId: string, text: string) => void
 }) {
   const t = asTranslate(useTranslations('McpConnectors'))
   const [data, setData] = useState(initial)
@@ -479,6 +506,10 @@ export function McpConnectorsPanel({
           <CreateForm
             allowedHosts={data.allowedHosts}
             onCreated={(text, connectorId) => {
+              if (onCreatedConnector) {
+                onCreatedConnector(connectorId, text)
+                return
+              }
               setCreatedConnectorId(connectorId)
               void reload(text)
             }}
@@ -486,7 +517,7 @@ export function McpConnectorsPanel({
         ) : null}
         {createdConnector ? (
           <>
-            <ConnectorCard row={createdConnector} reload={(text) => void reload(text)} />
+            <McpConnectorCard row={createdConnector} reload={(text) => void reload(text)} />
             {canManage ? (
               <button
                 type="button"
@@ -519,7 +550,7 @@ export function McpConnectorsPanel({
           <p className="rounded-lg border border-dashed border-line px-3 py-3 text-sm text-ink-soft">{t('empty')}</p>
         ) : null}
         {data?.connectors.map((row) => (
-          <ConnectorCard key={row.id} row={row} reload={(text) => void reload(text)} />
+          <McpConnectorCard key={row.id} row={row} reload={(text) => void reload(text)} />
         ))}
         {canManage && data ? (
           <CreateForm
