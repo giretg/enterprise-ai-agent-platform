@@ -14,14 +14,13 @@ export type AgentScaffoldMaterializationDeps = {
     | 'findById'
     | 'create'
     | 'updateProfile'
-    | 'setCurrentDefinitionVersionId'
     | 'activate'
     | 'findCapabilitiesForAgent'
     | 'findConnectorsForAgent'
   >
   versions: Pick<
     AgentDefinitionRepository,
-    'create' | 'findById' | 'findByAgentAndVersion' | 'findMaxVersion'
+    'publish' | 'findById' | 'findByAgentAndVersion'
   >
   skills: Pick<SkillRepository, 'listEnabledForAgent'>
 }
