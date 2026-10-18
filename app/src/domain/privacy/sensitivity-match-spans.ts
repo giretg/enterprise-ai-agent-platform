@@ -59,13 +59,12 @@ const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i
  * than secrets. We extract the value and assess whether it looks like real
  * material before blocking.
  *
- * A bare `token` key is omitted: CRM/download URLs (`…/download?token=…`) carry
- * high-entropy query values that are not API keys. Query-string assignments
- * (`?` / `&` before the key) are skipped for the same reason. Known vendor
- * prefixes and JWTs are still caught anywhere, including in URLs.
+ * CRM/download URLs (`…/download?token=…`) carry high-entropy query values
+ * that are not API keys. Only generic `token` query assignments are skipped;
+ * explicit credentials, known vendor prefixes and JWTs are caught in URLs too.
  */
 const SECRET_ASSIGNMENT_RE =
-  /(?:password|passwd|client[_-]?secret|secret|api[_-]?key|auth[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["'`]?([^\s"'`,;]+)/gi
+  /(?:password|passwd|client[_-]?secret|secret|api[_-]?key|auth[_-]?key|private[_-]?key|(?<![?&])token|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["'`]?([^\s"'`,;]+)/gi
 
 const PLACEHOLDER_SECRET_RE =
   /^(?:<[^>]+>|\{[^}]+\}|\[[^\]]+\]|(?:your|example|sample|demo|dummy|test|fake|placeholder|replace|changeme|change_me|todo|xxx|xxxx|redacted|masked|here|api[_-]?key|token|secret|password|key|value)(?:[_-](?:your|example|sample|demo|dummy|test|fake|placeholder|replace|changeme|change_me|todo|xxx|xxxx|redacted|masked|here|api[_-]?key|token|secret|password|key|value))*)$/i
@@ -156,10 +155,10 @@ function lineSnippet(text: string, index: number): string {
 }
 
 function maskSecretAssignments(text: string): string {
-  SECRET_ASSIGNMENT_RE.lastIndex = 0
-  return text.replace(SECRET_ASSIGNMENT_RE, (full, value: string) =>
-    full.replace(value, maskSecretValue(value)),
-  )
+  for (const span of collectSecretSpans(text).sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, span.start) + maskSecretValue(text.slice(span.start, span.end)) + text.slice(span.end)
+  }
+  return text
 }
 
 function maskSecretValue(value: string): string {
@@ -502,10 +501,6 @@ export function collectSensitivityMatchSpans(text: string): SensitivityMatchSpan
   }))
 }
 
-function isQueryStringAssignment(text: string, index: number): boolean {
-  return index > 0 && (text[index - 1] === '?' || text[index - 1] === '&')
-}
-
 function pushSecretSpan(spans: RedactionSpan[], start: number, end: number): void {
   if (isWithinSpan(start, end, spans)) return
   if (spans.some((other) => start < other.end && end > other.start)) return
@@ -521,7 +516,7 @@ function assignmentValueSpan(match: RegExpMatchArray): TextSpan | null {
   return { start, end: start + value.length }
 }
 
-/** PEM-blokk, ismert prefix / JWT, hozzárendelés (nem query-string), Bearer. */
+/** PEM-blokk, ismert prefix / JWT, hozzárendelés (kivéve letöltési token), Bearer. */
 function collectSecretSpans(text: string): RedactionSpan[] {
   const spans: RedactionSpan[] = []
 
@@ -534,14 +529,13 @@ function collectSecretSpans(text: string): RedactionSpan[] {
 
   SECRET_ASSIGNMENT_RE.lastIndex = 0
   for (const match of text.matchAll(SECRET_ASSIGNMENT_RE)) {
-    if (isQueryStringAssignment(text, match.index ?? 0)) continue
     const span = assignmentValueSpan(match)
     if (span) pushSecretSpan(spans, span.start, span.end)
   }
 
   KNOWN_SECRET_VALUE_RE.lastIndex = 0
   for (const match of text.matchAll(KNOWN_SECRET_VALUE_RE)) {
-    if (match.index == null) continue
+    if (match.index == null || isPlaceholderSecretValue(match[0])) continue
     pushSecretSpan(spans, match.index, match.index + match[0].length)
   }
 

@@ -3,6 +3,7 @@
  * Futtatás: npm run test:model-gateway-content-filter
  */
 import assert from 'node:assert/strict'
+import { inspectPromptSensitivity, redactSensitiveText } from '../src/domain/privacy/sensitivity-match-spans'
 import { handleChatCompletion, type ModelCallEvent, type ModelGatewayDeps } from '../src/domain/model-gateway/proxy'
 import { createContentFilterHooks, dryRunContentFilter, PAN_BLOCK_MESSAGE, type GatewayValVault } from '../src/domain/model-gateway/content-filter'
 import { SurrogateTakenError, type InsertValInput, type ValVaultRecord } from '../src/domain/privacy/surrogate-vault'
@@ -246,6 +247,38 @@ async function main() {
       })
       await s.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })
       assert.equal(s.calls.length, ['block', 'tokenize'].includes(level) ? 0 : 1, level)
+    }
+  })
+
+  await check('a letöltési kivétel nem enged át explicit URL-hitelesítőket és szöveges tokeneket', async () => {
+    const value = 'D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ'
+    for (const text of [`token: ${value}`, `https://example.com/?api_key=${value}`, `https://example.com/?access_token=${value}`, `https://example.com/?x=1&password=${value}`, `https://example.com/?token=download&api_key=${value}`]) {
+      const s = setup({ capabilities: PRESETS.bound })
+      await s.call({ messages: [user(text)] })
+      assert.equal(s.calls.length, 0, text)
+      assert.ok(!redactSensitiveText(text).text.includes(value))
+    }
+    const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user(`https://example.com/?x=1&token=${value}`)] })
+    assert.equal(s.calls.length, 1)
+  })
+
+  await check('az ismert prefixű dokumentációs mintakulcs sem blokkol', async () => {
+    for (const value of ['sk-your_api_key_here_do_not_use', 'ghp_your_example_token_here']) {
+      const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+      await s.call({ messages: [user(`api_key: ${value}`)] })
+      assert.equal(s.calls.length, 1, value)
+    }
+  })
+
+  await check('az új titokminták a találati kivonatban és a redakcióban is maszkoltak', async () => {
+    for (const value of ['sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg', 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signaturepartgoesherexx']) {
+      for (const text of [value, `Authorization: Bearer ${value}`]) {
+        const inspection = inspectPromptSensitivity([{ role: 'user', content: text }])
+        assert.equal(inspection.level, 'forbidden')
+        assert.ok(inspection.findings.every((finding) => !finding.snippet.includes(value)))
+        assert.ok(!redactSensitiveText(text).text.includes(value))
+      }
     }
   })
 
