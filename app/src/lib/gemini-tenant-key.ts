@@ -15,11 +15,21 @@ export function geminiSecretId(tenantId: string): string {
   return `gemini-${tenantId}`
 }
 
+/** Régi Google Cloud / AI Studio standard kulcs. */
+const STANDARD_GEMINI_API_KEY = /^AIza[0-9A-Za-z_-]{20,}$/
+/**
+ * Google AI Studio auth-kulcs. 2026-05-28-tól az új kulcsok így jönnek ki.
+ * @see https://ai.google.dev/gemini-api/docs/api-key
+ */
+const AUTH_GEMINI_API_KEY = /^AQ\.[A-Za-z0-9_-]{20,}$/
+
 export function parseGeminiApiKey(raw: unknown): string {
   if (typeof raw !== 'string') throw new Error('invalid_gemini_key')
   const key = raw.trim()
-  // Google AI Studio / Cloud API kulcs: AIza… (jellemzően 39 karakter).
-  if (key.length > 200 || !/^AIza[0-9A-Za-z_-]{20,}$/.test(key)) {
+  if (
+    key.length > 500 ||
+    !(STANDARD_GEMINI_API_KEY.test(key) || AUTH_GEMINI_API_KEY.test(key))
+  ) {
     throw new Error('invalid_gemini_key')
   }
   return key
