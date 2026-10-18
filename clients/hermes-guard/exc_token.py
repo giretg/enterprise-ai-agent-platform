@@ -298,6 +298,13 @@ def get_token_exp(home, now=time.time, fetcher=fetch):
             return c["token"], c["exp"]
     except (OSError, ValueError, KeyError):
         pass
+    # Egy Bot frissítése elforgatja a közös refresh tokent; a Bot-profilból indított szinkron csak a
+    # saját párját látja, így a többi Bot lejárt belépővel 401-ezne. Ezért a gyökérből, minden Botra.
+    if os.environ.get("EXC_TOKEN_SYNC_ALL", "1") != "0":
+        try:
+            share_all_mcp_tokens(parent_hermes_home(home) or home)
+        except OSError:
+            pass  # a szinkron csak segítség, a saját belépővel még próbálkozunk
     token, exp = fetcher(origin, tenant, agent, inst, mcp_access_token(home))
     tmp = f"{cache}.{os.getpid()}"
     try:
