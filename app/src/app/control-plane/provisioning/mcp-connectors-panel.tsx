@@ -325,7 +325,13 @@ function ConnectorCard({ row, reload }: { row: ConnectorRow; reload: (text?: str
   )
 }
 
-function CreateForm({ allowedHosts, onCreated }: { allowedHosts: string[]; onCreated: (text: string) => void }) {
+function CreateForm({
+  allowedHosts,
+  onCreated,
+}: {
+  allowedHosts: string[]
+  onCreated: (text: string, connectorId: string) => void
+}) {
   const t = asTranslate(useTranslations('McpConnectors'))
   const [form, setForm] = useState({
     name: '',
@@ -349,6 +355,7 @@ function CreateForm({ allowedHosts, onCreated }: { allowedHosts: string[]; onCre
         res.data.toolCount !== null
           ? t('createdWithTools', { count: res.data.toolCount })
           : t('createdDelegated'),
+        res.data.connectorId,
       )
       setForm((current) => ({ ...current, name: '', serverUrl: '', token: '', clientSecret: '' }))
     })
@@ -424,22 +431,76 @@ export function McpConnectorsPanel({
   canManage,
   initial,
   initialError,
+  mode = 'manage',
+  onChanged,
 }: {
   canManage: boolean
   initial: McpConnectorsData | null
   initialError?: string
+  mode?: 'manage' | 'setup'
+  onChanged?: () => void
 }) {
   const t = asTranslate(useTranslations('McpConnectors'))
   const [data, setData] = useState(initial)
+  const [createdConnectorId, setCreatedConnectorId] = useState<string | null>(null)
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
     initialError ? { tone: 'err', text: actionError(t, initialError) } : null,
   )
 
   async function reload(text?: string) {
     const res = await listMcpConnectors()
-    if (res.success) setData(res.data as McpConnectorsData)
-    else setMessage({ tone: 'err', text: actionError(t, res.error) })
-    if (text) setMessage({ tone: 'ok', text })
+    if (res.success) {
+      setData(res.data as McpConnectorsData)
+      setMessage(text ? { tone: 'ok', text } : null)
+      if (mode === 'setup') onChanged?.()
+    } else {
+      setMessage({ tone: 'err', text: actionError(t, res.error) })
+    }
+  }
+
+  if (mode === 'setup') {
+    const createdConnector = data?.connectors.find((row) => row.id === createdConnectorId)
+    return (
+      <div className="space-y-4">
+        {message ? <Message value={message} /> : null}
+        {!data && canManage ? (
+          <button type="button" className={button} onClick={() => void reload()}>
+            {t('refresh')}
+          </button>
+        ) : null}
+        {canManage && data && !createdConnectorId ? (
+          <CreateForm
+            allowedHosts={data.allowedHosts}
+            onCreated={(text, connectorId) => {
+              setCreatedConnectorId(connectorId)
+              void reload(text)
+            }}
+          />
+        ) : null}
+        {createdConnector ? (
+          <>
+            <ConnectorCard row={createdConnector} reload={(text) => void reload(text)} />
+            {canManage ? (
+              <button
+                type="button"
+                className={button}
+                onClick={() => {
+                  setCreatedConnectorId(null)
+                  setMessage(null)
+                }}
+              >
+                {t('addAnother')}
+              </button>
+            ) : null}
+          </>
+        ) : null}
+        {createdConnectorId && !createdConnector ? (
+          <button type="button" className={button} onClick={() => void reload()}>
+            {t('refresh')}
+          </button>
+        ) : null}
+      </div>
+    )
   }
 
   return (
@@ -453,7 +514,12 @@ export function McpConnectorsPanel({
         {data?.connectors.map((row) => (
           <ConnectorCard key={row.id} row={row} reload={(text) => void reload(text)} />
         ))}
-        {canManage && data ? <CreateForm allowedHosts={data.allowedHosts} onCreated={(text) => void reload(text)} /> : null}
+        {canManage && data ? (
+          <CreateForm
+            allowedHosts={data.allowedHosts}
+            onCreated={(text) => void reload(text)}
+          />
+        ) : null}
       </div>
     </Card>
   )
