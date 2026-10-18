@@ -183,6 +183,7 @@
     "test:i18n": "tsx scripts/i18n-public-paths.test.ts",
     "test:agent-catalog-card": "tsx scripts/agent-catalog-card.test.ts",
     "test:confirm-dialog": "tsx scripts/confirm-dialog.test.ts",
+    "test:project-memory-delete": "tsx scripts/project-memory-delete.test.ts",
     "test:memory-ui-labels": "tsx scripts/memory-ui-labels.test.ts",
     "test:work-project": "tsx scripts/work-project.test.ts",
     "test:agent-chat-stream-input": "tsx scripts/agent-chat-stream-input.test.ts",

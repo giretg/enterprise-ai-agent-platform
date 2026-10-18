@@ -525,6 +525,7 @@
       "saveMemory": "Save memory",
       "saveChanges": "Save changes",
       "deleteMemory": "Delete",
+      "deleteMemoryTitle": "Delete memory item",
       "deleteMemoryConfirm": "Delete this memory item? “{title}” — it will no longer appear in search or the agent’s memory.",
       "memoryDeleted": "Memory item deleted.",
       "noAgentMemory": "No teammate — project memory lives per teammate.",
