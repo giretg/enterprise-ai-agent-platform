@@ -14,10 +14,10 @@ import { normalizeModelConfig, parseAgentModelConfig, resolveAgentPrimary } from
 import { fallbackPreviewSteps } from '../src/lib/model-fallback-preview'
 import { isModelAllowed, parseModelPolicy, setModelEnabled, type ModelRef } from '../src/lib/model-policy'
 
-const gpt: ModelRef = { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' }
-const sonnet: ModelRef = { provider: 'claude-code-oauth', model: 'claude-sonnet-4-6' }
+const gpt: ModelRef = { provider: 'openrouter', model: '~openai/gpt-latest' }
+const sonnet: ModelRef = { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' }
 const gemini: ModelRef = { provider: 'gemini', model: 'gemini-3.5-flash' }
-const grok: ModelRef = { provider: 'grok-cli-oauth', model: 'grok-4.6' }
+const grok: ModelRef = { provider: 'openrouter', model: 'x-ai/grok-4.5' }
 const policy = parseModelPolicy({ enabled: [gpt, sonnet, gemini] })
 
 let failures = 0

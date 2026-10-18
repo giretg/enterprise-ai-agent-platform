@@ -20,6 +20,7 @@ import {
 } from '@/domain/model-gateway/fallback-chain'
 import type { GatewayTokenFailure, GatewayTokenClaims } from '@/domain/model-gateway-token/gateway-token'
 import type { McpPrincipal } from '@/auth/mcp-principal'
+import { loadGeminiTenantKey, resolveGeminiApiKey, GEMINI_OPENAI_BASE_URL } from '@/lib/gemini-tenant-key'
 import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrouter-tenant-key'
 
 export const SESSION_HEADER = 'x-excellence-session'
@@ -44,10 +45,11 @@ export type ProviderRegistry = (
   tenantId: string,
 ) => ProviderEndpoint | null | Promise<ProviderEndpoint | null>
 
-/** v1: OpenAI-kompatibilis providerek (D11). A céges modell-kulcs egyetlen helye. */
+/** OpenAI-kompatibilis providerek. A céges modell-kulcs egyetlen helye. */
 export function envProviderRegistry(
   env: Record<string, string | undefined> = process.env,
   loadTenantOpenRouterKey: (tenantId: string) => Promise<string | null> = loadOpenRouterTenantKey,
+  loadTenantGeminiKey: (tenantId: string) => Promise<string | null> = loadGeminiTenantKey,
 ): ProviderRegistry {
   return async (provider, tenantId) => {
     if (provider === 'openrouter') {
@@ -60,6 +62,14 @@ export function envProviderRegistry(
           ...(env.OPENROUTER_HTTP_REFERER ? { 'HTTP-Referer': env.OPENROUTER_HTTP_REFERER } : {}),
           ...(env.OPENROUTER_APP_TITLE ? { 'X-OpenRouter-Title': env.OPENROUTER_APP_TITLE } : {}),
         },
+      }
+    }
+    if (provider === 'gemini') {
+      const apiKey = await resolveGeminiApiKey(tenantId, loadTenantGeminiKey, env)
+      if (!apiKey) return null
+      return {
+        baseUrl: (env.GEMINI_BASE_URL || GEMINI_OPENAI_BASE_URL).replace(/\/+$/, ''),
+        apiKey,
       }
     }
     if (provider === 'ollama' && env.OLLAMA_BASE_URL) {

@@ -99,6 +99,7 @@ jobs:
           npm run test:model-fallback-chain
           npm run test:model-gateway-proxy
           npm run test:openrouter-tenant-key
+          npm run test:gemini-tenant-key
           npm run test:model-gateway-jwt-key
           npm run test:model-gateway-content-filter
           npm run test:ai-audit
