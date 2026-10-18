@@ -450,9 +450,16 @@ export function McpConnectorsPanel({
   async function reload(text?: string) {
     const res = await listMcpConnectors()
     if (res.success) {
-      setData(res.data as McpConnectorsData)
+      const next = res.data as McpConnectorsData
+      setData(next)
       setMessage(text ? { tone: 'ok', text } : null)
-      if (mode === 'setup') onChanged?.()
+      if (mode === 'setup') {
+        // Archíválás után a lista már nem tartalmazza: vissza a létrehozó űrlapra.
+        setCreatedConnectorId((id) =>
+          id && next.connectors.some((row) => row.id === id) ? id : null,
+        )
+        onChanged?.()
+      }
     } else {
       setMessage({ tone: 'err', text: actionError(t, res.error) })
     }

@@ -26,5 +26,6 @@ assert.match(panel, /mode="setup"/)
 assert.match(panel, /connectionKind === 'fixed' && startPath === 'own'/)
 assert.match(mcpPanel, /mode === 'setup'/)
 assert.match(mcpPanel, /setCreatedConnectorId\(connectorId\)/)
+assert.match(mcpPanel, /next.connectors.some\(\(row\) => row.id === id\)/)
 
 console.log('connector-manager-wizard teszt zöld')
