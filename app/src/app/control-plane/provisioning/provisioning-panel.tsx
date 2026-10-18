@@ -641,6 +641,7 @@ export function ProvisioningPanel({
   // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
+  const [newlyCreatedDraftId, setNewlyCreatedDraftId] = useState<string | null>(null)
 
   // Connector sablon-katalógus
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -736,13 +737,18 @@ export function ProvisioningPanel({
   }, [reload])
 
   const run = useCallback(
-    (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => {
+    (
+      fn: () => Promise<{ success: boolean; error?: string; data?: unknown }>,
+      okMsg: string,
+      onSuccess?: (result: { success: boolean; error?: string; data?: unknown }) => void,
+    ) => {
       setError(null)
       setNotice(null)
       startTransition(async () => {
         const res = await fn()
         if (res.success) {
           setNotice(okMsg)
+          onSuccess?.(res)
           reload()
         } else {
           setError(res.error ?? 'Ismeretlen hiba')
@@ -1106,7 +1112,10 @@ export function ProvisioningPanel({
         })
         if (result.success) closeCreateDraftForm()
         return result
-      }, t('draftFromTemplate'))
+      }, t('draftFromTemplate'), (result) => {
+        setNewlyCreatedDraftId((result.data as { draftId: string }).draftId)
+        closeCreateDraftForm()
+      })
       return
     }
     let parsed: unknown
@@ -1124,9 +1133,11 @@ export function ProvisioningPanel({
         sourceContent: docText.trim() || undefined,
         generatedConfig: parsed,
       })
-      if (result.success) closeCreateDraftForm()
       return result
-    }, t('connectorCreated'))
+    }, t('connectorCreated'), (result) => {
+      setNewlyCreatedDraftId((result.data as { draftId: string }).draftId)
+      closeCreateDraftForm()
+    })
   }, [
     catalogChecked,
     catalogIsCatalog,
@@ -2644,6 +2655,7 @@ export function ProvisioningPanel({
               <DraftCard
                 key={d.draftId}
                 draft={d}
+                autoOpen={newlyCreatedDraftId === d.draftId}
                 agents={agents}
                 templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
@@ -2731,8 +2743,6 @@ function CatalogGapCard({
   const [open, setOpen] = useState(false)
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [decommReason, setDecommReason] = useState('')
-  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
-  const [decommApprover, setDecommApprover] = useState('')
   const t = useProvT()
   const toggleOpen = () => setOpen((current) => !current)
 
@@ -2783,27 +2793,6 @@ function CatalogGapCard({
                   placeholder={t('reasonGapPlaceholder')}
                 />
               </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                <select
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommCriticality}
-                  onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                >
-                  <option value="L1">L1</option>
-                  <option value="L2">L2 (dual-control)</option>
-                  <option value="L3">L3 (dual-control)</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
-                <input
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommApprover}
-                  onChange={(e) => setDecommApprover(e.target.value)}
-                  placeholder={t('userIdPlaceholder')}
-                />
-              </label>
             </div>
             {!confirmDecomm ? (
               <button
@@ -2825,8 +2814,6 @@ function CatalogGapCard({
                     run(async () => {
                       const res = await decommissionActiveConnector({
                         connectorId: row.id,
-                        criticality: decommCriticality,
-                        approverId: decommApprover.trim() || undefined,
                         reason:
                           decommReason.trim() ||
                           'provisioning: kezelés nélküli aktív kapcsolat megszüntetése',
@@ -2858,6 +2845,7 @@ function CatalogGapCard({
 
 function DraftCard({
   draft,
+  autoOpen,
   agents,
   templates,
   latestTemplateVersions,
@@ -2870,6 +2858,7 @@ function DraftCard({
   isSuperadmin,
 }: {
   draft: DraftRow
+  autoOpen?: boolean
   agents: AgentOption[]
   templates: ConnectorTemplateRow[]
   latestTemplateVersions: Record<string, number>
@@ -2882,12 +2871,10 @@ function DraftCard({
   isSuperadmin: boolean
 }) {
   const t = useProvT()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(autoOpen ?? false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
   const [clientId, setClientId] = useState(() => draft.delegatedOauthView?.clientId ?? '')
-  const [approverId, setApproverId] = useState('')
-  const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [agentApiKey, setAgentApiKey] = useState('')
@@ -2902,8 +2889,6 @@ function DraftCard({
   // Takarítás / megszüntetés megerősítése.
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [decommReason, setDecommReason] = useState('')
-  const [decommApprover, setDecommApprover] = useState('')
-  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
@@ -3002,8 +2987,6 @@ function DraftCard({
     ...(isOstorosborCrm && actingUserEmail.trim()
       ? { defaultActingUserEmail: actingUserEmail.trim() }
       : {}),
-    criticality,
-    approverId: approverId.trim() || undefined,
   })
 
   const handleActivate = () => {
@@ -3154,7 +3137,6 @@ function DraftCard({
     (draft.lifecycleState === 'draft' ||
       draft.lifecycleState === 'validated' ||
       (isSuperadmin && draft.lifecycleState === 'archived'))
-  const toggleOpen = () => setOpen((current) => !current)
   const handleDeleteFromList = async () => {
     const confirmed = await confirmDialog({
       title: t('deleteConnectorTitle'),
@@ -3181,12 +3163,27 @@ function DraftCard({
           {`Létrehozva: ${new Date(draft.createdAt).toLocaleString('hu-HU')}`}
         </Badge>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconButton
-            icon="info"
-            label={open ? t('close') : t('details')}
-            active={open}
-            onClick={toggleOpen}
-          />
+          {!isActive ? (
+            <button
+              type="button"
+              className="rounded-md border border-sage/40 bg-sage/10 px-3 py-2 text-sm font-semibold text-sage hover:bg-sage/20"
+              onClick={() => {
+                setOpen(true)
+                setDraftStep('activate')
+              }}
+            >
+              {t('activate')}
+            </button>
+          ) : null}
+          {open ? (
+            <button
+              type="button"
+              className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold text-ink-soft hover:bg-wash"
+              onClick={() => setOpen(false)}
+            >
+              {t('close')}
+            </button>
+          ) : null}
           {canDeleteDraft ? (
             <IconButton
               icon="trash"
@@ -3955,27 +3952,6 @@ function DraftCard({
                 ) : null}
                   </>
                 )}
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={criticality}
-                    onChange={(e) => setCriticality(e.target.value as typeof criticality)}
-                  >
-                    <option value="L1">L1</option>
-                    <option value="L2">L2 (dual-control)</option>
-                    <option value="L3">L3 (dual-control)</option>
-                  </select>
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('secondApproverReviewer')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={approverId}
-                    onChange={(e) => setApproverId(e.target.value)}
-                    placeholder={t('userIdPlaceholder')}
-                  />
-                </label>
               </div>
               {!isGmailConnector && !hasActivationCredentials ? (
                 <p className="mt-2 text-xs text-honey">{t('keylessWarn')}</p>
@@ -4159,27 +4135,6 @@ function DraftCard({
                     placeholder={t('reasonActivePlaceholder')}
                   />
                 </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommCriticality}
-                    onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                  >
-                    <option value="L1">L1</option>
-                    <option value="L2">L2 (dual-control)</option>
-                    <option value="L3">L3 (dual-control)</option>
-                  </select>
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommApprover}
-                    onChange={(e) => setDecommApprover(e.target.value)}
-                    placeholder={t('userIdPlaceholder')}
-                  />
-                </label>
               </div>
               {!confirmDecomm ? (
                 <button
@@ -4201,8 +4156,6 @@ function DraftCard({
                       run(async () => {
                         const res = await decommissionConnector({
                           draftId: draft.draftId,
-                          criticality: decommCriticality,
-                          approverId: decommApprover.trim() || undefined,
                           reason: decommReason.trim() || undefined,
                         })
                         if (!res.success) return res
