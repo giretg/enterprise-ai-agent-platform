@@ -302,7 +302,7 @@ export default async function AgentDetailPage({
               agentName={agent.name}
               projects={projects}
               canEdit={canEditMemory}
-              canDeleteMemory={canManage}
+              canDeleteMemory={canManage || canDelete}
               initialError={projectsError}
             />
           </Card>

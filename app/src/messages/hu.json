@@ -525,6 +525,7 @@
       "saveMemory": "Emlék mentése",
       "saveChanges": "Változások mentése",
       "deleteMemory": "Törlés",
+      "deleteMemoryTitle": "Emlék törlése",
       "deleteMemoryConfirm": "Biztosan törlöd ezt az emléket? „{title}” — a keresésben és az agent memóriájában többé nem jelenik meg.",
       "memoryDeleted": "Az emlék törölve.",
       "noAgentMemory": "Nincs munkatárs — a projektmemória munkatársonként él.",
