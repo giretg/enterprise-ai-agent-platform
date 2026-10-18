@@ -2114,7 +2114,7 @@
         },
         "secret_key": {
           "label": "Keys and passwords",
-          "example": "e.g. api_key: sk-… (documentation example keys are not treated as secrets)"
+          "example": "e.g. api_key: sk-…, Bearer eyJ…, PEM key. A download-link ?token= query is not a secret; documentation example keys are not treated as secrets either."
         }
       },
       "tryTitle": "Try it: what would the model see?",

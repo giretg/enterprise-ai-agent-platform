@@ -3,6 +3,7 @@
  * Futtatás: npm run test:model-gateway-content-filter
  */
 import assert from 'node:assert/strict'
+import { inspectPromptSensitivity, redactSensitiveText } from '../src/domain/privacy/sensitivity-match-spans'
 import { handleChatCompletion, type ModelCallEvent, type ModelGatewayDeps } from '../src/domain/model-gateway/proxy'
 import { createContentFilterHooks, dryRunContentFilter, PAN_BLOCK_MESSAGE, type GatewayValVault } from '../src/domain/model-gateway/content-filter'
 import { SurrogateTakenError, type InsertValInput, type ValVaultRecord } from '../src/domain/privacy/surrogate-vault'
@@ -203,7 +204,8 @@ async function main() {
     assert.equal(PRESETS.standard['content_filter.mode'], 'observe')
     assert.equal(PRESETS.bound['content_filter.mode'], 'enforce')
     assert.equal(PRESETS.free['content_filter.mode'], 'off')
-    assert.deepEqual(contentFilterLevels('secret_key'), ['block'])
+    assert.equal(PRESETS.free['content_filter.secret_key'], 'off')
+    assert.deepEqual(contentFilterLevels('secret_key'), ['block', 'local_only', 'warn', 'off'])
   })
 
   await check('figyelő mód: a naplóhiba nem blokkolja a kérést', async () => {
@@ -219,21 +221,87 @@ async function main() {
     assert.equal(data.choices[0].message.content, 'ok')
   })
 
-  await check('Szabad preset: e-mail kimegy, titkos kulcs akkor is blokkol', async () => {
+  await check('Szabad preset: e-mail és titkos kulcs is kimegy (a szűrő ki van kapcsolva)', async () => {
     const s = setup({ capabilities: PRESETS.free, scripts: [completion({ content: 'ok' })] })
     await s.call({ messages: [user('írj a kiss@x.hu-ra')] })
     assert.equal(s.calls.length, 1)
-    const secret = setup({ capabilities: PRESETS.free })
+    const secret = setup({ capabilities: PRESETS.free, scripts: [completion({ content: 'ok' })] })
     const data = await (await secret.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })).json()
-    assert.match(data.choices[0].message.content, /titkos kulcsot vagy jelszót/)
-    assert.equal(secret.calls.length, 0)
+    assert.equal(data.choices[0].message.content, 'ok')
+    assert.equal(secret.calls.length, 1)
+    assert.match(sentTo(secret.calls), /sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg/)
   })
 
-  await check('titkos kulcs warn/off is blokkol (kemény invariáns)', async () => {
+  await check('képesség nélkül (standalone): titkos kulcs továbbra is blokk', async () => {
+    const s = setup()
+    const data = await (await s.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })).json()
+    assert.match(data.choices[0].message.content, /titkos kulcsot vagy jelszót/)
+    assert.equal(s.calls.length, 0)
+  })
+
+  await check('titkos kulcs: tokenize/block tilt, warn/off átenged', async () => {
     for (const level of ['warn', 'off', 'tokenize', 'block']) {
-      const s = setup({ capabilities: { ...ENFORCE, 'content_filter.secret_key': level } })
+      const s = setup({
+        capabilities: { ...ENFORCE, 'content_filter.secret_key': level },
+        scripts: [completion({ content: 'ok' })],
+      })
       await s.call({ messages: [user('api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg')] })
-      assert.equal(s.calls.length, 0, level)
+      assert.equal(s.calls.length, ['block', 'tokenize'].includes(level) ? 0 : 1, level)
+    }
+  })
+
+  await check('a letöltési kivétel nem enged át explicit URL-hitelesítőket és szöveges tokeneket', async () => {
+    const value = 'D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ'
+    for (const text of [`token: ${value}`, `https://example.com/?api_key=${value}`, `https://example.com/?access_token=${value}`, `https://example.com/?x=1&password=${value}`, `https://example.com/?token=download&api_key=${value}`]) {
+      const s = setup({ capabilities: PRESETS.bound })
+      await s.call({ messages: [user(text)] })
+      assert.equal(s.calls.length, 0, text)
+      assert.ok(!redactSensitiveText(text).text.includes(value))
+    }
+    const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+    await s.call({ messages: [user(`https://example.com/?x=1&token=${value}`)] })
+    assert.equal(s.calls.length, 1)
+  })
+
+  await check('az ismert prefixű dokumentációs mintakulcs sem blokkol', async () => {
+    for (const value of ['sk-your_api_key_here_do_not_use', 'ghp_your_example_token_here']) {
+      const s = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+      await s.call({ messages: [user(`api_key: ${value}`)] })
+      assert.equal(s.calls.length, 1, value)
+    }
+  })
+
+  await check('az új titokminták a találati kivonatban és a redakcióban is maszkoltak', async () => {
+    for (const value of ['sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg', 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signaturepartgoesherexx']) {
+      for (const text of [value, `Authorization: Bearer ${value}`]) {
+        const inspection = inspectPromptSensitivity([{ role: 'user', content: text }])
+        assert.equal(inspection.level, 'forbidden')
+        assert.ok(inspection.findings.every((finding) => !finding.snippet.includes(value)))
+        assert.ok(!redactSensitiveText(text).text.includes(value))
+      }
+    }
+  })
+
+  await check('letöltő-URL ?token= nem titok; ismert prefix, JWT, PEM, Bearer igen', async () => {
+    const download =
+      'https://crm.example.com/reports/exports/11111111-1111-4111-8111-111111111111/download?token=D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ'
+    const ok = setup({ capabilities: PRESETS.bound, scripts: [completion({ content: 'ok' })] })
+    await ok.call({ messages: [user(`export kész: ${download}`)] })
+    assert.equal(ok.calls.length, 1)
+    assert.match(sentTo(ok.calls), /download\?token=D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ/)
+
+    const jwt = 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.signaturepartgoesherexx'
+    for (const [label, text] of [
+      ['assignment', 'api_key: sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg'],
+      ['jwt', `auth ${jwt}`],
+      ['pem', '-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----'],
+      ['bearer', 'Authorization: Bearer D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ'],
+      ['url-prefix', 'https://example.com/callback?key=sk-9fQ2xLm7Rt4vB8nZ1pK6wE3yH5jD0aSg'],
+    ] as const) {
+      const blocked = setup({ capabilities: PRESETS.bound })
+      const data = await (await blocked.call({ messages: [user(text)] })).json()
+      assert.match(data.choices[0].message.content, /titkos kulcsot vagy jelszót/, label)
+      assert.equal(blocked.calls.length, 0, label)
     }
   })
 

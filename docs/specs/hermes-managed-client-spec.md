@@ -249,6 +249,8 @@ A legacy platform Model Gateway-ében már működött egy kétlépcsős tartalo
 
 **Átvehető tanulságok** (a legacy kódkommentekben és a code-review-kban rögzítve): a tool-üzenetek határán ne keletkezzen hamis PAN-találat; a dokumentációs példa-API-kulcs ne blokkoljon; a telefonszám csak tokenizálódjon, ne emelje `sensitive`-re a beszélgetést; a debug-trace se szivárogtasson PII-t (PR #319); a PAN/IBAN egress legyen auditált (PR #342). A legacy eval-fixture-ök regressziós tesztként átvehetők.
 
+**Hermes kliens-policy szűrő (`content_filter.*`, #747):** a `secret_key` a PAN-hoz hasonlóan kikapcsolható (`block` / `local_only` / `warn` / `off`; álnév nincs). A Szabad preset teljesen ki van kapcsolva (`mode=off` semmit nem néz át). Kötött pálya és Standard alapból `block`. A felismerés ismert kulcs-prefixeket (pl. `sk-`, `ghp_`, JWT), hozzárendelést (`api_key:`, `password:`) és PEM-blokkot keres; a letöltő-URL `?token=` paramétere nem titok. A legacy APG `privacy-category-policy.ts` invariánsa (`secret_key` csak `block`) ettől független.
+
 ### 7.2 POC-ban mérendő
 
 1. **A blokkolás jelzése.** Egy 4xx-es hiba újrapróbálkozást, tartalék modellre váltást vagy tömörítést válthat ki. Valószínűleg jobb egy 200-as válasz szintetikus asszisztens-üzenettel (a legacy `formatSensitivityBlockMessage` szövegéből kiindulva, hétköznapi nyelven).
