@@ -2,7 +2,11 @@
  * Futtatás: GOOGLE_DRIVE_API_STUB=true npx tsx scripts/google-drive-api-client.test.ts
  */
 import assert from 'node:assert/strict'
-import { GoogleDriveApiClient } from '../src/domain/connector-grant/google-drive-api-client'
+import {
+  GoogleDriveApiAuthError,
+  GoogleDriveApiClient,
+  GoogleDriveApiError,
+} from '../src/domain/connector-grant/google-drive-api-client'
 
 process.env.GOOGLE_DRIVE_API_STUB = 'true'
 
@@ -166,6 +170,98 @@ async function main() {
         const res = await live.search({ query: 'x' })
         assert.equal(res.files.length, 0)
         assert.equal(getCalls(), 3, 'reads keep the 5xx retry')
+      },
+    )
+  })
+
+  await test('search 400 keeps structured Google reason, not raw body', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'File secret-content.pdf not found',
+        status: 'INVALID_ARGUMENT',
+        errors: [
+          {
+            reason: 'invalid',
+            location: 'q',
+            message: 'File secret-content.pdf not found',
+          },
+        ],
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.search({ query: 'secret' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.status, 400)
+            assert.equal(error.googleStatus, 'INVALID_ARGUMENT')
+            assert.deepEqual(error.googleReasonCodes, ['invalid'])
+            assert.deepEqual(error.googleLocations, ['q'])
+            assert.equal(error.message, 'google_drive.search failed: 400')
+            assert.equal(error.message.includes('secret-content'), false)
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('search 400 reads reason and field from Google details[]', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'Request contains secret-content.pdf',
+        status: 'INVALID_ARGUMENT',
+        details: [
+          { reason: 'INVALID_PARAMETER' },
+          { fieldViolations: [{ field: 'parents', description: 'secret-content.pdf' }] },
+        ],
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.search({ query: 'secret' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.googleStatus, 'INVALID_ARGUMENT')
+            assert.deepEqual(error.googleReasonCodes, ['INVALID_PARAMETER'])
+            assert.deepEqual(error.googleLocations, ['parents'])
+            assert.equal(error.message.includes('secret-content'), false)
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('search 403 keeps structured Google auth reason, not raw body', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 403,
+        message: 'The user has not granted the app access to file secret-content.pdf',
+        errors: [{ reason: 'appNotAuthorizedToFile', location: 'fileId' }],
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 403, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.search({ query: 'secret' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiAuthError)
+            assert.equal(error.status, 403)
+            assert.deepEqual(error.googleReasonCodes, ['appNotAuthorizedToFile'])
+            assert.deepEqual(error.googleLocations, ['fileId'])
+            assert.equal(error.message, 'google_drive.search auth failed: 403')
+            assert.equal(error.message.includes('secret-content'), false)
+            return true
+          },
+        )
       },
     )
   })

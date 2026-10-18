@@ -643,6 +643,46 @@ async function main() {
     assert.equal(payload.googleCode, 'file_too_large')
   })
 
+  await check('Drive API error maps structured Google details without raw body', async () => {
+    const logs = captureInfo()
+    try {
+      const result = await invokeEnterpriseTool(
+        invokeDeps({
+          executeDriveTool: async () => {
+            throw new GoogleDriveApiError(
+              'google_drive.search failed: 400',
+              400,
+              undefined,
+              'INVALID_ARGUMENT',
+              ['invalid'],
+              ['q'],
+            )
+          },
+        }),
+        {
+          principal: principal({ role: 'admin' }),
+          toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+          args: { definitionId: DEFINITION_ID },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, 'google_drive_api_error')
+      assert.equal(payload.status, 400)
+      assert.equal(payload.googleStatus, 'INVALID_ARGUMENT')
+      assert.deepEqual(payload.googleReasonCodes, ['invalid'])
+      assert.deepEqual(payload.googleLocations, ['q'])
+      const serialized = result.content[0]?.text ?? ''
+      assert.equal(serialized.includes('secret-content'), false)
+      const logged = logs.events.find((row) => row.event === 'enterprise.tool.error')
+      assert.equal(logged?.payload.googleStatus, 'INVALID_ARGUMENT')
+      assert.deepEqual(logged?.payload.googleReasonCodes, ['invalid'])
+      assert.deepEqual(logged?.payload.googleLocations, ['q'])
+    } finally {
+      logs.restore()
+    }
+  })
+
   await check('invoke create_folder enqueues instead of calling Drive', async () => {
     let driveCalled = false
     let enqueued: { toolName?: string; name?: unknown } | null = null
