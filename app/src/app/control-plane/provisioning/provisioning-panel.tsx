@@ -1,8 +1,7 @@
 'use client'
 
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore, useTransition } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
-import { useRouter } from 'next/navigation'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card, IconButton } from '@/components/ui/shell'
@@ -36,7 +35,13 @@ import {
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { GoogleConnectorLevelsPanel, type GoogleAccountViewRow } from './google-connector-levels-panel'
-import { McpConnectorsPanel, type McpConnectorsData } from './mcp-connectors-panel'
+import { listMcpConnectors } from '@/app/actions/mcp-connectors'
+import {
+  McpConnectorCard,
+  McpConnectorsPanel,
+  mcpHasApprovedTools,
+  type McpConnectorsData,
+} from './mcp-connectors-panel'
 import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
@@ -584,7 +589,6 @@ export function ProvisioningPanel({
   mcpInitialError?: string
 }) {
   const t = useProvT()
-  const router = useRouter()
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [catalogRows, setCatalogRows] = useState<
     Array<{ id: string; name: string; type: string; connectorMode?: 'fixed' | 'self_updating' }>
@@ -650,6 +654,8 @@ export function ProvisioningPanel({
   // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
+  const [mcpData, setMcpData] = useState(mcpInitial)
+  const [newlyCreatedMcpId, setNewlyCreatedMcpId] = useState<string | null>(null)
   const [newlyCreatedDraftId, setNewlyCreatedDraftId] = useState<string | null>(null)
 
   // Connector sablon-katalógus
@@ -740,6 +746,16 @@ export function ProvisioningPanel({
       setLoadedOnce(true)
     })
   }, [isSuperadmin])
+
+  const reloadMcp = useCallback(async (text?: string) => {
+    const res = await listMcpConnectors()
+    if (res.success) {
+      setMcpData(res.data as McpConnectorsData)
+      if (text) setNotice(text)
+    } else {
+      setError(res.error ?? t('error'))
+    }
+  }, [t])
 
   useEffect(() => {
     reload()
@@ -871,9 +887,10 @@ export function ProvisioningPanel({
     const listed = new Set([
       ...drafts.map((draft) => draft.connectorId),
       ...selfUpdatingRows.map((row) => row.id),
+      ...(mcpData?.connectors ?? []).map((row) => row.id),
     ])
     return catalogRows.filter((row) => !listed.has(row.id))
-  }, [catalogRows, drafts, selfUpdatingRows])
+  }, [catalogRows, drafts, mcpData, selfUpdatingRows])
   const activeSelfUpdatingRows = selfUpdatingRows.filter((row) => row.lifecycleState === 'active')
   const archivedSelfUpdatingRows = selfUpdatingRows
     .filter((row) => row.lifecycleState !== 'active')
@@ -882,10 +899,14 @@ export function ProvisioningPanel({
   const pendingSelfUpdatingRows = activeSelfUpdatingRows
     .filter((row) => !isSelfUpdatingReady(row))
     .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
-  const inactiveCount = openDrafts.length + archivedSelfUpdatingRows.length
+  const mcpConnectors = mcpData?.connectors ?? []
+  const inactiveMcpRows = mcpConnectors.filter((row) => !mcpHasApprovedTools(row))
+  const activeMcpRows = mcpConnectors.filter((row) => mcpHasApprovedTools(row))
+  const inactiveCount = openDrafts.length + archivedSelfUpdatingRows.length + inactiveMcpRows.length
   const activeItems = [
     ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
     ...readySelfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
+    ...activeMcpRows.map((row) => ({ kind: 'mcp' as const, name: row.name, row })),
   ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const latestTemplateVersions = useMemo(() => {
     const versions: Record<string, number> = {}
@@ -1764,9 +1785,13 @@ export function ProvisioningPanel({
                 <McpConnectorsPanel
                   mode="setup"
                   canManage={canManageMcp}
-                  initial={mcpInitial}
+                  initial={mcpData}
                   initialError={mcpInitialError}
-                  onChanged={() => router.refresh()}
+                  onCreatedConnector={(connectorId, text) => {
+                    setNewlyCreatedMcpId(connectorId)
+                    setNotice(text)
+                    void reloadMcp().then(() => closeCreateDraftForm())
+                  }}
                 />
               </div>
             ) : null}
@@ -2594,6 +2619,13 @@ export function ProvisioningPanel({
                   onReload={reload}
                   isSuperadmin={isSuperadmin}
                 />
+              ) : item.kind === 'mcp' ? (
+                <McpConnectorCard
+                  key={item.row.id}
+                  row={item.row}
+                  autoFocus={newlyCreatedMcpId === item.row.id}
+                  reload={(text) => void reloadMcp(text)}
+                />
               ) : (
                 <DraftCard
                   key={item.draft.draftId}
@@ -2687,6 +2719,14 @@ export function ProvisioningPanel({
           <p className="text-sm text-ink-soft">{t('noInactive')}</p>
         ) : (
           <div className="space-y-3">
+            {inactiveMcpRows.map((row) => (
+              <McpConnectorCard
+                key={row.id}
+                row={row}
+                autoFocus={newlyCreatedMcpId === row.id}
+                reload={(text) => void reloadMcp(text)}
+              />
+            ))}
             {archivedSelfUpdatingRows.map((row) => (
               <SelfUpdatingConnectorCard
                 key={row.id}
@@ -2917,7 +2957,12 @@ function DraftCard({
   isSuperadmin: boolean
 }) {
   const t = useProvT()
+  const rootRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(autoOpen ?? false)
+  useEffect(() => {
+    if (!autoOpen) return
+    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [autoOpen])
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
   const [clientId, setClientId] = useState(() => draft.delegatedOauthView?.clientId ?? '')
@@ -3195,7 +3240,7 @@ function DraftCard({
   }
 
   return (
-    <div className="rounded-lg border border-ink/12 bg-paper">
+    <div ref={rootRef} className="scroll-mt-24 rounded-lg border border-ink/12 bg-paper">
       <div className="flex items-center gap-3 px-4 py-3">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white text-ink-soft">
           <ConnectorTemplateIcon
