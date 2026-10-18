@@ -116,17 +116,17 @@ async function main() {
 
   // --- 5xx retry-duplikátum regresszió (nem-idempotens create-POST nem ismételhető) ---
   async function withLiveFetch<T>(
-    responder: (calls: number, url: string) => Response,
+    responder: (calls: number, url: string, init?: RequestInit) => Response,
     run: (live: GoogleDriveApiClient, getCalls: () => number) => Promise<T>,
   ): Promise<T> {
     const realFetch = globalThis.fetch
     const realStub = process.env.GOOGLE_DRIVE_API_STUB
     delete process.env.GOOGLE_DRIVE_API_STUB
     let calls = 0
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls += 1
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      return responder(calls, url)
+      return responder(calls, url, init)
     }) as typeof fetch
     try {
       // A GoogleDriveApiClient stubnak tekint minden `stub-` prefixű tokent → live token.
@@ -371,6 +371,48 @@ async function main() {
         )
       },
     )
+  })
+
+  await test('plain-text Google 400 body is kept as googleMessage', async () => {
+    await withLiveFetch(
+      () =>
+        new Response('Invalid multipart request with 0 mime parts.', {
+          status: 400,
+          headers: { 'content-type': 'text/plain' },
+        }),
+      async (live) => {
+        await assert.rejects(
+          () => live.uploadFile({ name: 'hello.txt', textContent: 'hello' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.googleMessage, 'Invalid multipart request with 0 mime parts.')
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('upload_file multipart has a blank line before the file body', async () => {
+    let sent: Buffer | undefined
+    await withLiveFetch(
+      (_calls, _url, init) => {
+        const raw = init?.body
+        sent = Buffer.isBuffer(raw)
+          ? raw
+          : raw instanceof Uint8Array
+            ? Buffer.from(raw)
+            : Buffer.from(String(raw ?? ''))
+        return Response.json({ id: 'f1', name: 'hello.txt', mimeType: 'text/plain' })
+      },
+      async (live) => {
+        await live.uploadFile({ name: 'hello.txt', textContent: 'hello' })
+      },
+    )
+    assert.ok(sent)
+    const text = sent.toString('latin1')
+    assert.match(text, /Content-Type: text\/plain; charset=UTF-8\r\n\r\nhello/)
+    assert.equal(text.includes('charset=UTF-8\r\nhello'), false)
   })
 
   console.log('\nAll google-drive-api-client tests passed.')
