@@ -58,6 +58,9 @@ function memAudit(): Pick<AuditRepository, 'findMany'> & { rows: Stored[]; lastF
         .filter((r) => !filter?.tenantId || r.tenantId === filter.tenantId)
         .filter((r) => !filter?.since || r.createdAt >= filter.since)
         .filter((r) => !actions || actions.has(r.action))
+        .sort((a, b) => filter?.order === 'desc'
+          ? b.createdAt.getTime() - a.createdAt.getTime()
+          : a.createdAt.getTime() - b.createdAt.getTime())
         .slice(0, filter?.limit ?? 100) as Awaited<ReturnType<AuditRepository['findMany']>>
     },
   }
@@ -99,56 +102,56 @@ async function main() {
   // 1. Blog-draft: mintaszerű sorrend → minden zöld.
   await session('blog-ok', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'claude' },
-    { action: 'mcp.tools.call', tool: 'platform.project_memory.read', agentId: KATI, client: 'claude' },
-    { action: 'mcp.tools.call', tool: 'platform.skills.read', agentId: KATI, client: 'claude' },
+    { action: 'enterprise.tool.ok', tool: 'platform.project_memory.read', agentId: KATI, client: 'claude' },
+    { action: 'mcp.resources.read', tool: 'skill://kati/SKILL.md', agentId: KATI, client: 'claude' },
     { action: 'mcp.tools.call', tool: 'kb_search', agentId: KATI, client: 'claude' },
-    { action: 'mcp.tools.call', tool: 'platform.work_file.write', agentId: KATI, client: 'claude' },
+    { action: 'enterprise.tool.ok', tool: 'platform.work_file.write', agentId: KATI, client: 'claude' },
   ])
 
   // 2. Céges tény memóriával: definíció+memória, keresés, memória-írás.
   await session('fact-memory', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'cursor' },
-    { action: 'mcp.tools.call', tool: 'platform.project_memory.read', agentId: KATI, client: 'cursor' },
-    { action: 'mcp.tools.call', tool: 'platform.skills.read', agentId: KATI, client: 'cursor' },
+    { action: 'enterprise.tool.ok', tool: 'platform.project_memory.read', agentId: KATI, client: 'cursor' },
+    { action: 'mcp.resources.read', tool: 'skill://kati/SKILL.md', agentId: KATI, client: 'cursor' },
     { action: 'mcp.tools.call', tool: 'kb_search', agentId: KATI, client: 'cursor' },
-    { action: 'project.project_memory.write', tool: null, agentId: KATI, client: 'cursor' },
+    { action: 'enterprise.tool.ok', tool: 'platform.project_memory.write', agentId: KATI, client: 'cursor' },
   ])
 
   // 3. Keresés definíció nélkül → definitionBeforeSearch hamis.
   await session('search-first', [
     { action: 'mcp.tools.call', tool: 'kb_search', agentId: KATI, client: 'cursor' },
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'cursor' },
-    { action: 'mcp.tools.call', tool: 'platform.skills.read', agentId: KATI, client: 'cursor' },
-    { action: 'mcp.tools.call', tool: 'platform.work_file.write', agentId: KATI, client: 'cursor' },
+    { action: 'mcp.resources.read', tool: 'skill://kati/SKILL.md', agentId: KATI, client: 'cursor' },
+    { action: 'enterprise.tool.ok', tool: 'platform.work_file.write', agentId: KATI, client: 'cursor' },
   ])
 
   // 4. Belépő skill nélkül → entrySkillRead hamis.
   await session('no-skill', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'codex' },
     { action: 'mcp.tools.call', tool: 'kb_search', agentId: KATI, client: 'codex' },
-    { action: 'mcp.tools.call', tool: 'platform.work_file.write', agentId: KATI, client: 'codex' },
+    { action: 'enterprise.tool.ok', tool: 'platform.work_file.write', agentId: KATI, client: 'codex' },
   ])
 
   // 5. Írás nélkül zár → logWritten/memoryWritten hamis.
   await session('no-write', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'claude' },
-    { action: 'mcp.tools.call', tool: 'platform.skills.read', agentId: KATI, client: 'claude' },
+    { action: 'mcp.resources.read', tool: 'skill://kati/SKILL.md', agentId: KATI, client: 'claude' },
     { action: 'mcp.tools.call', tool: 'kb_search', agentId: KATI, client: 'claude' },
   ])
 
   // 6. "Jegyezd meg" kérés → memória-írás.
   await session('remember', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'cursor' },
-    { action: 'mcp.tools.call', tool: 'platform.skills.read', agentId: KATI, client: 'cursor' },
-    { action: 'mcp.tools.call', tool: 'platform.project_memory.write', agentId: KATI, client: 'cursor' },
+    { action: 'mcp.resources.read', tool: 'skill://kati/SKILL.md', agentId: KATI, client: 'cursor' },
+    { action: 'enterprise.tool.ok', tool: 'platform.project_memory.write', agentId: KATI, client: 'cursor' },
   ])
 
   // 7. Átadás Gábornak: a checkout és az írás már az ő agentId-jén.
   await session('handoff', [
     { action: 'mcp.tools.call', tool: 'platform.agent.get_definition', agentId: KATI, client: 'claude' },
     { action: 'mcp.tools.call', tool: 'platform.agent.checkout', agentId: GABOR, client: 'claude' },
-    { action: 'mcp.tools.call', tool: 'platform.skills.read', agentId: GABOR, client: 'claude' },
-    { action: 'mcp.tools.call', tool: 'platform.work_file.append', agentId: GABOR, client: 'claude' },
+    { action: 'mcp.resources.read', tool: 'skill://gabor/SKILL.md', agentId: GABOR, client: 'claude' },
+    { action: 'enterprise.tool.ok', tool: 'platform.work_file.append', agentId: GABOR, client: 'claude' },
   ])
 
   // 8. Jogosulatlan eszköz → tool_not_allowed számolva.
@@ -248,6 +251,25 @@ async function main() {
     assert.ok(
       report.trend.every((t) => t.pctGood === null || (t.pctGood >= 0 && t.pctGood <= 100)),
     )
+  })
+
+  await check('a friss eseményeket választja, és jelzi a mintahatárt és a hiányzó sessiont', async () => {
+    const sample = memAudit()
+    const now = Date.now()
+    for (let i = 0; i < 4; i++) {
+      sample.rows.push({
+        action: 'mcp.tools.call', inputRef: 'kb_search', outputRef: null,
+        policyDecision: 'allowed',
+        metadata: i === 2 ? {} : { sessionId: `sample-${i}`, clientName: 'codex' },
+        createdAt: new Date(now + i), actorId: 'one', tenantId: TENANT,
+      })
+    }
+    const recent = await getMcpParityReport(sample, { tenantId: TENANT, limit: 2 })
+    assert.equal(sample.lastFilter?.order, 'desc')
+    assert.equal(sample.lastFilter?.limit, 3)
+    assert.equal(recent.limited, true)
+    assert.equal(recent.unattributedEvents, 1)
+    assert.deepEqual(recent.sessionsDetail.map((s) => s.sessionId), ['sample-3'])
   })
 
   console.log(failures === 0 ? '\nMinden eval-forgatókönyv zöld.' : `\n${failures} eval bukott.`)
