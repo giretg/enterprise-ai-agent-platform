@@ -56,7 +56,7 @@ export function UpdateOutputFolderForm({
       <p className="text-sm text-ink-soft">
         {outputDriveFolderId
           ? `Output-mappa: ${outputDriveFolderId} — ide a munkatárs jóváhagyás nélkül tölt fel.`
-          : 'Nincs output-mappa — a feltöltési célhelyet a feladat adja meg, a jóváhagyást a Drive írási mód szabályozza.'}
+          : 'Nincs output-mappa — a feladat adja meg a mappát (enélkül a Drive gyökerébe kerül); a jóváhagyást a Drive írási mód szabályozza.'}
       </p>
     )
   }
@@ -82,8 +82,9 @@ export function UpdateOutputFolderForm({
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink-soft">
-        Válassz alapértelmezett Drive-mappát. Ha nincs kiválasztva, a feltöltés a Drive gyökérmappájába
-        kerül; a jóváhagyást a fenti Drive írási mód szabályozza.
+        Válassz alapértelmezett Drive-mappát. Ide a munkatárs jóváhagyás nélkül tölthet fel. Ha nincs
+        kiválasztva, a feladat adja meg a mappát (enélkül a Drive gyökerébe kerül); a jóváhagyást a
+        fenti Drive írási mód szabályozza.
       </p>
 
       {folderId ? (

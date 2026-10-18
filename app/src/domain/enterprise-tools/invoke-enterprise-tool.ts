@@ -800,6 +800,22 @@ async function resolveHttpActingUser(
   return resolved ? { id: resolved.id, email: resolved.email, tenantId: principal.tenantId } : null
 }
 
+function googleDriveMappedExtra(error: {
+  status: number
+  code?: string
+  googleStatus?: string
+  googleReasonCodes?: string[]
+  googleLocations?: string[]
+}): Record<string, unknown> {
+  return {
+    status: error.status,
+    ...(typeof error.code === 'string' ? { googleCode: error.code } : {}),
+    ...(typeof error.googleStatus === 'string' ? { googleStatus: error.googleStatus } : {}),
+    ...(Array.isArray(error.googleReasonCodes) ? { googleReasonCodes: error.googleReasonCodes } : {}),
+    ...(Array.isArray(error.googleLocations) ? { googleLocations: error.googleLocations } : {}),
+  }
+}
+
 function mapToolError(
   error: unknown,
   connectorType: string,
@@ -807,18 +823,7 @@ function mapToolError(
   if (error instanceof GoogleDriveApiAuthError || error instanceof GoogleWorkspaceApiAuthError) {
     return {
       code: 'google_drive_auth_failed',
-      extra: {
-        status: error.status,
-        ...('googleStatus' in error && typeof error.googleStatus === 'string'
-          ? { googleStatus: error.googleStatus }
-          : {}),
-        ...('googleReasonCodes' in error && Array.isArray(error.googleReasonCodes)
-          ? { googleReasonCodes: error.googleReasonCodes }
-          : {}),
-        ...('googleLocations' in error && Array.isArray(error.googleLocations)
-          ? { googleLocations: error.googleLocations }
-          : {}),
-      },
+      extra: googleDriveMappedExtra(error),
     }
   }
   if (error instanceof GmailApiAuthError) {
@@ -827,19 +832,7 @@ function mapToolError(
   if (error instanceof GoogleDriveApiError || error instanceof GoogleWorkspaceApiError) {
     return {
       code: connectorType === 'gmail' ? 'gmail_api_error' : 'google_drive_api_error',
-      extra: {
-        status: error.status,
-        ...('code' in error && typeof error.code === 'string' ? { googleCode: error.code } : {}),
-        ...('googleStatus' in error && typeof error.googleStatus === 'string'
-          ? { googleStatus: error.googleStatus }
-          : {}),
-        ...('googleReasonCodes' in error && Array.isArray(error.googleReasonCodes)
-          ? { googleReasonCodes: error.googleReasonCodes }
-          : {}),
-        ...('googleLocations' in error && Array.isArray(error.googleLocations)
-          ? { googleLocations: error.googleLocations }
-          : {}),
-      },
+      extra: googleDriveMappedExtra(error),
     }
   }
   if (error instanceof HttpApiError) {

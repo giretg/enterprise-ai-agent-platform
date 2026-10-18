@@ -79,6 +79,10 @@ export class GoogleDriveApiError extends Error {
   }
 }
 
+function pushTrimmed(target: string[], value: unknown) {
+  if (typeof value === 'string' && value) target.push(value.slice(0, 100))
+}
+
 function googleDriveErrorDetails(body?: string): {
   status?: string
   reasonCodes?: string[]
@@ -88,17 +92,26 @@ function googleDriveErrorDetails(body?: string): {
   try {
     const error = (JSON.parse(body) as { error?: Record<string, unknown> }).error
     if (!error) return {}
+    const reasonCodes: string[] = []
+    const locations: string[] = []
     const errors = Array.isArray(error.errors) ? error.errors : []
-    const reasonCodes = errors.flatMap((entry) => {
-      if (!entry || typeof entry !== 'object') return []
-      const reason = (entry as Record<string, unknown>).reason
-      return typeof reason === 'string' ? [reason.slice(0, 100)] : []
-    })
-    const locations = errors.flatMap((entry) => {
-      if (!entry || typeof entry !== 'object') return []
-      const location = (entry as Record<string, unknown>).location
-      return typeof location === 'string' ? [location.slice(0, 100)] : []
-    })
+    for (const entry of errors) {
+      if (!entry || typeof entry !== 'object') continue
+      const rec = entry as Record<string, unknown>
+      pushTrimmed(reasonCodes, rec.reason)
+      pushTrimmed(locations, rec.location)
+    }
+    const details = Array.isArray(error.details) ? error.details : []
+    for (const entry of details) {
+      if (!entry || typeof entry !== 'object') continue
+      const rec = entry as Record<string, unknown>
+      pushTrimmed(reasonCodes, rec.reason)
+      const violations = Array.isArray(rec.fieldViolations) ? rec.fieldViolations : []
+      for (const violation of violations) {
+        if (!violation || typeof violation !== 'object') continue
+        pushTrimmed(locations, (violation as Record<string, unknown>).field)
+      }
+    }
     return {
       ...(typeof error.status === 'string' ? { status: error.status.slice(0, 100) } : {}),
       ...(reasonCodes.length ? { reasonCodes: [...new Set(reasonCodes)].slice(0, 10) } : {}),
