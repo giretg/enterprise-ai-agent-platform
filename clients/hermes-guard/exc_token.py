@@ -161,11 +161,14 @@ def _copy_login(src_dir, src_name, dest_dir, dest_name):
         if os.path.islink(src) or not os.path.isfile(src) or os.path.islink(dest):
             continue
         os.makedirs(dest_dir, exist_ok=True)
+        info = os.stat(src)
         data = open(src, "rb").read()
         tmp = f"{dest}.{os.getpid()}"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+        # A legacy belépő lejárata az mtime-ra épül; a másolás nem friss bejelentkezés.
+        os.utime(tmp, ns=(info.st_atime_ns, info.st_mtime_ns))
         os.replace(tmp, dest)
         copied = True
     return copied
@@ -218,8 +221,23 @@ def share_all_mcp_tokens(home):
 
 
 def _expires_at(path):
+    """Mikor jár le a belépő? Nagyobb = frissebb a share számára.
+
+    A modern Hermes abszolút ``expires_at``-et ír. Régi / telepítő-másolt fájlokban
+    ez hiányzik — a 0-ra esés azt jelentette, hogy egy lejárt, de ``expires_at``-es
+    szülő belépő felülírta a Bot friss (expires_at nélküli) loginját. A Hermeshez
+    igazodva: hiányzó ``expires_at`` esetén ``mtime + expires_in`` (vagy mtime).
+    """
     try:
-        return float(json.load(open(path, encoding="utf-8")).get("expires_at") or 0)
+        data = json.load(open(path, encoding="utf-8"))
+        exp = data.get("expires_at")
+        if exp is not None and exp != "":
+            return float(exp)
+        mtime = os.path.getmtime(path)
+        extra = data.get("expires_in")
+        if extra is not None and extra != "":
+            return mtime + float(extra)
+        return mtime
     except (OSError, ValueError, TypeError, AttributeError):
         return 0.0
 
