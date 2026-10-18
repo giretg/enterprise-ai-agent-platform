@@ -1,21 +1,23 @@
 import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { getOpenRouterKeyStatus, getTenantModelPolicy } from '@/app/actions/model-config'
+import { getGeminiKeyStatus, getOpenRouterKeyStatus, getTenantModelPolicy } from '@/app/actions/model-config'
 import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { getTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
+import { GeminiKeyPanel } from './gemini-key-panel'
 import { OpenRouterKeyPanel } from './openrouter-key-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 
 export default async function TenantSettingsPage() {
   await requireTenantRole('admin')
-  const [language, mcpIntro, modelPolicy, openRouterKey] = await Promise.all([
+  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey] = await Promise.all([
     getTenantLanguage(),
     getTenantMcpIntro(),
     getTenantModelPolicy(),
     getOpenRouterKeyStatus(),
+    getGeminiKeyStatus(),
   ])
   const t = await getTranslations('ControlPlane.settings')
 
@@ -49,11 +51,20 @@ export default async function TenantSettingsPage() {
           },
           {
             id: 'openrouter',
-            label: t('openrouter'),
-            content: openRouterKey.success ? (
-              <OpenRouterKeyPanel configured={openRouterKey.data.configured} canEdit />
-            ) : (
-              <p className="text-sm text-coral-deep">{t('openrouterLoadFailed')}</p>
+            label: t('companyKeys'),
+            content: (
+              <div className="space-y-4">
+                {openRouterKey.success ? (
+                  <OpenRouterKeyPanel configured={openRouterKey.data.configured} canEdit />
+                ) : (
+                  <p className="text-sm text-coral-deep">{t('openrouterLoadFailed')}</p>
+                )}
+                {geminiKey.success ? (
+                  <GeminiKeyPanel configured={geminiKey.data.configured} canEdit />
+                ) : (
+                  <p className="text-sm text-coral-deep">{t('geminiLoadFailed')}</p>
+                )}
+              </div>
             ),
           },
           {

@@ -1,12 +1,13 @@
-// A create-agent és az agent-detail model-konfig űrlap közös provider-listája.
+// A Control Plane katalógus és az agent model-konfig közös provider-listája.
 // A `value` a `modelConfig.provider`, amit a Model Gateway provider-regisztere ért.
+// Csak az a forrás szerepel, amit a platform ténylegesen hívni tud (céges API-kulcs).
 export type ModelOption = {
   id: string
   label: string
   description?: string
 }
 
-/** Ortogonális gondolkodási profil (Cursor-féle luna/terra/sol) — a modell ID mellett. */
+/** Ortogonális gondolkodási profil — a gateway API-kulcsos útján no-op; a mező a UI-n rejtett. */
 export type ModelType = 'luna' | 'terra' | 'sol'
 
 export const MODEL_TYPES: Array<{
@@ -51,51 +52,10 @@ export type ModelProviderOption = {
   models?: ModelOption[]
   /**
    * Luna/Terra/Sol a provider reasoning/thinking paraméterére megy.
-   * OpenRouter / Gemini / Ollama: no-op — a UI elrejti a mezőt.
+   * A céges API-kulcsos úton (OpenRouter, Gemini) no-op — a UI elrejti a mezőt.
    */
   thinkingProfile?: boolean
 }
-
-export const CHATGPT_OAUTH_MODELS: ModelOption[] = [
-  {
-    id: 'chatgpt-oauth-default',
-    label: 'ChatGPT OAuth default',
-    description: 'A szerveroldali ChatGPT OAuth adapter alapértelmezett modellje.',
-  },
-]
-
-/** Claude Code előfizetés (Pro/Max) — `claude auth login`, nem API-kulcs. */
-export const CLAUDE_CODE_OAUTH_MODELS: ModelOption[] = [
-  {
-    id: 'claude-sonnet-4-6',
-    label: 'Claude Sonnet 4.6',
-    description: 'Claude Code előfizetés — kiegyensúlyozott agent-munkához.',
-  },
-  {
-    id: 'claude-opus-4-6',
-    label: 'Claude Opus 4.6',
-    description: 'Claude Code előfizetés — mélyebb érvelés, összetett feladatok.',
-  },
-  {
-    id: 'claude-haiku-4-5',
-    label: 'Claude Haiku 4.5',
-    description: 'Claude Code előfizetés — gyors, olcsóbb kvótájú modell.',
-  },
-]
-
-/** Grok CLI előfizetés (SuperGrok / X Premium+) — `grok login`, nem xAI API-kulcs. */
-export const GROK_CLI_OAUTH_MODELS: ModelOption[] = [
-  {
-    id: 'grok-4.6',
-    label: 'Grok 4.6',
-    description: 'Grok CLI előfizetés — flagship, 500K context, reasoning.',
-  },
-  {
-    id: 'grok-4.5',
-    label: 'Grok 4.5',
-    description: 'Grok CLI előfizetés — előző flagship, ha a fiók arra van jogosítva.',
-  },
-]
 
 /** Szöveges generálásra ajánlott Gemini modellek (ai.google.dev, 2026-06). */
 export const GEMINI_TEXT_MODELS: ModelOption[] = [
@@ -136,16 +96,7 @@ export const GEMINI_TEXT_MODELS: ModelOption[] = [
   },
 ]
 
-/** Helyi Ollama modellek — az `id` megegyezik az `ollama list` névvel. */
-export const OLLAMA_TEXT_MODELS: ModelOption[] = [
-  {
-    id: 'gemma-local',
-    label: 'Gemma 4 E4B (unsloth Q4_K_M)',
-    description: 'Goose-ből importált unsloth/gemma-4-E4B-it-GGUF — szöveg-only, Ollama alias: gemma-local',
-  },
-]
-
-/** OpenRouteren keresztül kísérletezésre felvehető modellek. Egyedi slug adminból adható hozzá. */
+/** OpenRouteren keresztül felvehető modellek. Egyedi slug adminból adható hozzá. */
 export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
   {
     id: '~openai/gpt-latest',
@@ -164,61 +115,28 @@ export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
   },
 ]
 
-export const MODEL_PROVIDER_IDS = [
-  'chatgpt-oauth',
-  'claude-code-oauth',
-  'grok-cli-oauth',
-  'gemini',
-  'ollama',
-  'openrouter',
-] as const
+/**
+ * Amit a Model Gateway hívni tud. Az `ollama` csak szerver-env (`OLLAMA_BASE_URL`);
+ * a tenant UI-n nem jelenik meg. A régi ChatGPT/Claude/Grok OAuth id-k szándékosan
+ * nincsenek itt: a parse eldobja őket, a gateway soha nem hívta őket.
+ */
+export const MODEL_PROVIDER_IDS = ['gemini', 'ollama', 'openrouter'] as const
 
 export type ModelProviderId = (typeof MODEL_PROVIDER_IDS)[number]
 
 export const MODEL_PROVIDERS: ModelProviderOption[] = [
   {
-    value: 'chatgpt-oauth',
-    label: 'ChatGPT OAuth (felhő)',
-    defaultModel: 'chatgpt-oauth-default',
-    hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5). Codex CLI belépés: ~/.codex/auth.json.',
-    models: CHATGPT_OAUTH_MODELS,
-    thinkingProfile: true,
-  },
-  {
-    value: 'claude-code-oauth',
-    label: 'Claude Code OAuth (előfizetés)',
-    defaultModel: 'claude-sonnet-4-6',
-    hint: 'Claude Pro/Max előfizetés a Claude Code CLI belépésével (`claude auth login` vagy `claude setup-token`). Nem API-kulcs.',
-    models: CLAUDE_CODE_OAUTH_MODELS,
-    thinkingProfile: true,
-  },
-  {
-    value: 'grok-cli-oauth',
-    label: 'Grok CLI OAuth (előfizetés)',
-    defaultModel: 'grok-4.6',
-    hint: 'SuperGrok / X Premium+ a Grok CLI belépésével (`grok login`). Token: ~/.grok/auth.json. Nem xAI API-kulcs.',
-    models: GROK_CLI_OAUTH_MODELS,
-    thinkingProfile: true,
-  },
-  {
     value: 'gemini',
-    label: 'Google Gemini API',
+    label: 'Google Gemini',
     defaultModel: 'gemini-3.5-flash',
-    hint: 'Google AI Studio API kulcs a szerveren (GEMINI_API_KEY). A modell a legördülőből választható.',
+    hint: 'Céges Google AI Studio kulcs. A hívások a platformon mennek át — csak Hermes céges kontrollban.',
     models: GEMINI_TEXT_MODELS,
   },
   {
-    value: 'ollama',
-    label: 'Helyi Gemma (Ollama)',
-    defaultModel: 'gemma-local',
-    hint: 'Ollama fut (ollama serve / Ollama app). Modell: gemma-local (Goose GGUF import). OLLAMA_BASE_URL opcionális.',
-    models: OLLAMA_TEXT_MODELS,
-  },
-  {
     value: 'openrouter',
-    label: 'OpenRouter (kísérleti)',
+    label: 'OpenRouter',
     defaultModel: '~openai/gpt-latest',
-    hint: 'OpenAI-kompatibilis OpenRouter. A céges kulcsot a Beállítások → Céges modellkulcs alatt viszi fel az admin. Modellek csak allowlist után választhatók agenthez.',
+    hint: 'Céges OpenRouter-kulcs. A hívások a platformon mennek át — csak Hermes céges kontrollban.',
     models: OPENROUTER_TEXT_MODELS,
   },
 ]
@@ -227,7 +145,16 @@ export function providerOption(
   value: string,
   providers: ModelProviderOption[] = MODEL_PROVIDERS,
 ): ModelProviderOption {
-  return providers.find((p) => p.value === value) ?? MODEL_PROVIDERS.find((p) => p.value === value) ?? providers[0] ?? MODEL_PROVIDERS[0]
+  return (
+    providers.find((p) => p.value === value) ??
+    MODEL_PROVIDERS.find((p) => p.value === value) ?? {
+      value,
+      label: value,
+      defaultModel: value,
+      hint: '',
+      models: [],
+    }
+  )
 }
 
 /** Luna/Terra/Sol csak ott jelenik meg, ahol a gateway ténylegesen alkalmazza. */
