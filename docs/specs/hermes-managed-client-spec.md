@@ -197,7 +197,7 @@ Jelölés: **[forrás]** = kódban/doksiban ellenőrizve · **[élő]** = ezen a
 | H-8 | **Terminál-backend plugin** | A `terminal`, az `execute_code` **és a fájl-toolok** saját backendre (céges sandbox) mennek. **Ismeretlen backend esetén elutasít, nem lokálisra esik vissza** (`terminal_tool_backends.py:360`). | Fail-closed. **[forrás]** | — |
 | H-9 | `--safe-mode` | Kikapcsolja a pluginokat, a shell hookokat és az MCP-t. | — | **A Guard eltűnik**; a managed pinek maradnak, a céges MCP eltűnik. Upstream rés U2. |
 | H-10 | Custom provider `providers.<id>`: `api`, `key_cmd`, `extra_headers`, `session_affinity_header` | Céges LLM-proxy natív bekötése; a `key_cmd` rövid életű tokent kér; a header viszi az agent- és session-azonosítót. | **[forrás]** | A user további providert vehet fel (dict-merge). |
-| H-11 | `/model … --provider x` (session-only) | Session szintű provider-váltás. | — | **[POC K4]** |
+| H-11 | `/model … --provider x` (session-only) | Session szintű provider-váltás. | — | A CLI elfogadhatja; a Guard 0.3.1 a végrehajtásnál (főhívás + mellékhívás HTTP) fail-closed. Élő újramérés: **[POC K4]** |
 | H-12 | Skillek: `write_approval`, `guard_agent_created` | Az agent skill-írása jóváhagyáshoz köthető. | **Nincs skill-allowlist.** | A `/skill` slash parancs tool-hívás nélkül injektál. U5. |
 | H-13 | Memory provider plugin | A lokális memória Excellence-memóriára cserélhető. | **[forrás]** | — |
 | H-14 | Böngésző-provider plugin | A böngésző felhős (céges) backendre irányítható. | **[forrás, doksi]** | **[POC]** |
@@ -333,8 +333,8 @@ providers:
 auxiliary: { compression: {provider: main}, vision: {provider: main}, title_generation: {provider: main} }  # minden aux task
 fallback_providers: []
 ```
-- A managed `.env` az ismert provider-kulcsokat (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) üresre pineli.
-- A Guard `llm_execution` szintetikus elutasítást ad, ha a hívás nem az Excellence providerre menne.
+- A managed `.env` az ismert provider-kulcsokat (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) üresre pineli. Üres kulcs önmagában nem elég: ha a sessionben mégis van kulcs, a `/model --provider` klienst indít (K4).
+- A Guard `llm_execution` szintetikus elutasítást ad, ha a főhívás nem az Excellence providerre menne. A mellékhívás (címadás, tömörítés) **nem** megy át ezen a middleware-en (Hermes v0.22.2): a Guard 0.3.1 a `run_with_aux_hooks` funnelben és a HTTP-kapun (urllib/httpx, csak a céges Gateway host) fail-closed, mielőtt a kérés elindulna.
 - A modellt a Model Gateway választja az agent `modelConfig`-ja alapján (D12, D16). Az agent-azonosítót **a tokenből** veszi (D1), nem a user által átírható headerből. Tartalék-váltás csak a gateway-ben történik (a Hermes `fallback_providers: []` pinelve), így az is auditált és szűrt.
 - Saját ChatGPT/Codex előfizetés menedzselt módban nem használható, mert kikerül az auditból (D2).
 - MDM egress-szabály: LLM-API forgalom csak a Model Gateway felé (T2/T3).
@@ -355,7 +355,7 @@ A Guard heartbeatet küld: az effektív konfig hash-ét, a managed dir hash-ét,
 | # | Megkerülés | Hatás | Mitigáció | Maradék |
 |---|---|---|---|---|
 | B1 | `hermes --safe-mode` | Nincs Guard | A gép-padló él; az MCP kikapcsol; a sandbox-backend ismeretlen, tehát a terminál elutasít; nincs heartbeat → Open | Beszélgetés Guard nélkül, **de a Model Gateway auditál és szűr**. U2 |
-| B2 | `/model x --provider openrouter` | Audit nélküli modell | Üres kulcsok a managed `.env`-ben, Guard `llm_execution`, egress | **[POC K4]** |
+| B2 | `/model x --provider openrouter` | Audit nélküli modell | Üres kulcsok a managed `.env`-ben; Guard `llm_execution` (főhívás); HTTP-kapu + aux-funnel wrap (mellékhívás, pl. `title_generation`) | Unit: Guard 0.3.1. Élő újramérés: **[POC K4]** |
 | B3 | Saját MCP-szerver (dict-merge) | Nem engedett tool | Guard allowlist | A stdio processz elindul (user-kód, nem AI-akció). U1 |
 | B4 | Saját skill, `/skill` injekció | Nem engedett instrukció | Manifest, Model Gateway-észlelés | U5 |
 | B5 | Admin user törli az `/etc/hermes`-t | Elveszik a gép-padló | MDM drift-riasztás, heartbeat → Open | T3 |
@@ -413,13 +413,13 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 | K10 | Mi a Hermes system promptjának stabil (cache-elt) része, és mit kell mégis tokenizálni benne (memória, context-fájlok)? |
 | K11 | A `key_cmd` helper a kiszolgált Bot-profil `HERMES_HOME`-jával fut-e (Desktop multiplex módban is), és eléri-e a profil `mcp-tokens/` tokenjét? **[forrás]:** igen (`tools/environments/local.py` `served_profile_child_env`, `mcp_oauth.py` `HERMES_HOME/mcp-tokens/`), a `key_cmd` kérésenként fut (`runtime_provider_custom.py:567`) → a helpernek cache-elnie kell. Élőben mérendő. |
 
-**V1-8 mérési eredmény (2026-10-03).** A generátor és a telepítő kész, a V1-6 Guarddal összekötve. A helyben telepített Hermes v0.21.4+canary (`6ec05205a943cf813bd56c3c79d64bcf922dac67`) CLI konfigurációs belépési pontjai elkülönített profilban és managed könyvtárral ellenőrizve; a Desktop és a K3/K4 forgalmi része nyitva marad.
+**V1-8 mérési eredmény (2026-10-03, K4 kiegészítés 2026-10-18).** A generátor és a telepítő kész, a V1-6 Guarddal összekötve. A helyben telepített Hermes v0.21.4+canary (`6ec05205a943cf813bd56c3c79d64bcf922dac67`) CLI konfigurációs belépési pontjai elkülönített profilban és managed könyvtárral ellenőrizve. A Desktop és a K3 (aux forgalom a gateway-naplóban) nyitva marad; a K4 élő lyuk (OpenRouter `title_generation`) a Guard 0.3.1-ben unit szinten zárva, élő újramérés hátra.
 
 | K | Eredmény |
 |---|---|
 | **K1** | A 2026-09-30-as CLI-mérés áll: a `hermes config` listázza a managed kulcsokat, a `config set` megtagadja, és a `model.base_url`-t külön kell pinelni. A generátor ezt a három modell-levelet, plusz a `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `agent.disabled_toolsets` kulcsokat kiírja. 2026-10-03: a generált 78 managed levél betöltése sikeres; a `model.provider`, `model.base_url` és `plugins.enabled` módosítását a CLI `set_config_value` megtagadta. A mérés az eredeti telepített runtime-ban, elkülönített tesztprofillal futott. A Desktop élőben nem újramérve. A shell-hook doksi (Hermes, 2026-10) szerint a hook CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. |
 | **K3** | Generátor: minden ismert aux task `provider: main`, üres `base_url` / `api_key` / `model`, üres `fallback_chain`, és a top-level `fallback_providers: []`. Az aux hívások gateway-naplója élő Hermes nélkül nem mérhető. |
-| **K4** | Generátor: az ismert provider-kulcsok a managed `.env`-ben üresek, a modell-út levelenként pinelt. Élő `/model --provider openrouter` nem futott. |
+| **K4** | Generátor: az ismert provider-kulcsok a managed `.env`-ben üresek, a modell-út levelenként pinelt. **2026-10-18 élő** (Hermes v0.22.2 @ `d923a5eb`): a session `/model openai/gpt-4o-mini --provider openrouter` elfogadódik; nem-üres `OPENROUTER_API_KEY` mellett a `title_generation` OpenRouterre ment (401). A `auxiliary.*.provider: main` a váltás után az új maint követi, és a mellékhívás nem megy át az `llm_execution`-ön. **Guard 0.3.1:** végrehajtásnál fail-closed (HTTP-kapu + aux wrap); unit regresszió: külső HTTP nem indul. Élő újramérés a 0.3.1 telepítővel még hátra. |
 **V1-6 mérési eredmény (2026-10-03, Hermes v0.21.5 @ `d0288be5`).** Az eredeti V1-6 mérés forrásellenőrzés volt; a későbbi V1-8 CLI konfigurációs mérés fent szerepel. A Desktop K1 és a tool-dispatch K2 élő fele nyitva marad. A forrás a pinelt `hooks.md`, `middleware.md` és `model_tools.py`.
 
 | K | Eredmény |

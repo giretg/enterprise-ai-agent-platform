@@ -60,7 +60,7 @@ class Smoke(unittest.TestCase):
             mod.register(ctx)
             self.assertEqual(
                 set(ctx.hooks),
-                {"on_session_start", "on_session_end", "pre_tool_call", "post_tool_call", "pre_llm_call", "post_llm_call"},
+                {"on_session_start", "on_session_end", "pre_tool_call", "post_tool_call", "pre_llm_call", "post_llm_call", "pre_auxiliary_call"},
             )
             self.assertIn("llm_execution", ctx.middleware)
             self.assertEqual(ctx.sections[0][0], "excellence-guard.notice")
@@ -86,6 +86,7 @@ class Smoke(unittest.TestCase):
             delegated = ctx.hooks["pre_tool_call"](tool_name="delegate_task", args={"goal": "számla"}, session_id="s", tool_call_id="4")
             self.assertEqual(delegated["action"], "block")
         finally:
+            runtime.uninstall_llm_egress_gate()
             os.environ.pop("EXC_GUARD_OFFLINE", None)
             os.environ.pop("EXC_GUARD_DISABLE_BACKGROUND", None)
             os.environ.pop("HERMES_HOME", None)

@@ -9,7 +9,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-GUARD_VERSION = "0.3.0"
+GUARD_VERSION = "0.3.1"
 NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
 ASK = "Ha erre szükséged van, kérd a rendszergazdát."
 OFFLINE_TTL_SECONDS = 3600
@@ -465,6 +465,65 @@ def is_excellence_route(provider, base_url, expected_base_url=None):
         return expected is not None and actual == expected
     except ValueError:
         return False
+
+
+# A session `/model --provider openrouter` (K4) a fő hívást és a title_generation
+# mellékhívást is ezekre a hostokra viszi. A Guard HTTP-kapu ezeket blokkolja.
+FOREIGN_LLM_HOSTS = frozenset({
+    "openrouter.ai",
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.groq.com",
+    "api.together.xyz",
+    "api.together.ai",
+    "api.fireworks.ai",
+    "api.deepseek.com",
+    "api.mistral.ai",
+    "api.moonshot.ai",
+    "api.x.ai",
+    "generativelanguage.googleapis.com",
+    "api.deepinfra.com",
+    "api.nscale.com",
+})
+
+_LLM_PATH_MARKERS = (
+    "/chat/completions",
+    "/v1/messages",
+    "/v1/responses",
+    "/api/v1/models",
+    "/v1/models",
+)
+
+
+def hostname_of(url):
+    try:
+        return (urlsplit(str(url or "")).hostname or "").strip().lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
+def _host_matches(host, allowed):
+    return bool(host) and bool(allowed) and (host == allowed or host.endswith("." + allowed))
+
+
+def is_foreign_llm_host(host):
+    return any(_host_matches(host, blocked) for blocked in FOREIGN_LLM_HOSTS)
+
+
+def should_block_llm_egress(url, expected_gateway_url=None):
+    """True, ha a kérés külső modell-API-ra menne a céges Gateway helyett (K4)."""
+    host = hostname_of(url)
+    if not host:
+        return False
+    if _host_matches(host, hostname_of(expected_gateway_url)):
+        return False
+    if is_foreign_llm_host(host):
+        return True
+    try:
+        path = urlsplit(str(url or "")).path.lower()
+    except ValueError:
+        return False
+    return any(marker in path for marker in _LLM_PATH_MARKERS)
 
 
 PROVIDER_BLOCK = (
