@@ -203,7 +203,9 @@ function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
     const owner = value as Record<string, unknown> | unknown[]
     for (const [key, child] of Object.entries(owner)) {
       if (typeof child === 'string') {
-        if (!SKIP_KEYS.has(key) && !child.startsWith('data:')) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
+        // A data-URI fejléc és a binárisnak mondott törzs is tartalmazhat nyers érzékeny szöveget.
+        // ponytail: nyers szöveget szűrünk; kódolt tartalomhoz típusfüggő dekódolás kellene.
+        if (!SKIP_KEYS.has(key)) out.push({ owner, key: Array.isArray(owner) ? Number(key) : key, text: child })
       } else collectSlots(child, out)
     }
   }
