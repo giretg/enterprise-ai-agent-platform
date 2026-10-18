@@ -679,29 +679,55 @@ async function invokeHandoff(
     createdById: principal.userId,
   })
 
-  // Trusted intra-tenant write: bypasses the recipient's approval mode so the
-  // handed-off task is visible immediately; the source is stamped in the body.
+  // The handoff is always delivered through the Handoff row (recipient briefing /
+  // human inbox). As a convenience we ALSO inject an open_task straight into the
+  // recipient agent's memory, bypassing its approval mode so the task is visible
+  // immediately — but only when the caller may actually operate the recipient.
+  // A write into another agent's trusted memory must never exceed what the caller
+  // could do via platform.project_memory.write, which requires `operate`. A mere
+  // `view` grant (handoff-visible, enough to create the row) must not force-write
+  // attacker-chosen text into an agent it cannot operate (memory poisoning).
   let memoryId: string | null = null
+  // For the audit trail of this privileged cross-agent write: whether we injected,
+  // or skipped because the caller lacks operate on the recipient.
+  let memoryInjection: 'written' | 'skipped_not_operable' | 'not_applicable' =
+    toAgentId ? 'skipped_not_operable' : 'not_applicable'
   if (toAgentId) {
-    const written = await deps.projectWork.writeMemory({
+    const recipientGrant = await deps.findAgentGrant({
       tenantId: principal.tenantId,
+      userId: principal.userId,
       agentId: toAgentId,
-      projectKey,
-      kind: 'open_task',
-      title: validated.title,
-      body: formatHandoffMemoryBody({
-        fromAgentName: definition.snapshot.name,
-        summary: validated.summary,
-        links: validated.links,
-        handoffId: handoff.id,
-      }),
-      withUserId: principal.userId,
-      confirmNew: true,
-      mode: 'direct',
     })
-    if (written.ok && written.status === 'written') {
-      memoryId = written.item.id
-      await deps.handoffs.attachMemory(handoff.id, written.item.id)
+    const canOperateRecipient = canOperateAgent({
+      role: principal.role,
+      grant: recipientGrant,
+      assumed: principal.assumed,
+    })
+    if (canOperateRecipient) {
+      const written = await deps.projectWork.writeMemory({
+        tenantId: principal.tenantId,
+        agentId: toAgentId,
+        projectKey,
+        kind: 'open_task',
+        title: validated.title,
+        body: formatHandoffMemoryBody({
+          fromAgentName: definition.snapshot.name,
+          summary: validated.summary,
+          links: validated.links,
+          handoffId: handoff.id,
+        }),
+        withUserId: principal.userId,
+        confirmNew: true,
+        mode: 'direct',
+      })
+      if (written.ok && written.status === 'written') {
+        memoryId = written.item.id
+        memoryInjection = 'written'
+        await deps.handoffs.attachMemory(handoff.id, written.item.id)
+      } else {
+        // operate-capable, but the write did not land (e.g. secret-blocked, possible_duplicate).
+        memoryInjection = 'not_applicable'
+      }
     }
   }
 
@@ -725,11 +751,14 @@ async function invokeHandoff(
       toUserId,
       projectKey,
       memoryId,
+      memoryInjection,
     },
     tenantId: principal.tenantId,
   })
   await auditOk(deps, principal, MCP_HANDOFF_TOOL, definition.definitionId, definition.agentId)
-  return textResult({ ok: true, handoffId: handoff.id, memoryId, projectKey, notified: toAgentId ? 'agent_memory' : 'inbox' })
+  // 'agent_memory' only when we actually injected; a view-only agent handoff (or a
+  // human handoff) is delivered through the recipient's briefing / inbox instead.
+  return textResult({ ok: true, handoffId: handoff.id, memoryId, projectKey, notified: memoryId ? 'agent_memory' : 'inbox' })
 }
 
 async function invokeHandoffAck(

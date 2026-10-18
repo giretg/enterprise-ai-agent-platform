@@ -89,6 +89,7 @@ jobs:
           npm run test:agent-knowledge-placement
           npm run test:create-agent-wizard
           npm run test:project-work
+          npm run test:handoff
           npm run test:work-file-output
           npm run test:mcp-skills
           npm run test:conversation-skill

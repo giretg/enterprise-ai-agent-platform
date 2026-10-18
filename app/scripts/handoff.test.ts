@@ -204,6 +204,34 @@ async function main() {
     assert.equal(memRows[0]?.kind, 'open_task')
     assert.ok(memRows[0]?.body.includes(handoffId))
     assert.ok(memRows[0]?.body.includes('Kati'))
+    assert.equal(out.notified, 'agent_memory')
+  })
+
+  // Security regression: a caller with only `view` on the recipient agent must NOT
+  // be able to force an open_task into that agent's trusted memory (memory poisoning
+  // / privilege escalation — a direct memory write would require `operate`). The
+  // handoff is still delivered via the recipient's briefing (the Handoff row).
+  await check('view-only recipient: handoff delivered but memory NOT injected', async () => {
+    const { memory, handoffs, invokeArgs } = deps({
+      // operate on the sender (Kati), only view on the recipient (Gábor)
+      findAgentGrant: async (input: { agentId: string }) =>
+        input.agentId === GABOR ? { accessLevel: 'view' } : { accessLevel: 'operate' },
+    })
+    const out = parsePayload(
+      await invokeProjectWork(invokeArgs, {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.handoff',
+        args: { definitionId: KATI_DEF, toAgentId: GABOR, title: 'Átadás', summary: 'Nézd meg.', idempotencyKey: 'hv1' },
+      }),
+    )
+    assert.equal(out.ok, true)
+    const row = await handoffs.findById(out.handoffId as string)
+    assert.equal(row?.status, 'open') // handoff still delivered (briefing/inbox)
+    assert.equal(row?.memoryId, null) // but no memory injected
+    assert.equal(out.memoryId, null)
+    assert.equal(out.notified, 'inbox')
+    const memRows = await memory.listActive({ tenantId: TENANT, agentId: GABOR, projectKey: '__general__' })
+    assert.equal(memRows.length, 0) // recipient memory not poisoned
   })
 
   await check('briefing shows handed-off work with handoffId', () => {
