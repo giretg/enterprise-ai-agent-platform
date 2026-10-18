@@ -275,6 +275,7 @@ async function auditDenied(
   reason: string,
   definitionId?: string,
   agentId?: string,
+  errorDetails?: Record<string, unknown>,
 ) {
   const payload = {
     toolName,
@@ -283,6 +284,7 @@ async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...errorDetails,
   }
   console.info('enterprise.tool.denied', payload)
   await writeAudit(deps.audit, {
@@ -457,7 +459,19 @@ async function tryDirectWrite(
     return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
-    await auditDenied(deps, principal, toolName, mapped.code, definitionId, definition.agentId)
+    const auditDetails =
+      mapped.code === 'google_drive_api_error' || mapped.code === 'google_drive_auth_failed'
+        ? mapped.extra
+        : undefined
+    await auditDenied(
+      deps,
+      principal,
+      toolName,
+      mapped.code,
+      definitionId,
+      definition.agentId,
+      auditDetails,
+    )
     return errorResult(mapped.code, mapped.extra)
   }
 }
@@ -698,6 +712,10 @@ export async function invokeEnterpriseTool(
     return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
+    const auditDetails =
+      mapped.code === 'google_drive_api_error' || mapped.code === 'google_drive_auth_failed'
+        ? mapped.extra
+        : undefined
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -706,6 +724,7 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
       errorCode: mapped.code,
+      ...auditDetails,
     }
     console.info('enterprise.tool.error', payload)
     await writeAudit(deps.audit, {
@@ -786,7 +805,21 @@ function mapToolError(
   connectorType: string,
 ): { code: string; extra?: Record<string, unknown> } {
   if (error instanceof GoogleDriveApiAuthError || error instanceof GoogleWorkspaceApiAuthError) {
-    return { code: 'google_drive_auth_failed', extra: { status: error.status } }
+    return {
+      code: 'google_drive_auth_failed',
+      extra: {
+        status: error.status,
+        ...('googleStatus' in error && typeof error.googleStatus === 'string'
+          ? { googleStatus: error.googleStatus }
+          : {}),
+        ...('googleReasonCodes' in error && Array.isArray(error.googleReasonCodes)
+          ? { googleReasonCodes: error.googleReasonCodes }
+          : {}),
+        ...('googleLocations' in error && Array.isArray(error.googleLocations)
+          ? { googleLocations: error.googleLocations }
+          : {}),
+      },
+    }
   }
   if (error instanceof GmailApiAuthError) {
     return { code: 'gmail_auth_failed', extra: { status: error.status } }
@@ -797,6 +830,15 @@ function mapToolError(
       extra: {
         status: error.status,
         ...('code' in error && typeof error.code === 'string' ? { googleCode: error.code } : {}),
+        ...('googleStatus' in error && typeof error.googleStatus === 'string'
+          ? { googleStatus: error.googleStatus }
+          : {}),
+        ...('googleReasonCodes' in error && Array.isArray(error.googleReasonCodes)
+          ? { googleReasonCodes: error.googleReasonCodes }
+          : {}),
+        ...('googleLocations' in error && Array.isArray(error.googleLocations)
+          ? { googleLocations: error.googleLocations }
+          : {}),
       },
     }
   }

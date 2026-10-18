@@ -56,6 +56,9 @@ export class GoogleDriveApiAuthError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly googleStatus?: string,
+    readonly googleReasonCodes?: string[],
+    readonly googleLocations?: string[],
   ) {
     super(message)
     this.name = 'GoogleDriveApiAuthError'
@@ -67,17 +70,64 @@ export class GoogleDriveApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly googleStatus?: string,
+    readonly googleReasonCodes?: string[],
+    readonly googleLocations?: string[],
   ) {
     super(message)
     this.name = 'GoogleDriveApiError'
   }
 }
 
-function driveApiError(operation: string, status: number, body?: string): Error {
-  if (status === 401 || status === 403) {
-    return new GoogleDriveApiAuthError(`${operation} auth failed: ${status}`, status)
+function googleDriveErrorDetails(body?: string): {
+  status?: string
+  reasonCodes?: string[]
+  locations?: string[]
+} {
+  if (!body) return {}
+  try {
+    const error = (JSON.parse(body) as { error?: Record<string, unknown> }).error
+    if (!error) return {}
+    const errors = Array.isArray(error.errors) ? error.errors : []
+    const reasonCodes = errors.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const reason = (entry as Record<string, unknown>).reason
+      return typeof reason === 'string' ? [reason.slice(0, 100)] : []
+    })
+    const locations = errors.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const location = (entry as Record<string, unknown>).location
+      return typeof location === 'string' ? [location.slice(0, 100)] : []
+    })
+    return {
+      ...(typeof error.status === 'string' ? { status: error.status.slice(0, 100) } : {}),
+      ...(reasonCodes.length ? { reasonCodes: [...new Set(reasonCodes)].slice(0, 10) } : {}),
+      ...(locations.length ? { locations: [...new Set(locations)].slice(0, 10) } : {}),
+    }
+  } catch {
+    return {}
   }
-  return new GoogleDriveApiError(`${operation} failed: ${status}${body ? ` · ${body.slice(0, 200)}` : ''}`, status)
+}
+
+function driveApiError(operation: string, status: number, body?: string): Error {
+  const details = googleDriveErrorDetails(body)
+  if (status === 401 || status === 403) {
+    return new GoogleDriveApiAuthError(
+      `${operation} auth failed: ${status}`,
+      status,
+      details.status,
+      details.reasonCodes,
+      details.locations,
+    )
+  }
+  return new GoogleDriveApiError(
+    `${operation} failed: ${status}`,
+    status,
+    undefined,
+    details.status,
+    details.reasonCodes,
+    details.locations,
+  )
 }
 
 function sleep(ms: number): Promise<void> {
