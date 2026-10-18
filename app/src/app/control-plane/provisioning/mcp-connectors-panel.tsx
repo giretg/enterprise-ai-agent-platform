@@ -121,6 +121,7 @@ function ToolReview({
   }
 
   function tryTool(name: string) {
+    if (!isActive && !window.confirm(t('confirmReadTrial', { name }))) return
     let parsedArgs: Record<string, unknown> = {}
     try {
       parsedArgs = tryArgs[name]?.trim() ? JSON.parse(tryArgs[name]) : {}
@@ -129,7 +130,7 @@ function ToolReview({
       return
     }
     startTransition(async () => {
-      const res = await tryMcpTool({ connectorId, tool: name, arguments: parsedArgs })
+      const res = await tryMcpTool({ connectorId, versionId, tool: name, arguments: parsedArgs, confirmReadTrial: !isActive })
       setTryResult((current) => ({
         ...current,
         [name]: res.success ? JSON.stringify(res.data, null, 2) : actionError(t, res.error),
@@ -178,7 +179,7 @@ function ToolReview({
                 {JSON.stringify(row.inputSchema, null, 2)}
               </pre>
             </details>
-            {row.suggestedRisk === 'read' || (row.approved && row.risk === 'read') ? (
+            {row.approved && row.risk === 'read' && (isActive || !row.writeLikeName) ? (
               <details className="mt-2 text-xs">
                 <summary className="cursor-pointer text-ink-soft">{t('tryTitle')}</summary>
                 <textarea

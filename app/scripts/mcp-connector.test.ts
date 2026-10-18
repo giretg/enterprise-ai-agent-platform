@@ -22,6 +22,8 @@ import {
   diffMcpTools,
   isWriteLikeToolName,
   MCP_RESULT_MAX_CHARS,
+  mayTryMcpTool,
+  mayTryProposedMcpTool,
   mcpHostAllowed,
   mcpResultForModel,
   mcpToolListForModel,
@@ -195,6 +197,23 @@ async function main() {
     assert.equal(resolveMcpToolRisk(ACTIVE, 'update_secret').ok, false)
     assert.equal(resolveMcpToolRisk(ACTIVE, 'unknown').ok, false)
     assert.equal((resolveMcpToolRisk(ACTIVE, 'create_issue') as { risk: string }).risk, 'write')
+  })
+  await check('admin próbán csak az aktív, jóváhagyott olvasó eszköz futhat', () => {
+    const serverHint: McpCapabilitySet = {
+      format: 'mcp_tools',
+      tools: [{ ...entry('erase_data', 'danger', false), suggestedRisk: 'read' }],
+    }
+    assert.equal(mayTryMcpTool(serverHint, 'erase_data'), false)
+    assert.equal(mayTryMcpTool(ACTIVE, 'search_issues'), true)
+    assert.equal(mayTryMcpTool(ACTIVE, 'create_issue'), false)
+    assert.equal(mayTryMcpTool(null, 'search_issues'), false)
+    assert.equal(mayTryProposedMcpTool(serverHint, 'erase_data', true), false)
+    assert.equal(mayTryProposedMcpTool(serverHint, 'erase_data', false), false)
+    const readProposal: McpCapabilitySet = { format: 'mcp_tools', tools: [entry('get_page', 'danger', false)] }
+    assert.equal(mayTryProposedMcpTool(readProposal, 'get_page', true), true)
+    assert.equal(mayTryProposedMcpTool(readProposal, 'get_page', false), false)
+    assert.equal(mayTryProposedMcpTool(serverHint, 'create_issue', true), false)
+    assert.equal(mayTryProposedMcpTool(serverHint, 'delete_project', true), false)
   })
   await check('leírás- vagy sémaváltozás újrajóváhagyást kér; változatlan döntés öröklődik (D4/D7)', () => {
     const prev = [entry('a_tool', 'read'), entry('b_tool', 'write')]

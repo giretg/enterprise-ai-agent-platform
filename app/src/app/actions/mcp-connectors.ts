@@ -28,6 +28,8 @@ import {
   isWriteLikeToolName,
   MCP_SPEC_FORMAT,
   MCP_TOOL_RISKS,
+  mayTryMcpTool,
+  mayTryProposedMcpTool,
   mcpHostAllowed,
   mcpResultForModel,
   mcpServerHost,
@@ -69,8 +71,10 @@ const approveSchema = connectorIdSchema.extend({
   confirmReadDowngrade: z.boolean().optional(),
 })
 const trySchema = connectorIdSchema.extend({
+  versionId: z.string().uuid(),
   tool: z.string().min(1).max(200),
   arguments: z.record(z.string(), z.unknown()).optional(),
+  confirmReadTrial: z.boolean().optional(),
 })
 /** A capability-set `inputSchema`-ja `unknown` — JSON-ként tároljuk. */
 const asJson = (value: unknown) => value as Prisma.InputJsonValue
@@ -111,7 +115,7 @@ type ConnectorRow = NonNullable<Awaited<ReturnType<typeof loadConnector>>>
 
 async function loadConnector(connectorId: string, tenantId: string) {
   return prisma.connector.findFirst({
-    where: { id: connectorId, tenantId, type: 'mcp' },
+    where: { id: connectorId, tenantId, type: 'mcp', lifecycleState: { not: 'archived' } },
     include: {
       specSource: true,
       activeSpecVersion: true,
@@ -480,29 +484,27 @@ export async function approveMcpTools(input: unknown) {
   }
 }
 
-/** §6/3: egy olvasónak javasolt/besorolt eszköz valódi futtatása, mielőtt agent hozzáférne. */
+/** §6/3: ember által besorolt olvasó eszköz valódi próbája az agenthez rendelés előtt. */
 export async function tryMcpTool(input: unknown) {
   try {
     const ctx = await requireTenantRole('admin')
     const parsed = trySchema.parse(input)
     const connector = await loadConnector(parsed.connectorId, ctx.activeTenantId)
     if (!connector) return fail('not_found')
-    const latest = parseMcpCapabilitySet(connector.specVersions[0]?.capabilitySet)
-    const tool = latest?.tools.find((entry) => entry.name === parsed.tool)
-    if (!tool) return fail('tool_not_found')
-    if (tool.suggestedRisk !== 'read' && !(tool.approved && tool.risk === 'read')) {
-      return fail('try_read_only')
-    }
+    if (connector.lifecycleState !== 'active') return fail('not_found')
+    const active = parseMcpCapabilitySet(connector.activeSpecVersion?.capabilitySet)
+    const proposedVersion = connector.specVersions[0]
+    const proposed = proposedVersion?.status === 'proposed' ? parseMcpCapabilitySet(proposedVersion.capabilitySet) : null
+    const activeTrial = parsed.versionId === connector.activeSpecVersionId && mayTryMcpTool(active, parsed.tool)
+    const proposedTrial =
+      parsed.versionId === proposedVersion?.id &&
+      mayTryProposedMcpTool(proposed, parsed.tool, parsed.confirmReadTrial === true)
+    if (!activeTrial && !proposedTrial) return fail('try_read_only')
     const config = parseMcpConnectorConfig(connector.config)
     if (!config) return fail('invalid_config')
     const { hosts } = await allowedHostsOrFail(config.serverUrl)
-    const result = await executeMcpTool({
-      connector,
-      accessToken: await adminAccessToken(connector, ctx.user.id),
-      tool: tool.name,
-      arguments: parsed.arguments ?? {},
-      allowedHosts: hosts,
-    })
+    const accessToken = await adminAccessToken(connector, ctx.user.id)
+    // A külső hívás előtt tartós nyom kell: timeout vagy hálózati hiba esetén is volt próbálkozás.
     await repositories.audit.append({
       actorType: 'human',
       actorId: ctx.user.id,
@@ -511,11 +513,18 @@ export async function tryMcpTool(input: unknown) {
       targetType: 'connector',
       targetId: connector.id,
       modelUsed: null,
-      inputRef: tool.name,
+      inputRef: parsed.tool,
       outputRef: null,
       policyDecision: 'allowed',
-      metadata: { connectorId: connector.id, mcpTool: tool.name, isError: Boolean(result.isError) },
+      metadata: { connectorId: connector.id, mcpTool: parsed.tool, versionId: parsed.versionId, provisionalReadDecision: proposedTrial, attempted: true },
       tenantId: ctx.activeTenantId,
+    })
+    const result = await executeMcpTool({
+      connector,
+      accessToken,
+      tool: parsed.tool,
+      arguments: parsed.arguments ?? {},
+      allowedHosts: hosts,
     })
     return ok(mcpResultForModel(result))
   } catch (error) {

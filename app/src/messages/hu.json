@@ -1981,7 +1981,8 @@
     "writeLikeWarning": "A neve alapján adatot módosíthat!",
     "noDescription": "(nincs leírás)",
     "parameters": "Paraméterek",
-    "tryTitle": "Kipróbálás (valódi hívás)",
+    "tryTitle": "Olvasó eszköz kipróbálása (valódi hívás)",
+    "confirmReadTrial": "Átnézted a(z) {name} eszközt, és olvasónak tartod? A próba valódi hívás a szolgáltató felé. Csak akkor folytasd, ha biztos vagy benne, hogy nem módosít adatot.",
     "tryPlaceholder": "Paraméterek JSON-ben, pl. query: teszt",
     "run": "Futtatás",
     "invalidJson": "A paraméterek nem érvényes JSON.",
@@ -2013,7 +2014,7 @@
       "not_found": "A kapcsolat nem található.",
       "version_not_approvable": "Ez a verzió már nem hagyható jóvá.",
       "tool_not_found": "Ez az eszköz nem szerepel a szerver listájában.",
-      "try_read_only": "Kipróbálni csak olvasó eszközt lehet — ez módosíthat adatot.",
+      "try_read_only": "Kipróbálni csak az admin által olvasónak besorolt eszközt lehet.",
       "unknown": "Ismeretlen hiba."
     }
   },

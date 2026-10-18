@@ -69,7 +69,7 @@ export function mcpToolsHash(tools: McpRemoteTool[]): string {
 
 const READ_PREFIX = /^(get|list|search|find|read|fetch|query|describe|lookup|count|show|view)[_\-.]/i
 const WRITE_PREFIX = /^(create|update|add|send|post|put|patch|set|edit|write|upsert|insert|move|rename|assign|comment|reply|upload|append|modify|start|run|trigger)[_\-.]/i
-const DANGER_PREFIX = /^(delete|remove|destroy|drop|purge|share|revoke|archive|transfer|pay|wipe|reset|cancel|close|merge|publish|execute|exec)[_\-.]/i
+const DANGER_PREFIX = /^(delete|remove|destroy|drop|purge|erase|share|revoke|archive|transfer|pay|wipe|reset|cancel|close|merge|publish|execute|exec)[_\-.]/i
 
 /** D2: név- és annotáció-alapú javaslat. A szerver jelzése csak ezt befolyásolja. */
 export function suggestMcpToolRisk(tool: Pick<McpRemoteTool, 'name' | 'annotations'>): McpToolRisk {
@@ -137,6 +137,18 @@ export function resolveMcpToolRisk(active: McpCapabilitySet | null, toolName: st
   const tool = active?.tools.find((entry) => entry.name === toolName)
   if (!tool || !tool.approved) return { ok: false, reason: 'mcp_tool_not_approved' }
   return { ok: true, risk: tool.risk, tool }
+}
+
+/** Admin próbahívásnál is az aktív, ember által jóváhagyott besorolás dönt. */
+export function mayTryMcpTool(active: McpCapabilitySet | null, toolName: string): boolean {
+  const decision = resolveMcpToolRisk(active, toolName)
+  return decision.ok && decision.risk === 'read'
+}
+
+/** Javasolt verzión a próba kizárólag az admin külön olvasó-döntésével futhat. */
+export function mayTryProposedMcpTool(proposed: McpCapabilitySet | null, toolName: string, confirmed: boolean): boolean {
+  // ponytail: a név szerinti írás-tiltás heurisztika; valódi read-only garanciához izolált próbakörnyezet kell.
+  return confirmed && Boolean(proposed?.tools.some((tool) => tool.name === toolName && !isWriteLikeToolName(tool.name)))
 }
 
 export type McpToolDiff = {

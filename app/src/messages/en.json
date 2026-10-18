@@ -1981,7 +1981,8 @@
     "writeLikeWarning": "The name suggests it can change data!",
     "noDescription": "(no description)",
     "parameters": "Parameters",
-    "tryTitle": "Try it (live call)",
+    "tryTitle": "Try read tool (live call)",
+    "confirmReadTrial": "Have you reviewed {name} and classified it as read-only? This makes a real call to the provider. Continue only if you are sure it does not change data.",
     "tryPlaceholder": "Parameters as JSON, e.g. query: test",
     "run": "Run",
     "invalidJson": "The parameters are not valid JSON.",
@@ -2013,7 +2014,7 @@
       "not_found": "The connection was not found.",
       "version_not_approvable": "This version can no longer be approved.",
       "tool_not_found": "This tool is not on the server’s list.",
-      "try_read_only": "You can only try a read tool — this one may change data.",
+      "try_read_only": "You can only try a tool that an admin has classified as read-only.",
       "unknown": "Unknown error."
     }
   },
