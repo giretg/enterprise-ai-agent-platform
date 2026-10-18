@@ -161,11 +161,14 @@ def _copy_login(src_dir, src_name, dest_dir, dest_name):
         if os.path.islink(src) or not os.path.isfile(src) or os.path.islink(dest):
             continue
         os.makedirs(dest_dir, exist_ok=True)
+        info = os.stat(src)
         data = open(src, "rb").read()
         tmp = f"{dest}.{os.getpid()}"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+        # A legacy belépő lejárata az mtime-ra épül; a másolás nem friss bejelentkezés.
+        os.utime(tmp, ns=(info.st_atime_ns, info.st_mtime_ns))
         os.replace(tmp, dest)
         copied = True
     return copied
