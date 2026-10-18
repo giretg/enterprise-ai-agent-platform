@@ -1,9 +1,10 @@
 /**
  * Model Gateway tartalomszűrő (#746 V1-4, #747 teljes port) — a #769 proxy `filterRequest`/`transformResponse` horgai.
  *
- * Üzemmód (`content_filter.mode`, tenant → user → agent-plafon): `off` = nem nézzük át (kivéve titkos kulcs,
- * az mindig blokk); `observe` = felismer és naplóz, de semmit nem módosít és nem blokkol; `enforce` =
- * kategóriánként `block / local_only / tokenize / warn / off`.
+ * Üzemmód (`content_filter.mode`, tenant → user → agent-plafon): `off` = nem nézzük át;
+ * `observe` = felismer és naplóz, de semmit nem módosít és nem blokkol; `enforce` =
+ * kategóriánként `block / local_only / tokenize / warn / off`. A titkos kulcsnak nincs álneve
+ * (`tokenize` blokk), de `off` / `warn` / `local_only` mentett szintje érvényesül.
  *
  * 1. Felismerés slotonként (system/user/assistant/tool üzenet, tool-argumentum): nincs üzenethatáron átnyúló
  *    hamis PAN-találat. Személynév katalógus nélkül ott, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
@@ -290,8 +291,8 @@ export function filterPolicyFrom(capabilities: Record<string, string> | undefine
   const mode = capabilities[CONTENT_FILTER_MODE_KEY]
   return {
     mode: mode === 'off' || mode === 'observe' ? mode : 'enforce',
-    // Ismeretlen kategória a legszigorúbb. Titkos kulcs mentett warn/off értéke is block (§7.1/5).
-    level: (c) => (c === 'secret_key' ? 'block' : capabilities[`content_filter.${c}`] ?? 'block'),
+    // Ismeretlen kategória a legszigorúbb. Titkos kulcsnak nincs álneve (NOT_TOKENIZABLE).
+    level: (c) => capabilities[`content_filter.${c}`] ?? 'block',
   }
 }
 
@@ -320,11 +321,6 @@ export async function filterMessages(input: {
   const { policy } = input
   const messages = structuredClone(input.messages)
   if (policy.mode === 'off') {
-    for (const slot of collectSlots(messages)) {
-      if (findCandidates(slot.text).some((c) => c.category === 'secret_key')) {
-        return { kind: 'block', category: 'secret_key', message: blockMessage('secret_key'), reason: 'content_filter_block:secret_key' }
-      }
-    }
     return { kind: 'send', messages, categories: [], fresh: {}, privateOnly: [] }
   }
 

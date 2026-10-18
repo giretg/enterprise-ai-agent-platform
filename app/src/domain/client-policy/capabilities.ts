@@ -28,12 +28,11 @@ export const CONTENT_FILTER_CATEGORIES = PRIVACY_POLICY_CATEGORIES.filter(
 export type ContentFilterCategory = (typeof CONTENT_FILTER_CATEGORIES)[number]
 
 /**
- * Kemény invariánsok (legacy §7.1/5): titkos kulcs csak `block` (még kikapcsolt szűrőnél is);
- * kártyaszám nem kerül a vaultba (PCI-hatókör), ezért nincs álneve.
+ * Kártyaszám és titkos kulcs nem kerül a vaultba, ezért nincs álneve.
+ * A titkos kulcs a PAN-hoz hasonlóan kikapcsolható; Kötött pálya / Standard alapból `block`.
  */
 export function contentFilterLevels(category: string): readonly string[] {
-  if (category === 'secret_key') return ['block']
-  if (category === 'pan') return ['block', 'local_only', 'warn', 'off']
+  if (category === 'secret_key' || category === 'pan') return ['block', 'local_only', 'warn', 'off']
   return CONTENT_FILTER_LEVELS
 }
 
@@ -146,8 +145,8 @@ export const PRESETS: Record<PresetId, CapabilityMap> = {
     human_approval: 'none',
     audit_depth: 'prompt_and_response',
     external_services: 'allowed',
-    // PII kimehet; a titkos kulcs kemény invariáns, a szűrő off módban is blokkolja.
-    ...contentFilter('off', { secret_key: 'block' }, 'off'),
+    // PII és titok is kimehet: a szűrő ki van kapcsolva, semmit nem nézünk át.
+    ...contentFilter('off', {}, 'off'),
   } as CapabilityMap,
 }
 

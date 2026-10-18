@@ -2114,7 +2114,7 @@
         },
         "secret_key": {
           "label": "Kulcs és jelszó",
-          "example": "pl. api_key: sk-… (a dokumentációs példakulcsokat nem tekintjük titoknak)"
+          "example": "pl. api_key: sk-…, Bearer eyJ…, PEM-kulcs. A letöltő-link ?token= paramétere nem titok; a dokumentációs példakulcsokat sem tekintjük annak."
         }
       },
       "tryTitle": "Próbáld ki: mit látna a modell?",
