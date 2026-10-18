@@ -132,7 +132,8 @@ function googleDriveErrorDetails(body?: string): {
       ...(googleMessage ? { message: googleMessage } : {}),
     }
   } catch {
-    return {}
+    const googleMessage = sanitizeGoogleMessage(body)
+    return googleMessage ? { message: googleMessage } : {}
   }
 }
 
@@ -541,6 +542,7 @@ export class GoogleDriveApiClient {
 
     const boundary = `platform-${Date.now().toString(36)}`
     // ponytail: binary goes in as raw bytes (multipart/related), no base64 envelope — Drive expects the bytes.
+    // join('\r\n') a záró üres elem után NEM ad második CRLF-et; a MIME törzs elé kell a header/body üres sor.
     const chunks = [
       Buffer.from(
         [
@@ -553,7 +555,7 @@ export class GoogleDriveApiClient {
             ? `Content-Type: ${mediaType}`
             : `Content-Type: ${mediaType}; charset=UTF-8`,
           '',
-        ].join('\r\n'),
+        ].join('\r\n') + '\r\n',
         'utf8',
       ),
       params.binaryBytes
