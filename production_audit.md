@@ -7,84 +7,36 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
-## 2026-10-16 — Projekt-munka / projekt-memória / handoff MCP-felület: átadáskori memória-injektálás `view`-szintű eszkalációja (PR #899)
+## 2026-10-16 — Handoff: jogosulatlan memóriaírás és a teljes kézbesítés megőrzése (PR #899)
 
-**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb **nem-auditált**
-felület a **projekt-munka / projekt-memória / handoff MCP-eszközcsalád**
-(`platform.work_file.*`, `platform.project_memory.read/write`, `platform.handoff`,
-`platform.handoff_ack`). Ez az agent **tartós, megbízott memóriája és tudás-tára** (a memória
-felülírja a keresést és vezérli az agent viselkedését) **plusz** az agent→agent / agent→ember
-**delegáció** — érzékeny, izoláció-kritikus, írás-képes felület, amely a napi ledgerben **eddig
-egyszer sem szerepelt**, és friss churn-nel bír (#664 handoff, #661 work-file, #789). Adat-osztály +
-kereszt-agent mellékhatás + jogosultsági kapu = a legnagyobb nem-auditált kockázat.
+**Üzleti hatás:** a `platform.handoff` a fogadó agenten csak `view` jogosultsággal
+rendelkező munkatárs szövegét is közvetlenül az agent bizalmi memóriájába írta,
+a fogadó írási jóváhagyási módját megkerülve. A normál memóriaíráshoz `operate` kell.
 
-**Coverage (teljes bizalmi-határ + adatfolyam-trace, kézi end-to-end + dedikált biztonsági
-sub-agent threat-model):** `authorizeProjectWorkCall`/`invokeProjectWork`/`invokeHandoff`/
-`invokeHandoffAck` (project-work/mcp.ts), `ProjectWorkService` (work-file CRUD, memória
-read/write, supersede/merge CAS, duplikátum-előszűrő), `handoff-service.ts` + Postgres
-`handoff-repository`/`project-work-repository`, `work-project.ts` (path/projectKey normalizálás),
-`memory-content-guard` (titok-szkenner), wiring a `mcp-server.ts`/`gateway-services.ts`-ben.
-A `ctx.tenantId`/`userId`/`role` **szerver-feloldott**; csak a tool-argsok támadó-vezéreltek.
+**Javítás:** a közvetlen memória-injektálás ugyanazt a közös `canOperateAgent`
+jogosultságellenőrzést használja, mint a normál memóriaírás. Az átadás rekordja
+megmarad akkor is, ha a memóriaírás kimarad; a `notified` a tényleges eredményt,
+a `handoff.created` audit `memoryInjection` mezője a kihagyás okát rögzíti.
 
-### Bizonyított finding (security / privilege-escalation) — javítva (PR **#899**)
+**2026-10-19 merge előtti review:** a rekord megléte önmagában nem jelentett teljes
+kézbesítést: a briefing csak címet adott, az összefoglalóért pedig a már nem létrejövő
+memóriabejegyzésre utalt. Két független review-tengely igazolta ezt a regressziót.
+A fogadó `get_definition` válaszában a tenant+agent szerint szűrt átadások most a teljes
+`summary` és `links` mezőt tartalmazzák, a briefing a `handoffs.entries` mezőre mutat.
+Az átadás munkatárstól származó feladatadat, nem szabály vagy jogosultság; a meglévő
+engedélyezési és jóváhagyási kapuk érvényben maradnak. A teljes átadási adat csak
+sikeres, `operate`-ot követelő memóriaolvasás után kerül a válaszba; a definíciót
+csak megtekintő hívó nem kapja meg a részleteket.
 
-**`platform.handoff` átadáskor `view`-szintű hívónak is a fogadó agent bizalmi memóriájába írt.**
-Az átadás kényelmi gyorsításként közvetlenül (`mode:'direct'`, `confirmNew:true`, a fogadó
-`approval` írási-módját megkerülve) `open_task` emléket injektált a **fogadó** agent aktív
-memóriájába, és ezt eddig csak a `canViewAgent` (= `canReadPublishedAgent`, elég hozzá **`view`**
-grant) kapuzta. Közben **minden** normál memóriaírás (`platform.project_memory.write`)
-`operate` jogot követel a cél agenten (a kód saját kommentje: „view is definition-read only").
-→ Egy csak-látó operátor a saját agentjén keresztül **tetszőleges szöveget kényszeríthetett egy
-olyan agent megbízott memóriájába, amelyet nem is üzemeltet** — a fogadó ezt a `get_definition`
-memóriájaként olvassa és megbízik benne. **Jogosultság-eszkaláció + memória-mérgezés**, ami a
-fogadóra beállított emberi jóváhagyási kaput is kijátssza.
-- **Üzleti hatás:** szűk jogú munkatárs feladatokat/utasításokat csempészhet egy másik csapat
-  agentjének memóriájába, a másik agent kontrolljait megkerülve. **Súlyosság:** közepes
-  (hitelesített, bérlőn belüli, de bizalmi-határ-sértő, agent-viselkedést befolyásoló).
-- **Független validáció:** dedikált biztonsági sub-agent **CONFIRMED** (F2), külön a kézi trace-től.
+**Ellenőrzés:** `test:handoff`, `test:project-work`, `test:mcp-http`, `test:agent-checkout`,
+ESLint és TypeScript. A regressziós ellenőrzés bizonyítja a view-only címzettnél
+kihagyott memóriaírást és megmaradó átadást, valamint a teljes tartalom elérését
+memóriabejegyzés nélkül és annak kihagyását tiltott olvasásnál. Az új olvasásiút-teszt
+az eredeti PR-kódon elbukott. A handoff-tesztek a CI-be is bekerültek. Migráció nincs.
 
-### Javítás (root-cause, a határon)
-A handoff memória-injektálás csak akkor fut, ha a hívó **`operate` joggal** rendelkezik a **fogadó**
-agenten — ugyanaz az alapjogosultság, mint a közvetlen memóriaírásnál (invariáns: *az átadás ne
-írhasson a fogadó memóriájába többet, mint amennyit a hívó a `project_memory.write`-tal tudna*).
-A **kézbesítés nem sérül:** a `Handoff` rekord a kapu **előtt**, feltétel nélkül létrejön, így az
-átadás továbbra is megjelenik a fogadó briefingjében / inboxában; a memória-injektálás csak
-gyorsítás. A `notified` mező a tényleges injektálást tükrözi (`agent_memory` vs `inbox`). Review-ra
-adott kiegészítés: a `handoff.created` audit `memoryInjection` mezője rögzíti az injektálást /
-kihagyást (`written` / `skipped_not_operable` / `not_applicable`) — forenzikus nyom a privilegizált
-kereszt-agent íráshoz. Nincs migráció, nincs viselkedés-törés az operate-ágon.
-
-### Ellenőrzések
-- `test:handoff` (+1 regressziós teszt **negatív kontrollal**): csak-látó fogadó → kézbesítve, de
-  **nincs** memóriaírás (0 elem, `memoryId` null, `notified` inbox); operate fogadó → injektál
-  (`agent_memory`). **Zöld** (12/12).
-- `test:project-work` **zöld**; `tsc`/`eslint` tiszta a módosított fájlokra.
-- Független `/code-review` (Matt Pocock, 2 párhuzamos axis): **Standards** — *ship*, 0 hard,
-  2 nem-blokkoló judgement-call (dupla recipient-lookup; a kihagyott írás audit-nyoma — utóbbit
-  átvezettem a `memoryInjection` mezővel). **Spec** — *ship*, teljes és helyes, 0 scope-creep, a
-  regressziós teszt valódi bizonyíték valódi negatív kontrollal.
-
-### Residual risk / következő audithoz (ugyanezen a felületen)
-- **🟡 Idempotencia (F1, CONFIRMED):** `idempotencyKey` **kötelező** a `handoff` és
-  `project_memory.write` sémában, de csak a jóváhagyási (enqueue→gateway-operation) ág dedup-ol;
-  a **direkt** memóriaírás és a **teljes handoff-insert nem** → kliens/agent-újrapróbálásra
-  **duplikált handoff + duplikált injektált open_task**. (A jelen fix után a csak-látó ágon az
-  injektálás eleve kimarad; az operate-ágon és a direkt memóriaírásnál marad a duplikátum-kockázat.)
-  A repo már tartalmazza a race-safe mintát (`GatewayOperation @@unique([tenantId, idempotencyKey])`
-  + P2002-elkapás a `createAwaitingApproval`-ban) — a handoffhoz migráció (nullable oszlop + unique
-  index) + a direkt íráshoz ugyanez kellene. **Ez a felület következő prioritált köre.**
-- **🟡 Work-file titok/PII-szkennelés hiánya (F4):** `writeFile`/`appendFile` nem futtatja a
-  `scanMemoryContentForSecrets`-et (a memóriaírással ellentétben); alacsonyabb kockázat, mert a
-  fájlokat on-demand olvassák, nem auto-injektálódnak a kontextusba.
-- **🟡 `appendFile` lost-update + kvóta-TOCTOU (F3):** read-modify-write; a ponytail-garancia csak
-  per-principal sorrend, két párhuzamos író (más user/agent) ugyanarra a tenant+projekt fájlra
-  elveszíthet egy chunkot. Nem biztonsági határ.
-- **Megerősítve rendben (nincs finding):** kereszt-bérlő/kereszt-agent memória read/write/delete/
-  supersede (mind `tenantId`+`agentId`(+`projectKey`) szűrt; supersede atomikus CAS count-ellenőrzéssel);
-  minden projekt-munka tool `operate`-ot követel (`view` csak definíció-olvasás — az egyetlen rés az
-  F2 volt); `handoff_ack` izoláció + status-CAS; `toUserEmail` nem szivárogtat bérlőn-kívüli létezést;
-  path-traversal/projectKey-injekció (`normalizeWorkFilePath`/`isValidProjectKey`); body/base64 DoS-kapuk;
-  a handoff-injektált írás is átmegy a titok-szkennelésen.
+**Megmaradó határ:** a közvetlen handoff-létrehozás idempotenciája továbbra sem megoldott;
+kliens-újrapróbálás duplikált rekordot okozhat. Ez külön adatmodell-módosítást igényel.
+A work-file titokszűrés és a párhuzamos append kérdése külön felület, itt nem változott.
 
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 

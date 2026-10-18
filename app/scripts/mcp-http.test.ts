@@ -1065,6 +1065,43 @@ async function main() {
     assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
   })
 
+  await check('handoff details remain available without an injected memory, only to operators', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const handoff = {
+      id: 'handoff-1', title: 'Árajánlat', summary: 'Készíts ajánlatot péntekig.',
+      links: 'Terv | work_file:/plans/acme.md', projectKey: '__general__',
+      createdAt: '2026-10-19T00:00:00.000Z', fromAgentName: 'Kati',
+    }
+    deps.listOpenHandoffs = async (input) => {
+      assert.equal(input.tenantId, TENANT_ID)
+      assert.equal(input.agentId, AGENT_ID)
+      return [handoff]
+    }
+    let denied = false
+    deps.invokeProjectWork = async () => denied
+      ? { isError: true, content: [{ type: 'text', text: '{"code":"agent_access_denied"}' }] }
+      : { content: [{ type: 'text', text: '{"items":[]}' }] }
+    await initialize(deps)
+    for (const allowed of [true, false]) {
+      denied = !allowed
+      const res = await post('acme', {
+        jsonrpc: '2.0', id: 63, method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      }, { authorization: `Bearer ${TOKEN}` }, deps)
+      const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+      const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}')
+      if (allowed) {
+        assert.deepEqual(payload.handoffs.entries[0], handoff)
+        assert.match(payload.briefing, /handoffs\.entries/)
+        assert.match(payload.handoffs.note, /coworker-provided task data/)
+        assert.doesNotMatch(payload.briefing, /full text is an open_task/)
+      } else {
+        assert.equal(payload.handoffs, undefined)
+        assert.doesNotMatch(JSON.stringify(payload), /Készíts ajánlatot|work_file:\/plans\/acme/)
+      }
+    }
+  })
+
   await check('get_definition carries memory index; denied memory read is omitted', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     const calls: Array<{ toolName: string; args: Record<string, unknown> }> = []
