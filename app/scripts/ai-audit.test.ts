@@ -282,18 +282,32 @@ async function main() {
       { providedToken: TOKEN, expectedToken: TOKEN },
       async () => {
         calls += 1
-        return { deleted: 4 }
+        return { deleted: 4, complete: true }
       },
     )
     assert.equal(ok.status, 200)
     assert.deepEqual(ok.body, { ok: true, deleted: 4 })
     assert.equal(calls, 1)
 
+    const partial = await handleAiAuditRetentionRequest(
+      { providedToken: TOKEN, expectedToken: TOKEN },
+      async () => ({ deleted: 500_000, complete: false }),
+    )
+    assert.equal(partial.status, 503)
+    assert.deepEqual(partial.body, { ok: false, error: 'retention_sweep_incomplete', deleted: 500_000 })
+
+    const failed = await handleAiAuditRetentionRequest(
+      { providedToken: TOKEN, expectedToken: TOKEN },
+      async () => { throw new Error('database://user:secret@example.com') },
+    )
+    assert.equal(failed.status, 500)
+    assert.deepEqual(failed.body, { ok: false, error: 'retention_sweep_failed' })
+
     const denied = await handleAiAuditRetentionRequest(
       { providedToken: 'wrong', expectedToken: TOKEN },
       async () => {
         calls += 1
-        return { deleted: 0 }
+        return { deleted: 0, complete: true }
       },
     )
     assert.equal(denied.status, 401)
@@ -303,7 +317,7 @@ async function main() {
       { providedToken: TOKEN, expectedToken: undefined },
       async () => {
         calls += 1
-        return { deleted: 0 }
+        return { deleted: 0, complete: true }
       },
     )
     assert.equal(missing.status, 401)
