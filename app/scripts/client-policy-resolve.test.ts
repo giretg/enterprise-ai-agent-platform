@@ -64,6 +64,13 @@ assert.equal('model_gateway' in floored.capabilities, false)
 
 // hibás szint → legszigorúbb (fail-closed)
 assert.equal(resolve(row('tenant', { preset: 'free', capabilities: { code_execution: 'yolo' } })).capabilities.code_execution, 'denied')
+// Sérült DB-sor nem ejtheti el az agent-plafont vagy a modell/tool korlátozását.
+assert.equal(resolve(row('tenant', { preset: 'free' }), row('user', { preset: 'free' }), row('agent', { preset: 'bogus' })).capabilities.code_execution, 'denied')
+assert.equal(resolve(row('tenant', { preset: 'free' }), null, row('agent', { preset: 'constructor', capabilities: { code_execution: 'local_free' } })).capabilities.code_execution, 'denied')
+assert.equal(resolve(row('tenant', { preset: 'free' }), null, row('agent', { capabilities: null })).capabilities.code_execution, 'denied')
+assert.deepEqual(resolve(row('tenant', { capabilities: { models: 'bad' } })).models, [])
+assert.deepEqual(resolve(row('tenant', { capabilities: {} }), null, row('agent', { capabilities: [] })).models, [])
+assert.equal(decideToolRule(resolve(row('tenant'), null, row('agent', { toolOverrides: null })).toolRules, 'mcp__crm__delete'), 'deny')
 
 // modell-lista: user felülír, agent metsz
 const models = resolve(
