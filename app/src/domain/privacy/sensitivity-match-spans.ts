@@ -58,15 +58,26 @@ const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i
  * contain headers like `X-Api-Key: your_api_key_here`, which are examples rather
  * than secrets. We extract the value and assess whether it looks like real
  * material before blocking.
+ *
+ * CRM/download URLs (`…/download?token=…`) carry high-entropy query values
+ * that are not API keys. Only generic `token` query assignments are skipped;
+ * explicit credentials, known vendor prefixes and JWTs are caught in URLs too.
  */
 const SECRET_ASSIGNMENT_RE =
-  /(?:password|secret|api[_-]?key|token|auth[_-]?key|private[_-]?key)\s*[:=]\s*["'`]?([^\s"'`,;]+)/gi
+  /(?:password|passwd|client[_-]?secret|secret|api[_-]?key|auth[_-]?key|private[_-]?key|(?<![?&])token|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["'`]?([^\s"'`,;]+)/gi
 
 const PLACEHOLDER_SECRET_RE =
   /^(?:<[^>]+>|\{[^}]+\}|\[[^\]]+\]|(?:your|example|sample|demo|dummy|test|fake|placeholder|replace|changeme|change_me|todo|xxx|xxxx|redacted|masked|here|api[_-]?key|token|secret|password|key|value)(?:[_-](?:your|example|sample|demo|dummy|test|fake|placeholder|replace|changeme|change_me|todo|xxx|xxxx|redacted|masked|here|api[_-]?key|token|secret|password|key|value))*)$/i
 
-const COMMON_SECRET_VALUE_RE =
-  /^(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/
+/** Vendor prefixes and JWT — full-value check for assignment entropy. */
+const KNOWN_SECRET_VALUE_SOURCE =
+  'sk-[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[0-9A-Za-z]{16,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}|AQ\\.[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+'
+
+const COMMON_SECRET_VALUE_RE = new RegExp(`^(?:${KNOWN_SECRET_VALUE_SOURCE})$`)
+const KNOWN_SECRET_VALUE_RE = new RegExp(`\\b(?:${KNOWN_SECRET_VALUE_SOURCE})`, 'g')
+
+/** `Authorization: Bearer <material>` — the scheme itself is the assignment. */
+const BEARER_SECRET_RE = /\bBearer\s+([A-Za-z0-9\-._~+/]+=*)/gi
 
 /** Email address (basic RFC-5322 local@domain). */
 const EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/
@@ -144,10 +155,10 @@ function lineSnippet(text: string, index: number): string {
 }
 
 function maskSecretAssignments(text: string): string {
-  SECRET_ASSIGNMENT_RE.lastIndex = 0
-  return text.replace(SECRET_ASSIGNMENT_RE, (full, value: string) =>
-    full.replace(value, maskSecretValue(value)),
-  )
+  for (const span of collectSecretSpans(text).sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, span.start) + maskSecretValue(text.slice(span.start, span.end)) + text.slice(span.end)
+  }
+  return text
 }
 
 function maskSecretValue(value: string): string {
@@ -204,23 +215,7 @@ function findingOf(
 }
 
 function detectSecretKeyFindings(text: string): SensitivityFinding[] {
-  SECRET_ASSIGNMENT_RE.lastIndex = 0
-  const findings: SensitivityFinding[] = []
-
-  const privateKey = PRIVATE_KEY_BLOCK_RE.exec(text)
-  if (privateKey?.index != null) {
-    findings.push(findingOf(text, privateKey.index, 'forbidden', 'secret_key'))
-  }
-
-  for (const match of text.matchAll(SECRET_ASSIGNMENT_RE)) {
-    const value = match[1] ?? ''
-    if (isPlaceholderSecretValue(value)) continue
-    if (hasHighEntropyShape(value)) {
-      findings.push(findingOf(text, match.index ?? 0, 'forbidden', 'secret_key'))
-    }
-  }
-
-  return findings
+  return collectSecretSpans(text).map((span) => findingOf(text, span.start, 'forbidden', 'secret_key'))
 }
 
 function detectPatternFindings(
@@ -506,11 +501,25 @@ export function collectSensitivityMatchSpans(text: string): SensitivityMatchSpan
   }))
 }
 
-function collectRedactionSpans(text: string): RedactionSpan[] {
+function pushSecretSpan(spans: RedactionSpan[], start: number, end: number): void {
+  if (isWithinSpan(start, end, spans)) return
+  if (spans.some((other) => start < other.end && end > other.start)) return
+  spans.push({ start, end, category: 'secret_key' })
+}
+
+function assignmentValueSpan(match: RegExpMatchArray): TextSpan | null {
+  const value = match[1] ?? ''
+  if (!value || isPlaceholderSecretValue(value) || !hasHighEntropyShape(value)) return null
+  const base = match.index ?? 0
+  const rel = match[0].lastIndexOf(value)
+  const start = base + (rel >= 0 ? rel : 0)
+  return { start, end: start + value.length }
+}
+
+/** PEM-blokk, ismert prefix / JWT, hozzárendelés (kivéve letöltési token), Bearer. */
+function collectSecretSpans(text: string): RedactionSpan[] {
   const spans: RedactionSpan[] = []
 
-  // Privát kulcs blokk: a fejléctől a záró sorig (vagy a szöveg végéig) — a
-  // base64 törzs önmagában is titok, ezért az egész blokkot redaktáljuk.
   const pkStart = text.search(PRIVATE_KEY_BLOCK_RE)
   if (pkStart >= 0) {
     const endMatch = /-----END [A-Z ]*PRIVATE KEY-----/i.exec(text.slice(pkStart))
@@ -518,17 +527,29 @@ function collectRedactionSpans(text: string): RedactionSpan[] {
     spans.push({ start: pkStart, end, category: 'secret_key' })
   }
 
-  // Titok-hozzárendelések: csak a valódi (nem placeholder, magas-entrópiájú)
-  // ÉRTÉK részt maszkoljuk, a kulcsot (pl. `api_key:`) meghagyjuk kontextusnak.
   SECRET_ASSIGNMENT_RE.lastIndex = 0
   for (const match of text.matchAll(SECRET_ASSIGNMENT_RE)) {
-    const value = match[1] ?? ''
-    if (!value || isPlaceholderSecretValue(value) || !hasHighEntropyShape(value)) continue
-    const base = match.index ?? 0
-    const rel = match[0].lastIndexOf(value)
-    const start = base + (rel >= 0 ? rel : 0)
-    spans.push({ start, end: start + value.length, category: 'secret_key' })
+    const span = assignmentValueSpan(match)
+    if (span) pushSecretSpan(spans, span.start, span.end)
   }
+
+  KNOWN_SECRET_VALUE_RE.lastIndex = 0
+  for (const match of text.matchAll(KNOWN_SECRET_VALUE_RE)) {
+    if (match.index == null || isPlaceholderSecretValue(match[0])) continue
+    pushSecretSpan(spans, match.index, match.index + match[0].length)
+  }
+
+  BEARER_SECRET_RE.lastIndex = 0
+  for (const match of text.matchAll(BEARER_SECRET_RE)) {
+    const span = assignmentValueSpan(match)
+    if (span) pushSecretSpan(spans, span.start, span.end)
+  }
+
+  return spans
+}
+
+function collectRedactionSpans(text: string): RedactionSpan[] {
+  const spans: RedactionSpan[] = [...collectSecretSpans(text)]
 
   const ibanSpans = collectValidIbanSpans(text)
   for (const span of ibanSpans) spans.push({ ...span, category: 'iban' })

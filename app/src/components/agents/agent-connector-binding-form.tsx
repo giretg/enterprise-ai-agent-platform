@@ -117,7 +117,7 @@ function AddConnectorBindingsDialog({
   const [error, setError] = useState<string | null>(null)
   const suggestedIds = useMemo(() => new Set(suggested.map((item) => item.id)), [suggested])
   const [picks, setPicks] = useState<Record<string, ConnectorPick>>({})
-  const [previewId, setPreviewId] = useState<string | null>(ordered[0]?.id ?? null)
+  const [previewId, setPreviewId] = useState<string | null>(null)
 
   const selectedIds = useMemo(
     () => Object.keys(picks).filter((id) => ordered.some((item) => item.id === id)),
@@ -125,9 +125,8 @@ function AddConnectorBindingsDialog({
   )
 
   const preview = useMemo(() => {
-    const id = previewId ?? selectedIds[0] ?? ordered[0]?.id
-    return id ? ordered.find((item) => item.id === id) : undefined
-  }, [previewId, selectedIds, ordered])
+    return previewId ? ordered.find((item) => item.id === previewId) : undefined
+  }, [previewId, ordered])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
@@ -238,7 +237,7 @@ function AddConnectorBindingsDialog({
                     className={`flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 transition-colors ${
                       active ? 'border-coral/50 bg-coral/5' : 'border-line/70'
                     }`}
-                    onMouseEnter={() => setPreviewId(item.id)}
+                    onClick={() => setPreviewId(item.id)}
                     onFocusCapture={() => setPreviewId(item.id)}
                   >
                     <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 text-sm">

@@ -154,16 +154,21 @@ def parent_server_name(home, parent):
 def _copy_login(src_dir, src_name, dest_dir, dest_name):
     """Token + client + meta együtt; symlinket nem követünk és nem írunk."""
     copied = False
+    if os.path.islink(src_dir) or os.path.islink(dest_dir):
+        return False
     for suffix in (".json", ".client.json", ".meta.json"):
         src, dest = os.path.join(src_dir, src_name + suffix), os.path.join(dest_dir, dest_name + suffix)
         if os.path.islink(src) or not os.path.isfile(src) or os.path.islink(dest):
             continue
         os.makedirs(dest_dir, exist_ok=True)
+        info = os.stat(src)
         data = open(src, "rb").read()
         tmp = f"{dest}.{os.getpid()}"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+        # A legacy belépő lejárata az mtime-ra épül; a másolás nem friss bejelentkezés.
+        os.utime(tmp, ns=(info.st_atime_ns, info.st_mtime_ns))
         os.replace(tmp, dest)
         copied = True
     return copied
@@ -194,9 +199,45 @@ def share_mcp_tokens(dest_home, source_home=None):
     return False
 
 
-def _expires_at(path):
+def share_all_mcp_tokens(home):
+    """`share_mcp_tokens` a Bot-profilra, vagy a default profilból indulva minden `exc-*` Botra.
+
+    A Hermes asztali app egy folyamatban, `HERMES_HOME=~/.hermes`-szel szolgálja ki az összes
+    profilt, így a Guard a default profilt látja; a telepítő is innen indul. Visszaad: kapott-e újat Bot.
+    """
+    if parent_hermes_home(home):
+        return share_mcp_tokens(home)
+    profiles = os.path.join(home, "profiles")
     try:
-        return float(json.load(open(path, encoding="utf-8")).get("expires_at") or 0)
+        names = sorted(os.listdir(profiles))
+    except OSError:
+        return False
+    got = False
+    for name in names:
+        bot = os.path.join(profiles, name)
+        if name.startswith("exc-") and os.path.isdir(bot) and not os.path.islink(bot):
+            got = share_mcp_tokens(bot, home) or got
+    return got
+
+
+def _expires_at(path):
+    """Mikor jár le a belépő? Nagyobb = frissebb a share számára.
+
+    A modern Hermes abszolút ``expires_at``-et ír. Régi / telepítő-másolt fájlokban
+    ez hiányzik — a 0-ra esés azt jelentette, hogy egy lejárt, de ``expires_at``-es
+    szülő belépő felülírta a Bot friss (expires_at nélküli) loginját. A Hermeshez
+    igazodva: hiányzó ``expires_at`` esetén ``mtime + expires_in`` (vagy mtime).
+    """
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+        exp = data.get("expires_at")
+        if exp is not None and exp != "":
+            return float(exp)
+        mtime = os.path.getmtime(path)
+        extra = data.get("expires_in")
+        if extra is not None and extra != "":
+            return mtime + float(extra)
+        return mtime
     except (OSError, ValueError, TypeError, AttributeError):
         return 0.0
 
@@ -275,6 +316,10 @@ def key_cmd_payload(token, exp, now=time.time):
 
 
 def main():
+    if sys.argv[1:2] == ["--share"]:
+        # Telepítő: a frissen kirakott Bot-profilok az azonos URL-ű default belépőt kapják.
+        share_all_mcp_tokens(sys.argv[2] if len(sys.argv) > 2 else default_home())
+        return 0
     home = os.environ.get("HERMES_HOME") or default_home()
     try:
         sys.stdout.write(key_cmd_payload(*get_token_exp(home)))

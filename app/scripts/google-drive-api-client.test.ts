@@ -2,7 +2,11 @@
  * Futtatás: GOOGLE_DRIVE_API_STUB=true npx tsx scripts/google-drive-api-client.test.ts
  */
 import assert from 'node:assert/strict'
-import { GoogleDriveApiClient } from '../src/domain/connector-grant/google-drive-api-client'
+import {
+  GoogleDriveApiAuthError,
+  GoogleDriveApiClient,
+  GoogleDriveApiError,
+} from '../src/domain/connector-grant/google-drive-api-client'
 
 process.env.GOOGLE_DRIVE_API_STUB = 'true'
 
@@ -112,16 +116,17 @@ async function main() {
 
   // --- 5xx retry-duplikátum regresszió (nem-idempotens create-POST nem ismételhető) ---
   async function withLiveFetch<T>(
-    responder: (calls: number) => Response,
+    responder: (calls: number, url: string, init?: RequestInit) => Response,
     run: (live: GoogleDriveApiClient, getCalls: () => number) => Promise<T>,
   ): Promise<T> {
     const realFetch = globalThis.fetch
     const realStub = process.env.GOOGLE_DRIVE_API_STUB
     delete process.env.GOOGLE_DRIVE_API_STUB
     let calls = 0
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls += 1
-      return responder(calls)
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      return responder(calls, url, init)
     }) as typeof fetch
     try {
       // A GoogleDriveApiClient stubnak tekint minden `stub-` prefixű tokent → live token.
@@ -168,6 +173,246 @@ async function main() {
         assert.equal(getCalls(), 3, 'reads keep the 5xx retry')
       },
     )
+  })
+
+  await test('search 400 keeps structured Google reason, not raw body', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'File secret-content.pdf not found',
+        status: 'INVALID_ARGUMENT',
+        errors: [
+          {
+            reason: 'invalid',
+            location: 'q',
+            message: 'File secret-content.pdf not found',
+          },
+        ],
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.search({ query: 'secret' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.status, 400)
+            assert.equal(error.googleStatus, 'INVALID_ARGUMENT')
+            assert.deepEqual(error.googleReasonCodes, ['invalid'])
+            assert.deepEqual(error.googleLocations, ['q'])
+            assert.equal(error.googleMessage, 'File secret-content.pdf not found')
+            assert.equal(error.message, 'google_drive.search failed: 400')
+            assert.equal(error.message.includes('secret-content'), false)
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('search 400 reads reason and field from Google details[]', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'Request contains secret-content.pdf',
+        status: 'INVALID_ARGUMENT',
+        details: [
+          { reason: 'INVALID_PARAMETER' },
+          { fieldViolations: [{ field: 'parents', description: 'secret-content.pdf' }] },
+        ],
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.search({ query: 'secret' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.googleStatus, 'INVALID_ARGUMENT')
+            assert.deepEqual(error.googleReasonCodes, ['INVALID_PARAMETER'])
+            assert.deepEqual(error.googleLocations, ['parents'])
+            assert.equal(error.googleMessage, 'Request contains secret-content.pdf')
+            assert.equal(error.message.includes('secret-content'), false)
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('search 403 keeps structured Google auth reason, not raw body', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 403,
+        message: 'The user has not granted the app access to file secret-content.pdf',
+        errors: [{ reason: 'appNotAuthorizedToFile', location: 'fileId' }],
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 403, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.search({ query: 'secret' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiAuthError)
+            assert.equal(error.status, 403)
+            assert.deepEqual(error.googleReasonCodes, ['appNotAuthorizedToFile'])
+            assert.deepEqual(error.googleLocations, ['fileId'])
+            assert.equal(
+              error.googleMessage,
+              'The user has not granted the app access to file secret-content.pdf',
+            )
+            assert.equal(error.message, 'google_drive.search auth failed: 403')
+            assert.equal(error.message.includes('secret-content'), false)
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('search keeps includeItemsFromAllDrives', async () => {
+    let seen = ''
+    await withLiveFetch(
+      (_calls, url) => {
+        seen = url
+        return Response.json({ files: [] })
+      },
+      async (live) => {
+        await live.search({ query: 'x' })
+      },
+    )
+    const parsed = new URL(seen)
+    assert.equal(parsed.searchParams.get('supportsAllDrives'), 'true')
+    assert.equal(parsed.searchParams.get('includeItemsFromAllDrives'), 'true')
+  })
+
+  await test('upload_file omits includeItemsFromAllDrives and keeps supportsAllDrives', async () => {
+    let seen = ''
+    await withLiveFetch(
+      (_calls, url) => {
+        seen = url
+        return Response.json({ id: 'f1', name: 'r.html', mimeType: 'text/html' })
+      },
+      async (live) => {
+        await live.uploadFile({ name: 'r.html', textContent: '<h1>ok</h1>' })
+      },
+    )
+    const parsed = new URL(seen)
+    assert.equal(parsed.pathname, '/upload/drive/v3/files')
+    assert.equal(parsed.searchParams.get('supportsAllDrives'), 'true')
+    assert.equal(parsed.searchParams.get('includeItemsFromAllDrives'), null)
+  })
+
+  await test('create_folder omits includeItemsFromAllDrives', async () => {
+    let seen = ''
+    await withLiveFetch(
+      (_calls, url) => {
+        seen = url
+        return Response.json({
+          id: 'folder-1',
+          name: 'M',
+          mimeType: 'application/vnd.google-apps.folder',
+        })
+      },
+      async (live) => {
+        await live.createFolder({ name: 'M' })
+      },
+    )
+    const parsed = new URL(seen)
+    assert.equal(parsed.searchParams.get('supportsAllDrives'), 'true')
+    assert.equal(parsed.searchParams.get('includeItemsFromAllDrives'), null)
+  })
+
+  await test('upload 400 with message-only Google body keeps truncated googleMessage', async () => {
+    const body = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'Invalid multipart request with 0 mime parts',
+      },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.uploadFile({ name: 'r.html', textContent: '<h1>ok</h1>' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.status, 400)
+            assert.equal(error.googleStatus, undefined)
+            assert.equal(error.googleReasonCodes, undefined)
+            assert.equal(error.googleMessage, 'Invalid multipart request with 0 mime parts')
+            assert.equal(error.message, 'google_drive.upload_file failed: 400')
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('googleMessage truncates to 120 characters and strips control chars', async () => {
+    const body = JSON.stringify({
+      error: { code: 400, message: `Bad\nparam ${'x'.repeat(200)}` },
+    })
+    await withLiveFetch(
+      () => new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }),
+      async (live) => {
+        await assert.rejects(
+          () => live.uploadFile({ name: 'r.html', textContent: '<h1>ok</h1>' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.googleMessage?.length, 120)
+            assert.equal(error.googleMessage?.includes('\n'), false)
+            assert.equal(error.googleMessage?.startsWith('Bad param '), true)
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('plain-text Google 400 body is kept as googleMessage', async () => {
+    await withLiveFetch(
+      () =>
+        new Response('Invalid multipart request with 0 mime parts.', {
+          status: 400,
+          headers: { 'content-type': 'text/plain' },
+        }),
+      async (live) => {
+        await assert.rejects(
+          () => live.uploadFile({ name: 'hello.txt', textContent: 'hello' }),
+          (error: unknown) => {
+            assert.ok(error instanceof GoogleDriveApiError)
+            assert.equal(error.googleMessage, 'Invalid multipart request with 0 mime parts.')
+            return true
+          },
+        )
+      },
+    )
+  })
+
+  await test('upload_file multipart has a blank line before the file body', async () => {
+    let sent: Buffer | undefined
+    await withLiveFetch(
+      (_calls, _url, init) => {
+        const raw = init?.body
+        sent = Buffer.isBuffer(raw)
+          ? raw
+          : raw instanceof Uint8Array
+            ? Buffer.from(raw)
+            : Buffer.from(String(raw ?? ''))
+        return Response.json({ id: 'f1', name: 'hello.txt', mimeType: 'text/plain' })
+      },
+      async (live) => {
+        await live.uploadFile({ name: 'hello.txt', textContent: 'hello' })
+      },
+    )
+    assert.ok(sent)
+    const text = sent.toString('latin1')
+    assert.match(text, /Content-Type: text\/plain; charset=UTF-8\r\n\r\nhello/)
+    assert.equal(text.includes('charset=UTF-8\r\nhello'), false)
   })
 
   console.log('\nAll google-drive-api-client tests passed.')

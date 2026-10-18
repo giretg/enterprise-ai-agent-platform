@@ -172,6 +172,10 @@ async function confirmMessage(
       .join(', ')
   } else if (view.toolName === GMAIL_TRASH_TOOL) {
     target = `${gmailItemTarget(args)} → kuka`
+  } else if (view.toolName === 'mcp_call') {
+    // #395 D3: a jóváhagyó a belső eszköznevet és a teljes argumentumot látja.
+    target = pendingOperationHeadline(view.toolName, args, { connectorName })
+    content = args.arguments && typeof args.arguments === 'object' ? JSON.stringify(args.arguments, null, 2) : ''
   } else if (view.toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) {
     target = `Táblázat: ${str(args.fileId)}, tartomány: ${str(args.range)}`
     content = str(args.values)

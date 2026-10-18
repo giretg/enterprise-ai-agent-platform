@@ -50,7 +50,7 @@ import {
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
-import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
+import { MCP_WORK_FILE_LIST_TOOL, PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
 import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -778,7 +778,7 @@ async function main() {
         tools?: Array<{
           name: string
           description?: string
-          inputSchema?: { properties?: Record<string, { type?: string }> }
+          inputSchema?: { properties?: Record<string, { type?: string }>; required?: string[] }
         }>
       }
       error?: unknown
@@ -813,6 +813,13 @@ async function main() {
     for (const tool of tools) {
       for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
         assert.notEqual(spec.type, 'array', `${tool.name}.${field} advertised as array`)
+      }
+      if (tool.inputSchema?.properties?.definitionId) {
+        assert.equal(
+          (tool.inputSchema.required ?? []).includes('definitionId'),
+          false,
+          `${tool.name} still advertises definitionId as required`,
+        )
       }
     }
   })
@@ -1732,6 +1739,14 @@ async function main() {
     assert.ok(JSON.stringify(ok).includes(DEFINITION_ID))
     const def = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, {}, AGENT_ID)
     assert.equal(def.payload.definitionId, DEFINITION_ID)
+  })
+
+  await check('#682 agent header only → work_file.list without definitionId', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const files = await callWithAgentHeader(deps, MCP_WORK_FILE_LIST_TOOL, {}, AGENT_ID)
+    assert.equal(files.isError, undefined)
+    assert.equal(files.payload.ok, true)
   })
 
   await check('#682 agent header + matching definitionId → OK', async () => {

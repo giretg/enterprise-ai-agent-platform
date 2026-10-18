@@ -473,6 +473,7 @@ async function main() {
     assert.match(config, /user_profile_enabled: false/)
     assert.match(config, new RegExp(`X-Excellence-Agent-Id: ${AGENT_ID}`))
     assert.match(config, /auth: oauth/)
+    assert.match(config, /client_id: https:\/\/nousresearch\.github\.io\/hermes-agent\/docs\/oauth\/client-metadata\.json/)
     assert.match(config, /- google_drive_search/)
     assert.match(config, /- platform\.agent\.get_definition/)
     assert.doesNotMatch(config, /platform\.agent\.publish|platform\.agent\.create_draft/)

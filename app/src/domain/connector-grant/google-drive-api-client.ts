@@ -52,10 +52,16 @@ const GOOGLE_WORKSPACE_EXPORT: Record<string, string> = {
 const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_CHARS = 200_000
 
+const GOOGLE_MESSAGE_MAX = 120
+
 export class GoogleDriveApiAuthError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly googleStatus?: string,
+    readonly googleReasonCodes?: string[],
+    readonly googleLocations?: string[],
+    readonly googleMessage?: string,
   ) {
     super(message)
     this.name = 'GoogleDriveApiAuthError'
@@ -67,17 +73,91 @@ export class GoogleDriveApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly googleStatus?: string,
+    readonly googleReasonCodes?: string[],
+    readonly googleLocations?: string[],
+    readonly googleMessage?: string,
   ) {
     super(message)
     this.name = 'GoogleDriveApiError'
   }
 }
 
-function driveApiError(operation: string, status: number, body?: string): Error {
-  if (status === 401 || status === 403) {
-    return new GoogleDriveApiAuthError(`${operation} auth failed: ${status}`, status)
+function pushTrimmed(target: string[], value: unknown) {
+  if (typeof value === 'string' && value) target.push(value.slice(0, 100))
+}
+
+function sanitizeGoogleMessage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const collapsed = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!collapsed) return undefined
+  return collapsed.slice(0, GOOGLE_MESSAGE_MAX)
+}
+
+function googleDriveErrorDetails(body?: string): {
+  status?: string
+  reasonCodes?: string[]
+  locations?: string[]
+  message?: string
+} {
+  if (!body) return {}
+  try {
+    const error = (JSON.parse(body) as { error?: Record<string, unknown> }).error
+    if (!error) return {}
+    const reasonCodes: string[] = []
+    const locations: string[] = []
+    const errors = Array.isArray(error.errors) ? error.errors : []
+    for (const entry of errors) {
+      if (!entry || typeof entry !== 'object') continue
+      const rec = entry as Record<string, unknown>
+      pushTrimmed(reasonCodes, rec.reason)
+      pushTrimmed(locations, rec.location)
+    }
+    const details = Array.isArray(error.details) ? error.details : []
+    for (const entry of details) {
+      if (!entry || typeof entry !== 'object') continue
+      const rec = entry as Record<string, unknown>
+      pushTrimmed(reasonCodes, rec.reason)
+      const violations = Array.isArray(rec.fieldViolations) ? rec.fieldViolations : []
+      for (const violation of violations) {
+        if (!violation || typeof violation !== 'object') continue
+        pushTrimmed(locations, (violation as Record<string, unknown>).field)
+      }
+    }
+    const googleMessage = sanitizeGoogleMessage(error.message)
+    return {
+      ...(typeof error.status === 'string' ? { status: error.status.slice(0, 100) } : {}),
+      ...(reasonCodes.length ? { reasonCodes: [...new Set(reasonCodes)].slice(0, 10) } : {}),
+      ...(locations.length ? { locations: [...new Set(locations)].slice(0, 10) } : {}),
+      ...(googleMessage ? { message: googleMessage } : {}),
+    }
+  } catch {
+    const googleMessage = sanitizeGoogleMessage(body)
+    return googleMessage ? { message: googleMessage } : {}
   }
-  return new GoogleDriveApiError(`${operation} failed: ${status}${body ? ` · ${body.slice(0, 200)}` : ''}`, status)
+}
+
+function driveApiError(operation: string, status: number, body?: string): Error {
+  const details = googleDriveErrorDetails(body)
+  if (status === 401 || status === 403) {
+    return new GoogleDriveApiAuthError(
+      `${operation} auth failed: ${status}`,
+      status,
+      details.status,
+      details.reasonCodes,
+      details.locations,
+      details.message,
+    )
+  }
+  return new GoogleDriveApiError(
+    `${operation} failed: ${status}`,
+    status,
+    undefined,
+    details.status,
+    details.reasonCodes,
+    details.locations,
+    details.message,
+  )
 }
 
 function sleep(ms: number): Promise<void> {
@@ -125,12 +205,26 @@ function parseFileSummary(raw: Record<string, unknown>): DriveFileSummary | null
   }
 }
 
+/** files.create / upload / get / patch: a Google csak a supportsAllDrives-t dokumentálja. */
 function sharedDriveParams(extra?: Record<string, string>): Record<string, string> {
   return {
     supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
     ...extra,
   }
+}
+
+/** files.list: az includeItemsFromAllDrives csak listázós query param. */
+function listDriveParams(extra?: Record<string, string>): Record<string, string> {
+  return sharedDriveParams({ includeItemsFromAllDrives: 'true', ...extra })
+}
+
+/**
+ * A modell gyakran sima szót ad `query`-ként („Birtok”), amit a Drive `q` szintaxisként
+ * 400-zal elutasít. Operátor/idézőjel nélküli szöveg → teljes-szöveges keresés.
+ */
+export function driveQueryClause(query: string): string {
+  if (/'|=|<|>|\bcontains\b|\bhas\b/i.test(query)) return `(${query})`
+  return `fullText contains '${query.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
 }
 
 export class GoogleDriveApiClient {
@@ -161,7 +255,7 @@ export class GoogleDriveApiClient {
     }
 
     const qParts: string[] = ['trashed = false']
-    if (params.query) qParts.push(`(${params.query})`)
+    if (params.query) qParts.push(driveQueryClause(params.query))
     if (params.nameContains) qParts.push(`name contains '${params.nameContains.replace(/'/g, "\\'")}'`)
     if (params.mimeTypes?.length) {
       const mimeQ = params.mimeTypes.map((m) => `mimeType='${m}'`).join(' or ')
@@ -181,7 +275,7 @@ export class GoogleDriveApiClient {
       url.searchParams.set('corpora', 'drive')
       url.searchParams.set('driveId', params.driveId)
     }
-    for (const [key, value] of Object.entries(sharedDriveParams())) {
+    for (const [key, value] of Object.entries(listDriveParams())) {
       url.searchParams.set(key, value)
     }
 
@@ -448,6 +542,7 @@ export class GoogleDriveApiClient {
 
     const boundary = `platform-${Date.now().toString(36)}`
     // ponytail: binary goes in as raw bytes (multipart/related), no base64 envelope — Drive expects the bytes.
+    // join('\r\n') a záró üres elem után NEM ad második CRLF-et; a MIME törzs elé kell a header/body üres sor.
     const chunks = [
       Buffer.from(
         [
@@ -460,7 +555,7 @@ export class GoogleDriveApiClient {
             ? `Content-Type: ${mediaType}`
             : `Content-Type: ${mediaType}; charset=UTF-8`,
           '',
-        ].join('\r\n'),
+        ].join('\r\n') + '\r\n',
         'utf8',
       ),
       params.binaryBytes

@@ -38,6 +38,33 @@ az eredeti PR-kódon elbukott. A handoff-tesztek a CI-be is bekerültek. Migrác
 kliens-újrapróbálás duplikált rekordot okozhat. Ez külön adatmodell-módosítást igényel.
 A work-file titokszűrés és a párhuzamos append kérdése külön felület, itt nem változott.
 
+## 2026-10-15 — Hermes Model Gateway: `data:`-prefixes tartalomszűrés megkerülése (PR #891)
+
+**Üzleti hatás:** a `collectSlots` minden `data:`-vel kezdődő stringet kihagyott,
+így nyers bankkártyaszám és személyes adat juthatott a külső AI-modellhez.
+A megosztott függvényen user-, system-, assistant-, tool-szöveg és tool-argumentum is átmegy.
+
+**2026-10-19 merge előtti review:** a PR eredeti base64-fejléc regexe önmagában
+nem igazolta, hogy a törzs bináris. A hamis `data:image/png;base64,<nyers PAN>`
+és az e-mailt tartalmazó MIME-fejléc is kimaradt; a nagybetűs `DATA:` új megkerülést
+is okozott. Két független review-tengely igazolta a hiányt.
+
+**Végső javítás:** a prefixalapú kivétel teljes eltávolítása. Minden nem-strukturális
+string átmegy ugyanazon PAN-blokkon és tokenizáláson; nincs új parser vagy függőség.
+A valódi base64-kép érzékeny szöveg hiányában bájtazonosan továbbítódik.
+
+**Ellenőrzés:** a bővített regressziós teszt az eredeti PR-kódon elbukott, a végső
+javítással zöld: hamis base64-fejléc, kis-/nagybetű, tömör és tagolt PAN, user/tool/assistant
+szöveg, MIME-paraméter és nyers e-mail; legitim PNG változatlan. A teljes
+`test:model-gateway-content-filter`, `test:model-gateway-proxy`, ESLint és TypeScript ellenőrzés zöld.
+Egy 1 MiB véletlen bináris adat base64-szövegének detektorszkennelése helyben 14 ms volt
+(egyszeri tájékoztató mérés, nem teljes kérésre vonatkozó teljesítménygarancia).
+
+**Megmaradó határ:** a szövegszűrő nem dekódol base64-kódolt szöveget, és nem OCR-ez képet;
+a nyers értékekre vonatkozó garancia nem teljes multimodális DLP. A `ponytail:` komment
+rögzíti a típusfüggő dekódolás lehetséges későbbi irányát. A kategóriák tenant-policy szerinti
+`off` beállítása továbbra is szándékos termékfunkció. Migráció nincs.
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés

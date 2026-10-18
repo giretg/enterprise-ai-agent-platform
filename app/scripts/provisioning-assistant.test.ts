@@ -1561,6 +1561,50 @@ async function run() {
     assert.ok(/unknown@example.com/.test(r.detail ?? ''))
   })
 
+  await test('SBX: nem-CRM connector + VALÓDI tokennel 404 → generikus üzenet, NEM acting user', async () => {
+    const { fn } = recordingFetch({ status: 404 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: { ...cleanConfig(), auth: { type: 'bearer_token' } } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.statusCode, 404)
+    assert.ok(!/acting user/i.test(r.detail ?? ''), 'nem-CRM connectornál ne CRM-üzenet jelenjen meg')
+    assert.ok(/404/.test(r.detail ?? ''))
+  })
+
+  await test('SBX: GitHub repo-szűrt connector → a próba a /user végpontra megy (nem kamurepo)', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ['api.github.com'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: {
+        provider: 'github',
+        baseUrl: 'https://api.github.com',
+        egressHosts: ['api.github.com'],
+        authMode: 'service',
+        auth: { type: 'bearer_token' },
+        proposedTools: [
+          { name: 'get_repository', method: 'GET', path: '/repos/{owner}/{repo}', access: 'read' },
+          { name: 'list_issues', method: 'GET', path: '/repos/{owner}/{repo}/issues', access: 'read' },
+        ],
+      } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, true)
+    assert.equal(calls[0].url, 'https://api.github.com/user')
+  })
+
   await test('SBX: fetch dob (hálózati hiba) → request_failed, sanitizált detail', async () => {
     const tester = new HttpSandboxConnectionTester({
       resolveEgressAllowlist: async () => ALLOWLIST,

@@ -22,6 +22,16 @@ import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
+import {
+  checkMcpCallGate,
+  executeMcpTool as defaultExecuteMcpTool,
+  executeMcpWithRetryPolicy,
+  mcpErrorCode,
+  type ExecuteMcpToolInput,
+  type McpGateDeps,
+} from './handlers/mcp'
+import type { McpCallResult } from '@/domain/connector/mcp-client'
+import { mcpResultForModel, mcpToolListForModel } from '@/domain/connector/mcp-tools'
 import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
@@ -29,9 +39,14 @@ import {
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseKbTool,
+  isEnterpriseMcpTool,
   isEnterpriseSandboxTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
+  MCP_CALL_TOOL,
+  MCP_LIST_TOOLS_TOOL,
+  mcpCallInputSchema,
+  mcpListToolsInputSchema,
   schemaForEnterpriseKbTool,
   schemaForEnterpriseSandboxTool,
   schemaForEnterpriseTool,
@@ -108,7 +123,8 @@ export type WriteConfirmInput = {
 export type HttpApiActingUser = { id: string; email: string; tenantId: string | null } | null
 
 export type EnterpriseToolDeps = AuthorizeToolCallDeps &
-  DefinitionPinDeps & {
+  DefinitionPinDeps &
+  McpGateDeps & {
   loadDefinition: (input: {
     tenantId: string
     definitionId: string
@@ -196,6 +212,8 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     tenantId: string
   }) => Promise<AgentWriteApprovalModes | null>
   startAuthorization?: StartDelegatedAuthorization
+  /** #395: külső MCP-hívás; tesztben cserélhető. */
+  executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
   audit?: AuditSink
 }
 
@@ -257,6 +275,7 @@ async function auditDenied(
   reason: string,
   definitionId?: string,
   agentId?: string,
+  errorDetails?: Record<string, unknown>,
 ) {
   const payload = {
     toolName,
@@ -265,6 +284,7 @@ async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...errorDetails,
   }
   console.info('enterprise.tool.denied', payload)
   await writeAudit(deps.audit, {
@@ -404,6 +424,7 @@ async function tryDirectWrite(
       connector,
       accessToken,
       actingUser,
+      agent: { id: definition.agentId, version: definition.version },
     })
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&
@@ -438,8 +459,18 @@ async function tryDirectWrite(
     return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
-    await auditDenied(deps, principal, toolName, mapped.code, definitionId, definition.agentId)
-    return errorResult(mapped.code, mapped.extra)
+    const extra = { ...mapped.extra, ...driveUploadLogMeta(toolName, parsedArgs) }
+    const auditDetails = Object.keys(extra).length ? extra : undefined
+    await auditDenied(
+      deps,
+      principal,
+      toolName,
+      mapped.code,
+      definitionId,
+      definition.agentId,
+      auditDetails,
+    )
+    return errorResult(mapped.code, extra)
   }
 }
 
@@ -503,6 +534,10 @@ export async function invokeEnterpriseTool(
   if (!canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })) {
     await auditDenied(deps, principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
     return errorResult('agent_access_denied')
+  }
+
+  if (isEnterpriseMcpTool(toolName)) {
+    return invokeMcpTool(deps, { principal, toolName, args, definitionId, definition, origin, confirm })
   }
 
   if (isEnterpriseWriteTool(toolName)) {
@@ -675,6 +710,11 @@ export async function invokeEnterpriseTool(
     return textResult(result, upstreamFailure)
   } catch (error) {
     const mapped = mapToolError(error, connector.type)
+    const mappedExtra = {
+      ...mapped.extra,
+      ...driveUploadLogMeta(toolName, parsed.data as Record<string, unknown>),
+    }
+    const auditDetails = Object.keys(mappedExtra).length ? mappedExtra : undefined
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -683,6 +723,7 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
       errorCode: mapped.code,
+      ...auditDetails,
     }
     console.info('enterprise.tool.error', payload)
     await writeAudit(deps.audit, {
@@ -707,7 +748,7 @@ export async function invokeEnterpriseTool(
       role: principal.role,
       toolName,
     })
-    return errorResult(mapped.code, { ...mapped.extra, ...extra })
+    return errorResult(mapped.code, { ...mappedExtra, ...extra })
   }
 }
 
@@ -758,12 +799,53 @@ async function resolveHttpActingUser(
   return resolved ? { id: resolved.id, email: resolved.email, tenantId: principal.tenantId } : null
 }
 
+function googleDriveMappedExtra(error: {
+  status: number
+  code?: string
+  googleStatus?: string
+  googleReasonCodes?: string[]
+  googleLocations?: string[]
+  googleMessage?: string
+}): Record<string, unknown> {
+  return {
+    status: error.status,
+    ...(typeof error.code === 'string' ? { googleCode: error.code } : {}),
+    ...(typeof error.googleStatus === 'string' ? { googleStatus: error.googleStatus } : {}),
+    ...(Array.isArray(error.googleReasonCodes) ? { googleReasonCodes: error.googleReasonCodes } : {}),
+    ...(Array.isArray(error.googleLocations) ? { googleLocations: error.googleLocations } : {}),
+    ...(typeof error.googleMessage === 'string' ? { googleMessage: error.googleMessage } : {}),
+  }
+}
+
+function driveUploadLogMeta(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  if (toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL) return {}
+  const name = typeof args.name === 'string' ? args.name.slice(0, 120) : undefined
+  const mimeType = typeof args.mimeType === 'string' ? args.mimeType.slice(0, 100) : undefined
+  const parent = typeof args.parentFolderId === 'string' ? args.parentFolderId.trim() : ''
+  let uploadContentLength: number | undefined
+  if (typeof args.textContent === 'string') {
+    uploadContentLength = Buffer.byteLength(args.textContent, 'utf8')
+  } else if (typeof args.contentBase64 === 'string') {
+    const padded = args.contentBase64.endsWith('==') ? 2 : args.contentBase64.endsWith('=') ? 1 : 0
+    uploadContentLength = Math.floor((args.contentBase64.length * 3) / 4) - padded
+  }
+  return {
+    ...(name ? { uploadName: name } : {}),
+    ...(mimeType ? { uploadMimeType: mimeType } : {}),
+    hasParentFolderId: parent.length > 0,
+    ...(uploadContentLength != null ? { uploadContentLength } : {}),
+  }
+}
+
 function mapToolError(
   error: unknown,
   connectorType: string,
 ): { code: string; extra?: Record<string, unknown> } {
   if (error instanceof GoogleDriveApiAuthError || error instanceof GoogleWorkspaceApiAuthError) {
-    return { code: 'google_drive_auth_failed', extra: { status: error.status } }
+    return {
+      code: 'google_drive_auth_failed',
+      extra: googleDriveMappedExtra(error),
+    }
   }
   if (error instanceof GmailApiAuthError) {
     return { code: 'gmail_auth_failed', extra: { status: error.status } }
@@ -771,10 +853,7 @@ function mapToolError(
   if (error instanceof GoogleDriveApiError || error instanceof GoogleWorkspaceApiError) {
     return {
       code: connectorType === 'gmail' ? 'gmail_api_error' : 'google_drive_api_error',
-      extra: {
-        status: error.status,
-        ...('code' in error && typeof error.code === 'string' ? { googleCode: error.code } : {}),
-      },
+      extra: googleDriveMappedExtra(error),
     }
   }
   if (error instanceof HttpApiError) {
@@ -788,6 +867,249 @@ function mapToolError(
     }
   }
   return { code: 'tool_execution_failed' }
+}
+
+async function auditToolOutcome(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    definitionId: string
+    agentId: string
+    ok: boolean
+    errorCode?: string
+    metadata: Record<string, unknown>
+  },
+) {
+  const action = input.ok ? 'enterprise.tool.ok' : 'enterprise.tool.error'
+  const payload = {
+    toolName: input.toolName,
+    tenantId: input.principal.tenantId,
+    userId: input.principal.userId,
+    definitionId: input.definitionId,
+    agentId: input.agentId,
+    ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+    ...input.metadata,
+  }
+  console.info(action, payload)
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: input.principal.userId,
+    agentVersion: null,
+    action,
+    targetType: 'agent',
+    targetId: input.agentId,
+    modelUsed: null,
+    inputRef: input.toolName,
+    outputRef: input.errorCode ?? null,
+    policyDecision: input.ok ? 'allowed' : null,
+    metadata: payload,
+    tenantId: input.principal.tenantId,
+  })
+}
+
+/**
+ * #395: `mcp_list_tools` + `mcp_call`. Ugyanaz az út, mint bármely enterprise
+ * eszköznél (definíció-pin és agent-hozzáférés már lefutott), plusz az MCP-kapu:
+ * engedélyezett domain, aktív jóváhagyott eszközlista, admin-besorolás (§3.3).
+ */
+async function invokeMcpTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+    origin?: string
+    confirm?: WriteConfirmInput
+  },
+): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  const deny = async (code: string, extra?: Record<string, unknown>) => {
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
+    return errorResult(code, extra)
+  }
+  const linkFields = (reason: string, connectorId?: string) =>
+    authorizationLinkFields(deps.startAuthorization, {
+      reason,
+      connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+  if (!deps.loadMcpActiveTools || !deps.resolveMcpAllowedHosts) return deny('tool_not_configured')
+
+  if (toolName === MCP_LIST_TOOLS_TOOL) {
+    const parsed = mcpListToolsInputSchema.safeParse(args)
+    if (!parsed.success) return deny('invalid_args')
+    const wantedName = parsed.data.connectorName?.trim().toLowerCase()
+    const candidates = definition.snapshot.connectors.filter(
+      (row) =>
+        row.type === 'mcp' &&
+        (!parsed.data.connectorId || row.connectorId === parsed.data.connectorId) &&
+        (!wantedName || row.name?.trim().toLowerCase() === wantedName),
+    )
+    if (candidates.length === 0) return deny('missing_mcp_connector_read')
+    const connectors: Array<Record<string, unknown>> = []
+    let firstDenial: string | null = null
+    let note: string | undefined
+    for (const row of candidates) {
+      const authorized = await authorizeToolCall(deps, {
+        principal,
+        definition,
+        toolName,
+        args: { ...parsed.data, connectorId: row.connectorId },
+      })
+      // Hiányzó saját fiók: a jóváhagyott lista a mi adatunk, megmutatható — linkkel.
+      const needsGrant = !authorized.allowed && isAuthorizationLinkReason(authorized.reason)
+      if (!authorized.allowed && !needsGrant) {
+        firstDenial ??= authorized.reason
+        continue
+      }
+      const active = await deps.loadMcpActiveTools({ connectorId: row.connectorId, tenantId: principal.tenantId })
+      const listed = mcpToolListForModel(active?.tools ?? [], parsed.data.query)
+      note = listed.note
+      connectors.push({
+        connectorId: row.connectorId,
+        name: row.name,
+        tools: listed.tools,
+        ...(active ? {} : { status: 'no_approved_tool_list' }),
+        ...(needsGrant ? await linkFields(authorized.reason, row.connectorId) : {}),
+      })
+    }
+    if (connectors.length === 0) return deny(firstDenial ?? 'missing_mcp_connector_read')
+    await auditToolOutcome(deps, {
+      principal,
+      toolName,
+      definitionId,
+      agentId: definition.agentId,
+      ok: true,
+      metadata: { connectorIds: connectors.map((row) => row.connectorId) },
+    })
+    return textResult({
+      note,
+      connectors,
+      usage:
+        'Call mcp_call with connectorId, tool and arguments (matching inputSchema). Tools with risk write or danger need an idempotencyKey and may wait for human approval.',
+    })
+  }
+
+  const parsed = mcpCallInputSchema.safeParse(args)
+  if (!parsed.success) return deny('invalid_args')
+  const callArgs = parsed.data as Record<string, unknown>
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: callArgs })
+  if (!authorized.allowed) {
+    return deny(authorized.reason, {
+      ...(await linkFields(authorized.reason, authorized.connectorId)),
+      ...(authorized.connectorChoices?.length ? { connectors: authorized.connectorChoices } : {}),
+      ...(authorized.accountChoices?.length ? { accounts: authorized.accountChoices } : {}),
+    })
+  }
+  const connector = authorized.connector
+  const gate = await checkMcpCallGate(deps, { connector, tool: parsed.data.tool })
+  if (!gate.ok) return deny(gate.code, { connectorId: connector.id })
+
+  if (gate.risk !== 'read') {
+    const binding = definition.snapshot.connectors.find((row) => row.connectorId === connector.id)
+    if (binding?.accessMode !== 'write') return deny('missing_mcp_connector_write')
+    // `danger` mindig jóváhagyási sor, az agent írási módjától függetlenül (§3.3/4).
+    const modes =
+      gate.risk === 'write' && deps.findAgentWriteModes
+        ? await deps.findAgentWriteModes({ agentId: definition.agentId, tenantId: principal.tenantId })
+        : null
+    if (!skipsWriteApproval(MCP_CALL_TOOL, modes)) {
+      if (!deps.enqueueWrite) return deny('tool_not_configured')
+      return deps.enqueueWrite({ principal, toolName, args: callArgs, origin: input.origin, confirm: input.confirm })
+    }
+  }
+
+  let accessToken: string | undefined
+  if (connector.authMode === 'user_delegated') {
+    try {
+      accessToken = await resolveDelegatedToken(deps, principal, connector, authorized.grantId, authorized.tokenRef)
+    } catch {
+      return deny('mcp_auth_failed', await linkFields('mcp_auth_failed', connector.id))
+    }
+  }
+
+  const serverRequests = new Set<string>()
+  const metadata = {
+    connectorId: connector.id,
+    mcpTool: parsed.data.tool,
+    risk: gate.risk,
+    ...(gate.risk !== 'read' ? { approvalBypass: 'agent_write_mode' } : {}),
+  }
+  try {
+    const result = await executeMcpWithRetryPolicy(
+      deps.executeMcpTool ?? defaultExecuteMcpTool,
+      {
+        connector,
+        accessToken,
+        tool: parsed.data.tool,
+        arguments: parsed.data.arguments ?? {},
+        allowedHosts: gate.allowedHosts,
+        onServerRequest: (method) => serverRequests.add(method),
+      },
+      gate.risk,
+    )
+    await auditMcpServerRequests(deps, principal, definition.agentId, connector.id, serverRequests)
+    await auditToolOutcome(deps, {
+      principal,
+      toolName,
+      definitionId,
+      agentId: definition.agentId,
+      ok: !result.isError,
+      ...(result.isError ? { errorCode: 'mcp_tool_error' } : {}),
+      metadata,
+    })
+    return textResult(mcpResultForModel(result), Boolean(result.isError))
+  } catch (error) {
+    const code = mcpErrorCode(error, gate.risk)
+    await auditMcpServerRequests(deps, principal, definition.agentId, connector.id, serverRequests)
+    await auditToolOutcome(deps, {
+      principal,
+      toolName,
+      definitionId,
+      agentId: definition.agentId,
+      ok: false,
+      errorCode: code,
+      metadata,
+    })
+    return errorResult(code, {
+      connectorId: connector.id,
+      ...(code === 'mcp_auth_failed' ? await linkFields(code, connector.id) : {}),
+    })
+  }
+}
+
+/** D9: a szerver sampling/elicitation/roots kérését elutasítottuk — ez auditálandó. */
+export async function auditMcpServerRequests(
+  deps: { audit?: AuditSink },
+  principal: { userId: string; tenantId: string },
+  agentId: string,
+  connectorId: string | null,
+  methods: Set<string>,
+) {
+  for (const method of methods) {
+    const metadata = { method, connectorId, tenantId: principal.tenantId, userId: principal.userId, agentId }
+    console.info('mcp.server_request.denied', metadata)
+    await writeAudit(deps.audit, {
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'mcp.server_request.denied',
+      targetType: 'connector',
+      targetId: connectorId,
+      modelUsed: null,
+      inputRef: method,
+      outputRef: null,
+      policyDecision: 'denied',
+      metadata,
+      tenantId: principal.tenantId,
+    })
+  }
 }
 
 async function invokeKbTool(

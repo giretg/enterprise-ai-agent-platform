@@ -20,7 +20,8 @@ export const DEFAULT_WRITE_APPROVAL_MODES: AgentWriteApprovalModes = {
   drive: 'approval',
 }
 
-const HTTP_WRITE_TOOLS = new Set(['http_api_request'])
+// mcp_call: csak a `write` besorolású MCP-eszköz kérdezi; `danger` mindig jóváhagyás (#395 §3.3).
+const HTTP_WRITE_TOOLS = new Set(['http_api_request', 'mcp_call'])
 const GMAIL_WRITE_TOOLS = new Set([
   'gmail_send',
   'gmail_create_draft',

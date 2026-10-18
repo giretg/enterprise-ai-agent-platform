@@ -20,6 +20,7 @@ import {
 } from '@/domain/model-gateway/fallback-chain'
 import type { GatewayTokenFailure, GatewayTokenClaims } from '@/domain/model-gateway-token/gateway-token'
 import type { McpPrincipal } from '@/auth/mcp-principal'
+import { loadGeminiTenantKey, resolveGeminiApiKey, GEMINI_OPENAI_BASE_URL } from '@/lib/gemini-tenant-key'
 import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrouter-tenant-key'
 
 export const SESSION_HEADER = 'x-excellence-session'
@@ -44,10 +45,11 @@ export type ProviderRegistry = (
   tenantId: string,
 ) => ProviderEndpoint | null | Promise<ProviderEndpoint | null>
 
-/** v1: OpenAI-kompatibilis providerek (D11). A céges modell-kulcs egyetlen helye. */
+/** OpenAI-kompatibilis providerek. A céges modell-kulcs egyetlen helye. */
 export function envProviderRegistry(
   env: Record<string, string | undefined> = process.env,
   loadTenantOpenRouterKey: (tenantId: string) => Promise<string | null> = loadOpenRouterTenantKey,
+  loadTenantGeminiKey: (tenantId: string) => Promise<string | null> = loadGeminiTenantKey,
 ): ProviderRegistry {
   return async (provider, tenantId) => {
     if (provider === 'openrouter') {
@@ -60,6 +62,14 @@ export function envProviderRegistry(
           ...(env.OPENROUTER_HTTP_REFERER ? { 'HTTP-Referer': env.OPENROUTER_HTTP_REFERER } : {}),
           ...(env.OPENROUTER_APP_TITLE ? { 'X-OpenRouter-Title': env.OPENROUTER_APP_TITLE } : {}),
         },
+      }
+    }
+    if (provider === 'gemini') {
+      const apiKey = await resolveGeminiApiKey(tenantId, loadTenantGeminiKey, env)
+      if (!apiKey) return null
+      return {
+        baseUrl: (env.GEMINI_BASE_URL || GEMINI_OPENAI_BASE_URL).replace(/\/+$/, ''),
+        apiKey,
       }
     }
     if (provider === 'ollama' && env.OLLAMA_BASE_URL) {
@@ -115,10 +125,11 @@ export type PipelineBlock = { block: string; reason: string }
  */
 export type GatewayPipelineHooks = {
   gate?: (ctx: GatewayCallContext) => Promise<PipelineBlock | null>
+  /** `requirePrivate`: csak céges (saját üzemeltetésű) providerre mehet; ha nincs ilyen, ez a blokk. */
   filterRequest?: (
     ctx: GatewayCallContext,
     body: Record<string, unknown>,
-  ) => Promise<PipelineBlock | { body: Record<string, unknown> }>
+  ) => Promise<PipelineBlock | { body: Record<string, unknown>; requirePrivate?: PipelineBlock }>
   transformResponse?: (ctx: GatewayCallContext) => TransformStream<Uint8Array, Uint8Array>
 }
 
@@ -137,6 +148,12 @@ export type ModelGatewayDeps = {
   hooks?: GatewayPipelineHooks
   maxAttempts?: number
   fetchImpl?: typeof fetch
+  /** A cég saját üzemeltetésű providerei (`local_only` adat csak ide mehet). Alap: env, vagy `ollama`. */
+  privateProviders?: ReadonlySet<string>
+}
+
+export function privateProvidersFromEnv(env: Record<string, string | undefined> = process.env): ReadonlySet<string> {
+  return new Set((env.MODEL_GATEWAY_PRIVATE_PROVIDERS ?? 'ollama').split(',').map((p) => p.trim()).filter(Boolean))
 }
 
 class ProviderHttpError extends Error {
@@ -360,14 +377,25 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
   const gate = await deps.hooks?.gate?.(ctx)
   if (gate) return blocked(gate.reason, gate.block)
   let clientBody = body
+  let candidates = chain
   const filtered = await deps.hooks?.filterRequest?.(ctx, body)
   if (filtered && 'block' in filtered) return blocked(filtered.reason, filtered.block)
   if (filtered) clientBody = filtered.body
+  if (filtered?.requirePrivate) {
+    const isPrivate = (ref: ModelRef) => (deps.privateProviders ?? privateProvidersFromEnv()).has(ref.provider)
+    candidates = chain.filter(isPrivate)
+    // A láncon kívül is lehet engedett céges modell (pl. csak a tenant listáján szerepel).
+    if (!candidates.length) candidates = userPolicy.enabled.filter(isPrivate).slice(0, deps.maxAttempts ?? fallbackMaxAttemptsFromEnv())
+    if (!candidates.length) return blocked(filtered.requirePrivate.reason, filtered.requirePrivate.block)
+  }
 
   const upstreamFor = (candidate: ModelRef): Record<string, unknown> => {
     const out: Record<string, unknown> = {}
     for (const key of FORWARDED_PARAMS) if (clientBody[key] !== undefined) out[key] = clientBody[key]
-    if (config && sameModel(candidate, config)) {
+    // Helyettesített hívásnál (pl. a kliens segédmodellt kért a tömörítéshez) az agent
+    // keretei nem érvényesek: az agent 4096-os kerete csonkolta a Hermes-összefoglalót.
+    const substituted = !!requestedModel && !matchesRequested(candidate, requestedModel)
+    if (config && sameModel(candidate, config) && !substituted) {
       out.temperature ??= config.temperature
       if (out.max_completion_tokens === undefined) out.max_tokens ??= config.maxTokens
     }
@@ -376,7 +404,7 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
 
   const failed: ModelCallEvent['failedCandidates'] = []
   let lastError: unknown = null
-  for (const candidate of chain) {
+  for (const candidate of candidates) {
     const upstream = upstreamFor(candidate)
     try {
       return await callProvider(deps, request, candidate, upstream, ctx, (outcome, collected) => {

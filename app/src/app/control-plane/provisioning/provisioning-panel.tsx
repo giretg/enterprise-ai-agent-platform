@@ -1,6 +1,6 @@
 'use client'
 
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore, useTransition } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
@@ -35,6 +35,13 @@ import {
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { GoogleConnectorLevelsPanel, type GoogleAccountViewRow } from './google-connector-levels-panel'
+import { listMcpConnectors } from '@/app/actions/mcp-connectors'
+import {
+  McpConnectorCard,
+  McpConnectorsPanel,
+  mcpHasApprovedTools,
+  type McpConnectorsData,
+} from './mcp-connectors-panel'
 import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
@@ -568,12 +575,18 @@ function readInIframe() {
 
 export function ProvisioningPanel({
   canManageCatalog,
+  canManageMcp,
   isSuperadmin,
   activeTenantId,
+  mcpInitial,
+  mcpInitialError,
 }: {
   canManageCatalog: boolean
+  canManageMcp: boolean
   isSuperadmin: boolean
   activeTenantId: string | null
+  mcpInitial: McpConnectorsData | null
+  mcpInitialError?: string
 }) {
   const t = useProvT()
   const [drafts, setDrafts] = useState<DraftRow[]>([])
@@ -600,7 +613,7 @@ export function ProvisioningPanel({
   const [name, setName] = useState('')
   const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
   // A varázsló első lépése: semmi sincs előre kiválasztva.
-  const [startPath, setStartPath] = useState<'template' | 'own' | null>(null)
+  const [startPath, setStartPath] = useState<'template' | 'own' | 'mcp' | null>(null)
   const [ownKind, setOwnKind] = useState<'openapi' | 'custom' | null>(null)
   const [templateQuery, setTemplateQuery] = useState('')
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
@@ -641,6 +654,9 @@ export function ProvisioningPanel({
   // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
+  const [mcpData, setMcpData] = useState(mcpInitial)
+  const [newlyCreatedMcpId, setNewlyCreatedMcpId] = useState<string | null>(null)
+  const [newlyCreatedDraftId, setNewlyCreatedDraftId] = useState<string | null>(null)
 
   // Connector sablon-katalógus
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -731,18 +747,33 @@ export function ProvisioningPanel({
     })
   }, [isSuperadmin])
 
+  const reloadMcp = useCallback(async (text?: string) => {
+    const res = await listMcpConnectors()
+    if (res.success) {
+      setMcpData(res.data as McpConnectorsData)
+      if (text) setNotice(text)
+    } else {
+      setError(res.error ?? t('error'))
+    }
+  }, [t])
+
   useEffect(() => {
     reload()
   }, [reload])
 
   const run = useCallback(
-    (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => {
+    (
+      fn: () => Promise<{ success: boolean; error?: string; data?: unknown }>,
+      okMsg: string,
+      onSuccess?: (result: { success: boolean; error?: string; data?: unknown }) => void,
+    ) => {
       setError(null)
       setNotice(null)
       startTransition(async () => {
         const res = await fn()
         if (res.success) {
           setNotice(okMsg)
+          onSuccess?.(res)
           reload()
         } else {
           setError(res.error ?? 'Ismeretlen hiba')
@@ -856,9 +887,10 @@ export function ProvisioningPanel({
     const listed = new Set([
       ...drafts.map((draft) => draft.connectorId),
       ...selfUpdatingRows.map((row) => row.id),
+      ...(mcpData?.connectors ?? []).map((row) => row.id),
     ])
     return catalogRows.filter((row) => !listed.has(row.id))
-  }, [catalogRows, drafts, selfUpdatingRows])
+  }, [catalogRows, drafts, mcpData, selfUpdatingRows])
   const activeSelfUpdatingRows = selfUpdatingRows.filter((row) => row.lifecycleState === 'active')
   const archivedSelfUpdatingRows = selfUpdatingRows
     .filter((row) => row.lifecycleState !== 'active')
@@ -867,10 +899,14 @@ export function ProvisioningPanel({
   const pendingSelfUpdatingRows = activeSelfUpdatingRows
     .filter((row) => !isSelfUpdatingReady(row))
     .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
-  const inactiveCount = openDrafts.length + archivedSelfUpdatingRows.length
+  const mcpConnectors = mcpData?.connectors ?? []
+  const inactiveMcpRows = mcpConnectors.filter((row) => !mcpHasApprovedTools(row))
+  const activeMcpRows = mcpConnectors.filter((row) => mcpHasApprovedTools(row))
+  const inactiveCount = openDrafts.length + archivedSelfUpdatingRows.length + inactiveMcpRows.length
   const activeItems = [
     ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
     ...readySelfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
+    ...activeMcpRows.map((row) => ({ kind: 'mcp' as const, name: row.name, row })),
   ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const latestTemplateVersions = useMemo(() => {
     const versions: Record<string, number> = {}
@@ -1039,7 +1075,12 @@ export function ProvisioningPanel({
     })
   }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
-  const wizardSteps: Array<{ id: CreateStep; label: string }> = isTemplatePath
+  const wizardSteps: Array<{ id: CreateStep; label: string }> = startPath === 'mcp'
+    ? [
+        { id: 'basics', label: t('stepKind') },
+        { id: 'source', label: t('mcpSetupStep') },
+      ]
+    : isTemplatePath
     ? [
         { id: 'basics', label: t('stepService') },
         { id: 'source', label: t('stepSetup') },
@@ -1106,7 +1147,10 @@ export function ProvisioningPanel({
         })
         if (result.success) closeCreateDraftForm()
         return result
-      }, t('draftFromTemplate'))
+      }, t('draftFromTemplate'), (result) => {
+        setNewlyCreatedDraftId((result.data as { draftId: string }).draftId)
+        closeCreateDraftForm()
+      })
       return
     }
     let parsed: unknown
@@ -1124,9 +1168,11 @@ export function ProvisioningPanel({
         sourceContent: docText.trim() || undefined,
         generatedConfig: parsed,
       })
-      if (result.success) closeCreateDraftForm()
       return result
-    }, t('connectorCreated'))
+    }, t('connectorCreated'), (result) => {
+      setNewlyCreatedDraftId((result.data as { draftId: string }).draftId)
+      closeCreateDraftForm()
+    })
   }, [
     catalogChecked,
     catalogIsCatalog,
@@ -1153,9 +1199,9 @@ export function ProvisioningPanel({
 
   const activeStepIndex = stepOrder.indexOf(createStep)
   const suWizardProposal = suWizardRow?.versions.find((version) => version.id === suWizardVersionId) ?? null
-  const canEnterSource = isTemplatePath
+  const canEnterSource = startPath === 'mcp' || (isTemplatePath
     ? !!selectedTemplate && !isAgentMailTemplate
-    : startPath === 'own' && ownKind !== null && name.trim().length > 0
+    : startPath === 'own' && ownKind !== null && name.trim().length > 0)
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
   const canEnterReview =
@@ -1169,7 +1215,9 @@ export function ProvisioningPanel({
     if (stepOrder.indexOf(step) > suWizardMaxStepIndex) return
     setCreateStep(step)
   }
-  const createDisabledReason = pending
+  const createDisabledReason = startPath === 'mcp'
+    ? null
+    : pending
     ? t('pendingOp')
     : connectionKind === 'fixed' && isTemplatePath && !selectedTemplate
       ? t('pickTemplate')
@@ -1395,6 +1443,18 @@ export function ProvisioningPanel({
                     hint={t('pathOwnHint')}
                     onClick={() => setStartPath('own')}
                   />
+                  {canManageMcp ? (
+                    <WizardChoice
+                      selected={startPath === 'mcp'}
+                      title={t('pathMcp')}
+                      hint={t('pathMcpHint')}
+                      onClick={() => {
+                        setStartPath('mcp')
+                        setConnectionKind('fixed')
+                        setCreateStep('source')
+                      }}
+                    />
+                  ) : null}
                 </div>
 
                 {startPath === 'template' ? (
@@ -1716,6 +1776,26 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
+            {startPath === 'mcp' ? (
+              <div hidden={createStep !== 'source'} className="space-y-3">
+                <div>
+                  <h3 className="text-base font-semibold">{t('mcpSetupTitle')}</h3>
+                  <p className="mt-1 text-sm text-ink-soft">{t('mcpSetupBody')}</p>
+                </div>
+                <McpConnectorsPanel
+                  mode="setup"
+                  canManage={canManageMcp}
+                  initial={mcpData}
+                  initialError={mcpInitialError}
+                  onCreatedConnector={(connectorId, text) => {
+                    setNewlyCreatedMcpId(connectorId)
+                    setNotice(text)
+                    void reloadMcp().then(() => closeCreateDraftForm())
+                  }}
+                />
+              </div>
+            ) : null}
+
             {createStep === 'su_link' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
@@ -1987,7 +2067,7 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
-              {createStep === 'source' && connectionKind === 'fixed' && !isTemplatePath ? (
+              {createStep === 'source' && connectionKind === 'fixed' && startPath === 'own' ? (
                 <div className="space-y-4">
                   <div>
                     <h3 className="text-base font-semibold">{t('step2Custom')}</h3>
@@ -2185,7 +2265,9 @@ export function ProvisioningPanel({
               ) : (
                 <span />
               )}
-              {createStep === 'review' ||
+              {startPath === 'mcp' && createStep === 'source' ? (
+                <span />
+              ) : createStep === 'review' ||
               (createStep === 'source' && (isTemplatePath || connectionKind === 'self_updating')) ? (
                 <button
                   type="button"
@@ -2537,6 +2619,13 @@ export function ProvisioningPanel({
                   onReload={reload}
                   isSuperadmin={isSuperadmin}
                 />
+              ) : item.kind === 'mcp' ? (
+                <McpConnectorCard
+                  key={item.row.id}
+                  row={item.row}
+                  autoFocus={newlyCreatedMcpId === item.row.id}
+                  reload={(text) => void reloadMcp(text)}
+                />
               ) : (
                 <DraftCard
                   key={item.draft.draftId}
@@ -2630,6 +2719,14 @@ export function ProvisioningPanel({
           <p className="text-sm text-ink-soft">{t('noInactive')}</p>
         ) : (
           <div className="space-y-3">
+            {inactiveMcpRows.map((row) => (
+              <McpConnectorCard
+                key={row.id}
+                row={row}
+                autoFocus={newlyCreatedMcpId === row.id}
+                reload={(text) => void reloadMcp(text)}
+              />
+            ))}
             {archivedSelfUpdatingRows.map((row) => (
               <SelfUpdatingConnectorCard
                 key={row.id}
@@ -2644,6 +2741,7 @@ export function ProvisioningPanel({
               <DraftCard
                 key={d.draftId}
                 draft={d}
+                autoOpen={newlyCreatedDraftId === d.draftId}
                 agents={agents}
                 templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
@@ -2731,8 +2829,6 @@ function CatalogGapCard({
   const [open, setOpen] = useState(false)
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [decommReason, setDecommReason] = useState('')
-  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
-  const [decommApprover, setDecommApprover] = useState('')
   const t = useProvT()
   const toggleOpen = () => setOpen((current) => !current)
 
@@ -2783,27 +2879,6 @@ function CatalogGapCard({
                   placeholder={t('reasonGapPlaceholder')}
                 />
               </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                <select
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommCriticality}
-                  onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                >
-                  <option value="L1">L1</option>
-                  <option value="L2">L2 (dual-control)</option>
-                  <option value="L3">L3 (dual-control)</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
-                <input
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommApprover}
-                  onChange={(e) => setDecommApprover(e.target.value)}
-                  placeholder={t('userIdPlaceholder')}
-                />
-              </label>
             </div>
             {!confirmDecomm ? (
               <button
@@ -2825,8 +2900,6 @@ function CatalogGapCard({
                     run(async () => {
                       const res = await decommissionActiveConnector({
                         connectorId: row.id,
-                        criticality: decommCriticality,
-                        approverId: decommApprover.trim() || undefined,
                         reason:
                           decommReason.trim() ||
                           'provisioning: kezelés nélküli aktív kapcsolat megszüntetése',
@@ -2858,6 +2931,7 @@ function CatalogGapCard({
 
 function DraftCard({
   draft,
+  autoOpen,
   agents,
   templates,
   latestTemplateVersions,
@@ -2870,6 +2944,7 @@ function DraftCard({
   isSuperadmin,
 }: {
   draft: DraftRow
+  autoOpen?: boolean
   agents: AgentOption[]
   templates: ConnectorTemplateRow[]
   latestTemplateVersions: Record<string, number>
@@ -2882,12 +2957,15 @@ function DraftCard({
   isSuperadmin: boolean
 }) {
   const t = useProvT()
-  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(autoOpen ?? false)
+  useEffect(() => {
+    if (!autoOpen) return
+    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [autoOpen])
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
   const [clientId, setClientId] = useState(() => draft.delegatedOauthView?.clientId ?? '')
-  const [approverId, setApproverId] = useState('')
-  const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [agentApiKey, setAgentApiKey] = useState('')
@@ -2902,8 +2980,6 @@ function DraftCard({
   // Takarítás / megszüntetés megerősítése.
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [decommReason, setDecommReason] = useState('')
-  const [decommApprover, setDecommApprover] = useState('')
-  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
@@ -3002,8 +3078,6 @@ function DraftCard({
     ...(isOstorosborCrm && actingUserEmail.trim()
       ? { defaultActingUserEmail: actingUserEmail.trim() }
       : {}),
-    criticality,
-    approverId: approverId.trim() || undefined,
   })
 
   const handleActivate = () => {
@@ -3154,7 +3228,6 @@ function DraftCard({
     (draft.lifecycleState === 'draft' ||
       draft.lifecycleState === 'validated' ||
       (isSuperadmin && draft.lifecycleState === 'archived'))
-  const toggleOpen = () => setOpen((current) => !current)
   const handleDeleteFromList = async () => {
     const confirmed = await confirmDialog({
       title: t('deleteConnectorTitle'),
@@ -3167,7 +3240,7 @@ function DraftCard({
   }
 
   return (
-    <div className="rounded-lg border border-ink/12 bg-paper">
+    <div ref={rootRef} className="scroll-mt-24 rounded-lg border border-ink/12 bg-paper">
       <div className="flex items-center gap-3 px-4 py-3">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white text-ink-soft">
           <ConnectorTemplateIcon
@@ -3181,12 +3254,27 @@ function DraftCard({
           {`Létrehozva: ${new Date(draft.createdAt).toLocaleString('hu-HU')}`}
         </Badge>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconButton
-            icon="info"
-            label={open ? t('close') : t('details')}
-            active={open}
-            onClick={toggleOpen}
-          />
+          {!isActive ? (
+            <button
+              type="button"
+              className="rounded-md border border-sage/40 bg-sage/10 px-3 py-2 text-sm font-semibold text-sage hover:bg-sage/20"
+              onClick={() => {
+                setOpen(true)
+                setDraftStep('activate')
+              }}
+            >
+              {t('activate')}
+            </button>
+          ) : null}
+          {open ? (
+            <button
+              type="button"
+              className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold text-ink-soft hover:bg-wash"
+              onClick={() => setOpen(false)}
+            >
+              {t('close')}
+            </button>
+          ) : null}
           {canDeleteDraft ? (
             <IconButton
               icon="trash"
@@ -3955,27 +4043,6 @@ function DraftCard({
                 ) : null}
                   </>
                 )}
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={criticality}
-                    onChange={(e) => setCriticality(e.target.value as typeof criticality)}
-                  >
-                    <option value="L1">L1</option>
-                    <option value="L2">L2 (dual-control)</option>
-                    <option value="L3">L3 (dual-control)</option>
-                  </select>
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('secondApproverReviewer')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={approverId}
-                    onChange={(e) => setApproverId(e.target.value)}
-                    placeholder={t('userIdPlaceholder')}
-                  />
-                </label>
               </div>
               {!isGmailConnector && !hasActivationCredentials ? (
                 <p className="mt-2 text-xs text-honey">{t('keylessWarn')}</p>
@@ -4159,27 +4226,6 @@ function DraftCard({
                     placeholder={t('reasonActivePlaceholder')}
                   />
                 </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommCriticality}
-                    onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                  >
-                    <option value="L1">L1</option>
-                    <option value="L2">L2 (dual-control)</option>
-                    <option value="L3">L3 (dual-control)</option>
-                  </select>
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommApprover}
-                    onChange={(e) => setDecommApprover(e.target.value)}
-                    placeholder={t('userIdPlaceholder')}
-                  />
-                </label>
               </div>
               {!confirmDecomm ? (
                 <button
@@ -4201,8 +4247,6 @@ function DraftCard({
                       run(async () => {
                         const res = await decommissionConnector({
                           draftId: draft.draftId,
-                          criticality: decommCriticality,
-                          approverId: decommApprover.trim() || undefined,
                           reason: decommReason.trim() || undefined,
                         })
                         if (!res.success) return res

@@ -43,6 +43,144 @@ ManagedDirRedirected = _paths.ManagedDirRedirected
 DEFAULT_MANAGED_DIR = _paths.default_managed_dir()
 TOKEN_HELPER_PATH = _paths.token_helper_path()
 _lock = threading.Lock()
+# Gyakrabban, mint az exc-token 60 s-os LEEWAY-e: a fejlécben sosem marad lejárt JWT.
+TOKEN_REFRESH_SECONDS = 30
+
+# K4: a session `/model --provider` kikerüli az `llm_execution` middleware-t a
+# title_generation mellékhívásnál. A HTTP-kapu a tényleges kérés előtt állít meg.
+_EGRESS = {
+    "open": None,
+    "httpx_send": None,
+    "httpx_asend": None,
+    "expected": lambda: None,
+    "aux_patched": False,
+}
+
+
+class ForeignLlmRoute(urllib.error.URLError):
+    """Külső modell-API a céges Gateway helyett. Az opener/httpx nem fut le."""
+
+    def __init__(self, url):
+        super().__init__(policy.PROVIDER_BLOCK)
+        self.url = url
+
+
+def _url_of(fullurl):
+    if hasattr(fullurl, "full_url"):
+        return str(fullurl.full_url)
+    if hasattr(fullurl, "url"):
+        return str(fullurl.url)
+    return str(fullurl)
+
+
+def expected_gateway_url(home):
+    try:
+        mod = load_exc_token()
+        if mod is None:
+            return None
+        return mod.read_profile(home)[0] + "/api/model-gateway/v1"
+    except Exception:
+        return None
+
+
+def run_gated_auxiliary_call(call, *, provider, base_url, expected_url):
+    """Mellékhívás (title_generation, compression, …) a Guard útvonal-ellenőrzése után."""
+    if not policy.is_excellence_route(provider, base_url, expected_url):
+        raise ForeignLlmRoute(base_url or provider)
+    return call()
+
+
+def install_llm_egress_gate(expected_url_fn):
+    """urllib + httpx: külső LLM-host/útvonal kérése nem indul el. Idempotens."""
+    _EGRESS["expected"] = expected_url_fn
+    if _EGRESS["open"] is None:
+        _EGRESS["open"] = urllib.request.OpenerDirector.open
+
+        def open_gated(self, fullurl, *args, **kwargs):
+            url = _url_of(fullurl)
+            if policy.should_block_llm_egress(url, _EGRESS["expected"]()):
+                raise ForeignLlmRoute(url)
+            return _EGRESS["open"](self, fullurl, *args, **kwargs)
+
+        urllib.request.OpenerDirector.open = open_gated
+    try:
+        import httpx
+    except ImportError:
+        return
+    # A send() belső redirect-ciklusa nem hívja újra a send()-et: minden HTTP-kérésnél zárunk.
+    if _EGRESS["httpx_send"] is None:
+        _EGRESS["httpx_send"] = httpx.Client._send_single_request
+
+        def send_gated(self, request, *args, **kwargs):
+            url = str(getattr(request, "url", request))
+            if policy.should_block_llm_egress(url, _EGRESS["expected"]()):
+                raise httpx.RequestError(policy.PROVIDER_BLOCK, request=request)
+            return _EGRESS["httpx_send"](self, request, *args, **kwargs)
+
+        httpx.Client._send_single_request = send_gated
+    if _EGRESS["httpx_asend"] is None and hasattr(httpx, "AsyncClient"):
+        _EGRESS["httpx_asend"] = httpx.AsyncClient._send_single_request
+
+        async def asend_gated(self, request, *args, **kwargs):
+            url = str(getattr(request, "url", request))
+            if policy.should_block_llm_egress(url, _EGRESS["expected"]()):
+                raise httpx.RequestError(policy.PROVIDER_BLOCK, request=request)
+            return await _EGRESS["httpx_asend"](self, request, *args, **kwargs)
+
+        httpx.AsyncClient._send_single_request = asend_gated
+
+
+def uninstall_llm_egress_gate():
+    if _EGRESS["open"] is not None:
+        urllib.request.OpenerDirector.open = _EGRESS["open"]
+        _EGRESS["open"] = None
+    try:
+        import httpx
+    except ImportError:
+        httpx = None
+    if httpx is not None and _EGRESS["httpx_send"] is not None:
+        httpx.Client._send_single_request = _EGRESS["httpx_send"]
+        _EGRESS["httpx_send"] = None
+    if httpx is not None and _EGRESS["httpx_asend"] is not None:
+        httpx.AsyncClient._send_single_request = _EGRESS["httpx_asend"]
+        _EGRESS["httpx_asend"] = None
+    _EGRESS["expected"] = lambda: None
+
+
+def patch_auxiliary_hooks(expected_url_fn):
+    """A Hermes aux funnel (`run_with_aux_hooks`) a `call()` előtt fail-closed."""
+    try:
+        import agent.auxiliary_hooks as aux
+    except ImportError:
+        return False
+    aux._excellence_guard_expected = expected_url_fn
+    if getattr(aux, "_excellence_guard_gated", False):
+        return True
+    orig = aux.run_with_aux_hooks
+    orig_async = aux.arun_with_aux_hooks
+
+    def gated(call, **kwargs):
+        client = kwargs.get("client")
+        base_url = str(getattr(client, "base_url", "") or "")
+        return run_gated_auxiliary_call(
+            lambda: orig(call, **kwargs),
+            provider=kwargs.get("provider"),
+            base_url=base_url,
+            expected_url=aux._excellence_guard_expected(),
+        )
+
+    async def gated_async(call, **kwargs):
+        client = kwargs.get("client")
+        base_url = str(getattr(client, "base_url", "") or "")
+        if not policy.is_excellence_route(kwargs.get("provider"), base_url, aux._excellence_guard_expected()):
+            raise ForeignLlmRoute(base_url or kwargs.get("provider"))
+        return await orig_async(call, **kwargs)
+
+    aux.run_with_aux_hooks = gated
+    aux.arun_with_aux_hooks = gated_async
+    aux._excellence_guard_gated = True
+    _EGRESS["aux_patched"] = True
+    return True
 
 
 def sha256_bytes(data):
@@ -437,6 +575,22 @@ class Guard:
     def on_session_end(self, session_id=None, **kwargs):
         self.sessions.discard(session_id)
 
+    def expected_gateway_url(self):
+        return expected_gateway_url(self.home)
+
+    def install_execution_gates(self):
+        """K4: a modellhívás végrehajtásánál (HTTP + aux funnel) fail-closed."""
+        install_llm_egress_gate(self.expected_gateway_url)
+        patch_auxiliary_hooks(self.expected_gateway_url)
+
+    def pre_auxiliary_call(self, provider=None, base_url=None, **kwargs):
+        """Observer: a blokkolást a HTTP-kapu és a `run_with_aux_hooks` wrap végzi."""
+        client = kwargs.get("client")
+        url = str(base_url or getattr(client, "base_url", "") or "")
+        if policy.is_excellence_route(provider, url, self.expected_gateway_url()):
+            return None
+        raise ForeignLlmRoute(url or provider)
+
     def llm_execution(self, request=None, next_call=None, provider=None, base_url=None, **kwargs):
         self._share_mcp_tokens()
         token_helper = None
@@ -474,15 +628,31 @@ class Guard:
             headers = {name: value for name, value in headers.items() if name.lower() != "authorization"}
             headers["Authorization"] = f"Bearer {token}"
             request = {**request, "extra_headers": headers}
+            # A Hermes stream-újrapróbálása a next_call-on belül ugyanezt a header-dictet küldi újra
+            # (elakadt stream után 5+ perccel is) → a hívás alatt frissen tartjuk, különben lejárt JWT, 401.
+            stop = threading.Event()
+            threading.Thread(target=self._keep_token_fresh, args=(headers, stop), name="excellence-guard-token", daemon=True).start()
+            try:
+                return next_call(request)
+            finally:
+                stop.set()
         # A provider hibája a Hermes újrapróbálási/tömörítési útjára tartozik.
         return next_call(request)
 
+    def _keep_token_fresh(self, headers, stop):
+        # Az exc-token cache-ből ad, csak `exp - 60 s` után kér újat; hibánál a régi marad (a 401 úgyis látszik).
+        while not stop.wait(TOKEN_REFRESH_SECONDS):
+            token, refused = self._gateway_token()
+            if refused is None:
+                headers["Authorization"] = f"Bearer {token}"
+
     def _share_mcp_tokens(self):
         mod = load_exc_token()
-        if mod is None or not hasattr(mod, "share_mcp_tokens"):
+        share = getattr(mod, "share_all_mcp_tokens", None) or getattr(mod, "share_mcp_tokens", None)
+        if share is None:
             return
         try:
-            mod.share_mcp_tokens(self.home)
+            share(self.home)
         except Exception:
             log.exception("share_mcp_tokens")
 

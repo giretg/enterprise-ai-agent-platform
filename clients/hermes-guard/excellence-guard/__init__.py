@@ -1,7 +1,9 @@
 """Excellence Guard plugin (#775). A Hermes `register(ctx)`-ét hívja.
 
-Pin: Hermes v0.21.5 @ d0288be5. A hookok és a middleware szerződése a pinelt
-`website/docs/user-guide/features/hooks.md` és `developer-guide/middleware.md`.
+Pin: Hermes v0.21.5 @ d0288be5, K4 élő mérés v0.22.2 @ d923a5eb.
+A hookok és a middleware szerződése a pinelt `website/docs/user-guide/features/hooks.md`
+és `developer-guide/middleware.md`. A title_generation mellékhívás nem megy át az
+`llm_execution` middleware-en; a HTTP-kapu és az aux-funnel wrap a végrehajtásnál zár.
 """
 import os
 import sys
@@ -32,10 +34,12 @@ def register(ctx):
     ctx.register_hook("post_tool_call", g.post_tool_call)
     ctx.register_hook("pre_llm_call", g.pre_llm_call)
     ctx.register_hook("post_llm_call", g.post_llm_call)
+    ctx.register_hook("pre_auxiliary_call", g.pre_auxiliary_call)
     ctx.register_middleware("llm_execution", g.llm_execution)
     register_section = getattr(ctx, "register_system_prompt_section", None)
     if register_section:
         register_section("excellence-guard.notice", policy.NOTICE, position="after_memory", max_chars=500)
+    g.install_execution_gates()
     try:
         g.current(force=True)
         g.beat()

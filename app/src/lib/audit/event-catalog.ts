@@ -105,6 +105,16 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'connector.self_update.version.reject',
   'connector.self_update.version.rollback',
   'connector.self_update.api_key.rotate',
+  // #395 MCP-connector
+  'mcp.connector.create',
+  'mcp.connector.archive',
+  'mcp.tools.sync.proposed',
+  'mcp.tools.sync.no_change',
+  'mcp.tools.approve',
+  'mcp.tool.try',
+  'mcp.server_request.denied',
+  'platform.mcp_host.allow',
+  'platform.mcp_host.revoke',
   'tenant.self_update.policy.update',
 
   'privacy.connector.capability.absent',
@@ -148,6 +158,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model_fallback_chain.set',
   'agent.model_config',
   'model.openrouter_key.set',
+  'model.gemini_key.set',
   'model.gateway_jwt_key.set',
   // Client Policy heartbeat-regiszter (#774): Guard-eltérés (nincs/lejárt heartbeat, nem regisztrált session).
   'client_policy.deviation',
@@ -158,6 +169,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'client_policy.tool_classified',
   'client_policy.user_exception',
   'client_policy.content_warning',
+  // Tartalomszűrő figyelő mód (#747): tiltott/érzékeny adat kimegy, a napló csak fajtát és darabszámot ír.
+  'client_policy.content_observed',
 ])
 
 export class UnregisteredAuditActionError extends Error {

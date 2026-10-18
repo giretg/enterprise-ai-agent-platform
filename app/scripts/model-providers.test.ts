@@ -1,12 +1,11 @@
 /**
- * Modellforrás, gondolkodási profil és tartalék-modell UI.
- * Futtatás: npx tsx scripts/model-providers.test.ts
+ * Modellforrás-katalógus: csak a gateway által hívható API-kulcsos providerek.
+ * Futtatás: npm run test:model-providers
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { modelConfigSummary } from '../src/lib/agent-profile-labels'
-import { MODEL_PROVIDER_IDS, providerUsesThinkingProfile } from '../src/lib/model-providers'
+import { MODEL_PROVIDER_IDS, MODEL_PROVIDERS, providerUsesThinkingProfile } from '../src/lib/model-providers'
 
 const root = resolve(import.meta.dirname, '..')
 
@@ -27,17 +26,25 @@ function check(name: string, fn: () => void) {
 
 console.log('model-providers')
 
-check('Luna/Terra/Sol csak a reasoninges OAuth-providereknél él', () => {
-  assert.equal(providerUsesThinkingProfile('chatgpt-oauth'), true)
-  assert.equal(providerUsesThinkingProfile('claude-code-oauth'), true)
-  assert.equal(providerUsesThinkingProfile('grok-cli-oauth'), true)
+check('a tenant katalógus csak Gemini és OpenRouter', () => {
+  assert.deepEqual(
+    MODEL_PROVIDERS.map((p) => p.value),
+    ['gemini', 'openrouter'],
+  )
 })
 
-check('OpenRouter, Gemini, Ollama és ismeretlen provider: no-op', () => {
+check('OAuth-providerek nincsenek a gateway id-k között', () => {
+  for (const id of ['chatgpt-oauth', 'claude-code-oauth', 'grok-cli-oauth']) {
+    assert.equal((MODEL_PROVIDER_IDS as readonly string[]).includes(id), false, id)
+  }
+  assert.ok((MODEL_PROVIDER_IDS as readonly string[]).includes('ollama'))
+})
+
+check('Luna/Terra/Sol a céges API-úton no-op', () => {
   assert.equal(providerUsesThinkingProfile('openrouter'), false)
   assert.equal(providerUsesThinkingProfile('gemini'), false)
   assert.equal(providerUsesThinkingProfile('ollama'), false)
-  assert.equal(providerUsesThinkingProfile('unknown-provider'), false)
+  assert.equal(providerUsesThinkingProfile('chatgpt-oauth'), false)
 })
 
 check('minden ismert provider explicit true vagy false', () => {
@@ -46,60 +53,22 @@ check('minden ismert provider explicit true vagy false', () => {
   }
 })
 
-check('az összefoglaló OpenRouteren nem írja ki a Lunát', () => {
-  const summary = modelConfigSummary({
-    provider: 'openrouter',
-    model: 'deepseek/deepseek-v4-flash-0731',
-    modelType: 'luna',
-  })
-  assert.match(summary, /OpenRouter/)
-  assert.match(summary, /DeepSeek V4 Flash/)
-  assert.doesNotMatch(summary, /Luna/)
-})
-
-check('az összefoglaló ChatGPT OAuthnál kiírja a gondolkodási profilt', () => {
-  const summary = modelConfigSummary({
-    provider: 'chatgpt-oauth',
-    model: 'chatgpt-oauth-default',
-    modelType: 'luna',
-  })
-  assert.match(summary, /ChatGPT OAuth/)
-  assert.match(summary, /Luna/)
-  assert.doesNotMatch(summary, /tartalék/)
-})
-
-check('az összefoglaló kiírja a tartalék modellt, ha van', () => {
-  const summary = modelConfigSummary({
-    provider: 'chatgpt-oauth',
-    model: 'chatgpt-oauth-default',
-    fallbackModels: [{ provider: 'claude-code-oauth', model: 'claude-sonnet-4-6' }],
-  })
-  assert.match(summary, /tartalék: /)
-  assert.match(summary, /Claude/)
-  assert.match(summary, /Sonnet/)
-})
-
-check('a gondolkodási motor űrlap a profilt providerhez köti', () => {
+check('a gondolkodási mélység a formon a primary providerhez kötött', () => {
   const form = readSrc('src/components/agents/update-model-config-form.tsx')
-  assert.match(form, /providerUsesThinkingProfile\(provider\)/)
-  assert.match(form, /ModelTypeSelectField/)
-})
-
-check('a tartalék modell ugyanazzal a ModelSelectFielddel választódik, mint az alap', () => {
-  const form = readSrc('src/components/agents/update-model-config-form.tsx')
-  const fallbackStart = form.indexOf('Tartalék modellek')
-  assert.ok(fallbackStart >= 0)
-  const fallback = form.slice(fallbackStart)
-  assert.match(fallback, /ModelSelectField/)
-  assert.match(fallback, /normalizeModelForProvider\(fbProvider/)
-  assert.doesNotMatch(fallback, /placeholder="model"/)
-  assert.doesNotMatch(fallback, /<input[\s\S]*fbModel/)
+  assert.match(form, /providerUsesThinkingProfile\(primary\.provider\)/)
 })
 
 check('az új-agent varázsló nem tartalmazza a gondolkodási motort', () => {
   const wizard = readSrc('src/components/agents/create-agent-wizard.tsx')
   assert.doesNotMatch(wizard, /providerUsesThinkingProfile/)
   assert.doesNotMatch(wizard, /ModelTypeSelectField/)
+})
+
+check('a beállítások oldalon van Gemini-kulcs panel', () => {
+  const page = readSrc('src/app/control-plane/settings/page.tsx')
+  assert.match(page, /GeminiKeyPanel/)
+  assert.match(page, /companyKeys/)
+  assert.doesNotMatch(page, /chatgpt-oauth/)
 })
 
 if (failures > 0) {

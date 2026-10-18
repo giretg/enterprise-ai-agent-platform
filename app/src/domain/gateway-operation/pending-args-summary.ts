@@ -103,6 +103,9 @@ export function pendingOperationHeadline(
     const query = formatScalarQuery(args.query)
     return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
   }
+  if (toolName === 'mcp_call') {
+    return `${options?.connectorName || 'MCP-szerver'}: ${str(args.tool) || '—'}`
+  }
   if (toolName === 'google_drive_upload_file') {
     return `Google Drive fájl: ${str(args.name) || '—'}`
   }
@@ -139,6 +142,15 @@ export function pendingArgsSummary(
       `${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`,
     ]
     if (str(args.body)) lines.push(clip(prettyJsonBody(str(args.body))))
+    return lines.join('\n')
+  }
+
+  if (toolName === 'mcp_call') {
+    // D3: a jóváhagyó a belső eszköznevet és a teljes argumentumot látja.
+    const lines = [`eszköz: ${str(args.tool) || '—'}`]
+    if (args.arguments && typeof args.arguments === 'object') {
+      lines.push(clip(JSON.stringify(args.arguments, null, 2)))
+    }
     return lines.join('\n')
   }
 

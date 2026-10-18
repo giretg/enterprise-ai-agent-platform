@@ -184,6 +184,19 @@ export function formatGoogleAccountId(provider: GoogleAccountBindingProvider, id
 }
 
 /**
+ * `www.googleapis.com/{service}/v…` alakú pathokból levágjuk a szolgáltatás-előtagot,
+ * hogy a kötés ugyanúgy lássa a customer/property szegmenst, mint a kanonikus
+ * `analyticsdata.googleapis.com/v1beta/…` hoston. Különben a kötés `null` célt ad
+ * (= korlátlan), miközben a hívás idegen property/customer adatot olvas.
+ *
+ * `webmasters` szándékosan kimarad: a Search Console matcher maga a `/webmasters/v3/sites/…`
+ * előtagra épül.
+ */
+function stripGoogleApiServicePrefix(pathname: string): string {
+  return pathname.replace(/^\/(analyticsadmin|analyticsdata|googleads)(?=\/v)/i, '')
+}
+
+/**
  * A hívás melyik fiókot célozza? `null` = fiók-független hívás (pl. elérhető fiókok listája),
  * amelyet a kötés nem korlátoz.
  */
@@ -192,17 +205,18 @@ export function googleAccountTargetOf(
   pathname: string,
   body?: unknown,
 ): string | null {
+  const path = stripGoogleApiServicePrefix(pathname)
   if (provider === 'google-ads') {
-    const match = pathname.match(/^\/v\d+\/customers\/([^/:]+)(?:[/:]|$)/)
+    const match = path.match(/^\/v\d+\/customers\/([^/:]+)(?:[/:]|$)/)
     return match ? decodeSegment(match[1]!) : null
   }
   if (provider === 'google-analytics') {
-    const match = pathname.match(/^\/v1(?:beta|alpha)?\/properties\/([^/:]+)(?:[/:]|$)/)
+    const match = path.match(/^\/v1(?:beta|alpha)?\/properties\/([^/:]+)(?:[/:]|$)/)
     return match ? decodeSegment(match[1]!) : null
   }
-  const site = pathname.match(/^\/webmasters\/v3\/sites\/([^/]+)(?:\/|$)/)
+  const site = path.match(/^\/webmasters\/v3\/sites\/([^/]+)(?:\/|$)/)
   if (site) return decodeSegment(site[1]!)
-  if (/^\/v1\/urlInspection\//.test(pathname)) {
+  if (/^\/v1\/urlInspection\//.test(path)) {
     const siteUrl = body && typeof body === 'object' ? (body as { siteUrl?: unknown }).siteUrl : undefined
     return typeof siteUrl === 'string' ? siteUrl : ''
   }

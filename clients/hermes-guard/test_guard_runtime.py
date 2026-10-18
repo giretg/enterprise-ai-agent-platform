@@ -1,10 +1,13 @@
 """D4 cache, audit-sor, managed-dir hash. Futtatás: python3 clients/hermes-guard/test_guard_runtime.py"""
+import asyncio
 import json
 import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
+import urllib.request
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "excellence-guard"))
@@ -162,6 +165,105 @@ class Runtime(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "context length exceeded"):
             guard.llm_execution(request={}, next_call=provider_failure, provider="custom", base_url="https://ai.example/api/model-gateway/v1")
 
+    def test_provider_switch_does_not_start_foreign_http(self):
+        """K4: `/model --provider openrouter` után sem a fő hívás, sem a title_generation nem indít külső HTTP-t."""
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
+        gateway = "https://ai.example/api/model-gateway/v1"
+        openrouter = "https://openrouter.ai/api/v1/chat/completions"
+        hits = []
+        original_open = urllib.request.OpenerDirector.open
+
+        def recorder(self, fullurl, *args, **kwargs):
+            hits.append(runtime._url_of(fullurl))
+            raise AssertionError("külső HTTP elindult: " + runtime._url_of(fullurl))
+
+        guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        guard._gateway_token = lambda: ("jwt", None)
+        urllib.request.OpenerDirector.open = recorder
+        runtime.uninstall_llm_egress_gate()
+        try:
+            guard.install_execution_gates()
+            called = []
+            blocked = guard.llm_execution(
+                request={"model": "openai/gpt-4o-mini"},
+                next_call=lambda req: called.append(req) or urllib.request.OpenerDirector.open(object(), openrouter),
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+            self.assertEqual(called, [])
+            self.assertEqual(hits, [])
+            self.assertIn("Excellence", blocked.choices[0].message.content)
+
+            aux_called = []
+            with self.assertRaises(runtime.ForeignLlmRoute):
+                runtime.run_gated_auxiliary_call(
+                    lambda: aux_called.append("title_generation") or urllib.request.OpenerDirector.open(object(), openrouter),
+                    provider="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    expected_url=gateway,
+                )
+            self.assertEqual(aux_called, [])
+            self.assertEqual(hits, [])
+
+            with self.assertRaises(runtime.ForeignLlmRoute):
+                guard.pre_auxiliary_call(provider="openrouter", base_url="https://openrouter.ai/api/v1", aux_task="title_generation")
+
+            with self.assertRaises(runtime.ForeignLlmRoute):
+                urllib.request.OpenerDirector.open(object(), openrouter)
+            self.assertEqual(hits, [])
+
+            with self.assertRaises(runtime.ForeignLlmRoute):
+                urllib.request.OpenerDirector.open(object(), "https://openrouter.ai/api/v1/models")
+            self.assertEqual(hits, [])
+
+            live = []
+
+            def allow_company(self, fullurl, *args, **kwargs):
+                url = runtime._url_of(fullurl)
+                live.append(url)
+                return object()
+
+            runtime._EGRESS["open"] = allow_company
+            urllib.request.OpenerDirector.open(object(), gateway + "/chat/completions")
+            self.assertEqual(live, [gateway + "/chat/completions"])
+        finally:
+            runtime.uninstall_llm_egress_gate()
+            urllib.request.OpenerDirector.open = original_open
+
+    def test_httpx_gate_checks_sync_and_async_redirects(self):
+        try:
+            import httpx
+        except ImportError:
+            self.skipTest("httpx nincs telepítve")
+        gateway = "https://ai.example/api/model-gateway/v1/chat/completions"
+        foreign = "https://openrouter.ai/api/v1/chat/completions"
+        hits = []
+
+        def respond(request):
+            hits.append(str(request.url))
+            if str(request.url) == gateway:
+                return httpx.Response(307, headers={"location": foreign})
+            return httpx.Response(200, json={})
+
+        async def check_async():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
+                for url in (foreign, gateway):
+                    with self.assertRaises(httpx.RequestError):
+                        await client.post(url, json={"messages": ["confidential"]})
+
+        runtime.install_llm_egress_gate(lambda: gateway.rsplit("/chat/completions", 1)[0])
+        try:
+            with httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
+                for url in (foreign, gateway):
+                    with self.assertRaises(httpx.RequestError):
+                        client.post(url, json={"messages": ["confidential"]})
+            asyncio.run(check_async())
+            self.assertEqual(hits, [gateway, gateway])
+        finally:
+            runtime.uninstall_llm_egress_gate()
+
     def test_llm_execution_without_company_profile_fails_closed(self):
         with tempfile.TemporaryDirectory() as home:
             guard = runtime.Guard(home)
@@ -198,7 +300,7 @@ class Runtime(unittest.TestCase):
         body = sent["payload"]
         self.assertTrue(sent["url"].endswith("/api/client-policy/heartbeat"))
         self.assertEqual(body["policyVersion"], "v9")
-        self.assertEqual(body["guardVersion"], "0.3.0")
+        self.assertEqual(body["guardVersion"], "0.3.1")
         self.assertEqual(body["hermesVersion"], "0.21.5")
         self.assertEqual(body["sessions"], ["sess-1"])
         self.assertEqual(len(body["configHash"]), 64)
@@ -243,6 +345,36 @@ class Runtime(unittest.TestCase):
         )
         self.assertEqual(forwarded["extra_headers"]["Authorization"], "Bearer fresh-jwt")
         self.assertEqual(forwarded["extra_headers"]["X-Excellence-Session"], "s-1")
+
+    def test_llm_execution_keeps_token_fresh_for_in_call_stream_retry(self):
+        # 10-17 Réka: elakadt stream után a Hermes a next_call-on belül ugyanazt a fejlécet küldte újra → lejárt JWT, 401.
+        home = tempfile.mkdtemp()
+        with open(os.path.join(home, "config.yaml"), "w") as fh:
+            fh.write("mcp_servers:\n  excellence:\n    url: https://ai.example/api/mcp/tenant\n    headers:\n      X-Excellence-Agent-Id: agent-1\n")
+        guard = runtime.Guard(home, client=runtime.SnapshotClient(home, fetcher=lambda: ("down", None)))
+        tokens = iter(["jwt-1", "jwt-2", "jwt-3", "jwt-4"])
+        guard._gateway_token = lambda: (next(tokens, "jwt-last"), None)
+        sent = []
+
+        def provider_with_retry(req):
+            sent.append(req["extra_headers"]["Authorization"])
+            deadline = time.time() + 2
+            while req["extra_headers"]["Authorization"] == sent[0] and time.time() < deadline:
+                time.sleep(0.01)
+            sent.append(req["extra_headers"]["Authorization"])  # az újrapróbálás ugyanazt a dictet olvassa
+            return req
+
+        os.environ["EXC_GUARD_OFFLINE"] = "1"
+        with patch.object(runtime, "TOKEN_REFRESH_SECONDS", 0.05):
+            try:
+                forwarded = guard.llm_execution(request={}, next_call=provider_with_retry, provider="custom", base_url="https://ai.example/api/model-gateway/v1")
+            finally:
+                os.environ.pop("EXC_GUARD_OFFLINE", None)
+        self.assertEqual(sent[0], "Bearer jwt-1")
+        self.assertNotEqual(sent[1], sent[0])
+        after = forwarded["extra_headers"]["Authorization"]
+        time.sleep(0.2)
+        self.assertEqual(forwarded["extra_headers"]["Authorization"], after)  # a hívás végén a frissítés leáll
 
     def test_llm_execution_token_failure_never_forwards_without_jwt(self):
         # #895: első get_token hiba, második siker → régen JWT nélkül ment ki (401 invalid_token).

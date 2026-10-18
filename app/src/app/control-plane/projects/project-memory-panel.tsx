@@ -9,6 +9,8 @@ import {
 } from '@/app/actions/project-work'
 import { PROJECT_MEMORY_KINDS } from '@/domain/project-work/types'
 import type { MemoryView, ProjectListItem } from '@/domain/project-work/project-work-service'
+import { confirmDialog } from '@/components/ui/confirm-dialog'
+import { IconButton } from '@/components/ui/shell'
 import { GENERAL_WORK_PROJECT_KEY } from '@/lib/work-project'
 import { asTranslate } from '@/i18n/translate'
 import { projectWorkErrorLabel } from './labels'
@@ -321,7 +323,13 @@ export function ProjectMemoryPanel({
 
   async function onDeleteMemory(memoryId: string, title: string) {
     if (!canDeleteMemory || !agentId) return
-    if (!window.confirm(t('deleteMemoryConfirm', { title }))) return
+    const confirmed = await confirmDialog({
+      title: t('deleteMemoryTitle'),
+      description: t('deleteMemoryConfirm', { title }),
+      tone: 'danger',
+      confirmLabel: t('deleteMemory'),
+    })
+    if (!confirmed) return
     setSaving(true)
     setError(null)
     setNotice(null)
@@ -335,6 +343,19 @@ export function ProjectMemoryPanel({
     setEditingId(null)
     setExpandedId(null)
     setNotice(t('memoryDeleted'))
+  }
+
+  function memoryTrashButton(item: MemoryView) {
+    if (!canDeleteMemory) return null
+    return (
+      <IconButton
+        icon="trash"
+        label={t('deleteMemory')}
+        tone="danger"
+        disabled={saving}
+        onClick={() => void onDeleteMemory(item.id, item.title)}
+      />
+    )
   }
 
   async function onSaveMemory(replaceId?: string) {
@@ -420,8 +441,13 @@ export function ProjectMemoryPanel({
             {sessionLogs.map((item) => (
               <li key={item.id} className="relative">
                 <span className="absolute -left-[1.35rem] top-1.5 h-2 w-2 rounded-full bg-sage" aria-hidden />
-                <p className="text-xs text-ink-faint">{formatWhen(item.createdAt)} · {item.withUserName}</p>
-                <p className="font-medium text-ink">{item.title}</p>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-ink-faint">{formatWhen(item.createdAt)} · {item.withUserName}</p>
+                    <p className="font-medium text-ink">{item.title}</p>
+                  </div>
+                  {memoryTrashButton(item)}
+                </div>
                 <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">
                   {item.body.length > BODY_PREVIEW_CHARS
                     ? `${item.body.slice(0, BODY_PREVIEW_CHARS)}…`
@@ -488,7 +514,10 @@ export function ProjectMemoryPanel({
                   >
                     {meta.label}
                   </span>
-                  <span className="text-xs text-ink-faint">{formatWhen(item.createdAt)}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-ink-faint">{formatWhen(item.createdAt)}</span>
+                    {memoryTrashButton(item)}
+                  </div>
                 </div>
                 <p className="mt-2 font-medium text-ink">{item.title}</p>
                 <p className="mt-1 whitespace-pre-wrap text-sm text-ink-soft">{body}</p>
@@ -525,9 +554,7 @@ export function ProjectMemoryPanel({
                     onSubmit={() => void onSaveMemory(item.id)}
                     onCancel={() => setEditingId(null)}
                     onDelete={
-                      canDeleteMemory && item.kind !== 'session_log'
-                        ? () => void onDeleteMemory(item.id, item.title)
-                        : undefined
+                      canDeleteMemory ? () => void onDeleteMemory(item.id, item.title) : undefined
                     }
                     busy={saving}
                     submitLabel={t('saveChanges')}

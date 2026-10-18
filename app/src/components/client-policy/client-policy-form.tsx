@@ -4,11 +4,12 @@ import { useId, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { asTranslate } from '@/i18n/translate'
 import { useTranslations } from 'next-intl'
-import { CAPABILITY_KEYS, PRESET_IDS, PRESETS, capabilityLevels, type PresetId } from '@/domain/client-policy/capabilities'
+import { CAPABILITY_KEYS, PRESET_IDS, PRESETS, capabilityLevels, type CapabilityKey, type PresetId } from '@/domain/client-policy/capabilities'
 import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
 import { InstallerOsField } from '@/components/client-policy/installer-os-field'
 import type { InstallerPlatform } from '@/domain/client-policy/installer-filename'
 import { DEFAULT_TOOL_CATALOG, TOOL_ACTIONS } from '@/domain/client-policy/tool-catalog'
+import { ContentFilterSection } from '@/components/client-policy/content-filter-section'
 
 export type EditableClientPolicy = { preset: string | null; capabilities: unknown; version: number; toolOverrides?: Record<string, string> }
 
@@ -42,6 +43,15 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy, toolOpt
   const tenantOverrides = tenantPolicy?.capabilities as Record<string, unknown> | null
   const base = preset ? PRESETS[preset as PresetId] : scope === 'agent' ? null : PRESETS[tenantPreset]
   const resetConfirmation = () => { setWidened([]); setConfirmed(false); setMessage('') }
+  const inheritedOf = (key: string) =>
+    !preset && scope === 'user' && typeof tenantOverrides?.[key] === 'string' ? tenantOverrides[key] as string : base?.[key as CapabilityKey]
+  const setOverride = (key: string, value: string) => {
+    const next = { ...overrides }
+    if (value) next[key] = value
+    else delete next[key]
+    setOverrides(next)
+    resetConfirmation()
+  }
 
   async function save(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -89,23 +99,16 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy, toolOpt
           </select>
         </label>
         <p className="text-sm text-ink-soft">{t(scope === 'agent' ? 'agentHelp' : 'presetHelp')}</p>
-        <p className="text-xs text-ink-soft">{t('filterLimits')}</p>
         <div className="grid gap-4 md:grid-cols-2">
-          {CAPABILITY_KEYS.map(key => {
+          {CAPABILITY_KEYS.filter(key => !key.startsWith('content_filter.')).map(key => {
             const selected = typeof overrides[key] === 'string' ? overrides[key] as string : ''
-            const inherited = !preset && scope === 'user' && typeof tenantOverrides?.[key] === 'string' ? tenantOverrides[key] as string : base?.[key]
+            const inherited = inheritedOf(key)
             const labelKey = key.replace('.', '_')
             const displayLevel = selected || inherited
             return (
               <div key={key} className={`min-w-0 rounded-xl border p-3 ${selected ? 'border-coral/40 bg-coral/5' : 'border-line'}`}>
                 <label htmlFor={`${id}-${key}`} className="block text-sm font-semibold">{t(`capabilities.${labelKey}`)}</label>
-                <select id={`${id}-${key}`} value={selected} onChange={e => {
-                  const next = { ...overrides }
-                  if (e.target.value) next[key] = e.target.value
-                  else delete next[key]
-                  setOverrides(next)
-                  resetConfirmation()
-                }} className="mt-2 w-full rounded-lg border border-line bg-card px-2 py-2 text-sm">
+                <select id={`${id}-${key}`} value={selected} onChange={e => setOverride(key, e.target.value)} className="mt-2 w-full rounded-lg border border-line bg-card px-2 py-2 text-sm">
                   <option value="">{t(scope === 'agent' && !preset ? 'noCeiling' : 'inherit')}{inherited ? `: ${t(`levels.${inherited}`)}` : ''}</option>
                   {capabilityLevels(key).map(level => <option key={level} value={level}>{t(`levels.${level}`)}</option>)}
                 </select>
@@ -115,6 +118,8 @@ export function ClientPolicyForm({ scope, scopeId, policy, tenantPolicy, toolOpt
             )
           })}
         </div>
+        <ContentFilterSection id={id} overrides={overrides} inheritedOf={inheritedOf}
+          inheritLabel={t(scope === 'agent' && !preset ? 'noCeiling' : 'inherit')} onChange={setOverride} allowDryRun={scope !== 'agent' || !!preset} />
         <details className="rounded-xl border border-line p-3" open={toolRules.length > 0}>
           <summary className="cursor-pointer text-sm font-semibold">{t('toolRulesTitle')}</summary>
           <p className="mt-2 text-xs text-ink-soft">{t('toolRulesHelp')}</p>

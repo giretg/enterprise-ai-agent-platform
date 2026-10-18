@@ -57,7 +57,10 @@ function splitIds(value: string): string[] {
 const definitionId = z
   .string()
   .uuid()
-  .describe('Published agent definition id — from platform.agent.get_definition')
+  .optional()
+  .describe(
+    'Published agent definition id from platform.agent.get_definition. Omit it when this client sends X-Excellence-Agent-Id — the server uses the current published definition. Unbound clients must pass it.',
+  )
 const projectKey = z
   .string()
   .max(120)
