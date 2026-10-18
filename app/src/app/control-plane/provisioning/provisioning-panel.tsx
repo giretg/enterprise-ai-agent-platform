@@ -2,6 +2,7 @@
 
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
+import { useRouter } from 'next/navigation'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card, IconButton } from '@/components/ui/shell'
@@ -35,6 +36,7 @@ import {
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { GoogleConnectorLevelsPanel, type GoogleAccountViewRow } from './google-connector-levels-panel'
+import { McpConnectorsPanel, type McpConnectorsData } from './mcp-connectors-panel'
 import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
@@ -568,14 +570,21 @@ function readInIframe() {
 
 export function ProvisioningPanel({
   canManageCatalog,
+  canManageMcp,
   isSuperadmin,
   activeTenantId,
+  mcpInitial,
+  mcpInitialError,
 }: {
   canManageCatalog: boolean
+  canManageMcp: boolean
   isSuperadmin: boolean
   activeTenantId: string | null
+  mcpInitial: McpConnectorsData | null
+  mcpInitialError?: string
 }) {
   const t = useProvT()
+  const router = useRouter()
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [catalogRows, setCatalogRows] = useState<
     Array<{ id: string; name: string; type: string; connectorMode?: 'fixed' | 'self_updating' }>
@@ -600,7 +609,7 @@ export function ProvisioningPanel({
   const [name, setName] = useState('')
   const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
   // A varázsló első lépése: semmi sincs előre kiválasztva.
-  const [startPath, setStartPath] = useState<'template' | 'own' | null>(null)
+  const [startPath, setStartPath] = useState<'template' | 'own' | 'mcp' | null>(null)
   const [ownKind, setOwnKind] = useState<'openapi' | 'custom' | null>(null)
   const [templateQuery, setTemplateQuery] = useState('')
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
@@ -1045,7 +1054,12 @@ export function ProvisioningPanel({
     })
   }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
-  const wizardSteps: Array<{ id: CreateStep; label: string }> = isTemplatePath
+  const wizardSteps: Array<{ id: CreateStep; label: string }> = startPath === 'mcp'
+    ? [
+        { id: 'basics', label: t('stepKind') },
+        { id: 'source', label: t('mcpSetupStep') },
+      ]
+    : isTemplatePath
     ? [
         { id: 'basics', label: t('stepService') },
         { id: 'source', label: t('stepSetup') },
@@ -1164,9 +1178,9 @@ export function ProvisioningPanel({
 
   const activeStepIndex = stepOrder.indexOf(createStep)
   const suWizardProposal = suWizardRow?.versions.find((version) => version.id === suWizardVersionId) ?? null
-  const canEnterSource = isTemplatePath
+  const canEnterSource = startPath === 'mcp' || (isTemplatePath
     ? !!selectedTemplate && !isAgentMailTemplate
-    : startPath === 'own' && ownKind !== null && name.trim().length > 0
+    : startPath === 'own' && ownKind !== null && name.trim().length > 0)
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
   const canEnterReview =
@@ -1180,7 +1194,9 @@ export function ProvisioningPanel({
     if (stepOrder.indexOf(step) > suWizardMaxStepIndex) return
     setCreateStep(step)
   }
-  const createDisabledReason = pending
+  const createDisabledReason = startPath === 'mcp'
+    ? null
+    : pending
     ? t('pendingOp')
     : connectionKind === 'fixed' && isTemplatePath && !selectedTemplate
       ? t('pickTemplate')
@@ -1406,6 +1422,18 @@ export function ProvisioningPanel({
                     hint={t('pathOwnHint')}
                     onClick={() => setStartPath('own')}
                   />
+                  {canManageMcp ? (
+                    <WizardChoice
+                      selected={startPath === 'mcp'}
+                      title={t('pathMcp')}
+                      hint={t('pathMcpHint')}
+                      onClick={() => {
+                        setStartPath('mcp')
+                        setConnectionKind('fixed')
+                        setCreateStep('source')
+                      }}
+                    />
+                  ) : null}
                 </div>
 
                 {startPath === 'template' ? (
@@ -1727,6 +1755,22 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
+            {startPath === 'mcp' ? (
+              <div hidden={createStep !== 'source'} className="space-y-3">
+                <div>
+                  <h3 className="text-base font-semibold">{t('mcpSetupTitle')}</h3>
+                  <p className="mt-1 text-sm text-ink-soft">{t('mcpSetupBody')}</p>
+                </div>
+                <McpConnectorsPanel
+                  mode="setup"
+                  canManage={canManageMcp}
+                  initial={mcpInitial}
+                  initialError={mcpInitialError}
+                  onChanged={() => router.refresh()}
+                />
+              </div>
+            ) : null}
+
             {createStep === 'su_link' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
@@ -1998,7 +2042,7 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
-              {createStep === 'source' && connectionKind === 'fixed' && !isTemplatePath ? (
+              {createStep === 'source' && connectionKind === 'fixed' && startPath === 'own' ? (
                 <div className="space-y-4">
                   <div>
                     <h3 className="text-base font-semibold">{t('step2Custom')}</h3>
@@ -2196,7 +2240,9 @@ export function ProvisioningPanel({
               ) : (
                 <span />
               )}
-              {createStep === 'review' ||
+              {startPath === 'mcp' && createStep === 'source' ? (
+                <span />
+              ) : createStep === 'review' ||
               (createStep === 'source' && (isTemplatePath || connectionKind === 'self_updating')) ? (
                 <button
                   type="button"
