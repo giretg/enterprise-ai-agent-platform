@@ -51,6 +51,8 @@ export type ToolRule = { pattern: string; action: ToolAction; source: 'tenant' |
 
 export type EffectivePolicy = {
   capabilities: CapabilityMap
+  /** Az agent saját plafonja; a Guard tool-kivétel sem lépheti túl. */
+  agentCeilings: Partial<CapabilityMap>
   /** Engedett modell-lista; null = nincs szűkítés (a tenant `model.policy` továbbra is érvényes). */
   models: string[] | null
   toolRules: ToolRule[]
@@ -145,6 +147,7 @@ export function resolveEffectivePolicy(input: {
   const tenantPreset = presetOf(tenant)
   const userPreset = presetOf(user)
   const agentPreset = presetOf(agent)
+  const agentCeilings: Partial<CapabilityMap> = { ...agentPreset, ...agentOv.levels }
 
   for (const key of CAPABILITY_KEYS) {
     // 1. tenant alap
@@ -210,6 +213,7 @@ export function resolveEffectivePolicy(input: {
 
   return {
     capabilities,
+    agentCeilings,
     models,
     toolRules: [...merged.values()].sort((a, b) => a.pattern.localeCompare(b.pattern)),
     floor: { modelGatewayRequired: true, guardRequired: true, auditMinimum: AUDIT_DEPTH_FLOOR, enterpriseToolsServerAuthorized: true },
