@@ -7,93 +7,32 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
-## 2026-10-15 — Hermes Model Gateway kimenő tartalomszűrő (#773 V1-4): `data:`-prefix megkerüli a PAN/PII-blokkot
+## 2026-10-15 — Hermes Model Gateway: `data:`-prefixes tartalomszűrés megkerülése (PR #891)
 
-**Scope-választás (kockázati alapon):** `gh pr list` + ledger után a legmagasabb **nem-auditált**
-felület a **Hermes Model Gateway kimenő tartalomszűrője** (`content-filter.ts`, #773 V1-4,
-~10-03): ez az egyetlen **kikényszerített** kapu, ami megakadályozza, hogy nyers bankkártyaszám
-(PAN) vagy személyes adat a **külső AI-modellhez** jusson — PCI/GDPR-kritikus egy fizetési
-platformon (Excellence Pay). Friss (10-03 óta aktívan churnölő felület: #840 content-boundary
-review, #871/#875 guard-fix, #879 deny-audit), komplex (regex-detekció + álnév round-trip +
-streamelő válasz-visszaállítás), és a napló **eddig egyszer sem fedte** (a 09-17 a *külső gateway
-trust boundary*-t + költség-NaN-t vizsgálta, a tartalomszűrőt nem). A 10-12..10-14 OOM-körök a
-connector/OAuth válasz-törzs méret-kapuira fókuszáltak (külön nyitott PR-ekben: #854/#878/#882),
-nem erre a felületre. Friss + komplex + adatvédelmi kontroll = a legnagyobb nem-auditált kockázat.
+**Üzleti hatás:** a `collectSlots` minden `data:`-vel kezdődő stringet kihagyott,
+így nyers bankkártyaszám és személyes adat juthatott a külső AI-modellhez.
+A megosztott függvényen user-, system-, assistant-, tool-szöveg és tool-argumentum is átmegy.
 
-**Coverage (teljes kézi end-to-end bizalmi-határ trace a teljes szűrő-csővezetéken):**
-`createContentFilterHooks` (`filterRequest`/`transformResponse`) → `collectSlots` slot-gyűjtés →
-`collectSensitivityMatchSpans` (PAN_RE/CARD_BROAD_RE + Luhn, IBAN mod-97, e-mail, titok) →
-`SurrogateSession` (bijektív álnév-vault, tenant+user+session HMAC-scope, AES-GCM envelope) →
-`response-restorer.ts` (nem-stream JSON + SSE streamelő, `holdIndex`/`takeHeld` szakadt-álnév
-visszatartás) → policy-bekötés: `model-gateway-deps.ts` → `getPolicySnapshot().capabilities` →
-`capabilities.ts` presetek (`bound`/`standard`/`free`) + `privacy-category-policy.ts` (alias
-`card_broad`→`pan`, `?? 'block'` fail-safe default, default preset `bound`). A detekció, a
-policy-feloldás és a cross-tenant/cross-session izoláció **helytáll** (élőben bekötve, fail-safe).
+**2026-10-19 merge előtti review:** a PR eredeti base64-fejléc regexe önmagában
+nem igazolta, hogy a törzs bináris. A hamis `data:image/png;base64,<nyers PAN>`
+és az e-mailt tartalmazó MIME-fejléc is kimaradt; a nagybetűs `DATA:` új megkerülést
+is okozott. Két független review-tengely igazolta a hiányt.
 
-### Bizonyított finding (security — PCI/GDPR egress-kontroll megkerülés) — javítva (PR **#891**)
+**Végső javítás:** a prefixalapú kivétel teljes eltávolítása. Minden nem-strukturális
+string átmegy ugyanazon PAN-blokkon és tokenizáláson; nincs új parser vagy függőség.
+A valódi base64-kép érzékeny szöveg hiányában bájtazonosan továbbítódik.
 
-**`data:`-prefixes szöveg-slot teljesen kimaradt a szűrésből.** A `collectSlots` a
-`!child.startsWith('data:')` feltétellel **bármely** olyan üzenet-slotot (user-/tool-/assistant-
-szöveg, tool-argumentum) kihagyott a PAN-blokkból **és** a tokenizálásból, amelynek a szövege
-`data:`-vel kezdődött. A kihagyás egyetlen jogos oka a nagy base64 kép/hang/PDF blob (ott nincs
-olvasható adat), de a `startsWith` emellett a **szöveges** `data:text/plain,…` URI-t és a prózában
-`data:`-vel kezdődő tartalmat is kihagyta → abban **nyers kártyaszám vagy e-mail juthatott a külső
-modellhez**, a szűrő saját, dokumentált invariánsa ellenére („PAN → blokk: a **teljes** kimenő
-kérésen … slotonként szkennelve").
+**Ellenőrzés:** a bővített regressziós teszt az eredeti PR-kódon elbukott, a végső
+javítással zöld: hamis base64-fejléc, kis-/nagybetű, tömör és tagolt PAN, user/tool/assistant
+szöveg, MIME-paraméter és nyers e-mail; legitim PNG változatlan. A teljes
+`test:model-gateway-content-filter`, `test:model-gateway-proxy`, ESLint és TypeScript ellenőrzés zöld.
+Egy 1 MiB véletlen bináris adat base64-szövegének detektorszkennelése helyben 14 ms volt
+(egyszeri tájékoztató mérés, nem teljes kérésre vonatkozó teljesítménygarancia).
 
-- **Hatás:** a kikényszerített kimenő adatvédelmi kapu megkerülhető volt egy `data:`-prefixes
-  üzenettel — akár **tool-eredményből** (gmail/kb/drive tartalom), akár begépelt szövegből.
-  **Súlyosság:** közepes-alacsony (szűk kiváltás: a slotnak `data:`-vel kell *kezdődnie*; fő
-  reális vektor a tool-forrású vagy célzottan formázott tartalom), de valódi kontroll-gyengítés.
-- **Bizonyíték (negatív kontroll):** a regressziós teszt **elbukik** a javítás nélkül
-  (`data:text/plain,…4111 1111 1111 1111` átment a providerhez), a javítással blokkol.
-
-### Javítás (root-cause, a megosztott `collectSlots` határon)
-- A kihagyást a **valódi base64 (bináris) data-URI-kra** szűkítettem: `BASE64_DATA_URI_RE =
-  /^data:[^,]*;base64,/i`. A kép/hang/PDF blob továbbra is kimarad (teljesítmény + nincs rajta mit
-  szkennelni), **minden más** `data:` tartalom átmegy a PAN-blokkon és a tokenizáláson. A diff
-  strictly **szűkítés** (több tartalmat szkennel) → nem vezet be új megkerülést.
-- A fix a **megosztott függvényben** egyetlen helyen (nem slot-típusonként): a PAN-blokk, a
-  tokenizálás és a system/tool/assistant ág mind ezen a `collectSlots`-on megy át.
-
-### Ellenőrzések
-- `npm run test:model-gateway-content-filter` — **zöld** (23 teszt); új regressziós teszt
-  **negatív kontrollal igazolva**: `data:text/plain,` PAN → blokk; e-mail a `data:text` URI-ben →
-  tokenizálódik (nem megy ki nyersen); `data:image/png;base64,…` → változatlanul megy ki (base64
-  továbbra is kimarad, nincs hamis blokk).
-- `eslint` + `tsc` tiszta a módosított fájlokra.
-- Független **`/code-review`** (Matt Pocock, 2 párhuzamos axis a branch-diffen):
-  **Standards** — 0 hard violation, 0 érdemi smell; a regex-konstans néven nevezett, a komment a
-  *miértet* magyarázza (a prior néma, túl tág kihagyás megszüntetése). **Spec** — a fix hű a
-  szándékhoz, minimális, 0 scope-creep; a detekció/álnevezés korrekt, nincs ReDoS, az upper-case és
-  a vezető-whitespace eset biztonságos irányban kezelt; a regressziós teszt valódi negatív kontroll.
-
-### PR
-- **#891** — `fix(model-gateway): a tartalomszűrő ne hagyja ki a `data:`-vel kezdődő szöveget`
-  (branch `fix/content-filter-data-uri-bypass`, `origin/main`-ről külön worktree-ben). **Atomikus:**
-  fix + regressziós teszt + e napló-bejegyzés egy PR-ben (a 10-13/10-14 kör mintája).
-
-### Residual risk / következő audithoz
-- **🟡 Szándékosan base64-kódolt szöveges data-URI** (`data:text/plain;base64,<PAN base64-je>`)
-  **így is kimarad** — a modell vissza tudja fejteni. Gyenge támadó-modell (a user a *saját*
-  kártyáját kódolná be) és a `data:`-összes-kihagyás óta fennálló **pre-existing** reziduum (nem e
-  javítás regressziója). `ponytail:` komment rögzíti a kódban; lezárás, ha kell: a nem-bináris
-  mediatype-os (`text/*`, üres) base64 URI-t dekódolni és szkennelni (nagyobb változás, most YAGNI).
-- **🟡 `tools`/`tool_choice`/`response_format` nincs szűrve** — a `filterRequest` csak a `messages`-t
-  szkenneli; a `FORWARDED_PARAMS` a `tools`-t (függvény-definíciók) nyersen továbbítja. Ma platform-
-  definiált, nem user-adat-csatorna → alacsony kockázat, de ha valaha user-tartalom kerül tool-
-  definícióba, rés. Nem bizonyított hiba → nincs e-kör-módosítás.
-- **🟡 PAN-detekció csak slotonként** (üzenethatáron át szándékosan nincs összeolvasás, a hamis-
-  pozitív elkerülésére) + a `CARD_BROAD_RE` csak `[ \t\-]` szeparátort ismer (dot/8-8 formázás nem) —
-  tudatos ponytail-tradeoff; kártyaszám-reprezentáció szélső esetei kicsúszhatnak. DoS/teljesség-
-  osztály, nem e kör.
-- **🟡 `free` preset: PAN/IBAN='off'** (`contentFilter({ secret_key: 'block' }, 'off')`) — a
-  „Szabad (fejlesztő)" preset nyersen engedi a kártyaszámot a külső modellhez. Szándékos product-
-  döntés (az admin explicit opt-inel), nem kód-hiba; fizetési cégnél érdemes külön átgondolni, hogy
-  a `free` is blokkolja-e a PAN/IBAN-t. Terméki kérdés, nem audit-finding.
-- A detekciós primitívek (`sensitivity-match-spans.ts`) és a streamelő visszaállító
-  (`response-restorer.ts`) end-to-end trace-elve helytálltak; a `streaming-surrogate-resolve` és a
-  content-filter suite lefedi a szakadt-álnév és a round-trip eseteket.
+**Megmaradó határ:** a szövegszűrő nem dekódol base64-kódolt szöveget, és nem OCR-ez képet;
+a nyers értékekre vonatkozó garancia nem teljes multimodális DLP. A `ponytail:` komment
+rögzíti a típusfüggő dekódolás lehetséges későbbi irányát. A kategóriák tenant-policy szerinti
+`off` beállítása továbbra is szándékos termékfunkció. Migráció nincs.
 
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
