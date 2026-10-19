@@ -21,6 +21,30 @@ export const DEFAULT_SWEEP_LIMIT = 5000
 export const MAX_SWEEP_BATCHES = 100
 export const MAX_LIST_LIMIT = 500
 
+/** A Guard batchét bájtonként korlátozza még a JSON feldolgozása előtt. */
+export async function readAuditBatchText(request: Request): Promise<string | null> {
+  if (Number(request.headers.get('content-length') ?? 0) > MAX_BATCH_BYTES) return null
+  const reader = request.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let bytes = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > MAX_BATCH_BYTES) {
+        await reader.cancel().catch(() => {})
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks, bytes).toString('utf8')
+}
+
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
 /** `tool_unclassified` (#872): a Guard a katalógusban nem szereplő eszközt blokkolta; tartalom soha. */
 export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final' | 'tool_unclassified'

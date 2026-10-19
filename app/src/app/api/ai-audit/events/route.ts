@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { aiInteractionStore, productionAiAuditDeps, productionContentGrantKey } from '@/auth/ai-audit-deps'
 import { productionGatewayTokenDeps } from '@/auth/gateway-token-deps'
 import { verifyContentGrant } from '@/domain/ai-audit/content-grant'
-import { MAX_BATCH_BYTES, MAX_LIST_LIMIT, ingestGuardEvents, listAuditEvents } from '@/domain/ai-audit/ai-audit-service'
+import { MAX_LIST_LIMIT, ingestGuardEvents, listAuditEvents, readAuditBatchText } from '@/domain/ai-audit/ai-audit-service'
 import { verifyGatewayToken } from '@/domain/model-gateway-token/gateway-token'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { writeAudit } from '@/lib/audit/types'
@@ -24,11 +24,8 @@ export async function POST(request: Request): Promise<Response> {
   }
   const { principal, claims } = verified
 
-  if (Number(request.headers.get('content-length') ?? 0) > MAX_BATCH_BYTES) {
-    return NextResponse.json({ error: 'batch_too_large' }, { status: 413 })
-  }
-  const text = await request.text()
-  if (text.length > MAX_BATCH_BYTES) return NextResponse.json({ error: 'batch_too_large' }, { status: 413 })
+  const text = await readAuditBatchText(request)
+  if (text === null) return NextResponse.json({ error: 'batch_too_large' }, { status: 413 })
   let payload: unknown
   try {
     payload = JSON.parse(text)
