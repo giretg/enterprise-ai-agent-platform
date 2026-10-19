@@ -104,22 +104,23 @@ class T(unittest.TestCase):
         for d in (os.path.join(root, "mcp-tokens"), os.path.join(bot, "mcp-tokens")):
             os.makedirs(d)
         open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        now = time.time()
         write = lambda home, name, body: json.dump(body, open(os.path.join(home, "mcp-tokens", name), "w"))
-        write(root, "excellence.json", {"access_token": "oauth-old", "expires_at": 100})
+        write(root, "excellence.json", {"access_token": "oauth-old", "expires_at": now + 100})
         write(root, "excellence.client.json", {"client_id": "old"})
-        write(bot, "excellence.json", {"access_token": "oauth-new", "expires_at": 200})
+        write(bot, "excellence.json", {"access_token": "oauth-new", "expires_at": now + 200})
         write(bot, "excellence.client.json", {"client_id": "new"})
-        self.assertFalse(x.share_mcp_tokens(bot))
+        self.assertFalse(x.share_mcp_tokens(bot, now=lambda: now))
         self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.json")))["access_token"], "oauth-new")
         self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "new")
-        self.assertEqual(x.mcp_access_token(bot), "oauth-new")
+        self.assertEqual(x.mcp_access_token(bot, now=lambda: now), "oauth-new")
         # A Bot frissítése elforgatta a refresh tokent: visszakerül a default profilba (a többi Bot onnan kapja).
         self.assertEqual(json.load(open(os.path.join(root, "mcp-tokens", "excellence.json")))["access_token"], "oauth-new")
         self.assertEqual(json.load(open(os.path.join(root, "mcp-tokens", "excellence.client.json")))["client_id"], "new")
         # Újra-belépés a default profilban: az a frissebb, átmegy.
-        write(root, "excellence.json", {"access_token": "oauth-relogin", "expires_at": 300})
-        self.assertTrue(x.share_mcp_tokens(bot))
-        self.assertEqual(x.mcp_access_token(bot), "oauth-relogin")
+        write(root, "excellence.json", {"access_token": "oauth-relogin", "expires_at": now + 300})
+        self.assertTrue(x.share_mcp_tokens(bot, now=lambda: now))
+        self.assertEqual(x.mcp_access_token(bot, now=lambda: now), "oauth-relogin")
 
     def test_legacy_bot_login_without_expires_at_beats_expired_parent(self):
         # Telepítő / pre-Fix-A Hermes: nincs expires_at. A 0-ra esés miatt a szülő
@@ -140,6 +141,36 @@ class T(unittest.TestCase):
         self.assertEqual(x.mcp_access_token(bot), "fresh-bot")
         # A Bot frissebb → visszamegy a default profilba (refresh-forgás).
         self.assertEqual(json.load(open(parent))["access_token"], "fresh-bot")
+
+    def test_expired_parent_does_not_wipe_still_refreshable_aged_legacy_bot(self):
+        # #904 utáni maradék: access TTL mindkét oldalon múltbeli, de a szülő abszolút
+        # expires_at-je nagyobb → share felülírta a Bot élő refresh tokenjét.
+        # (A „még érvényes access” vs lejárt szülő matematikai lehetetlen ugyanazzal a
+        # időegységgel; a valós lyuk a mindkét-access-lejárt + élő refresh eset.)
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        for d in (os.path.join(root, "mcp-tokens"), os.path.join(bot, "mcp-tokens")):
+            os.makedirs(d)
+        open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        parent = os.path.join(root, "mcp-tokens", "excellence.json")
+        child = os.path.join(bot, "mcp-tokens", "excellence.json")
+        now = 1_800_000_000
+        json.dump(
+            {"access_token": "dead-parent", "refresh_token": "DEAD", "expires_at": now - 100},
+            open(parent, "w"),
+        )
+        json.dump(
+            {"access_token": "stale-bot", "refresh_token": "LIVE", "expires_in": 3600},
+            open(child, "w"),
+        )
+        os.utime(child, (now - 10_000, now - 10_000))  # mtime+expires_in = now-6400
+        self.assertGreater(x._expires_at(parent), x._expires_at(child))  # lejárt szülő „nyerne”
+        self.assertLess(x._expires_at(parent), now)
+        self.assertLess(x._expires_at(child), now)
+        self.assertFalse(x.share_mcp_tokens(bot, now=lambda: now))
+        self.assertEqual(json.load(open(child))["refresh_token"], "LIVE")
+        self.assertEqual(json.load(open(parent))["refresh_token"], "DEAD")  # ne másolja vissza
+        self.assertEqual(x.mcp_access_token(bot, now=lambda: now), "stale-bot")
 
     def test_legacy_copy_keeps_expiry_and_does_not_replace_new_login(self):
         with tempfile.TemporaryDirectory() as root:
@@ -177,20 +208,21 @@ class T(unittest.TestCase):
             "mcp_servers:\n  excellence:\n    url: https://ai.example.com/api/mcp/own\n    auth: oauth\n"
             "  excellence-acme:\n    url: https://ai.example.com/api/mcp/acme\n    auth: oauth\n    oauth:\n      client_id: cid\n"
         )
+        now = time.time()
         write = lambda home, name, body: json.dump(body, open(os.path.join(home, "mcp-tokens", name), "w"))
-        write(root, "excellence.json", {"access_token": "oauth-own", "expires_at": 900})
-        write(root, "excellence-acme.json", {"access_token": "oauth-acme", "expires_at": 500})
+        write(root, "excellence.json", {"access_token": "oauth-own", "expires_at": now + 900})
+        write(root, "excellence-acme.json", {"access_token": "oauth-acme", "expires_at": now + 500})
         write(root, "excellence-acme.client.json", {"client_id": "cid"})
-        write(bot, "excellence.json", {"access_token": "oauth-stale", "expires_at": 100})
+        write(bot, "excellence.json", {"access_token": "oauth-stale", "expires_at": now + 100})
         self.assertEqual(x.parent_server_name(bot, root), "excellence-acme")
-        self.assertTrue(x.share_mcp_tokens(bot))
-        self.assertEqual(x.mcp_access_token(bot), "oauth-acme")
+        self.assertTrue(x.share_mcp_tokens(bot, now=lambda: now))
+        self.assertEqual(x.mcp_access_token(bot, now=lambda: now), "oauth-acme")
         self.assertEqual(json.load(open(os.path.join(bot, "mcp-tokens", "excellence.client.json")))["client_id"], "cid")
         self.assertFalse(os.path.exists(os.path.join(bot, "mcp-tokens", "excellence-acme.json")))
         # Ha a default profilban nincs azonos URL-ű belépő, más tenant tokenje nem kerül át.
         open(os.path.join(root, "config.yaml"), "w").write("mcp_servers:\n  excellence:\n    url: https://ai.example.com/api/mcp/own\n")
         self.assertIsNone(x.parent_server_name(bot, root))
-        self.assertFalse(x.share_mcp_tokens(bot))
+        self.assertFalse(x.share_mcp_tokens(bot, now=lambda: now))
 
     def test_share_all_from_default_home_reaches_every_bot(self):
         # Hermes desktop: egy folyamat, HERMES_HOME=~/.hermes. A Guard és a telepítő innen indul;
@@ -201,15 +233,17 @@ class T(unittest.TestCase):
             "mcp_servers:\n  excellence:\n    url: https://ai.example.com/api/mcp/own\n"
             "  excellence-acme:\n    url: https://ai.example.com/api/mcp/acme\n"
         )
+        now = time.time()
         write = lambda path, body: json.dump(body, open(path, "w"))
-        write(os.path.join(root, "mcp-tokens", "excellence.json"), {"access_token": "oauth-own", "expires_at": 900})
-        write(os.path.join(root, "mcp-tokens", "excellence-acme.json"), {"access_token": "oauth-acme", "expires_at": 500})
+        write(os.path.join(root, "mcp-tokens", "excellence.json"), {"access_token": "oauth-own", "expires_at": now + 900})
+        write(os.path.join(root, "mcp-tokens", "excellence-acme.json"), {"access_token": "oauth-acme", "expires_at": now + 500})
         bots = {}
         for name in ("exc-alfred", "exc-reka", "plain"):
             bots[name] = os.path.join(root, "profiles", name)
             os.makedirs(os.path.join(bots[name], "mcp-tokens"))
             open(os.path.join(bots[name], "config.yaml"), "w").write(CONFIG)
-            write(os.path.join(bots[name], "mcp-tokens", "excellence.json"), {"access_token": "oauth-own", "expires_at": 100})
+            write(os.path.join(bots[name], "mcp-tokens", "excellence.json"), {"access_token": "oauth-own", "expires_at": now + 100})
+        # share_all has no now= hook; wall clock must see these as still-valid.
         self.assertTrue(x.share_all_mcp_tokens(root))
         self.assertEqual(x.mcp_access_token(bots["exc-alfred"]), "oauth-acme")
         self.assertEqual(x.mcp_access_token(bots["exc-reka"]), "oauth-acme")

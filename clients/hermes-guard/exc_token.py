@@ -174,12 +174,15 @@ def _copy_login(src_dir, src_name, dest_dir, dest_name):
     return copied
 
 
-def share_mcp_tokens(dest_home, source_home=None):
-    """A default profil és a Bot Excellence MCP-belépőjét szinkronizálja: a később lejáró nyer.
+def share_mcp_tokens(dest_home, source_home=None, now=time.time):
+    """A default profil és a Bot Excellence MCP-belépőjét szinkronizálja: a frissebb belépő nyer.
 
-    A Hermes MCP és a key_cmd a Bot saját `mcp-tokens/` könyvtárát olvassa. Kétirányú, mert
-    az OAuth-szerver frissítéskor elforgatja a refresh tokent: ha a Bot frissített, a default
-    profil (és rajta át a többi Bot) régi refresh tokenje már érvénytelen (400). True = a Bot kapott újat.
+    Rangsor: csak még érvényes (expires > now) forrás írhat felül meglévő célt; azon belül a
+    később lejáró. Így egy lejárt, de magasabb abszolút ``expires_at``-es szülő nem törli a Bot
+    élő refresh tokenjét, amikor a Bot access TTL-je (mtime+expires_in) szintén múltbeli
+    (#904 utáni maradék: mindkét access lejárt, a refresh még él). Hiányzó célra (telepítő)
+    a forrás akkor is bemásolódik. Kétirányú, mert az OAuth-szerver frissítéskor elforgatja
+    a refresh tokent. True = a Bot kapott újat.
     """
     source_home = source_home or parent_hermes_home(dest_home)
     if not source_home:
@@ -191,10 +194,14 @@ def share_mcp_tokens(dest_home, source_home=None):
     src, dest = os.path.join(src_dir, f"{src_name}.json"), os.path.join(dest_dir, f"{SERVER}.json")
     if not os.path.isfile(src):
         return False
-    if not os.path.exists(dest) or _expires_at(src) > _expires_at(dest):
+    if not os.path.exists(dest):
+        return _copy_login(src_dir, src_name, dest_dir, SERVER)
+    src_exp, dest_exp = _expires_at(src), _expires_at(dest)
+    # Lejárt forrás soha ne írjon felül meglévő célt (LIVE refresh védelme).
+    if src_exp > dest_exp and src_exp > now():
         return _copy_login(src_dir, src_name, dest_dir, SERVER)
     # ponytail: a frissítés és a visszamásolás között egy másik Bot még a régi tokennel frissíthet (ritka verseny); akkor újra-belépés.
-    if _expires_at(dest) > _expires_at(src):
+    if dest_exp > src_exp:
         _copy_login(dest_dir, SERVER, src_dir, src_name)
     return False
 
@@ -242,23 +249,32 @@ def _expires_at(path):
         return 0.0
 
 
-def mcp_access_token(home):
+def mcp_access_token(home, now=time.time):
+    """Bot saját belépője előbb; szülő csak akkor nyer, ha az access még érvényes és később jár le."""
     candidates = [os.path.join(home, "mcp-tokens", f"{SERVER}.json")]
     parent = parent_hermes_home(home)
     name = parent and parent_server_name(home, parent)
     if name:
         candidates.append(os.path.join(parent, "mcp-tokens", f"{name}.json"))
-    best, best_exp = None, -1.0
+    best_valid, best_exp = None, -1.0
+    fallback = None
+    clock = now()
     for path in candidates:
         try:
             tok = json.load(open(path, encoding="utf-8"))["access_token"]
         except (OSError, ValueError, KeyError, TypeError):
             continue
-        # A Bot és a default profil közül a később lejáró belépő (a Bot Hermese maga is frissíthet).
-        if tok and _expires_at(path) > best_exp:
-            best, best_exp = tok, _expires_at(path)
-    if best:
-        return best
+        if not tok:
+            continue
+        # Lejárt accessek között a Bot saját fájlja marad (első jelölt) — a share sem
+        # írja felül lejárt szülővel, a LIVE refresh ott van.
+        if fallback is None:
+            fallback = tok
+        exp = _expires_at(path)
+        if exp > clock and exp > best_exp:
+            best_valid, best_exp = tok, exp
+    if best_valid or fallback:
+        return best_valid or fallback
     raise Fail("Jelentkezz be újra a Hermes Excellence-kapcsolatába.")
 
 
