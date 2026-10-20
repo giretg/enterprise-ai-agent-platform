@@ -193,6 +193,9 @@ export async function mcpListTools(input: McpSessionInput, deps: McpClientDeps =
         // Egy nem-haladó szerver (üres lap vagy vissza nem mozduló kurzor) ne pörgesse a
         // kérést a session-timeoutig: ha egy lap nem hoz új eszközt vagy a kurzor nem
         // változik, lezárjuk. A szabályos lapozást (nem üres lap + mozgó kurzor) nem érinti.
+        // ponytail: az üres-lap kaput szándékosan „vége" jelnek vesszük — egy spec-szerinti
+        // üres KÖZBÜLSŐ lap (nem-null kurzorral) itt csonkolna; ez gyakorlatban nem fordul elő,
+        // a pörgés-stop fontosabb. Ha valós szervernél gond lesz: lap-plafon a break helyett.
         if (batch.length === 0 || cursor === sent) break
       } while (cursor && tools.length < MCP_MAX_TOOLS)
       return tools.slice(0, MCP_MAX_TOOLS)
