@@ -13,6 +13,7 @@ import {
   isPreProvisionedAuthId,
   isSelfModification,
   makePreProvisionedAuthId,
+  raiseOnlyRole,
 } from '@/lib/iam-policy'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -120,10 +121,9 @@ export class IamService {
       }
       // Multi-tenant re-provision: never demote the global user.role below an
       // already-assigned pending role; elevate when the new tenant asks higher.
-      if (user.role && ROLE_RANK[params.role] > ROLE_RANK[user.role]) {
-        user = await this.users.update(user.id, { role: params.role })
-      } else if (!user.role) {
-        user = await this.users.update(user.id, { role: params.role })
+      const raised = raiseOnlyRole(user.role, params.role)
+      if (raised !== user.role) {
+        user = await this.users.update(user.id, { role: raised })
       }
     } else {
       user = await this.users.create({
@@ -326,8 +326,51 @@ export class IamService {
       throw new Error(`invitation: ${check.reason.toLowerCase()}`)
     }
 
+    // Aktív tagság mellett egy (esetleg elavult, magasabb szerepű) meghívó NEM írhatja
+    // felül a membership szerepet — ugyanaz a privilege escalation, mint a Clerk/session
+    // ágon (#838), de ez a token-beváltási út (/control-plane/iam/redeem) ott nincs lefedve.
+    // A meghívó pending marad (claim előtt állunk); felfüggesztett tagság újraélesíthető.
+    const existingUser = await this.users.findByExternalAuthId(params.externalAuthId)
+    if (invitation.tenantId && this.memberships && existingUser) {
+      const existing = await this.memberships.findByTenantAndUser(invitation.tenantId, existingUser.id)
+      if (existing?.status === 'active') {
+        throw new Error('invitation: already_a_member')
+      }
+    }
+
     const claimed = await this.invitations.claimPendingRedemption(invitation.id, params.email, new Date())
     if (!claimed) throw new Error('invitation: already_redeemed_or_unavailable')
+
+    // Claim utáni verseny: ha időközben aktív tagság keletkezett (pl. provision),
+    // ne írjuk felül a membershipet és ne minősítsük át a User.role-t.
+    if (claimed.tenantId && this.memberships && existingUser) {
+      const membershipAfterClaim = await this.memberships.findByTenantAndUser(
+        claimed.tenantId,
+        existingUser.id,
+      )
+      if (membershipAfterClaim?.status === 'active') {
+        await this.append({
+          actorType: 'human',
+          actorId: existingUser.id,
+          agentVersion: null,
+          action: 'user.invite.redeem',
+          targetType: 'user',
+          targetId: existingUser.id,
+          modelUsed: null,
+          inputRef: claimed.id,
+          outputRef: membershipAfterClaim.role,
+          policyDecision: 'already_a_member',
+          metadata: { source: 'token', invitationId: claimed.id },
+          tenantId: claimed.tenantId,
+        })
+        return existingUser
+      }
+    }
+
+    // A globális User.role raise-only (közös invariáns, l. raiseOnlyRole): soha nem
+    // minősítjük le — a korábbi feltétel nélküli felülírás keresztbérlői lebontást
+    // okozott (más tenantben magasabb szerepű user alacsonyabb szerepű meghívót váltott be).
+    const nextRole = raiseOnlyRole(existingUser?.role, invitation.role)
 
     const user = await this.users.upsertByExternalAuthId({
       externalAuthId: params.externalAuthId,
@@ -338,7 +381,7 @@ export class IamService {
         status: 'active',
       },
       update: {
-        role: invitation.role,
+        role: nextRole,
         status: 'active',
         activatedAt: new Date(),
         invitedById: invitation.createdById,
@@ -399,11 +442,10 @@ export class IamService {
       invitedById?: string
     } = { status: 'active' }
     // A tenant-szerep a membershipen él. A globális User.role-t csak üresen
-    // állítjuk, vagy ROLE_RANK szerint emeljük — soha nem minősítjük le.
-    if (!params.user.role) {
-      patch.role = invitation.role
-    } else if (ROLE_RANK[invitation.role] > ROLE_RANK[params.user.role]) {
-      patch.role = invitation.role
+    // állítjuk, vagy ROLE_RANK szerint emeljük — soha nem minősítjük le (raiseOnlyRole).
+    const raisedRole = raiseOnlyRole(params.user.role, invitation.role)
+    if (raisedRole !== params.user.role) {
+      patch.role = raisedRole
     }
     if (params.user.status !== 'active') {
       patch.activatedAt = new Date()

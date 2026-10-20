@@ -16,6 +16,16 @@ export const ROLE_RANK: Record<UserRole, number> = {
   admin: 3,
 }
 
+/**
+ * A globális `User.role` raise-only invariánsa (egy helyen, hogy ne csússzon szét):
+ * provisionUser / redeemInvitation / redeemClerkInvitation mind ezt hívja. Soha nem
+ * minősítünk le — üres szerepnél a beérkezőt vesszük, egyébként a magasabb rangút.
+ */
+export function raiseOnlyRole(current: UserRole | null | undefined, incoming: UserRole): UserRole {
+  if (!current) return incoming
+  return ROLE_RANK[incoming] > ROLE_RANK[current] ? incoming : current
+}
+
 /** Placeholder Clerk subject for admin-pre-provisioned users awaiting first login. */
 export const PREPROVISIONED_AUTH_PREFIX = 'preprovisioned:'
 
