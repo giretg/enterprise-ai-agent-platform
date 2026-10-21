@@ -13,6 +13,7 @@ import type {
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { CUSTOMER_PROMISE_TOOLS } from '@/domain/customer-promise/mcp'
 import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
@@ -38,6 +39,7 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_SKILL_READ_TOOL,
   MCP_SKILL_SUBMIT_TOOL,
   ...PROJECT_WORK_TOOLS,
+  ...CUSTOMER_PROMISE_TOOLS,
   MCP_GATEWAY_OPERATION_GET_TOOL,
 ] as const
 export const MCP_ALLOWED_TOOLS = [...MCP_PLATFORM_TOOLS, ...ENTERPRISE_TOOLS] as const

@@ -44,6 +44,7 @@ export type ControlPlaneNavContext = {
   navVisibility?: NavVisibilityPolicy
   /** Nyitott teendők (írás-jóváhagyás + átadás) — badge a Teendők menüponton. */
   pendingTasksCount?: number
+  urgentPromisesCount?: number
 }
 
 const isCatalogGroup = (
@@ -92,6 +93,7 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     label: 'Teendők',
     requires: { tenantRole: 'viewer' },
   },
+  { key: 'promises', href: '/control-plane/promises', label: 'Ígéretek', requires: { tenantRole: 'viewer' } },
   {
     key: 'staff',
     label: 'Katalógus',
@@ -218,7 +220,7 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
     if (!visible(entry.key)) continue
     if (!isCatalogGroup(entry)) {
       if (meetsRequirement(ctx, entry.requires)) {
-        const badge = entry.key === 'admin.operations' ? ctx.pendingTasksCount : undefined
+        const badge = entry.key === 'admin.operations' ? ctx.pendingTasksCount : entry.key === 'promises' ? ctx.urgentPromisesCount : undefined
         nav.push(toLeaf(entry, badge))
       }
       continue

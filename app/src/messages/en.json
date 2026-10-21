@@ -238,6 +238,42 @@
     "failBody": "You can close this tab and retry the connection in your AI client."
   },
   "ControlPlane": {
+    "promises": {
+      "pageEmpty": "There are no more commitments on this page. Go back to the previous page.",
+      "pagination": "Pagination",
+      "previous": "Previous",
+      "next": "Next",
+      "page": "Page {page}",
+      "filterLabel": "Filter promises",
+      "active": "Open commitments",
+      "history": "Include history",
+      "title": "Promises",
+      "body": "What we promised customers, who owns it, and when it is due.",
+      "helpLabel": "How do promises appear here?",
+      "help": "Your teammate records a promise when giving a customer a deadline. After the deadline, an unfinished promise is marked overdue so you can act before the customer complains.",
+      "empty": "You have no open commitments. When a teammate promises a customer a deadline, it will appear here.",
+      "commitment": "What we promised",
+      "customer": "Customer",
+      "agent": "Teammate",
+      "dueAt": "Due",
+      "status": "Status",
+      "owner": "Owner",
+      "actions": "Actions",
+      "resolve": "Resolve",
+      "complete": "Fulfilled",
+      "cancel": "Cancel promise",
+      "back": "Back",
+      "note": "Short note (optional)",
+      "error": "Promises could not be loaded or updated. Please try again.",
+      "statuses": {
+        "open": "Open",
+        "overdue": "Overdue",
+        "claimed": "In progress",
+        "fulfilled": "Fulfilled",
+        "cancelled": "Cancelled",
+        "missed": "Missed"
+      }
+    },
     "shell": {
       "appName": "E-AI",
       "appSubtitle": "Control plane",
@@ -268,6 +304,7 @@
       "admin_platform-iam": "Platform · IAM",
       "admin_platform-contact": "Platform · Contact inbox",
       "admin_platform-settings": "Platform · Settings",
+      "promises": "Promises",
       "admin_ai-client-policy": "Hermes company controls"
     },
     "pending": {
@@ -352,6 +389,7 @@
       "navHeading": "Settings",
       "projectMemory": "Project memory",
       "sections": {
+        "igeretek": "Promises",
         "elesites": "Go live",
         "elesitesDesc": "Which definition is live, and whether unpublished changes remain.",
         "profil": "Name and responsibility",

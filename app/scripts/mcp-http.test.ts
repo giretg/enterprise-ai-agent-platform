@@ -50,6 +50,8 @@ import {
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
+import { CUSTOMER_PROMISE_TOOLS, invokeCustomerPromise } from '../src/domain/customer-promise/mcp'
+import { CustomerPromiseService, type CustomerPromiseStore } from '../src/domain/customer-promise/customer-promise-service'
 import { MCP_WORK_FILE_LIST_TOOL, PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
 import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -555,6 +557,76 @@ function writerDeps(extra: { requestStateKey?: string; driveCalls?: unknown[] } 
 }
 
 async function main() {
+  await check('promise HTTP tools enforce grants, ownership, tenant and argument boundaries', async () => {
+    const { deps, audit } = writerDeps()
+    const rows: import('../src/domain/customer-promise/customer-promise-service').CustomerPromiseRecord[] = []
+    const store: CustomerPromiseStore = {
+      async insertUnderLimit(input) {
+        const row = { ...input, id: crypto.randomUUID(), status: 'open' as const, claimedAt: null, claimClient: null, claimExternalId: null, resolvedAt: null, resolvedNote: null, createdAt: new Date(), updatedAt: new Date() }
+        rows.push(row)
+        return row
+      },
+      async findById(tenantId, id) { return rows.find(row => row.tenantId === tenantId && row.id === id) ?? null },
+      async list(input) { return rows.filter(row => row.tenantId === input.tenantId && row.ownerUserId === input.ownerUserId && row.agentId === input.agentId) },
+      async countUrgentForUser() { return 0 },
+      async resolve(input) {
+        const row = rows.find(row => row.id === input.id && row.tenantId === input.tenantId && ['open', 'claimed'].includes(row.status))
+        if (!row) return null
+        Object.assign(row, {status: input.status, resolvedNote: input.note, resolvedAt: input.now})
+        return row
+      },
+    }
+    let accessLevel: string | null = 'operate'
+    deps.invokeCustomerPromise = input => invokeCustomerPromise({
+      loadDefinition: lookup => deps.loadDefinition(lookup),
+      findCurrentDefinitionId: async () => DEFINITION_ID,
+      findAgentGrant: async () => accessLevel ? {accessLevel} : null,
+      customerPromises: new CustomerPromiseService(store, {async append(data) { audit.push(data) }}),
+    }, input)
+    async function call(tool: string, fields: Record<string, unknown>) {
+      const response = await post('acme', {jsonrpc: '2.0', id: 672, method: 'tools/call', params: {name: tool, arguments: {definitionId: DEFINITION_ID, ...fields}}}, {authorization: `Bearer ${TOKEN}`}, deps)
+      assert.equal(response.status, 200)
+      const body = await readJson(response) as {result: {isError?: boolean; content: Array<{text: string}>}}
+      return {isError: body.result.isError, ...JSON.parse(body.result.content[0].text)}
+    }
+    const fields = {title: 'Callback', commitment: 'Call the customer', dueAt: new Date(Date.now() + 86400000).toISOString()}
+    const registered = await call('platform.promise.register', fields)
+    assert.equal(registered.ok, true)
+    const promiseId = registered.row.id
+    assert.equal((await call('platform.promise.get', {promiseId})).row.id, promiseId)
+    assert.equal((await call('platform.promise.list', {})).promises.length, 1)
+    const briefing = await call(MCP_AGENT_GET_DEFINITION_TOOL, {})
+    assert.equal(briefing.customerPromises.entries[0].id, promiseId)
+    assert.match(briefing.briefing, /Open customer promises/)
+    assert.match(briefing.briefing, /Callback/)
+    accessLevel = 'view'
+    assert.equal((await call('platform.promise.list', {})).promises.length, 1)
+    for (const tool of CUSTOMER_PROMISE_TOOLS.filter(name => name !== 'platform.promise.list')) {
+      const denied = await call(tool, tool.endsWith('register') ? fields : {promiseId})
+      assert.equal(denied.isError, true)
+      assert.equal(denied.code, 'not_allowed')
+    }
+    accessLevel = null
+    assert.equal((await call('platform.promise.list', {})).code, 'not_allowed')
+    assert.deepEqual((await call(MCP_AGENT_GET_DEFINITION_TOOL, {})).customerPromises.entries, [])
+    accessLevel = 'operate'
+    for (const tool of CUSTOMER_PROMISE_TOOLS) {
+      const invalid = await call(tool, {...(tool.endsWith('register') ? fields : tool.endsWith('list') ? {} : {promiseId}), tenantId: TENANT_ID})
+      assert.equal(invalid.isError, true)
+      assert.equal(invalid.code, 'invalid_args')
+    }
+    assert.equal((await call('platform.promise.complete', {promiseId})).row.status, 'fulfilled')
+    assert.equal((await call('platform.promise.cancel', {promiseId})).code, 'already_resolved')
+    const second = await call('platform.promise.register', fields)
+    assert.equal((await call('platform.promise.cancel', {promiseId: second.row.id})).row.status, 'cancelled')
+    rows[0].ownerUserId = '33333333-3333-4333-8333-333333333333'
+    assert.equal((await call('platform.promise.get', {promiseId})).code, 'not_allowed')
+    rows[0].tenantId = '33333333-3333-4333-8333-333333333333'
+    assert.equal((await call('platform.promise.get', {promiseId})).code, 'not_found')
+    assert.ok(audit.some(row => row.action === 'promise.register'))
+    assert.doesNotMatch(JSON.stringify(audit.filter(row => String(row.action).startsWith('promise.'))), /Call the customer|Callback/)
+  })
+
   await check('#618 2026 + elicitation.form → input_required form', async () => {
     const { deps } = writerDeps({ requestStateKey: STATE_KEY })
     const body = await call2026(deps, { elicitation: { form: {} } })
@@ -797,7 +869,9 @@ async function main() {
       MCP_SKILLS_LIST_TOOL,
       MCP_SKILL_READ_TOOL,
       MCP_SKILL_SUBMIT_TOOL,
-      ...PROJECT_WORK_TOOLS,
+      ...PROJECT_WORK_TOOLS.slice(0, -2),
+      ...CUSTOMER_PROMISE_TOOLS,
+      ...PROJECT_WORK_TOOLS.slice(-2),
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
@@ -2320,7 +2394,7 @@ async function main() {
     deps.loadSkillVersions = async () => checkoutSkills
     const briefing = (await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, { agentId: AGENT_ID }, '')).payload
       .briefing as string
-    assert.match(briefing, /3\. For every new task, first read the entry skill marketing-workflow \(`skill:\/\/marketing-workflow\/SKILL\.md`\)/)
+    assert.match(briefing, /4\. For every new task, first read the entry skill marketing-workflow \(`skill:\/\/marketing-workflow\/SKILL\.md`\)/)
     assert.match(briefing, /- marketing-workflow \(entry skill — read first on every new task\):[^\n]*\n- near-win-seo:/)
     const agentsMd = renderAgentCheckout({ definition: kati, skills: checkoutSkills, mcpUrl: 'https://app.example.com/api/mcp/acme' })
       .files.find((f) => f.path === 'AGENTS.md')?.content

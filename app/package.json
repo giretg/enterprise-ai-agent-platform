@@ -357,6 +357,8 @@
     "test:reconcile-records": "tsx scripts/reconcile-records.test.ts",
     "test:trained-memory-prompt": "tsx scripts/trained-memory-prompt.test.ts",
     "probe:crm-privacy": "tsx scripts/crm-privacy-probe.ts",
+    "test:customer-promise-ui": "tsx scripts/customer-promise-ui.test.ts",
+    "test:customer-promise": "tsx scripts/customer-promise.test.ts",
     "test:handoff": "tsx scripts/handoff.test.ts",
     "test:client-policy-admin": "tsx scripts/client-policy-admin.test.ts",
     "test:client-policy-admin-db": "tsx scripts/client-policy-admin-db.test.ts"
