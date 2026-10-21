@@ -1,3 +1,4 @@
+import { CUSTOMER_PROMISE_TOOLS, isCustomerPromiseTool, promiseRegisterSchema, promiseGetSchema, promiseListSchema, promiseResolveSchema } from '@/domain/customer-promise/mcp'
 import { auth } from '@clerk/nextjs/server'
 import type { SkillVersionStatus } from '@prisma/client'
 import {
@@ -256,6 +257,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
   agentScaffold: AgentScaffoldDeps
+  invokeCustomerPromise?: (input: { principal: McpPrincipal; toolName: string; args: Record<string, unknown> }) => Promise<EnterpriseToolMcpResult>
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
 }
 
@@ -413,6 +415,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
+    invokeCustomerPromise: (input) => services.customerPromiseTools.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
       return Promise.all(
@@ -748,10 +751,11 @@ async function getDefinitionToolResult(
     agentId: loaded.agentId,
   })
   if (!allowed) return definitionNotFound()
-  const [memoryContext, skills, tenant] = await Promise.all([
+  const [memoryContext, skills, tenant, customerPromises] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
     deps.tenants.findById(principal.tenantId),
+    readCustomerPromises(principal, loaded.definitionId, deps),
   ])
   const approverName = await deps.loadAgentApproverName?.({
     tenantId: principal.tenantId,
@@ -775,6 +779,7 @@ async function getDefinitionToolResult(
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
+      customerPromises,
       approverName: approverName ?? null,
       writeModes: writeModes ?? undefined,
       // #717 B réteg: a briefing platform-szövegei a tenant kimeneti nyelvén.
@@ -784,7 +789,20 @@ async function getDefinitionToolResult(
     contentHash: hashSnapshot(loaded.snapshot),
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
+    customerPromises: { entries: customerPromises },
   })
+}
+
+async function readCustomerPromises(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps): Promise<import('@/lib/agent-checkout').CustomerPromiseHeadline[]> {
+  if (!deps.invokeCustomerPromise) return []
+  const response = await deps.invokeCustomerPromise({ principal, toolName: 'platform.promise.list', args: { definitionId } })
+  if (response.isError) return []
+  const text = response.content.find((item) => item.type === 'text')
+  if (!text || text.type !== 'text') return []
+  const payload = JSON.parse(text.text)
+  return (payload.promises ?? []).map((row: {id: string; title: string; dueAt: string; customerName: string | null; customerEmail: string | null; overdue: boolean}) => ({
+    id: row.id, title: row.title, dueAt: row.dueAt, customerName: row.customerName, customerEmail: row.customerEmail, overdue: row.overdue,
+  }))
 }
 
 function isFocusMemoryItem(item: unknown): boolean {
@@ -1173,6 +1191,7 @@ function toolBindsToAgentHeader(toolName: string): boolean {
     toolName === MCP_SKILLS_LIST_TOOL ||
     toolName === MCP_SKILL_READ_TOOL ||
     isProjectWorkTool(toolName) ||
+    isCustomerPromiseTool(toolName) ||
     isEnterpriseTool(toolName)
   )
 }
@@ -1473,6 +1492,22 @@ async function createMcpResourceHandler(
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
       )
+      for (const toolName of CUSTOMER_PROMISE_TOOLS) {
+        server.registerTool(toolName, {
+          title: toolName.replace('platform.promise.', 'Customer promise: '),
+          description: toolName === 'platform.promise.register'
+            ? 'Record a time-bound customer commitment before or when making it. Resolve relative dates to an absolute ISO dueAt. Use the published definitionId, or omit it on a bound client. This is a ledger; fulfillment is explicit.'
+            : toolName === 'platform.promise.list'
+              ? 'List your customer promises for this agent (active by default). Call at session start, including when the briefing is empty. Filter by status and due upcoming|overdue|all.'
+              : toolName === 'platform.promise.get'
+                ? 'Read your customer promise by promiseId.'
+                : 'Explicitly resolve your open or claimed customer promise by promiseId. Optional note: at most 500 characters.',
+          inputSchema: toolName === 'platform.promise.register' ? promiseRegisterSchema
+            : toolName === 'platform.promise.list' ? promiseListSchema
+              : toolName === 'platform.promise.get' ? promiseGetSchema : promiseResolveSchema,
+          annotations: { readOnlyHint: toolName === 'platform.promise.get' || toolName === 'platform.promise.list' },
+        }, async (args: Record<string, unknown>) => customerPromiseToolResult(principal, toolName, args, deps))
+      }
       server.registerTool(
         MCP_HANDOFF_TOOL,
         {
@@ -1881,6 +1916,9 @@ async function createMcpResourceHandler(
         if (toolName === MCP_SKILL_SUBMIT_TOOL) {
           return submitSkillToolResult(principal, args, deps)
         }
+        if (isCustomerPromiseTool(toolName)) {
+          return customerPromiseToolResult(principal, toolName, args, deps)
+        }
         if (isProjectWorkTool(toolName)) {
           return projectWorkToolResult(principal, toolName, args, deps, origin)
         }
@@ -1918,6 +1956,17 @@ async function enterpriseToolResult(
   return deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as Promise<
     CallToolResult | InputRequiredResult
   >
+}
+
+async function customerPromiseToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  await auditMcpToolCall(deps, principal, toolName)
+  if (!deps.invokeCustomerPromise) return textResult({ code: 'not_allowed' }, true)
+  return deps.invokeCustomerPromise({ principal, toolName, args })
 }
 
 async function projectWorkToolResult(

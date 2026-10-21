@@ -51,6 +51,9 @@ import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-ser
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
+import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
+import { PostgresCustomerPromiseRepository } from '@/repositories/postgres/customer-promise-repository'
+import { invokeCustomerPromise } from '@/domain/customer-promise/mcp'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
 import {
@@ -196,6 +199,7 @@ const projectWorkService = new ProjectWorkService(
 )
 
 const handoffRepository = new PostgresHandoffRepository()
+const customerPromiseService = new CustomerPromiseService(new PostgresCustomerPromiseRepository(), repositories.audit)
 
 /** #395: az MCP-connector aktív, jóváhagyott eszközlistája (null = nincs aktív verzió → fail-closed). */
 const mcpGateDeps = {
@@ -513,6 +517,13 @@ export const services = {
   selfUpdatingConnectors: selfUpdatingConnectorService,
   connectorGrants: connectorGrantService,
   knowledgeBase: knowledgeBaseService,
+  customerPromises: customerPromiseService,
+  customerPromiseTools: {
+    invoke: (input: Parameters<typeof invokeCustomerPromise>[1]) => invokeCustomerPromise({
+      ...sharedToolLookups,
+      customerPromises: customerPromiseService,
+    }, input),
+  },
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,
