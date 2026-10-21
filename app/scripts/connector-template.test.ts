@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
-import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
+import { HttpApiClient, HttpApiError, parseHttpApiConfig } from '../src/domain/connector/http-api-client'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import {
@@ -11,6 +11,7 @@ import {
   selfCheckTemplateDescriptor,
 } from '../src/domain/connector-template/materializer'
 import { materializeGmailConnectorConfig } from '../src/domain/connector-template/gmail-connector-config'
+import { materializeGoogleDriveConnectorConfig } from '../src/domain/connector-template/google-drive-connector-config'
 import { parseTemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
 import { enrichOstorosborConnectorConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
 
@@ -155,6 +156,24 @@ async function main() {
     assert.ok(descriptor.activationHelp?.includes('platform Google OAuth'))
   })
 
+  await test('an explicitly empty scope selection never restores default OAuth grants', () => {
+    const gmail = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-workspace'))
+    assert.throws(
+      () => materializeGmailConnectorConfig(gmail, { authMethodKind: 'user_delegated_oauth2', instanceValues: {}, selectedScopes: [] }, {}),
+      /Válassz legalább egy Gmail-jogosultságot/,
+    )
+    const drive = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-drive'))
+    assert.throws(
+      () => materializeGoogleDriveConnectorConfig(drive, { authMethodKind: 'user_delegated_oauth2', instanceValues: {}, selectedScopes: [] }, {}),
+      /Válassz legalább egy Google Drive-jogosultságot/,
+    )
+    const microsoft = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES.find((item) => item.key === 'microsoft-365'))
+    assert.throws(
+      () => materializeConnectorConfig(microsoft, { authMethodKind: 'user_delegated_oauth2', instanceValues: { clientId: 'test-client' }, selectedScopes: [] }, { clientSecret: 'secret-ref:test' }),
+      /Válassz legalább egy hozzáférési jogosultságot/,
+    )
+  })
+
   await test('unknown selected Gmail scope is rejected', () => {
     const descriptor = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES[0])
     assert.throws(
@@ -221,6 +240,75 @@ async function main() {
     })
     assert.ok((config.proposedTools ?? []).every((tool) => tool.path.startsWith('/repos/{owner}/{repo}')))
     assert.ok(!(config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
+    assert.equal(runtime.restrictToEndpoints, true)
+  })
+
+  await test('template selection limits live GitHub paths and permits nested file reads', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: 'bearer',
+        instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' },
+        selectedEndpoints: ['get_file_contents'],
+      },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const client = new HttpApiClient(parseHttpApiConfig(config), 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/src/lib/file.ts' })).ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'POST', path: '/repos/giretg/ostorosbor-crm/issues', body: { title: 'unapproved' } }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/src/../../issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/..%2F..%2Fissues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'invalid_path',
+    )
+  })
+
+  await test('existing GitHub template connectors receive the same live endpoint limit', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      { authMethodKind: 'bearer', instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' }, selectedEndpoints: ['get_file_contents'] },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const { proposedTools, ...storedConfig } = config
+    const oldConfig = {
+      ...storedConfig,
+      restrictToEndpoints: false,
+      endpoints: proposedTools.map((tool) => ({ ...tool, path: tool.path.replace('{path...}', '{path}') })),
+    }
+    const client = new HttpApiClient(parseHttpApiConfig(oldConfig), 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/src/lib/file.ts' })).ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('empty template action selection is rejected before a connector is created', () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    assert.throws(
+      () => materializeConnectorConfig(
+        descriptor,
+        {
+          authMethodKind: 'bearer',
+          instanceValues: { repositoryAccess: '*' },
+          selectedEndpoints: [],
+        },
+        { personalAccessToken: 'secret-ref:github-pat' },
+      ),
+      /Válassz legalább egy elérhető műveletet/,
+    )
   })
 
   await test('seeded GitHub custom descriptor keeps account-wide tools in any mode', () => {
@@ -236,9 +324,7 @@ async function main() {
     )
     assert.deepEqual(parseHttpApiConfig(config).githubRepositoryAccess, { mode: 'any' })
     assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
-    // WP-3 kivétel: GitHub repo-scope connectort NEM korlátozzuk endpoint-listával —
-    // azt a repository-határ őrzi, a katalógusa szándékosan tágabb.
-    assert.equal(config.restrictToEndpoints, undefined)
+    assert.equal(config.restrictToEndpoints, true)
   })
 
   await test('all seeded custom descriptors parse; marketing templates self-check', () => {
