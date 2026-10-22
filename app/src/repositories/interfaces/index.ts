@@ -844,6 +844,61 @@ export type WikiPageWrite = {
   contentHash: string
 }
 
+/** #943: egy wiki-oldal chunk-sora a wiki-konténer artifact alatt. */
+export type WikiChunkRow = {
+  path: string
+  title: string
+  type: string
+  section: string | null
+  chunkIndex: number
+  text: string
+  sourceRef: Prisma.InputJsonValue | null
+  contentHash: string
+}
+
+export type WikiApplyPageOp =
+  | {
+      kind: 'create'
+      page: WikiPageWrite
+      createdByAgentId?: string | null
+      createdByUserId?: string | null
+      chunks: WikiChunkRow[]
+    }
+  | {
+      kind: 'update'
+      pageId: string
+      /** Optimista zár: eltérésnél az egész change-set visszagörgetődik (`conflict`). */
+      expectedVersion: number
+      previousPath: string
+      page: WikiPageWrite
+      updatedByAgentId?: string | null
+      chunks: WikiChunkRow[]
+    }
+
+export type WikiApplyChangeSetInput = {
+  /** Meglévő (jóváhagyott, `pending`) change-set, vagy közvetlen módban egy új. */
+  changeSet: { id: string } | { create: Omit<Parameters<WikiRepository['createChangeSet']>[0], 'status'> }
+  wikiId: string
+  connectorId: string
+  ops: WikiApplyPageOp[]
+  log: {
+    op: WikiLogOp
+    title: string
+    note?: string | null
+    pagePaths: string[]
+    actorAgentId?: string | null
+    actorUserId?: string | null
+  }
+  /** Tálca-tétel lezárása (`final`) vagy a foglalás megújítása, ugyanabban a tranzakcióban. */
+  inbox?: { documentId: string; final: boolean; agentId: string; claimExpiresAt: Date } | null
+  appliedAt: Date
+}
+
+export type WikiApplyChangeSetResult =
+  | { ok: true; changeSetId: string; pages: WikiPage[] }
+  | { ok: false; reason: 'conflict'; path: string | null }
+  | { ok: false; reason: 'changeset_not_pending' }
+
 export interface WikiRepository {
   findById(wikiId: string): Promise<AgentWiki | null>
   findByConnectorId(connectorId: string): Promise<AgentWiki | null>
@@ -941,6 +996,16 @@ export interface WikiRepository {
   markInboxProcessed(input: { documentId: string; changeSetId: string }): Promise<boolean>
   skipInboxItem(input: { documentId: string; connectorId: string }): Promise<boolean>
   findDocumentByContentHash(connectorId: string, contentHash: string): Promise<{ id: string } | null>
+  /**
+   * #943: a teljes change-set egy tranzakcióban — oldalak + revíziók, az érintett
+   * oldalak chunkjai a wiki-konténer (`format: llm_wiki`) alatt, napló, tálca-tétel.
+   * Bármely verzió-ütközés az egészet visszagörgeti.
+   */
+  applyChangeSet(input: WikiApplyChangeSetInput): Promise<WikiApplyChangeSetResult>
+  /** Elutasított change-setnél a lezárt tálca-tétel vissza `pending`-be. */
+  reopenInboxItem(input: { documentId: string; changeSetId: string }): Promise<boolean>
+  /** A wiki-konténer artifact (keresési találatok jelöléséhez); még nincs → `null`. */
+  findContainerArtifactId(connectorId: string): Promise<string | null>
 }
 
 export type PrivateKnowledgeBaseRow = {

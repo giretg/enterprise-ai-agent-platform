@@ -316,6 +316,8 @@
     "test:per-user-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/per-user-connector.test.ts",
     "test:platform-google-oauth": "tsx scripts/platform-google-oauth.test.ts",
     "test:wiki-foundation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-foundation.test.ts",
+    "test:kb-wiki": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-wiki.test.ts",
+    "test:kb-wiki-db": "tsx scripts/kb-wiki-db.test.ts",
     "test:wiki-private-purge-db": "tsx scripts/wiki-private-purge-db.test.ts",
     "test:kb-gate": "DATABASE_URL=postgresql://kbtest:kbtest@127.0.0.1:5432/kbtest tsx scripts/knowledge-base-gate.test.ts",
     "test:kb-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-tenant-boundary.test.ts",

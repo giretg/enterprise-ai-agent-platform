@@ -27,7 +27,13 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   not_found: 'Not found',
   wiki_write_not_allowed: 'This agent may not write this wiki — submit the source to its inbox or ask an admin for write access',
   wiki_submit_not_allowed: 'This agent may only read this wiki',
-  wiki_id_required: 'Several wikis match — pass wikiId',
+  wiki_id_required: 'Several wikis match — pass wikiId (see wikis in the error payload)',
+  // #943
+  invalid_wiki_change: 'The wiki change is invalid — nothing was written; fix the listed errors and retry',
+  conflict: 'The page changed since you read it — nothing was written; merge with the current content and retry with its baseVersion',
+  already_claimed: 'Another agent is processing this inbox item (see claimedBy and claimExpiresAt)',
+  not_in_inbox: 'This document is not waiting in the wiki inbox',
+  changeset_not_pending: 'This wiki change-set is no longer waiting for approval',
   missing_code_sandbox_connector_read: 'Published definition has no code sandbox connector',
   missing_code_sandbox_connector_write:
     'Published definition has no code sandbox connector — grant sandbox_run and publish after the sandbox connection is bound',

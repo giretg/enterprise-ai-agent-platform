@@ -7,9 +7,35 @@ import type {
   PrivateKnowledgeBaseStore,
   WikiInboxCounts,
   WikiInboxItem,
+  WikiApplyChangeSetInput,
+  WikiApplyChangeSetResult,
+  WikiApplyPageOp,
   WikiInboxSummary,
   WikiRepository,
 } from '../interfaces'
+
+/** Tranzakció-megszakítás eredménnyel (a rollback után ezt adjuk vissza). */
+class ApplyAborted extends Error {
+  constructor(readonly result: Exclude<WikiApplyChangeSetResult, { ok: true }>) {
+    super('wiki_apply_aborted')
+  }
+}
+
+function pageData(page: WikiApplyPageOp['page']) {
+  return {
+    path: page.path,
+    type: page.type,
+    title: page.title,
+    summary: page.summary,
+    category: page.category ?? null,
+    frontmatter: page.frontmatter ?? {},
+    body: page.body,
+    sourceRefs: page.sourceRefs ?? [],
+    outLinks: page.outLinks ?? [],
+    status: page.status ?? 'published',
+    contentHash: page.contentHash,
+  }
+}
 
 /**
  * #942: a lejárt foglalás olvasáskor `pending` (D6, háttérjob nélkül). A SQL-ág
@@ -405,6 +431,180 @@ export class PostgresWikiRepository implements WikiRepository {
       data: { wikiStatus: 'skipped', wikiClaimedByAgentId: null, wikiClaimExpiresAt: null },
     })
     return result.count > 0
+  }
+
+  async applyChangeSet(input: WikiApplyChangeSetInput): Promise<WikiApplyChangeSetResult> {
+    try {
+      return await prisma.$transaction(async (tx) => {
+        // Egy wikin az írások sorban futnak: a konténer-artifact egyszer jön létre,
+        // és két change-set chunk-cseréje nem keveredik.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.connectorId}))`
+        let changeSetId: string
+        if ('id' in input.changeSet) {
+          const moved = await tx.wikiChangeSet.updateMany({
+            where: { id: input.changeSet.id, connectorId: input.connectorId, status: 'pending' },
+            data: { status: 'applied', appliedAt: input.appliedAt },
+          })
+          if (moved.count === 0) throw new ApplyAborted({ ok: false, reason: 'changeset_not_pending' })
+          changeSetId = input.changeSet.id
+        } else {
+          const created = input.changeSet.create
+          const row = await tx.wikiChangeSet.create({
+            data: {
+              wikiId: created.wikiId,
+              connectorId: created.connectorId,
+              agentId: created.agentId ?? null,
+              userId: created.userId ?? null,
+              status: 'applied',
+              appliedAt: input.appliedAt,
+              pages: created.pages,
+              validation: created.validation ?? Prisma.JsonNull,
+              logEntry: created.logEntry ?? Prisma.JsonNull,
+              sourceDocumentIds: created.sourceDocumentIds ?? [],
+              inboxItemId: created.inboxItemId ?? null,
+              approverScope: created.approverScope,
+            },
+            select: { id: true },
+          })
+          changeSetId = row.id
+        }
+
+        const container =
+          (await tx.knowledgeArtifact.findFirst({
+            where: { connectorId: input.connectorId, format: 'llm_wiki' },
+            select: { id: true },
+          })) ??
+          (await tx.knowledgeArtifact.create({
+            data: {
+              connectorId: input.connectorId,
+              format: 'llm_wiki',
+              status: 'published',
+              version: 1,
+              contentHash: 'llm_wiki',
+              bundle: {},
+              publishedAt: input.appliedAt,
+            },
+            select: { id: true },
+          }))
+
+        const pages = []
+        for (const op of input.ops) {
+          let page
+          if (op.kind === 'create') {
+            page = await tx.wikiPage.create({
+              data: {
+                ...pageData(op.page),
+                wikiId: input.wikiId,
+                connectorId: input.connectorId,
+                createdByAgentId: op.createdByAgentId ?? null,
+                createdByUserId: op.createdByUserId ?? null,
+                updatedByAgentId: op.createdByAgentId ?? null,
+              },
+            })
+          } else {
+            const updated = await tx.wikiPage.updateMany({
+              where: { id: op.pageId, connectorId: input.connectorId, version: op.expectedVersion },
+              data: {
+                ...pageData(op.page),
+                updatedByAgentId: op.updatedByAgentId ?? null,
+                version: { increment: 1 },
+              },
+            })
+            if (updated.count === 0) throw new ApplyAborted({ ok: false, reason: 'conflict', path: op.previousPath })
+            page = await tx.wikiPage.findUniqueOrThrow({ where: { id: op.pageId } })
+          }
+          // Oldalanként csak az érintett chunkok cserélődnek (régi és új path).
+          await tx.knowledgeChunk.deleteMany({
+            where: {
+              artifactId: container.id,
+              path: { in: op.kind === 'update' ? [op.previousPath, page.path] : [page.path] },
+            },
+          })
+          if (op.chunks.length > 0) {
+            await tx.knowledgeChunk.createMany({
+              data: op.chunks.map((chunk) => ({
+                ...chunk,
+                sourceRef: chunk.sourceRef ?? undefined,
+                artifactId: container.id,
+                connectorId: input.connectorId,
+              })),
+            })
+          }
+          await tx.wikiPageRevision.create({
+            data: {
+              pageId: page.id,
+              changeSetId,
+              version: page.version,
+              title: page.title,
+              summary: page.summary,
+              body: page.body,
+              frontmatter: page.frontmatter ?? {},
+              contentHash: page.contentHash,
+            },
+          })
+          pages.push(page)
+        }
+
+        await tx.wikiLogEntry.create({
+          data: {
+            wikiId: input.wikiId,
+            op: input.log.op,
+            title: input.log.title,
+            note: input.log.note ?? null,
+            pagePaths: input.log.pagePaths,
+            changeSetId,
+            actorAgentId: input.log.actorAgentId ?? null,
+            actorUserId: input.log.actorUserId ?? null,
+          },
+        })
+
+        if (input.inbox) {
+          await tx.document.updateMany({
+            where: {
+              id: input.inbox.documentId,
+              connectorId: input.connectorId,
+              wikiStatus: { in: ['pending', 'in_progress'] },
+            },
+            data: input.inbox.final
+              ? {
+                  wikiStatus: 'processed',
+                  wikiProcessedByChangeSetId: changeSetId,
+                  wikiClaimedByAgentId: null,
+                  wikiClaimExpiresAt: null,
+                }
+              : {
+                  wikiStatus: 'in_progress',
+                  wikiClaimedByAgentId: input.inbox.agentId,
+                  wikiClaimExpiresAt: input.inbox.claimExpiresAt,
+                },
+          })
+        }
+        return { ok: true as const, changeSetId, pages }
+      })
+    } catch (error) {
+      if (error instanceof ApplyAborted) return error.result
+      // Párhuzamos létrehozás ugyanarra a path-ra (unique connector+path).
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return { ok: false, reason: 'conflict', path: null }
+      }
+      throw error
+    }
+  }
+
+  async reopenInboxItem(input: { documentId: string; changeSetId: string }): Promise<boolean> {
+    const result = await prisma.document.updateMany({
+      where: { id: input.documentId, wikiStatus: 'processed', wikiProcessedByChangeSetId: input.changeSetId },
+      data: { wikiStatus: 'pending', wikiProcessedByChangeSetId: null, wikiClaimedByAgentId: null, wikiClaimExpiresAt: null },
+    })
+    return result.count > 0
+  }
+
+  async findContainerArtifactId(connectorId: string): Promise<string | null> {
+    const row = await prisma.knowledgeArtifact.findFirst({
+      where: { connectorId, format: 'llm_wiki' },
+      select: { id: true },
+    })
+    return row?.id ?? null
   }
 
   findDocumentByContentHash(connectorId: string, contentHash: string) {
