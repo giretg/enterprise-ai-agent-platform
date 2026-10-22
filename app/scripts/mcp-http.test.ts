@@ -1527,6 +1527,24 @@ async function main() {
     )
   })
 
+  await check('kb_get_document pageImages returns numbered PNG image blocks over MCP HTTP', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const { mixed } = await (await import('./fixtures/kb-pdf')).kbPdfFixtures()
+    const rendered = await (await import('../src/lib/kb-pdf-images')).renderPdfPages(mixed, '1-2')
+    deps.invokeEnterpriseTool = async () => ({ content: [{ type: 'text', text: JSON.stringify({ found: true, ...rendered }) }] })
+    await initialize(deps)
+    const response = await post('acme', {
+      jsonrpc: '2.0', id: 944, method: 'tools/call',
+      params: { name: 'kb_get_document', arguments: { definitionId: DEFINITION_ID, documentId: CONNECTOR_ID, pageImages: true, pages: '1-2' } },
+    }, { authorization: `Bearer ${TOKEN}` }, deps)
+    assert.equal(response.status, 200)
+    const body = await readJson(response) as { result: { content: Array<{ type: string; data?: string; mimeType?: string; text?: string }> } }
+    const images = body.result.content.filter((item) => item.type === 'image')
+    assert.equal(images.length, 2)
+    assert.ok(images.every((item) => item.mimeType === 'image/png' && item.data?.startsWith('iVBOR')))
+    assert.deepEqual(body.result.content.filter((item) => item.text?.startsWith('PDF page')).map((item) => item.text), ['PDF page 1', 'PDF page 2'])
+  })
+
   await check('google_drive_search without grant returns authorizationUrl', async () => {
     const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth?state=mcp-http'
     const { deps } = runtimeDeps({

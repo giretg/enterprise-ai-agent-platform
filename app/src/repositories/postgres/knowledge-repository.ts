@@ -130,11 +130,46 @@ export class PostgresDocumentRepository implements DocumentRepository {
         contentHash: data.contentHash ?? null,
         status: data.status ?? 'uploaded',
         processingMode: data.processingMode ?? null,
+        wikiStatus: data.wikiStatus ?? null,
         metadata: data.metadata ?? {},
         connectorId: data.connectorId ?? null,
         uploadedById: data.uploadedById,
       },
     })
+  }
+
+  async createSource(data: Parameters<DocumentRepository['create']>[0], rawBytes?: Buffer) {
+    if (!data.connectorId || !data.contentHash) throw new Error('invalid_args')
+    return prisma.$transaction(async (tx) => {
+      // ponytail: intake is serialized per KB; use a unique intake key if this short transaction becomes a bottleneck.
+      await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${data.connectorId}::uuid FOR UPDATE`
+      const existing = await tx.document.findFirst({
+        where: { connectorId: data.connectorId, tenantId: data.tenantId, contentHash: data.contentHash },
+        orderBy: { createdAt: 'asc' },
+      })
+      if (existing) {
+        // A legacy source can acquire its missing original without creating a second inbox item.
+        if (rawBytes) await tx.documentSourceFile.upsert({
+          where: { documentId: existing.id },
+          create: { documentId: existing.id, data: new Uint8Array(rawBytes) },
+          update: {},
+        })
+        return { document: existing, duplicate: true }
+      }
+      const document = await tx.document.create({
+        data: {
+          ...data,
+          metadata: data.metadata ?? {},
+          ...(rawBytes ? { sourceFile: { create: { data: new Uint8Array(rawBytes) } } } : {}),
+        },
+      })
+      return { document, duplicate: false }
+    })
+  }
+
+  async readSource(documentId: string): Promise<Buffer | null> {
+    const file = await prisma.documentSourceFile.findUnique({ where: { documentId } })
+    return file ? Buffer.from(file.data) : null
   }
 
   async findById(id: string): Promise<Document | null> {

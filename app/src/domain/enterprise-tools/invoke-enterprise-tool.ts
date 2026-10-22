@@ -1,6 +1,7 @@
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
+import { PdfPageImageError } from '@/lib/kb-pdf-images'
 import {
   GoogleDriveApiAuthError,
   GoogleDriveApiError,
@@ -1175,6 +1176,8 @@ async function invokeKbTool(
     return textResult(result)
   } catch (error) {
     const code =
+      error instanceof PdfPageImageError ? error.code :
+      error instanceof Error && error.message === 'not_found' ? 'not_found' :
       error instanceof Error && error.message === 'invalid_args'
         ? 'invalid_args'
         : error instanceof Error && error.message === 'file_too_large'
@@ -1204,7 +1207,7 @@ async function invokeKbTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return errorResult(code)
+    return errorResult(code, error instanceof PdfPageImageError ? { nextStep: error.message } : undefined)
   }
 }
 

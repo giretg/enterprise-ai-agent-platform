@@ -573,6 +573,8 @@ export const kbGetDocumentInputSchema = z
     agentId: optionalAgentId,
     documentId: z.string().uuid(),
     section: z.string().max(200).optional(),
+    pageImages: z.boolean().optional().describe('Return original PDF pages as PNG images; max 5 pages per call.'),
+    pages: z.string().min(1).max(100).optional().describe('1-based PDF pages, e.g. "1-3,7". Defaults to page 1.'),
   })
   .passthrough()
 
@@ -581,7 +583,7 @@ export const kbIngestInputSchema = z
     definitionId,
     agentId: optionalAgentId,
     filename: z.string().min(1).max(255),
-    processingMode: z.enum(['raw_text_only', 'okf']),
+    processingMode: z.enum(['raw_text_only', 'okf', 'wiki']),
     mimeType: z.string().max(200).optional(),
     purpose: z.string().max(240).optional(),
     content: z.string().max(2_000_000).optional(),

@@ -43,6 +43,7 @@ export type ExtractedBlock = {
   heading: string
   text: string
   sourceRef: OkfSourceRef
+  textQuality?: 'ok' | 'low_text' | 'no_text'
 }
 
 export type OkfBundleFile = {

@@ -731,7 +731,11 @@ export interface DocumentRepository {
     metadata?: Prisma.InputJsonValue
     connectorId?: string | null
     uploadedById: string
+    wikiStatus?: Document['wikiStatus']
   }): Promise<Document>
+  /** Atomic, connector-scoped duplicate detection; originals cascade with the Document. */
+  createSource(data: Parameters<DocumentRepository['create']>[0], rawBytes?: Buffer): Promise<{ document: Document; duplicate: boolean }>
+  readSource(documentId: string): Promise<Buffer | null>
   findById(id: string): Promise<Document | null>
   findByConnectorId(connectorId: string): Promise<Document[]>
   listByConnectorId(connectorId: string): Promise<DocumentListItem[]>
