@@ -23,6 +23,11 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   missing_http_api_connector_write: 'Published definition has no HTTP API write connector',
   missing_knowledge_base_connector_read: 'Published definition has no knowledge base read connector',
   missing_knowledge_base_connector_write: 'Published definition has no knowledge base write connector',
+  // #942: privát / nem látható tudásbázis — szándékosan nem árulja el, hogy létezik.
+  not_found: 'Not found',
+  wiki_write_not_allowed: 'This agent may not write this wiki — submit the source to its inbox or ask an admin for write access',
+  wiki_submit_not_allowed: 'This agent may only read this wiki',
+  wiki_id_required: 'Several wikis match — pass wikiId',
   missing_code_sandbox_connector_read: 'Published definition has no code sandbox connector',
   missing_code_sandbox_connector_write:
     'Published definition has no code sandbox connector — grant sandbox_run and publish after the sandbox connection is bound',

@@ -47,6 +47,8 @@ export async function executeKnowledgeBaseTool(
       buffer: decodeIngestBuffer(args),
       processingMode: args.processingMode === 'okf' ? 'okf' : 'raw_text_only',
       purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
+      actor: 'agent',
+      connectorId: ctx.connectorId,
     })
   }
   if (toolName === KB_LIST_INDEX_TOOL) {

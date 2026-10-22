@@ -48,6 +48,7 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { selfServiceTenantStore } from '@/repositories/postgres/self-service-tenant-store'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
+import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
@@ -170,6 +171,14 @@ const knowledgeBaseService = new KnowledgeBaseService({
   connectors: repositories.connectors,
   audit: repositories.audit,
   resolveTenantLanguage,
+})
+
+const wikiAccessService = new WikiAccessService({
+  connectors: repositories.connectors,
+  agents: repositories.agents,
+  wikis: repositories.wikis,
+  privateKnowledgeBases: repositories.privateKnowledgeBases,
+  audit: repositories.audit,
 })
 
 const projectWorkService = new ProjectWorkService(
@@ -513,6 +522,7 @@ export const services = {
   selfUpdatingConnectors: selfUpdatingConnectorService,
   connectorGrants: connectorGrantService,
   knowledgeBase: knowledgeBaseService,
+  wikiAccess: wikiAccessService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

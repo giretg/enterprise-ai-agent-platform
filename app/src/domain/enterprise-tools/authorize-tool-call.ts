@@ -10,6 +10,7 @@ import {
   resolveLinkedAccountGrant,
   type LinkedAccountChoice,
 } from '@/domain/connector-grant/linked-account'
+import { isKnowledgeBaseVisibleTo, scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { asUuid } from './tool-error-messages'
 import {
   HTTP_API_GET_ALL_TOOL,
@@ -46,6 +47,9 @@ export type LiveConnectorRow = {
   name?: string
   secretAlias?: string | null
   config?: unknown
+  /** #942 D13: knowledge_base láthatóság (`shared` | `private_to_user`). */
+  visibility?: unknown
+  ownerUserId?: string | null
 }
 
 export type HttpApiConnectorChoice = {
@@ -235,11 +239,32 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'capability_not_allowed' }
   }
 
+  // #942 D13: a nem a hívónak szóló privát és a `wikiAccess: none` KB-kötés
+  // nem létezik a hívó számára; közvetlen hivatkozásra `not_found`.
+  const isKb = requirement.connectorType === 'knowledge_base'
+  const definition = isKb
+    ? {
+        ...input.definition,
+        snapshot: {
+          ...input.definition.snapshot,
+          connectors: scopeSnapshotConnectorsToUser(input.definition.snapshot.connectors, input.principal.userId),
+        },
+      }
+    : input.definition
+  const connectorIdArg = asUuid(input.args.connectorId)
+  if (
+    isKb &&
+    connectorIdArg &&
+    !definition.snapshot.connectors.some((row) => row.connectorId === connectorIdArg && row.type === 'knowledge_base')
+  ) {
+    return { allowed: false, reason: 'not_found' }
+  }
+
   const picked = pickBinding(
-    input.definition,
+    definition,
     requirement.connectorType,
     requirement.accessMode,
-    asUuid(input.args.connectorId),
+    connectorIdArg,
     normalizeConnectorName(input.args.connectorName),
     input.toolName,
     input.args,
@@ -264,6 +289,10 @@ export async function authorizeToolCall(
   }
   if (connector.type !== requirement.connectorType) {
     return { allowed: false, reason: 'connector_not_active' }
+  }
+
+  if (isKb && !isKnowledgeBaseVisibleTo(connector, input.principal.userId)) {
+    return { allowed: false, reason: 'not_found' }
   }
 
   if (requirement.connectorType === 'knowledge_base' || requirement.connectorType === 'code_sandbox') {

@@ -51,6 +51,7 @@ import {
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import { readTenantLanguage } from '@/lib/tenant-language'
+import { scopeSnapshotToUser } from '@/lib/wiki-access'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
@@ -734,20 +735,22 @@ async function getDefinitionToolResult(
   bound = false,
 ) {
   await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL, agentCtx(args))
-  const loaded = await deps.loadDefinition({
+  const loadedRaw = await deps.loadDefinition({
     tenantId: principal.tenantId,
     definitionId: asUuid(args.definitionId),
     agentId: asUuid(args.agentId),
     version: asVersion(args.version),
   })
-  if (!loaded) return definitionNotFound()
+  if (!loadedRaw) return definitionNotFound()
   const allowed = await deps.canViewAgent({
     tenantId: principal.tenantId,
     userId: principal.userId,
     role: principal.role,
-    agentId: loaded.agentId,
+    agentId: loadedRaw.agentId,
   })
   if (!allowed) return definitionNotFound()
+  // #942 D13: a más felhasználó privát tudásbázisa a hívó számára nem létezik.
+  const loaded = { ...loadedRaw, snapshot: scopeSnapshotToUser(loadedRaw.snapshot, principal.userId) }
   const [memoryContext, skills, tenant] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
@@ -781,7 +784,8 @@ async function getDefinitionToolResult(
       language: readTenantLanguage(tenant?.settings),
     }),
     ...loaded,
-    contentHash: hashSnapshot(loaded.snapshot),
+    // A publikált (szűretlen) snapshot hash-e — a vázlat/közzétett összevetés ezt várja.
+    contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
   })
@@ -953,7 +957,7 @@ async function createDraftToolResult(
       skills,
       connectors,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError && error.code === 'invalid_args') {
       return invalidArgs(error.message)
@@ -983,7 +987,7 @@ async function getWorkingSetToolResult(
       agentId,
       tenantId: principal.tenantId,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch {
     return definitionNotFound()
   }
@@ -1006,7 +1010,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult(result)
+    return textResult({ ...result, snapshot: scopeSnapshotToUser(result.snapshot, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()
@@ -1050,7 +1054,7 @@ async function checkoutToolResult(
   // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
     renderAgentCheckout({
-      definition: loaded,
+      definition: { ...loaded, snapshot: scopeSnapshotToUser(loaded.snapshot, principal.userId) },
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),

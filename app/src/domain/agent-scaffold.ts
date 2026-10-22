@@ -1,4 +1,5 @@
 import type { Connector, ConnectorAccessMode, Skill, SkillVersion } from '@prisma/client'
+import { defaultWikiWriteMode, isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -178,7 +179,9 @@ export async function createDraftAgent(
     })
   }
 
-  const allConnectors = await deps.connectors.listForTenant(input.tenantId)
+  const allConnectors = (await deps.connectors.listForTenant(input.tenantId)).filter((row) =>
+    row.type !== 'knowledge_base' || isKnowledgeBaseVisibleTo(row, input.actorId),
+  )
 
   for (const binding of input.connectors ?? []) {
     const trimmed = binding.name.trim()
@@ -204,6 +207,8 @@ export async function createDraftAgent(
       agentId: agent.id,
       connectorId: resolved.id,
       accessMode: binding.accessMode ?? 'read',
+      ...(resolved.type === 'knowledge_base'
+        ? { initialWikiWriteMode: defaultWikiWriteMode(resolved.visibility) } : {}),
     })
   }
 
