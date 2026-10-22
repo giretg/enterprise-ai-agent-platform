@@ -205,6 +205,9 @@ jobs:
       - name: Prisma migrate status
         run: npx prisma migrate status
 
+      - name: Handoff decision concurrency
+        run: npm run test:handoff-repository
+
   security-scan:
     name: Titok-szkennelés + CodeQL
     runs-on: ubuntu-latest
