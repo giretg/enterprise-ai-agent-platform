@@ -77,6 +77,7 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  KB_WIKI_WRITE_TOOL,
   SANDBOX_RUN_TOOL,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
@@ -99,9 +100,10 @@ import {
   httpApiRequestInputSchema,
   kbGetDocumentInputSchema,
   kbGetPageInputSchema,
-  kbIngestInputSchema,
+  kbIngestObject,
   kbListIndexInputSchema,
   kbSearchInputSchema,
+  kbWikiWriteObject,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   type EnterpriseToolMcpResult,
@@ -1693,7 +1695,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search knowledge base',
           description:
-            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
+            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
           inputSchema: kbSearchInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
@@ -1703,7 +1705,7 @@ async function createMcpResourceHandler(
         {
           title: 'List knowledge base index',
           description:
-            'Call this first. With no pathPrefix or artifactId, returns one row per source (filename, purpose, size; wiki rows include page titles). Pass pathPrefix or artifactId to list wiki pages.',
+            'Call this first. Returns the agent wiki index by category (if any) and one row per raw source (filename, purpose, size). With several knowledge bases and no wikiId it lists the wikis. Pass pathPrefix or artifactId to list OKF pages. inbox:true lists sources waiting to be processed into the wiki, with pending/inProgress/processed/skipped counts per wiki and batch.',
           inputSchema: kbListIndexInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
@@ -1713,7 +1715,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base page',
           description:
-            'Read one wiki page by path. For the table of contents pass path "index.md" and artifactId from kb_list_index. Do not open every page.',
+            'Read one page by path. Agent wiki: pass wikiId and path "WIKI.md" (rules), "index.md", "log.md" or a page path; the answer has baseVersion for kb_wiki_write. OKF wiki: path "index.md" and artifactId from kb_list_index. Do not open every page.',
           inputSchema: kbGetPageInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
@@ -1723,7 +1725,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base file',
           description:
-            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text.',
+            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. OKF sources return artifactId instead of the full text. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
           annotations: { readOnlyHint: true },
         },
@@ -1734,10 +1736,20 @@ async function createMcpResourceHandler(
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the agent knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
-          inputSchema: kbIngestInputSchema,
+            'Load a file into the knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into pages mechanically; wiki stores the raw source for the agent wiki — then process it NOW in this session: read it and call kb_wiki_write. Use defer:true only when the user asks to process later. Pass wikiId when several wikis are writable. kind:"note" saves a short fact learned in conversation as a raw source (no filename needed). Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+          inputSchema: kbIngestObject,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_WRITE_TOOL,
+        {
+          title: 'Write agent wiki pages',
+          description:
+            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category, frontmatter (sources [{documentId}], source_date required on source pages), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a raw source of this knowledge base. Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. Errors: invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode returns awaiting_approval and an approvalUrl — show the link, do not poll.',
+          inputSchema: kbWikiWriteObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_WRITE_TOOL, args, deps),
       )
       server.registerTool(
         SANDBOX_RUN_TOOL,

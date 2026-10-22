@@ -23,6 +23,12 @@ import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
 import {
+  isWikiToolCall,
+  KbToolError,
+  type KbToolContext,
+  type WikiToolOutcome,
+} from './handlers/knowledge-base'
+import {
   checkMcpCallGate,
   executeMcpTool as defaultExecuteMcpTool,
   executeMcpWithRetryPolicy,
@@ -43,6 +49,10 @@ import {
   isEnterpriseSandboxTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
+  KB_GET_DOCUMENT_TOOL,
+  KB_INGEST_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_WIKI_WRITE_TOOL,
   MCP_CALL_TOOL,
   MCP_LIST_TOOLS_TOOL,
   mcpCallInputSchema,
@@ -66,6 +76,7 @@ import {
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 import { isAuthorizationLinkReason } from '@/domain/connector-grant/connector-grant-needed'
+import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import {
   skipsWriteApproval,
   type AgentWriteApprovalModes,
@@ -169,8 +180,18 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
   executeKbTool?: (
     toolName: EnterpriseKbTool,
     args: Record<string, unknown>,
-    ctx: { connectorId: string; tenantId: string; agentId: string; userId: string },
+    ctx: KbToolContext,
   ) => Promise<unknown>
+  /** #943: wiki-beküldés, -írás, tálca (a cél-wikit a snapshotból oldja fel). */
+  executeWikiTool?: (
+    toolName: EnterpriseKbTool,
+    args: Record<string, unknown>,
+    ctx: Omit<KbToolContext, 'connectorId'> & { snapshot: NonNullable<KbToolContext['snapshot']> },
+  ) => Promise<WikiToolOutcome>
+  /** #943: `wikiId` / `documentId` → a tudásbázis connectorja (tenanton belül). */
+  resolveKbConnector?: (input: { tenantId: string; wikiId?: string; documentId?: string }) => Promise<string | null>
+  /** #943: a jóváhagyásra tett change-set gateway-művelete; `null` = nem került sorba (elutasítjuk). */
+  onWikiApprovalQueued?: (input: { tenantId: string; changeSetId: string; operationId: string | null }) => Promise<void>
   loadSkillVersion?: (skillVersionId: string) => Promise<{
     attachments: unknown
     status: string
@@ -540,6 +561,17 @@ export async function invokeEnterpriseTool(
     return invokeMcpTool(deps, { principal, toolName, args, definitionId, definition, origin, confirm })
   }
 
+  if (isEnterpriseKbTool(toolName)) {
+    return invokeKbTool(deps, {
+      principal,
+      toolName,
+      args,
+      definitionId,
+      definition,
+      origin,
+    })
+  }
+
   if (isEnterpriseWriteTool(toolName)) {
     if (!deps.enqueueWrite) {
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
@@ -548,16 +580,6 @@ export async function invokeEnterpriseTool(
     const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args })
     if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args, origin, confirm })
-  }
-
-  if (isEnterpriseKbTool(toolName)) {
-    return invokeKbTool(deps, {
-      principal,
-      toolName,
-      args,
-      definitionId,
-      definition,
-    })
   }
 
   if (isEnterpriseSandboxTool(toolName)) {
@@ -1120,8 +1142,9 @@ async function invokeKbTool(
     args: Record<string, unknown>
     definitionId: string
     definition: AgentDefinition
+    origin?: string
   },
-): Promise<EnterpriseToolMcpResult> {
+): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, definitionId, definition } = input
   if (!deps.executeKbTool) {
     await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
@@ -1132,50 +1155,64 @@ async function invokeKbTool(
     await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
     return errorResult('invalid_args')
   }
+  const parsedArgs = { ...(parsed.data as Record<string, unknown>) }
+  const deny = async (code: string, details?: Record<string, unknown>) => {
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
+    return errorResult(code, details)
+  }
+
+  // #943: wikiId / documentId → a tudásbázis-kötés, ha a hívó nem adta meg.
+  // A feloldott kötést ugyanúgy a hívóra szűkített snapshot ellenőrzi (D13).
+  if (deps.resolveKbConnector && !asUuid(parsedArgs.connectorId)) {
+    const wikiId = asUuid(parsedArgs.wikiId)
+    const documentId = toolName === KB_GET_DOCUMENT_TOOL ? asUuid(parsedArgs.documentId) : undefined
+    if (wikiId || documentId) {
+      const connectorId = await deps.resolveKbConnector({ tenantId: principal.tenantId, wikiId, documentId })
+      if (!connectorId && wikiId) return deny('not_found')
+      if (connectorId) parsedArgs.connectorId = connectorId
+    }
+  }
+
+  const userConnectors = scopeSnapshotConnectorsToUser(definition.snapshot.connectors, principal.userId)
+  const kbBindings = userConnectors.filter((row) => row.type === 'knowledge_base')
+  const wikiOverview =
+    toolName === KB_LIST_INDEX_TOOL &&
+    parsedArgs.inbox !== true &&
+    !parsedArgs.connectorId &&
+    !parsedArgs.pathPrefix &&
+    !parsedArgs.artifactId &&
+    kbBindings.length > 1
+  if (deps.executeWikiTool && (isWikiToolCall(toolName, parsedArgs) || wikiOverview)) {
+    return invokeWikiTool(deps, { ...input, args: parsedArgs, userConnectors })
+  }
+  if (toolName === KB_WIKI_WRITE_TOOL || parsedArgs.processingMode === 'wiki' || parsedArgs.inbox === true) {
+    return deny('tool_not_configured')
+  }
+
   const authorized = await authorizeToolCall(deps, {
     principal,
     definition,
     toolName,
-    args: parsed.data as Record<string, unknown>,
+    args: parsedArgs,
   })
   if (!authorized.allowed) {
-    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
-    return errorResult(authorized.reason)
+    return deny(authorized.reason)
   }
   try {
-    const result = await deps.executeKbTool(toolName, parsed.data as Record<string, unknown>, {
+    const result = await deps.executeKbTool(toolName, parsedArgs, {
       connectorId: authorized.connectorId,
       tenantId: principal.tenantId,
       agentId: definition.agentId,
       userId: principal.userId,
+      snapshot: { connectors: userConnectors },
     })
-    const payload = {
-      toolName,
-      tenantId: principal.tenantId,
-      userId: principal.userId,
-      definitionId,
-      agentId: definition.agentId,
-      connectorId: authorized.connectorId,
-    }
-    console.info('enterprise.tool.ok', payload)
-    await writeAudit(deps.audit, {
-      actorType: 'human',
-      actorId: principal.userId,
-      agentVersion: null,
-      action: 'enterprise.tool.ok',
-      targetType: 'agent',
-      targetId: definition.agentId,
-      modelUsed: null,
-      inputRef: toolName,
-      outputRef: null,
-      policyDecision: 'allowed',
-      metadata: payload,
-      tenantId: principal.tenantId,
-    })
+    await auditKbOk(deps, { principal, toolName, definitionId, agentId: definition.agentId, connectorId: authorized.connectorId })
     return textResult(result)
   } catch (error) {
-    const code =
-      error instanceof Error && error.message === 'invalid_args'
+    const known = error instanceof KbToolError
+    const code = known
+      ? error.code
+      : error instanceof Error && error.message === 'invalid_args'
         ? 'invalid_args'
         : error instanceof Error && error.message === 'file_too_large'
           ? 'file_too_large'
@@ -1204,7 +1241,139 @@ async function invokeKbTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
+    return errorResult(code, known ? error.details : undefined)
+  }
+}
+
+async function auditKbOk(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    definitionId: string
+    agentId: string
+    connectorId: string | null
+  },
+) {
+  const payload = {
+    toolName: input.toolName,
+    tenantId: input.principal.tenantId,
+    userId: input.principal.userId,
+    definitionId: input.definitionId,
+    agentId: input.agentId,
+    ...(input.connectorId ? { connectorId: input.connectorId } : {}),
+  }
+  console.info('enterprise.tool.ok', payload)
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: input.principal.userId,
+    agentVersion: null,
+    action: 'enterprise.tool.ok',
+    targetType: 'agent',
+    targetId: input.agentId,
+    modelUsed: null,
+    inputRef: input.toolName,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: payload,
+    tenantId: input.principal.tenantId,
+  })
+}
+
+/** `kb_wiki_write` a snapshotban: saját képessége vagy a `kb_ingest` (a wiki-jog a kötésen dől el, D2). */
+const WIKI_TOOL_CAPABILITIES: Record<string, readonly string[]> = {
+  [KB_WIKI_WRITE_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  [KB_INGEST_TOOL]: [KB_INGEST_TOOL],
+  [KB_LIST_INDEX_TOOL]: [KB_LIST_INDEX_TOOL],
+}
+
+/**
+ * #943: a wiki-útvonalak (beküldés, írás, tálca, áttekintés) nem egyetlen
+ * kiválasztott kötésen futnak: a cél-wikit és a jogot (`none/read/submit/write`)
+ * a `WikiService` oldja fel a publikált snapshotból és a hívó felhasználóból.
+ */
+async function invokeWikiTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: EnterpriseKbTool
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+    origin?: string
+    userConnectors: AgentDefinition['snapshot']['connectors']
+  },
+): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  const accepted = WIKI_TOOL_CAPABILITIES[toolName] ?? [toolName]
+  if (!definition.snapshot.capabilities.some((row) => row.allowed && accepted.includes(row.toolName))) {
+    await auditDenied(deps, principal, toolName, 'capability_not_allowed', definitionId, definition.agentId)
+    return errorResult('capability_not_allowed')
+  }
+  let outcome: WikiToolOutcome
+  try {
+    outcome = await deps.executeWikiTool!(toolName, args, {
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      agentId: definition.agentId,
+      snapshot: { connectors: input.userConnectors },
+    })
+  } catch (error) {
+    const code =
+      error instanceof Error && (error.message === 'invalid_args' || error.message === 'file_too_large')
+        ? error.message
+        : error instanceof Error && error.message === 'not_found'
+          ? 'not_found'
+          : 'tool_execution_failed'
+    if (code === 'tool_execution_failed') console.error('enterprise.tool.wiki_failed', error)
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
     return errorResult(code)
+  }
+
+  if (outcome.ok === false) {
+    await auditDenied(deps, principal, toolName, outcome.code, definitionId, definition.agentId)
+    return errorResult(outcome.code, outcome.details)
+  }
+  if (outcome.ok === true) {
+    const connectorId = asUuid(args.connectorId) ?? null
+    await auditKbOk(deps, { principal, toolName, definitionId, agentId: definition.agentId, connectorId })
+    return textResult(outcome.result)
+  }
+
+  // Jóváhagyás: egy kártya a teljes change-setre a gateway-sorban (D1/D4).
+  const { request } = outcome
+  if (!deps.enqueueWrite) {
+    await deps.onWikiApprovalQueued?.({ tenantId: principal.tenantId, changeSetId: request.changeSetId, operationId: null })
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const queued = await deps.enqueueWrite({
+    principal,
+    toolName: KB_WIKI_WRITE_TOOL,
+    args: {
+      definitionId,
+      idempotencyKey: `kb-wiki-changeset:${request.changeSetId}`,
+      connectorId: request.connectorId,
+      wikiId: request.wikiId,
+      changeSetId: request.changeSetId,
+      pageCount: request.pageCount,
+      ...(request.pages ? { pages: request.pages } : {}),
+    },
+    origin: input.origin,
+  })
+  const queuedPayload = 'content' in queued ? parseToolJson(queued) : null
+  const operationId = queued && 'content' in queued && !queued.isError ? asUuid(queuedPayload?.operationId) ?? null : null
+  await deps.onWikiApprovalQueued?.({ tenantId: principal.tenantId, changeSetId: request.changeSetId, operationId })
+  if (!operationId || !queuedPayload) return queued
+  return textResult({ ...queuedPayload, ...outcome.result })
+}
+
+function parseToolJson(result: EnterpriseToolMcpResult): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(result.content[0]?.text ?? '') as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
   }
 }
 

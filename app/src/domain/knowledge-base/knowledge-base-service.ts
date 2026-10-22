@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { Connector, KnowledgeProcessingMode } from '@prisma/client'
+import type { Connector, KnowledgeProcessingMode, Prisma } from '@prisma/client'
 import type {
   AgentRepository,
   AuditRepository,
@@ -81,6 +81,8 @@ export class KnowledgeBaseService {
     /** #942: `agent` = az agent hívta (MCP `kb_ingest`); a Control Plane-feltöltés `human`. */
     actor?: 'agent' | 'human'
     connectorId?: string
+    /** #943: pl. `kind: note` bélyeg; a kinyerési metaadat mellé kerül. */
+    extraMetadata?: Record<string, Prisma.InputJsonValue>
   }) {
     if (input.buffer.byteLength === 0) throw new Error('File is empty')
     if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
@@ -118,6 +120,7 @@ export class KnowledgeBaseService {
       processingMode: input.processingMode,
       purpose: input.purpose,
       actor: input.actor ?? 'human',
+      extraMetadata: input.extraMetadata,
     })
   }
 
@@ -357,6 +360,7 @@ export class KnowledgeBaseService {
     processingMode: KnowledgeProcessingMode
     purpose?: string | null
     actor?: 'agent' | 'human'
+    extraMetadata?: Record<string, Prisma.InputJsonValue>
   }) {
     const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
@@ -370,6 +374,7 @@ export class KnowledgeBaseService {
       status: 'processed',
       processingMode: input.processingMode,
       metadata: {
+        ...input.extraMetadata,
         [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
         ...(purpose ? { purpose } : {}),
       },
@@ -511,10 +516,13 @@ export class KnowledgeBaseService {
     // Bővebb jelölt-halmaz, hogy az IDF-rangsor legyen miből válogasson.
     const candidates = Math.max(k * 4, 20)
     const connectorIds = [input.connectorId]
-    const [okfChunkHits, rawHits] = await Promise.all([
+    const [okfChunkHits, rawHits, artifacts] = await Promise.all([
       this.deps.chunks.searchChunks(connectorIds, input.query, candidates),
       this.deps.documents.searchRaw(input.connectorId, input.query, candidates),
+      this.deps.artifacts.findByConnector(input.connectorId, 'published'),
     ])
+    // #943: a wiki-konténer chunkjai wiki-oldalak — a találat ezt jelzi (kb_get_page path).
+    const wikiArtifactIds = new Set(artifacts.filter((row) => row.format === 'llm_wiki').map((row) => row.id))
     const okfHits = assembleKbHits({
       query: input.query,
       k: okfChunkHits.length,
@@ -528,7 +536,7 @@ export class KnowledgeBaseService {
     return rankKbHits(
       [
         ...okfHits.map((hit, i) => ({
-          hit,
+          hit: wikiArtifactIds.has(okfChunkHits[i].artifactId) ? { ...hit, kind: 'wiki_page' as const } : hit,
           matched: okfChunkHits[i].matched ?? [],
           rank: okfChunkHits[i].score,
         })),

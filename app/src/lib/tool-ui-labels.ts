@@ -31,7 +31,13 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   kb_ingest: {
     label: 'Tudásbázis feltöltés',
-    description: 'Fájl betöltése a tudásbázisba sima szövegként vagy wiki (OKF) oldalakra bontva.',
+    description:
+      'Fájl vagy rövid jegyzet betöltése a tudásbázisba: sima szövegként, gépi (OKF) oldalakra bontva, vagy a wikibe feldolgozásra.',
+  },
+  kb_wiki_write: {
+    label: 'Wiki írása',
+    description:
+      'Az AI-munkatárs a feldolgozott forrásokból wiki-oldalakat ír és frissít. Csak írási joggal; jóváhagyás módban a wiki gazdája fogadja el.',
   },
 
   'platform.projects.list': {
