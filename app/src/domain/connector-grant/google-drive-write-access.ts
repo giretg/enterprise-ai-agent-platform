@@ -53,51 +53,36 @@ export function assertGoogleDriveWriteAccess(params: {
   const allowedFolders = writableFolderIds(manifest)
 
   if (params.tool === 'google_drive_create_folder') {
-    const parentFolderId =
-      typeof params.args.parentFolderId === 'string' ? params.args.parentFolderId.trim() : ''
-    if (parentFolderId && !allowedFolders.has(parentFolderId) && !allowedFiles.has(parentFolderId)) {
-      throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
-    }
+    // Fail-closed: hiányzó parent → Drive root (My Drive), ami megkerüli a Picker
+    // manifesztet. selected_write alatt a szülő kötelező és a kiválasztásban kell lennie.
+    assertParentInWritableManifest(params.args.parentFolderId, allowedFolders, allowedFiles)
     return
   }
 
   if (params.tool === 'google_drive_upload_file') {
-    const parentFolderId =
-      typeof params.args.parentFolderId === 'string' ? params.args.parentFolderId.trim() : ''
-    if (parentFolderId && !allowedFolders.has(parentFolderId) && !allowedFiles.has(parentFolderId)) {
-      throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
-    }
+    assertParentInWritableManifest(params.args.parentFolderId, allowedFolders, allowedFiles)
     return
   }
 
   if (params.tool === 'google_drive_move_file') {
     const fileId = readFileId(params.args)
-    const destinationFolderId =
-      typeof params.args.destinationFolderId === 'string'
-        ? params.args.destinationFolderId.trim()
-        : ''
     // Fail-closed: az áthelyezendő forrásfájl azonosítója kötelező; hiányzó/üres
     // id esetén nem „átcsúsztatjuk", hanem elutasítjuk.
     if (!fileId || !allowedFiles.has(fileId)) {
       throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
     }
-    if (
-      destinationFolderId &&
-      !allowedFolders.has(destinationFolderId) &&
-      !allowedFiles.has(destinationFolderId)
-    ) {
-      throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
-    }
+    assertParentInWritableManifest(
+      params.args.destinationFolderId,
+      allowedFolders,
+      allowedFiles,
+    )
     return
   }
 
   if (params.tool === 'google_drive_copy_file') {
-    // For copy: source only needs read (Google ACL); parent for new file must be allowed.
-    const parentFolderId =
-      typeof params.args.parentFolderId === 'string' ? params.args.parentFolderId.trim() : ''
-    if (parentFolderId && !allowedFolders.has(parentFolderId) && !allowedFiles.has(parentFolderId)) {
-      throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
-    }
+    // Forrás: Google ACL (olvasás elég). Cél-szülő: kötelező + manifesztben —
+    // különben a másolat a forrás mappájába / rootba kerülhet a Pickeren kívül.
+    assertParentInWritableManifest(params.args.parentFolderId, allowedFolders, allowedFiles)
     return
   }
 
@@ -147,6 +132,17 @@ export function createdDriveFilesFromResult(
 function readFileId(args: WriteToolArgs): string {
   const fileId = typeof args.fileId === 'string' ? args.fileId.trim() : ''
   return fileId
+}
+
+function assertParentInWritableManifest(
+  rawParent: unknown,
+  allowedFolders: Set<string>,
+  allowedFiles: Set<string>,
+): void {
+  const parentId = typeof rawParent === 'string' ? rawParent.trim() : ''
+  if (!parentId || (!allowedFolders.has(parentId) && !allowedFiles.has(parentId))) {
+    throw new GoogleDriveWriteAccessError(DRIVE_PICKER_RESELECT_MESSAGE)
+  }
 }
 
 export function grantUsesSelectedWriteProfile(
