@@ -427,6 +427,16 @@ export class IamService {
       throw new Error(`invitation: ${check.reason.toLowerCase()}`)
     }
 
+    // Aktív tagság mellett a meghívó NEM írhatja felül a membership szerepet
+    // (stale admin-invite + későbbi operator provision ⇒ privilege escalation).
+    // A meghívó pending marad (claim előtt állunk), felfüggesztett tagság újraélesíthető.
+    if (invitation.tenantId && this.memberships) {
+      const existing = await this.memberships.findByTenantAndUser(invitation.tenantId, params.user.id)
+      if (existing?.status === 'active') {
+        throw new Error('invitation: already_a_member')
+      }
+    }
+
     const claimed = await this.invitations.claimPendingRedemption(invitation.id, params.user.email, new Date())
     if (!claimed) {
       const current = await this.invitations.findById(invitation.id)
@@ -435,6 +445,33 @@ export class IamService {
       }
       throw new Error('invitation: already_redeemed_or_unavailable')
     }
+
+    // Claim utáni verseny: ha időközben aktív tagság keletkezett (pl. provision),
+    // ne emeljük a User.role-t és ne írjuk felül a membershipet.
+    if (claimed.tenantId && this.memberships) {
+      const existingAfterClaim = await this.memberships.findByTenantAndUser(
+        claimed.tenantId,
+        params.user.id,
+      )
+      if (existingAfterClaim?.status === 'active') {
+        await this.append({
+          actorType: 'human',
+          actorId: params.user.id,
+          agentVersion: null,
+          action: 'user.invite.redeem',
+          targetType: 'user',
+          targetId: params.user.id,
+          modelUsed: null,
+          inputRef: claimed.id,
+          outputRef: existingAfterClaim.role,
+          policyDecision: 'already_a_member',
+          metadata: { source: params.source ?? 'clerk', invitationId: claimed.id },
+          tenantId: claimed.tenantId,
+        })
+        return params.user
+      }
+    }
+
     const patch: {
       role?: UserRole
       status: 'active'
@@ -478,6 +515,26 @@ export class IamService {
   ) {
     if (invitation.tenantId) {
       if (!this.memberships) throw new Error('invitation: tenant membership repository unavailable')
+      // Második kapu a claim utáni provision-versenyre: aktív tagság szerepét
+      // a meghívó akkor sem emelheti / minősítheti le, ha a pre-claim check óta keletkezett.
+      const existing = await this.memberships.findByTenantAndUser(invitation.tenantId, user.id)
+      if (existing?.status === 'active') {
+        await this.append({
+          actorType: 'human',
+          actorId: user.id,
+          agentVersion: null,
+          action: 'user.invite.redeem',
+          targetType: 'user',
+          targetId: user.id,
+          modelUsed: null,
+          inputRef: invitation.id,
+          outputRef: existing.role,
+          policyDecision: 'already_a_member',
+          metadata: { source, invitationId: invitation.id },
+          tenantId: invitation.tenantId,
+        })
+        return
+      }
       const membership = await this.memberships.upsert({
         tenantId: invitation.tenantId,
         userId: user.id,
