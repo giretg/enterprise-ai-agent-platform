@@ -66,6 +66,10 @@ export interface WorkProjectStore {
   }): Promise<WorkProjectRecord>
 }
 
+export type WorkFileAppendResult =
+  | { ok: true; record: WorkFileRecord }
+  | { ok: false; code: 'file_too_large' | 'quota_exceeded' }
+
 export interface WorkFileStore {
   list(tenantId: string, projectKey: string, prefix?: string): Promise<Omit<WorkFileRecord, 'content'>[]>
   find(tenantId: string, projectKey: string, path: string): Promise<WorkFileRecord | null>
@@ -77,6 +81,20 @@ export interface WorkFileStore {
     byteSize: number
     lastWriterUserId: string
   }): Promise<WorkFileRecord>
+  /**
+   * Atomikus hozzáfűzés: a find→concat→upsert RMW-t egy záron belül végzi,
+   * különben párhuzamos MCP append-ek elveszítenék egymás chunkját.
+   */
+  appendAtomic(input: {
+    tenantId: string
+    projectKey: string
+    path: string
+    chunk: string
+    lastWriterUserId: string
+    maxFileBytes: number
+    maxProjectBytes: number
+    maxCount: number
+  }): Promise<WorkFileAppendResult>
   delete(tenantId: string, projectKey: string, path: string): Promise<boolean>
   quota(tenantId: string, projectKey: string): Promise<WorkFileQuota>
 }

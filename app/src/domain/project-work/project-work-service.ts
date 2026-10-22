@@ -33,7 +33,7 @@ import { detectMisplacedMemoryWrite, type KnowledgePlacementTarget } from '@/lib
 export type { MemoryWriteModeValue, ProjectMemoryRecord, WorkFileRecord, WorkProjectRecord }
 export type { MemoryIndexPage } from './memory-index'
 
-// ponytail: per-call append cap = file cap; sequential MCP appends stay ordered because calls run one at a time.
+// per-call append cap = file cap; párhuzamos append-eket az appendAtomic zárolja (MCP gyakran párhuzamosan hív).
 export const WORK_FILE_MAX_BYTES = 200_000
 export const WORK_FILE_MAX_PROJECT_BYTES = 5_000_000
 export const WORK_FILE_MAX_COUNT = 200
@@ -341,6 +341,7 @@ export class ProjectWorkService {
   /**
    * Hozzáfűzés szöveges work file végéhez (#661: jsonl-metrikák, változásnapló).
    * Hiányzó fájlt létrehozza. Kvóta a létrejövő teljes fájlméretre érvényesül.
+   * Párhuzamos hívásoknál appendAtomic szerializál — különben last-write-wins adatvesztés.
    */
   async appendFile(input: {
     tenantId: string
@@ -356,25 +357,23 @@ export class ProjectWorkService {
     if (!path) return err('invalid_path')
     const chunk = resolveWorkFileBody({ content: input.content, contentBase64: input.contentBase64 })
     if (!chunk.ok) return err(chunk.code)
-    const existing = await this.files.find(input.tenantId, scoped.projectKey, path)
-    const content = `${existing?.content ?? ''}${chunk.content}`
-    const byteSize = Buffer.byteLength(content, 'utf8')
-    if (byteSize > WORK_FILE_MAX_BYTES) return err('file_too_large')
-    const quota = await this.files.quota(input.tenantId, scoped.projectKey)
-    const next = quotaAfter(quota, existing?.byteSize ?? 0, byteSize, !existing)
-    if (next.nextCount > WORK_FILE_MAX_COUNT || next.nextBytes > WORK_FILE_MAX_PROJECT_BYTES) {
-      return err('quota_exceeded')
-    }
-    const row = await this.files.upsert({
+    const appended = await this.files.appendAtomic({
       tenantId: input.tenantId,
       projectKey: scoped.projectKey,
       path,
-      content,
-      byteSize,
+      chunk: chunk.content,
       lastWriterUserId: input.userId,
+      maxFileBytes: WORK_FILE_MAX_BYTES,
+      maxProjectBytes: WORK_FILE_MAX_PROJECT_BYTES,
+      maxCount: WORK_FILE_MAX_COUNT,
     })
+    if (!appended.ok) return err(appended.code)
     return ok({
-      file: { path: row.path, byteSize: row.byteSize, lastWriterUserId: row.lastWriterUserId },
+      file: {
+        path: appended.record.path,
+        byteSize: appended.record.byteSize,
+        lastWriterUserId: appended.record.lastWriterUserId,
+      },
     })
   }
 

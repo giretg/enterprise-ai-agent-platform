@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db'
 import type {
   ProjectMemoryRecord,
   ProjectMemoryStore,
+  WorkFileAppendResult,
   WorkFileQuota,
   WorkFileRecord,
   WorkFileStore,
@@ -141,6 +142,78 @@ export class PostgresWorkFileRepository implements WorkFileStore {
       },
     })
     return mapFile(row)
+  }
+
+  /**
+   * Párhuzamos MCP append-ek ne veszítsenek chunkot: advisory lock a fájlkulcson,
+   * majd read→concat→quota→upsert egy tranzakcióban (akár létrehozás is).
+   */
+  async appendAtomic(input: {
+    tenantId: string
+    projectKey: string
+    path: string
+    chunk: string
+    lastWriterUserId: string
+    maxFileBytes: number
+    maxProjectBytes: number
+    maxCount: number
+  }): Promise<WorkFileAppendResult> {
+    return prisma.$transaction(async (tx) => {
+      const lockKey = `${input.tenantId}:${input.projectKey}:${input.path}`
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`
+
+      const existing = await tx.workFile.findUnique({
+        where: {
+          tenantId_projectKey_path: {
+            tenantId: input.tenantId,
+            projectKey: input.projectKey,
+            path: input.path,
+          },
+        },
+      })
+      const content = `${existing?.content ?? ''}${input.chunk}`
+      const byteSize = Buffer.byteLength(content, 'utf8')
+      if (byteSize > input.maxFileBytes) return { ok: false as const, code: 'file_too_large' as const }
+
+      const [count, agg] = await Promise.all([
+        tx.workFile.count({
+          where: { tenantId: input.tenantId, projectKey: input.projectKey },
+        }),
+        tx.workFile.aggregate({
+          where: { tenantId: input.tenantId, projectKey: input.projectKey },
+          _sum: { byteSize: true },
+        }),
+      ])
+      const nextCount = existing ? count : count + 1
+      const nextBytes = (agg._sum.byteSize ?? 0) - (existing?.byteSize ?? 0) + byteSize
+      if (nextCount > input.maxCount || nextBytes > input.maxProjectBytes) {
+        return { ok: false as const, code: 'quota_exceeded' as const }
+      }
+
+      const row = await tx.workFile.upsert({
+        where: {
+          tenantId_projectKey_path: {
+            tenantId: input.tenantId,
+            projectKey: input.projectKey,
+            path: input.path,
+          },
+        },
+        create: {
+          tenantId: input.tenantId,
+          projectKey: input.projectKey,
+          path: input.path,
+          content,
+          byteSize,
+          lastWriterUserId: input.lastWriterUserId,
+        },
+        update: {
+          content,
+          byteSize,
+          lastWriterUserId: input.lastWriterUserId,
+        },
+      })
+      return { ok: true as const, record: mapFile(row) }
+    })
   }
 
   async delete(tenantId: string, projectKey: string, path: string): Promise<boolean> {
