@@ -435,10 +435,16 @@ export class PostgresPrivateKnowledgeBaseStore implements PrivateKnowledgeBaseSt
     return rows.map((row) => ({ connectorId: row.id, tenantId: row.tenantId, ownerUserId: row.ownerUserId! }))
   }
 
-  async listOrphaned(input: { olderThan: Date }): Promise<PrivateKnowledgeBaseRow[]> {
-    // Felfüggesztett tagság: a felfüggesztés ideje az `updated_at` (egy későbbi
-    // módosítás csak kitolja, sosem hozza előre a törlést). Hiányzó tagság =
-    // a felhasználót törölték, visszaállítani nem lehet.
+  async listOrphaned(input: { olderThan: Date; now: Date }): Promise<PrivateKnowledgeBaseRow[]> {
+    // Hiányzó tagságnál nincs eltávolítási dátum: az első észleléstől indul
+    // a 30 nap, nem a KB létrehozásától. Visszaállításkor az óra nullázódik.
+    await prisma.$executeRaw`
+      UPDATE connectors c SET owner_missing_since = CASE
+        WHEN EXISTS (SELECT 1 FROM tenant_memberships m
+          WHERE m.tenant_id = c.tenant_id AND m.user_id = c.owner_user_id)
+        THEN NULL ELSE COALESCE(c.owner_missing_since, ${input.now}) END
+      WHERE c.type = 'knowledge_base' AND c.visibility = 'private_to_user'
+    `
     const rows = await prisma.$queryRaw<Array<{ id: string; tenant_id: string; owner_user_id: string }>>`
       SELECT c.id, c.tenant_id, c.owner_user_id
       FROM connectors c
@@ -446,19 +452,35 @@ export class PostgresPrivateKnowledgeBaseStore implements PrivateKnowledgeBaseSt
       WHERE c.type = 'knowledge_base'
         AND c.visibility = 'private_to_user'
         AND c.owner_user_id IS NOT NULL
-        AND (m.id IS NULL OR (m.status <> 'active' AND m.updated_at <= ${input.olderThan}))
+        AND ((m.id IS NULL AND c.owner_missing_since <= ${input.olderThan})
+          OR (m.status <> 'active' AND m.updated_at <= ${input.olderThan}))
       ORDER BY c.created_at
     `
     return rows.map((row) => ({ connectorId: row.id, tenantId: row.tenant_id, ownerUserId: row.owner_user_id }))
   }
 
-  async purge(connectorId: string): Promise<PrivateKnowledgeBasePurgeCounts> {
+  purge(connectorId: string): Promise<PrivateKnowledgeBasePurgeCounts>
+  purge(connectorId: string, input: { olderThan: Date }): Promise<PrivateKnowledgeBasePurgeCounts | null>
+  async purge(connectorId: string, input?: { olderThan: Date }): Promise<PrivateKnowledgeBasePurgeCounts | null> {
     return prisma.$transaction(async (tx) => {
       const connector = await tx.connector.findFirst({
         where: { id: connectorId, type: 'knowledge_base', visibility: 'private_to_user' },
-        select: { id: true },
+        select: { id: true, tenantId: true, ownerUserId: true, ownerMissingSince: true },
       })
-      if (!connector) throw new Error('private_kb_not_found')
+      if (!connector) {
+        if (input) return null
+        throw new Error('private_kb_not_found')
+      }
+      // A tagság a listázás és a törlés között visszaállhatott. Serializable
+      // tranzakció: párhuzamos visszaállításkor a törlés inkább megszakad.
+      if (input) {
+        const membership = await tx.tenantMembership.findUnique({
+          where: { tenantId_userId: { tenantId: connector.tenantId, userId: connector.ownerUserId! } },
+        })
+        if (membership
+          ? membership.status === 'active' || membership.updatedAt > input.olderThan
+          : !connector.ownerMissingSince || connector.ownerMissingSince > input.olderThan) return null
+      }
       const pageIds = (await tx.wikiPage.findMany({ where: { connectorId }, select: { id: true } })).map(
         (row) => row.id,
       )
@@ -480,6 +502,6 @@ export class PostgresPrivateKnowledgeBaseStore implements PrivateKnowledgeBaseSt
       await tx.agentWiki.deleteMany({ where: { connectorId } })
       await tx.connector.delete({ where: { id: connectorId } })
       return counts
-    })
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
   }
 }

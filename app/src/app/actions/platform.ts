@@ -11,6 +11,7 @@ import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
 import { parseLocalRoots, serializeLocalRoots } from '@/lib/agent-local-roots'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
+import { isKnowledgeBaseVisibleTo, scopeSnapshotToUser } from '@/lib/wiki-access'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
@@ -436,7 +437,12 @@ export async function getAgentGovernance(input: { agentId: string }) {
       repositories.agents.findCapabilitiesForAgent(agentId),
       repositories.agents.findConnectorsForAgent(agentId),
     ])
-    return ok({ capabilities, connectors })
+    return ok({
+      capabilities,
+      connectors: connectors.filter((row) =>
+        row.connector.type !== 'knowledge_base' || isKnowledgeBaseVisibleTo(row.connector, user.user.id),
+      ),
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load agent governance')
   }
@@ -886,7 +892,7 @@ export async function publishAgentDefinitionAction(input: { agentId: string }) {
       tenantId: user.activeTenantId,
       publishedById: user.user.id,
     })
-    return ok(definition)
+    return ok({ ...definition, snapshot: scopeSnapshotToUser(definition.snapshot, user.user.id) })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to publish agent definition')
   }

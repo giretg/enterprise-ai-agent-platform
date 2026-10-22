@@ -935,6 +935,19 @@ async function main() {
     },
   )
 
+  await check('linkKnowledgeBase: meglévő írási jog visszavonása felold és auditál', async () => {
+    const { service, released, audits } = makeService()
+    await service.linkKnowledgeBase({ actor: adminActor, agentId: AGENT, connectorId: SHARED_KB })
+    await service.setWikiAccess({ actor: adminActor, agentId: AGENT, connectorId: SHARED_KB, wikiAccess: 'write' })
+    released.length = 0
+    audits.length = 0
+    await service.linkKnowledgeBase({ actor: adminActor, agentId: AGENT, connectorId: SHARED_KB, accessMode: 'read' })
+    assert.deepEqual(released, [{ agentId: AGENT, connectorIds: [SHARED_KB] }])
+    assert.equal(audits.length, 1)
+    assert.equal((audits[0].metadata as Record<string, unknown>).fromAccess, 'write')
+    assert.equal((audits[0].metadata as Record<string, unknown>).toAccess, 'read')
+  })
+
   // --- Snapshot: alapértékű KB-kötés nem változtat a hash-en ---
   await check(
     'snapshot: alapértékű KB-kötés mezői kimaradnak (contentHash stabil); write/direct/privát bekerül',
@@ -1026,11 +1039,17 @@ async function main() {
       name: `kb:${AGENT}`,
       visibility: 'shared',
       ownerUserId: null,
+      lifecycleState: 'active',
       kbLanguage: 'hu',
     } as unknown as Connector
+    const stored: Array<{ connectorId: string }> = []
+    const privateKb = { ...ownKb, id: PRIVATE_KB, visibility: 'private_to_user', ownerUserId: OWNER } as Connector
     const service = new KnowledgeBaseService({
       documents: {
-        create: async (data: { filename: string }) => ({ id: 'doc-1', ...data }) as unknown as Document,
+        create: async (data: { filename: string; connectorId: string }) => {
+          stored.push(data)
+          return { id: 'doc-1', ...data } as unknown as Document
+        },
       } as never,
       artifacts: {} as never,
       chunks: {} as never,
@@ -1040,6 +1059,7 @@ async function main() {
       },
       connectors: {
         findByTenantTypeAndName: async () => ownKb,
+        findById: async (id) => id === OWN_KB ? ownKb : privateKb,
         create: async () => ownKb,
       },
       audit: {
@@ -1064,6 +1084,17 @@ async function main() {
     assert.equal(row.actorType, 'agent')
     assert.equal(row.actorId, AGENT)
     assert.equal((row.metadata as Record<string, unknown>).userId, OWNER)
+
+    await executeKnowledgeBaseTool(service, 'kb_ingest',
+      { filename: 'cukorbetegseg.md', content: 'privát lelet' },
+      { connectorId: PRIVATE_KB, tenantId: TENANT, agentId: AGENT, userId: OWNER })
+    assert.equal(stored.at(-1)?.connectorId, PRIVATE_KB)
+    assert.equal(audits.at(-1)?.inputRef, null)
+    assert.equal((audits.at(-1)?.metadata as Record<string, unknown>).privateKb, true)
+    await assert.rejects(() => executeKnowledgeBaseTool(service, 'kb_ingest',
+      { filename: 'lelet.md', content: 'x' },
+      { connectorId: PRIVATE_KB, tenantId: TENANT, agentId: AGENT, userId: OTHER_USER }), /not_found/)
+    assert.equal(stored.length, 2)
 
     // Control Plane-feltöltés továbbra is human.
     audits.length = 0

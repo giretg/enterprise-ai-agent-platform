@@ -957,7 +957,7 @@ async function createDraftToolResult(
       skills,
       connectors,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError && error.code === 'invalid_args') {
       return invalidArgs(error.message)
@@ -987,7 +987,7 @@ async function getWorkingSetToolResult(
       agentId,
       tenantId: principal.tenantId,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch {
     return definitionNotFound()
   }
@@ -1010,7 +1010,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult(result)
+    return textResult({ ...result, snapshot: scopeSnapshotToUser(result.snapshot, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()

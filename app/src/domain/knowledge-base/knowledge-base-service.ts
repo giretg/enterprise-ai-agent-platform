@@ -36,6 +36,7 @@ import {
 } from '@/lib/kb-retrieval'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
+import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
 export const KB_MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -46,6 +47,7 @@ export type KnowledgeBaseDeps = {
   chunks: KnowledgeChunkRepository
   agents: Pick<AgentRepository, 'findById' | 'upsertConnectorBinding'>
   connectors: Pick<ConnectorRepository, 'findByTenantTypeAndName' | 'create'> & {
+    findById?: ConnectorRepository['findById']
     /** #717: tudástár-connector keresési nyelve (concrete repo; fakes nélkül is megy). */
     setKbLanguage?: (connectorId: string, kbLanguage: KbLanguage) => Promise<Connector>
   }
@@ -78,6 +80,7 @@ export class KnowledgeBaseService {
     purpose?: string | null
     /** #942: `agent` = az agent hívta (MCP `kb_ingest`); a Control Plane-feltöltés `human`. */
     actor?: 'agent' | 'human'
+    connectorId?: string
   }) {
     if (input.buffer.byteLength === 0) throw new Error('File is empty')
     if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
@@ -86,9 +89,17 @@ export class KnowledgeBaseService {
 
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
-    const connector = await ensureAgentKnowledgeBase(agent, this.deps, {
-      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
-    })
+    const connector = input.connectorId
+      ? await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
+      : await ensureAgentKnowledgeBase(agent, this.deps, {
+          defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+        })
+    if (
+      !connector || connector.tenantId !== input.tenantId || connector.type !== 'knowledge_base' ||
+      connector.lifecycleState !== 'active' || !isKnowledgeBaseVisibleTo(connector, input.uploadedById)
+    ) {
+      throw new Error('not_found')
+    }
 
     const extraction = await extractStructured({
       buffer: input.buffer,

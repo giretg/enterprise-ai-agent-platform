@@ -34,6 +34,7 @@ ADD COLUMN     "wiki_write_mode" "MemoryWriteMode" NOT NULL DEFAULT 'approval';
 
 -- AlterTable
 ALTER TABLE "connectors" ADD COLUMN     "owner_user_id" UUID,
+ADD COLUMN     "owner_missing_since" TIMESTAMPTZ,
 ADD COLUMN     "visibility" "KnowledgeBaseVisibility" NOT NULL DEFAULT 'shared';
 
 -- AlterTable

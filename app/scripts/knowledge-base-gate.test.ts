@@ -196,7 +196,7 @@ function makeFakes() {
       )
     },
     async create(data: Record<string, unknown>) {
-      const row = { id: randomUUID(), createdAt: new Date(), ...data } as unknown as Connector
+      const row = { id: randomUUID(), createdAt: new Date(), lifecycleState: 'active', ...data } as unknown as Connector
       connectors.set(row.id, row)
       return row
     },

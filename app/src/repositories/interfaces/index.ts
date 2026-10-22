@@ -963,9 +963,10 @@ export interface PrivateKnowledgeBaseStore {
    * D16: privát KB-k, amelyek tulajdonosa már nem aktív tag (felfüggesztve vagy
    * törölve), és ez `olderThan` előtt történt. Aktív tag KB-ja sosem jelölt.
    */
-  listOrphaned(input: { olderThan: Date }): Promise<PrivateKnowledgeBaseRow[]>
+  listOrphaned(input: { olderThan: Date; now: Date }): Promise<PrivateKnowledgeBaseRow[]>
   /** Végleges törlés egy tranzakcióban: nyers források, oldalak, revíziók, chunkok, change-setek, tálca, connector. */
   purge(connectorId: string): Promise<PrivateKnowledgeBasePurgeCounts>
+  purge(connectorId: string, input: { olderThan: Date }): Promise<PrivateKnowledgeBasePurgeCounts | null>
 }
 
 export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'

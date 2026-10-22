@@ -145,8 +145,8 @@ export class WikiAccessService {
     })
     const binding = await this.deps.agents.findConnectorBinding(agent.id, connector.id)
     if (!binding) throw new WikiAccessError('not_found')
-    if (!existing) {
-      await this.auditAccessChange(connector, input.actor, agent.id, null, binding, 'linked')
+    if (!existing || existing.accessMode !== binding.accessMode) {
+      await this.handleAccessChange(connector, input.actor, agent.id, existing, binding, existing ? 'changed' : 'linked')
     }
     return binding
   }
@@ -186,11 +186,7 @@ export class WikiAccessService {
     })
     if (!after) throw new WikiAccessError('not_found')
 
-    // D16: írási jog visszavonásakor a nevére foglalt tálca-tételek azonnal vissza.
-    if (effectiveWikiAccess(before) === 'write' && effectiveWikiAccess(after) !== 'write') {
-      await this.deps.wikis.releaseClaimsForAgent({ agentId: input.agentId, connectorIds: [connector.id] })
-    }
-    await this.auditAccessChange(connector, input.actor, input.agentId, before, after, 'changed')
+    await this.handleAccessChange(connector, input.actor, input.agentId, before, after, 'changed')
     return after
   }
 
@@ -231,11 +227,13 @@ export class WikiAccessService {
    * (aktív tagság nélkül nincs principal); visszaállításkor újra elérhető.
    */
   async sweepOrphanedPrivateKnowledgeBases(): Promise<{ purged: number }> {
-    const olderThan = new Date(this.now().getTime() - PRIVATE_KB_ORPHAN_GRACE_MS)
-    const orphans = await this.deps.privateKnowledgeBases.listOrphaned({ olderThan })
+    const now = this.now()
+    const olderThan = new Date(now.getTime() - PRIVATE_KB_ORPHAN_GRACE_MS)
+    const orphans = await this.deps.privateKnowledgeBases.listOrphaned({ olderThan, now })
     let purged = 0
     for (const row of orphans) {
-      const counts = await this.deps.privateKnowledgeBases.purge(row.connectorId)
+      const counts = await this.deps.privateKnowledgeBases.purge(row.connectorId, { olderThan })
+      if (!counts) continue
       await this.auditPurge(row, counts, { actorType: 'system', actorId: null, trigger: 'owner_removed' })
       purged++
     }
@@ -248,7 +246,7 @@ export class WikiAccessService {
     throw new WikiAccessError(isPrivateKnowledgeBase(connector) ? 'not_found' : 'forbidden')
   }
 
-  private async auditAccessChange(
+  private async handleAccessChange(
     connector: Connector,
     actor: WikiActor,
     agentId: string,
@@ -256,6 +254,9 @@ export class WikiAccessService {
     after: AgentConnectorBinding,
     kind: 'linked' | 'changed',
   ) {
+    if (before && effectiveWikiAccess(before) === 'write' && effectiveWikiAccess(after) !== 'write') {
+      await this.deps.wikis.releaseClaimsForAgent({ agentId, connectorIds: [connector.id] })
+    }
     await this.deps.audit.append(
       redactKbAuditForVisibility(connector, {
         actorType: 'human',

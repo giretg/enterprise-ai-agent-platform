@@ -699,6 +699,7 @@ model Connector {
    */
   visibility     KnowledgeBaseVisibility @default(shared)
   ownerUserId    String?                 @map("owner_user_id") @db.Uuid
+  ownerMissingSince DateTime?            @map("owner_missing_since") @db.Timestamptz
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
