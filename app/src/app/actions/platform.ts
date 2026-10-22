@@ -851,6 +851,18 @@ export async function updateAgentConnectorBinding(input: {
       .parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
+    const connector = await repositories.connectors.findById(parsed.connectorId, user.activeTenantId)
+    if (!connector) return fail('Connector not found')
+    if (connector.type === 'knowledge_base') {
+      // #942 D13: privát KB-t csak a tulajdonos kapcsolhat; a szabály a service-ben él.
+      await services.wikiAccess.linkKnowledgeBase({
+        actor: { userId: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
+        agentId: parsed.agentId,
+        connectorId: parsed.connectorId,
+        accessMode: (parsed.accessMode ?? 'read') as ConnectorAccessMode,
+      })
+      return ok({ updated: true })
+    }
     await repositories.agents.upsertConnectorBinding({
       agentId: parsed.agentId,
       connectorId: parsed.connectorId,
@@ -960,6 +972,8 @@ export async function deleteAgent(input: { id: string }) {
     if (!existing) return fail('Agent not found')
     const force = isSuperadmin(user.platformRoles)
     await repositories.agents.delete(id, { force })
+    // #942 D16: a wiki marad, a nevére foglalt tálca-tételek azonnal vissza a tálcára.
+    await repositories.wikis.releaseClaimsForAgent({ agentId: id })
     await services.audit.append({
       actorType: 'human',
       actorId: user.user.id,

@@ -36,6 +36,7 @@ import {
 } from '@/lib/kb-retrieval'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
+import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
 export const KB_MAX_FILE_BYTES = 10 * 1024 * 1024
 
@@ -75,6 +76,8 @@ export class KnowledgeBaseService {
     buffer: Buffer
     processingMode: KnowledgeProcessingMode
     purpose?: string | null
+    /** #942: `agent` = az agent hívta (MCP `kb_ingest`); a Control Plane-feltöltés `human`. */
+    actor?: 'agent' | 'human'
   }) {
     if (input.buffer.byteLength === 0) throw new Error('File is empty')
     if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
@@ -103,6 +106,7 @@ export class KnowledgeBaseService {
       extraction,
       processingMode: input.processingMode,
       purpose: input.purpose,
+      actor: input.actor ?? 'human',
     })
   }
 
@@ -341,6 +345,7 @@ export class KnowledgeBaseService {
     extraction: StructuredExtraction
     processingMode: KnowledgeProcessingMode
     purpose?: string | null
+    actor?: 'agent' | 'human'
   }) {
     const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
@@ -404,25 +409,31 @@ export class KnowledgeBaseService {
       pageCount = bundle.files.filter((file) => file.path !== 'index.md').length
     }
 
-    await this.deps.audit.append({
-      actorType: 'human',
-      actorId: uploadedById,
-      agentVersion: null,
-      action: 'kb.document.ingested',
-      targetType: 'document',
-      targetId: document.id,
-      modelUsed: null,
-      inputRef: filename,
-      outputRef: connector.id,
-      policyDecision: 'allowed',
-      metadata: {
-        agentId,
-        processingMode: input.processingMode,
-        artifactId: artifactId ?? null,
-        chunkCount,
-      },
-      tenantId,
-    })
+    // #942: agent-hívásnál az actor az agent, a hívó felhasználó a metadatában.
+    const byAgent = input.actor === 'agent' && !!agentId
+    await this.deps.audit.append(
+      redactKbAuditForVisibility(connector, {
+        actorType: byAgent ? 'agent' : 'human',
+        actorId: byAgent ? agentId : uploadedById,
+        agentVersion: null,
+        action: 'kb.document.ingested',
+        targetType: 'document',
+        targetId: document.id,
+        modelUsed: null,
+        inputRef: filename,
+        outputRef: connector.id,
+        policyDecision: 'allowed',
+        metadata: {
+          agentId,
+          userId: uploadedById,
+          processingMode: input.processingMode,
+          artifactId: artifactId ?? null,
+          chunkCount,
+          contentHash,
+        },
+        tenantId,
+      }),
+    )
 
     return {
       documentId: document.id,
@@ -465,20 +476,22 @@ export class KnowledgeBaseService {
     if (document.connectorId !== connector.id) throw new Error('Document not found')
     await this.deps.artifacts.deleteBySourceDocumentId(document.id)
     await this.deps.documents.delete(document.id)
-    await this.deps.audit.append({
-      actorType: 'human',
-      actorId: input.actorId,
-      agentVersion: null,
-      action: 'kb.document.deleted',
-      targetType: 'document',
-      targetId: document.id,
-      modelUsed: null,
-      inputRef: document.filename,
-      outputRef: connector.id,
-      policyDecision: 'deleted',
-      metadata: { agentId: agent.id },
-      tenantId: input.tenantId,
-    })
+    await this.deps.audit.append(
+      redactKbAuditForVisibility(connector, {
+        actorType: 'human',
+        actorId: input.actorId,
+        agentVersion: null,
+        action: 'kb.document.deleted',
+        targetType: 'document',
+        targetId: document.id,
+        modelUsed: null,
+        inputRef: document.filename,
+        outputRef: connector.id,
+        policyDecision: 'deleted',
+        metadata: { agentId: agent.id },
+        tenantId: input.tenantId,
+      }),
+    )
     return { deleted: true }
   }
 

@@ -124,6 +124,7 @@ jobs:
           npm run test:agentmail-connector
           npm run test:kb-gate
           npm run test:kb-retrieval
+          npm run test:wiki-foundation
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -204,6 +205,10 @@ jobs:
 
       - name: Prisma migrate status
         run: npx prisma migrate status
+
+      # #942: privát KB végleges törlés + 30 napos sweep + tálca-SQL valódi Postgresen.
+      - name: Wiki private KB purge (Postgres)
+        run: npm run test:wiki-private-purge-db
 
   security-scan:
     name: Titok-szkennelés + CodeQL

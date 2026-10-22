@@ -1,4 +1,4 @@
-import type { Agent, ConnectorAccessMode, Prisma } from '@prisma/client'
+import type { Agent, Connector, ConnectorAccessMode, MemoryWriteMode, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
@@ -233,7 +233,29 @@ export class PostgresAgentRepository implements AgentRepository {
       include: { connector: true },
       orderBy: { connectorId: 'asc' },
     })
-    return rows.map((row) => ({ connector: row.connector, accessMode: row.accessMode }))
+    return rows.map(toBinding)
+  }
+
+  async findConnectorBinding(agentId: string, connectorId: string): Promise<AgentConnectorBinding | null> {
+    const row = await prisma.agentConnector.findUnique({
+      where: { agentId_connectorId: { agentId, connectorId } },
+      include: { connector: true },
+    })
+    return row ? toBinding(row) : null
+  }
+
+  async updateWikiLink(input: Parameters<AgentRepository['updateWikiLink']>[0]): Promise<AgentConnectorBinding | null> {
+    const result = await prisma.agentConnector.updateMany({
+      where: { agentId: input.agentId, connectorId: input.connectorId },
+      data: {
+        ...(input.accessMode ? { accessMode: input.accessMode } : {}),
+        ...(input.wikiAccess ? { wikiAccess: input.wikiAccess } : {}),
+        ...(input.wikiWriteMode ? { wikiWriteMode: input.wikiWriteMode } : {}),
+        ...(input.wikiCollectFocus !== undefined ? { wikiCollectFocus: input.wikiCollectFocus } : {}),
+      },
+    })
+    if (result.count === 0) return null
+    return this.findConnectorBinding(input.agentId, input.connectorId)
   }
 
   async replaceCapabilities(agentId: string, toolNames: string[]): Promise<void> {
@@ -253,6 +275,7 @@ export class PostgresAgentRepository implements AgentRepository {
     agentId: string
     connectorId: string
     accessMode: ConnectorAccessMode
+    initialWikiWriteMode?: MemoryWriteMode
   }): Promise<void> {
     await prisma.agentConnector.upsert({
       where: {
@@ -262,8 +285,25 @@ export class PostgresAgentRepository implements AgentRepository {
         agentId: input.agentId,
         connectorId: input.connectorId,
         accessMode: input.accessMode,
+        ...(input.initialWikiWriteMode ? { wikiWriteMode: input.initialWikiWriteMode } : {}),
       },
       update: { accessMode: input.accessMode },
     })
+  }
+}
+
+function toBinding(row: {
+  connector: Connector
+  accessMode: ConnectorAccessMode
+  wikiAccess: AgentConnectorBinding['wikiAccess']
+  wikiWriteMode: AgentConnectorBinding['wikiWriteMode']
+  wikiCollectFocus: string | null
+}): AgentConnectorBinding {
+  return {
+    connector: row.connector,
+    accessMode: row.accessMode,
+    wikiAccess: row.wikiAccess,
+    wikiWriteMode: row.wikiWriteMode,
+    wikiCollectFocus: row.wikiCollectFocus,
   }
 }

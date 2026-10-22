@@ -47,6 +47,18 @@ import type {
   KnowledgeArtifact,
   KnowledgeArtifactStatus,
   KnowledgeProcessingMode,
+  AgentWiki,
+  MemoryWriteMode,
+  WikiAccess,
+  WikiChangeSet,
+  WikiChangeSetStatus,
+  WikiInboxStatus,
+  WikiLogEntry,
+  WikiLogOp,
+  WikiPage,
+  WikiPageRevision,
+  WikiPageStatus,
+  WikiPageType,
 } from '@prisma/client'
 import type { GoogleAccountBinding } from '@/domain/connector/google-account-binding'
 import type { ListPageResult } from '@/lib/list-pagination'
@@ -67,6 +79,10 @@ export type AgentListFilter = {
 export type AgentConnectorBinding = {
   connector: Connector
   accessMode: ConnectorAccessMode
+  /** #942: csak knowledge_base-nél számít; régi fake-ekben hiányozhat (= read / approval). */
+  wikiAccess?: WikiAccess
+  wikiWriteMode?: MemoryWriteMode
+  wikiCollectFocus?: string | null
 }
 
 export interface AgentRepository {
@@ -112,7 +128,19 @@ export interface AgentRepository {
     agentId: string
     connectorId: string
     accessMode: ConnectorAccessMode
+    /** #942: csak új kötésnél alkalmazott kezdőérték (pl. privát wikinél `direct`, D14). */
+    initialWikiWriteMode?: MemoryWriteMode
   }): Promise<void>
+  /** #942 D1/D2: wiki-jog a meglévő kötésen; `null` = nincs ilyen kötés. */
+  updateWikiLink(input: {
+    agentId: string
+    connectorId: string
+    accessMode?: ConnectorAccessMode
+    wikiAccess?: WikiAccess
+    wikiWriteMode?: MemoryWriteMode
+    wikiCollectFocus?: string | null
+  }): Promise<AgentConnectorBinding | null>
+  findConnectorBinding(agentId: string, connectorId: string): Promise<AgentConnectorBinding | null>
 }
 
 export type AgentDefinitionVersionRow = AgentDefinitionVersion
@@ -341,6 +369,9 @@ export interface ConnectorRepository {
     authMode: ConnectorAuthMode
     scope: Connector['scope']
     config?: Prisma.InputJsonValue
+    /** #942 D13: csak knowledge_base; `private_to_user`-nél `ownerUserId` kötelező. */
+    visibility?: Connector['visibility']
+    ownerUserId?: string | null
   }): Promise<Connector>
   updateApprover(input: { connectorId: string; approverUserId: string | null }): Promise<Connector>
 }
@@ -769,6 +800,172 @@ export interface KnowledgeChunkRepository {
     artifactId?: string,
   ): Promise<KnowledgePageChunk[]>
   deleteByArtifact(artifactId: string): Promise<void>
+}
+
+/** #942 tálca-tétel (Document wiki-mezőiből), `status` már a lejárt foglalással korrigált. */
+export type WikiInboxItem = {
+  documentId: string
+  connectorId: string
+  filename: string
+  purpose: string | null
+  status: 'pending' | 'in_progress'
+  uploadedById: string
+  submittedByAgentId: string | null
+  claimedByAgentId: string | null
+  claimExpiresAt: Date | null
+  batchId: string | null
+  batchSeq: number | null
+  createdAt: Date
+}
+
+export type WikiInboxCounts = { pending: number; inProgress: number; processed: number; skipped: number }
+
+export type WikiInboxSummary = {
+  wikis: Array<{ connectorId: string } & WikiInboxCounts>
+  batches: Array<{ connectorId: string; batchId: string } & WikiInboxCounts>
+}
+
+export type WikiPageWrite = {
+  path: string
+  type: WikiPageType
+  title: string
+  summary: string
+  category?: string | null
+  frontmatter?: Prisma.InputJsonValue
+  body: string
+  sourceRefs?: Prisma.InputJsonValue
+  outLinks?: string[]
+  status?: WikiPageStatus
+  contentHash: string
+}
+
+export interface WikiRepository {
+  findById(wikiId: string): Promise<AgentWiki | null>
+  findByConnectorId(connectorId: string): Promise<AgentWiki | null>
+  /** Idempotens: meglévőt ad vissza, a sémát nem írja felül. */
+  ensureForConnector(input: { connectorId: string; schemaMd: string }): Promise<AgentWiki>
+  updateSchema(wikiId: string, schemaMd: string): Promise<AgentWiki>
+  updateLastLint(wikiId: string, lastLint: Prisma.InputJsonValue): Promise<void>
+
+  findPage(connectorId: string, path: string): Promise<WikiPage | null>
+  listPages(
+    connectorId: string,
+    filter?: { status?: WikiPageStatus | WikiPageStatus[]; pathPrefix?: string; category?: string; limit?: number },
+  ): Promise<WikiPage[]>
+  createPage(
+    input: WikiPageWrite & {
+      wikiId: string
+      connectorId: string
+      createdByAgentId?: string | null
+      createdByUserId?: string | null
+      changeSetId?: string | null
+    },
+  ): Promise<WikiPage>
+  /** Optimista zár: `expectedVersion` ≠ aktuális → `null` (D-konfliktus, csendes felülírás nincs). */
+  updatePage(
+    pageId: string,
+    expectedVersion: number,
+    input: Partial<WikiPageWrite> & { contentHash: string; updatedByAgentId?: string | null; changeSetId?: string | null },
+  ): Promise<WikiPage | null>
+  listRevisions(pageId: string): Promise<WikiPageRevision[]>
+
+  createChangeSet(input: {
+    wikiId: string
+    connectorId: string
+    agentId?: string | null
+    userId?: string | null
+    status?: WikiChangeSetStatus
+    pages: Prisma.InputJsonValue
+    validation?: Prisma.InputJsonValue | null
+    logEntry?: Prisma.InputJsonValue | null
+    sourceDocumentIds?: string[]
+    inboxItemId?: string | null
+    approverScope: Prisma.InputJsonValue
+  }): Promise<WikiChangeSet>
+  findChangeSet(id: string): Promise<WikiChangeSet | null>
+  /** CAS: csak `from` állapotból vált; különben `null`. */
+  transitionChangeSet(
+    id: string,
+    from: WikiChangeSetStatus,
+    to: WikiChangeSetStatus,
+    extra?: { gatewayOperationId?: string | null; appliedAt?: Date | null },
+  ): Promise<WikiChangeSet | null>
+
+  appendLog(input: {
+    wikiId: string
+    op: WikiLogOp
+    title: string
+    note?: string | null
+    pagePaths?: string[]
+    changeSetId?: string | null
+    actorAgentId?: string | null
+    actorUserId?: string | null
+  }): Promise<WikiLogEntry>
+  listLog(wikiId: string, limit?: number): Promise<WikiLogEntry[]>
+
+  /** Tálca: `pending` + `in_progress` (lejárt foglalás = `pending`), köteg, majd sorszám szerint. */
+  listInbox(
+    connectorIds: string[],
+    input: { now: Date; batchId?: string; limit?: number },
+  ): Promise<WikiInboxItem[]>
+  inboxSummary(connectorIds: string[], input: { now: Date; batchId?: string }): Promise<WikiInboxSummary>
+  /** Beküldés: a dokumentum tálca-tétellé válik (`pending`, vagy azonnali feldolgozásnál `in_progress`). */
+  submitToInbox(input: {
+    documentId: string
+    status: Extract<WikiInboxStatus, 'pending' | 'in_progress'>
+    submittedByAgentId?: string | null
+    claimedByAgentId?: string | null
+    claimExpiresAt?: Date | null
+    batchId?: string | null
+    batchSeq?: number | null
+  }): Promise<void>
+  /**
+   * Foglalás CAS-sal: `pending`, lejárt `in_progress`, vagy a saját foglalás
+   * megújítása. Másik agent élő foglalásánál `false`.
+   */
+  claimInboxItem(input: {
+    documentId: string
+    connectorId: string
+    agentId: string
+    now: Date
+    expiresAt: Date
+  }): Promise<boolean>
+  releaseInboxItem(input: { documentId: string; agentId: string }): Promise<boolean>
+  /** D16: agent törlésekor / jogvesztéskor a nevére foglalt tételek azonnal vissza a tálcára. */
+  releaseClaimsForAgent(input: { agentId: string; connectorIds?: string[] }): Promise<number>
+  markInboxProcessed(input: { documentId: string; changeSetId: string }): Promise<boolean>
+  skipInboxItem(input: { documentId: string; connectorId: string }): Promise<boolean>
+  findDocumentByContentHash(connectorId: string, contentHash: string): Promise<{ id: string } | null>
+}
+
+export type PrivateKnowledgeBaseRow = {
+  connectorId: string
+  tenantId: string
+  ownerUserId: string
+}
+
+export type PrivateKnowledgeBasePurgeCounts = {
+  documents: number
+  pages: number
+  revisions: number
+  chunks: number
+  artifacts: number
+  changeSets: number
+  logEntries: number
+  gatewayOperations: number
+  agentLinks: number
+}
+
+export interface PrivateKnowledgeBaseStore {
+  findPrivate(connectorId: string): Promise<PrivateKnowledgeBaseRow | null>
+  listPrivateForOwner(tenantId: string, ownerUserId: string): Promise<PrivateKnowledgeBaseRow[]>
+  /**
+   * D16: privát KB-k, amelyek tulajdonosa már nem aktív tag (felfüggesztve vagy
+   * törölve), és ez `olderThan` előtt történt. Aktív tag KB-ja sosem jelölt.
+   */
+  listOrphaned(input: { olderThan: Date }): Promise<PrivateKnowledgeBaseRow[]>
+  /** Végleges törlés egy tranzakcióban: nyers források, oldalak, revíziók, chunkok, change-setek, tálca, connector. */
+  purge(connectorId: string): Promise<PrivateKnowledgeBasePurgeCounts>
 }
 
 export type { GatewayOperationStore as GatewayOperationRepository } from '@/domain/gateway-operation'
