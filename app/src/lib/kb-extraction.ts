@@ -103,6 +103,8 @@ export function readExtractionBlocks(metadata: unknown): ExtractedBlock[] | null
     out.push({
       heading: b.heading,
       text: b.text,
+      ...(b.textQuality === 'ok' || b.textQuality === 'low_text' || b.textQuality === 'no_text'
+        ? { textQuality: b.textQuality } : {}),
       sourceRef: {
         page: typeof sr.page === 'number' ? sr.page : undefined,
         section: typeof sr.section === 'string' ? sr.section : undefined,
@@ -137,12 +139,32 @@ async function extractPdf(buffer: Buffer): Promise<StructuredExtraction> {
   const blocks: ExtractedBlock[] = []
   for (const { num, text: raw } of pages) {
     const text = normalizeWhitespace(raw)
-    if (!text.trim()) continue
-    blocks.push({ heading: `Oldal ${num}`, text, sourceRef: { page: num } })
+    blocks.push({ heading: `Oldal ${num}`, text, sourceRef: { page: num }, textQuality: pdfTextQuality(text) })
   }
 
-  const markdown = blocks.map((b) => `# ${b.heading}\n\n${b.text}`).join('\n\n')
+  const markdown = blocks.filter((b) => b.text).map((b) => `# ${b.heading}\n\n${b.text}`).join('\n\n')
   return { format: 'pdf', markdown, blocks }
+}
+
+/** Deterministic warning, not OCR or a guarantee that a table's layout is correct. */
+export function pdfTextQuality(text: string): NonNullable<ExtractedBlock['textQuality']> {
+  const chars = [...text.replace(/\s/g, '')]
+  if (chars.length === 0) return 'no_text'
+  const readable = chars.filter((c) => /[\p{L}\p{N}]/u.test(c)).length
+  return readable < 40 || readable / chars.length < 0.5 ? 'low_text' : 'ok'
+}
+
+export function pdfPageQuality(metadata: unknown) {
+  return (readExtractionBlocks(metadata) ?? [])
+    .filter((block) => block.sourceRef.page !== undefined && block.textQuality)
+    .map((block) => ({ page: block.sourceRef.page!, textQuality: block.textQuality! }))
+}
+
+export function pdfQualityHint(pages: ReturnType<typeof pdfPageQuality>) {
+  const unreadable = pages.filter((page) => page.textQuality !== 'ok').slice(0, 5)
+  return unreadable.length
+    ? `Call kb_get_document with pageImages:true and pages:"${unreadable.map((page) => page.page).join(',')}" to read low_text/no_text pages visually (max 5 pages per call).`
+    : undefined
 }
 
 // ── DOCX (heading/section-út) ────────────────────────────────────────────────

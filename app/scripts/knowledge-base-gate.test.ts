@@ -51,6 +51,11 @@ function makeFakes() {
       documents.set(doc.id, doc)
       return doc
     },
+    async createSource(data: Parameters<DocumentRepository['create']>[0]) {
+      const existing = [...documents.values()].find((doc) => doc.connectorId === data.connectorId && doc.contentHash === data.contentHash)
+      return { document: existing ?? await this.create(data), duplicate: !!existing }
+    },
+    async readSource() { return null },
     async findById(id: string) {
       return documents.get(id) ?? null
     },

@@ -1046,9 +1046,9 @@ async function main() {
     const privateKb = { ...ownKb, id: PRIVATE_KB, visibility: 'private_to_user', ownerUserId: OWNER } as Connector
     const service = new KnowledgeBaseService({
       documents: {
-        create: async (data: { filename: string; connectorId: string }) => {
+        createSource: async (data: { filename: string; connectorId: string }) => {
           stored.push(data)
-          return { id: 'doc-1', ...data } as unknown as Document
+          return { document: { id: 'doc-1', ...data } as unknown as Document, duplicate: false }
         },
       } as never,
       artifacts: {} as never,

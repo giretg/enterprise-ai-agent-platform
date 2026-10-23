@@ -210,6 +210,9 @@ jobs:
       - name: Wiki private KB purge (Postgres)
         run: npm run test:wiki-private-purge-db
 
+      - name: KB PDF sources and MCP images (Postgres)
+        run: npm run test:kb-pdf-source-db
+
   security-scan:
     name: Titok-szkennelés + CodeQL
     runs-on: ubuntu-latest

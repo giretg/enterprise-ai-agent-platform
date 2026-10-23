@@ -3,7 +3,7 @@
  * review ugyanebből a szótárból dolgozik (nem „Nyers KB” / „OKF wiki”).
  */
 
-export type KbProcessingModeValue = 'raw_text_only' | 'okf'
+export type KbProcessingModeValue = 'raw_text_only' | 'okf' | 'wiki'
 
 export const KB_PROCESSING_MODE_OPTIONS: Array<{
   value: KbProcessingModeValue
@@ -24,6 +24,7 @@ export const KB_PROCESSING_MODE_OPTIONS: Array<{
 
 export function kbProcessingModeLabel(mode: KbProcessingModeValue | null | undefined): string {
   if (mode === 'raw_text_only') return 'Egyszerű fájl feltöltés'
+  if (mode === 'wiki') return 'Feldolgozásra váró forrás'
   if (mode === 'okf') return 'Wiki formátumba alakítás'
   return 'Mód nincs kiválasztva'
 }
