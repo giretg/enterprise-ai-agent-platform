@@ -85,7 +85,9 @@ test('tömeges feltöltés: 30 fájl egy mozdulattal a privát tudásbázis tál
     mimeType: 'text/plain',
     buffer: Buffer.from(`Lelet ${i + 1} — ${suffix}`),
   }))
-  await page.getByTestId('wiki-inbox-file-input').setInputFiles(files)
+  await page.getByTestId('wiki-inbox-file-input').setInputFiles([
+    files[0], { ...files[0], name: 'azonos-1.txt' }, { ...files[0], name: 'azonos-2.txt' }, ...files.slice(1),
+  ])
   await expect(page.getByTestId('wiki-upload-progress')).toContainText('30', { timeout: 120_000 })
   await expect(page.getByTestId('wiki-upload-progress')).not.toContainText('Feltöltés:', { timeout: 120_000 })
   await expect(page.getByTestId('wiki-batch-bar')).toContainText('0/30')
@@ -93,8 +95,28 @@ test('tömeges feltöltés: 30 fájl egy mozdulattal a privát tudásbázis tál
   await expect(page.getByTestId('wiki-inbox-items').locator('li')).toHaveCount(30)
 
   // Ugyanaz a fájl még egyszer: duplikátumként kimarad.
-  await page.getByTestId('wiki-inbox-file-input').setInputFiles([files[0]])
+  await page.getByTestId('wiki-inbox-file-input').setInputFiles([files[0], { ...files[0], name: 'mas-neven.txt' }])
   await expect(page.getByTestId('wiki-upload-progress')).toContainText('már szerepelt', { timeout: 60_000 })
+
+  // Hibás tételek után is folytatható a feltöltés.
+  await page.getByTestId('wiki-inbox-file-input').setInputFiles([
+    { name: 'ures.txt', mimeType: 'text/plain', buffer: Buffer.alloc(0) },
+  ])
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('ures.txt')
+  await expect(page.getByTestId('wiki-upload-progress')).not.toContainText('Feltöltés:')
+  await expect(page.getByRole('button', { name: 'Fájlok kiválasztása', exact: true })).toBeEnabled()
+
+  await page.route('**/control-plane/knowledge/**', async (route) => {
+    if (route.request().method() === 'POST') await route.abort('failed')
+    else await route.continue()
+  })
+  await page.getByTestId('wiki-inbox-file-input').setInputFiles([
+    { name: 'kapcsolathiba.txt', mimeType: 'text/plain', buffer: Buffer.from('hiba') },
+  ])
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('kapcsolathiba.txt')
+  await expect(page.getByTestId('wiki-upload-progress')).not.toContainText('Feltöltés:')
+  await expect(page.getByRole('button', { name: 'Fájlok kiválasztása', exact: true })).toBeEnabled()
+  await page.unroute('**/control-plane/knowledge/**')
 
   const kb = await prisma.connector.findFirstOrThrow({ where: { tenantId, ownerUserId: devUserId, visibility: 'private_to_user' } })
   const queued = await prisma.document.findMany({ where: { connectorId: kb.id, wikiStatus: 'pending' } })

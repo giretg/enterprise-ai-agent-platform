@@ -463,6 +463,7 @@ export class WikiConsoleService {
       buffer: input.buffer,
       purpose: input.purpose ?? null,
     })
+    if (stored.duplicate) return { status: 'duplicate', existingDocumentId: stored.documentId }
     await this.deps.wikis.submitToInbox({
       documentId: stored.documentId,
       status: 'pending',

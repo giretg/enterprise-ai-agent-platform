@@ -196,6 +196,7 @@ export class KnowledgeBaseService {
       buffer: input.buffer,
       extraction,
       processingMode: 'raw_text_only',
+      deduplicate: true,
       purpose: input.purpose,
     })
   }
@@ -400,17 +401,18 @@ export class KnowledgeBaseService {
     purpose?: string | null
     actor?: 'agent' | 'human'
     extraMetadata?: Record<string, Prisma.InputJsonValue>
+    deduplicate?: boolean
   }) {
     const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
     const purpose = normalizeKbPurpose(input.purpose)
-    const document = await this.deps.documents.create({
+    const data = {
       tenantId,
       filename,
       extractedText: extraction.markdown,
       mimeType: input.mimeType ?? null,
       contentHash,
-      status: 'processed',
+      status: 'processed' as const,
       processingMode: input.processingMode,
       metadata: {
         ...input.extraMetadata,
@@ -419,7 +421,17 @@ export class KnowledgeBaseService {
       },
       connectorId: connector.id,
       uploadedById,
-    })
+    }
+    const stored = input.deduplicate
+      ? await this.deps.documents.createIfAbsent(data)
+      : { document: await this.deps.documents.create(data), created: true }
+    const document = stored.document
+    if (!stored.created) {
+      return {
+        documentId: document.id, filename: document.filename, processingMode: input.processingMode,
+        artifactId: null, chunkCount: 0, pageCount: 0, searchable: true, duplicate: true,
+      }
+    }
 
     let artifactId: string | undefined
     let chunkCount = 0
@@ -498,6 +510,7 @@ export class KnowledgeBaseService {
       chunkCount,
       pageCount,
       searchable: true,
+      duplicate: false,
     }
   }
 

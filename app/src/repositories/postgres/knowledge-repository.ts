@@ -137,6 +137,17 @@ export class PostgresDocumentRepository implements DocumentRepository {
     })
   }
 
+  async createIfAbsent(data: Parameters<DocumentRepository['createIfAbsent']>[0]) {
+    return prisma.$transaction(async (tx) => {
+      // Az ellenőrzés és mentés több szerverpéldány között is egyetlen művelet.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${data.connectorId}), hashtext(${data.contentHash}))`
+      const existing = await tx.document.findFirst({ where: { connectorId: data.connectorId, contentHash: data.contentHash } })
+      if (existing) return { document: existing, created: false }
+      const document = await tx.document.create({ data })
+      return { document, created: true }
+    })
+  }
+
   async findById(id: string): Promise<Document | null> {
     return prisma.document.findUnique({ where: { id } })
   }

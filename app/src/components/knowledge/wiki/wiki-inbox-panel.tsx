@@ -80,7 +80,8 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
     setError(null)
     const tooLarge = files.filter((file) => file.size > MAX_FILE_BYTES).map((file) => file.name)
     const queue = files.filter((file) => file.size > 0 && file.size <= MAX_FILE_BYTES)
-    const state: UploadState = { total: files.length, done: tooLarge.length, duplicates: [], tooLarge, failed: [] }
+    const failed = files.filter((file) => file.size === 0).map((file) => file.name)
+    const state: UploadState = { total: files.length, done: tooLarge.length + failed.length, duplicates: [], tooLarge, failed }
     setUpload({ ...state })
     const batchId = crypto.randomUUID()
     let next = 0
@@ -93,11 +94,16 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
         form.set('batchId', batchId)
         form.set('batchSeq', String(seq))
         form.set('file', file)
-        const res = await uploadWikiInboxFileAction(form)
-        if (!res.success) state.failed.push(file.name)
-        else if (res.data.status === 'duplicate') state.duplicates.push(file.name)
-        state.done++
-        setUpload({ ...state, duplicates: [...state.duplicates], failed: [...state.failed] })
+        try {
+          const res = await uploadWikiInboxFileAction(form)
+          if (!res.success) state.failed.push(file.name)
+          else if (res.data.status === 'duplicate') state.duplicates.push(file.name)
+        } catch {
+          state.failed.push(file.name)
+        } finally {
+          state.done++
+          setUpload({ ...state, duplicates: [...state.duplicates], failed: [...state.failed] })
+        }
       }
     }
     await Promise.all(Array.from({ length: Math.min(PARALLEL_UPLOADS, queue.length) }, worker))

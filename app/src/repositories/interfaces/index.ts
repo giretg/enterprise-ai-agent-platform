@@ -732,6 +732,7 @@ export interface DocumentRepository {
     connectorId?: string | null
     uploadedById: string
   }): Promise<Document>
+  createIfAbsent(data: Parameters<DocumentRepository['create']>[0] & { connectorId: string; contentHash: string }): Promise<{ document: Document; created: boolean }>
   findById(id: string): Promise<Document | null>
   findByConnectorId(connectorId: string): Promise<Document[]>
   listByConnectorId(connectorId: string): Promise<DocumentListItem[]>
