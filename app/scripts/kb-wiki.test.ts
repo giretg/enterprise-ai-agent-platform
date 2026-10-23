@@ -736,6 +736,11 @@ async function main() {
     assert.equal(hiddenSearch.hits.length, 0)
     assert.equal(documents.get(src.documentId)!.wikiStatus, 'processed')
 
+    const preview = await wikiService.previewChangeSet(TENANT, approvalCs)
+    assert.equal(preview?.pages[0].before, null)
+    assert.match(preview!.pages[0].after.body, /zebra/)
+    assert.deepEqual(preview!.changeSet.sourceDocumentIds, [src.documentId])
+
     // D4: az író (nem jóváhagyó) nem dönthet.
     const self = await approveGatewayOperation(gatewayDeps, { tenantId: TENANT, operationId: approvalOp, actor: principal(OWNER) })
     assert.equal(self.ok, false)
@@ -783,6 +788,14 @@ async function main() {
     assert.equal(archive.status, 'awaiting_approval')
     assert.deepEqual(archive.pendingPages, [{ path: 'concepts/cili.md', action: 'archive' }])
     assert.equal(archive.applied.pages[0].path, 'concepts/sajat.md')
+    assert.equal((await wikis.findPage(KB_A, 'concepts/cili.md'))!.status, 'published')
+    // #946 jóváhagyó kártya: a D5-ös tétel kiemelve, a mostani állapothoz képest, írás nélkül.
+    const preview = await wikiService.previewChangeSet(TENANT, archive.changeSetId)
+    assert.ok(preview && !preview.blocking, JSON.stringify(preview?.blocking))
+    assert.equal(preview.pages.length, 1)
+    assert.equal(preview.pages[0].action, 'archive')
+    assert.equal(preview.pages[0].othersPage, true)
+    assert.equal(preview.pages[0].before?.body, 'Cili oldala.')
     assert.equal((await wikis.findPage(KB_A, 'concepts/cili.md'))!.status, 'published')
     const approved = await approveGatewayOperation(gatewayDeps, { tenantId: TENANT, operationId: archive.operationId, actor: principal(APPROVER) })
     assert.equal(approved.ok && approved.view.status, 'succeeded', JSON.stringify(approved))

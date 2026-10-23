@@ -161,6 +161,45 @@ export class KnowledgeBaseService {
     })
   }
 
+  /**
+   * #946 tálca-feltöltés a Control Plane-ről: egy adott tudásbázisba, agent nélkül.
+   * A láthatóságot (privát KB) itt is ellenőrizzük, nem csak a hívóban.
+   */
+  async ingestIntoKnowledgeBase(input: {
+    tenantId: string
+    connectorId: string
+    uploadedById: string
+    filename: string
+    mimeType?: string | null
+    buffer: Buffer
+    purpose?: string | null
+  }) {
+    if (input.buffer.byteLength === 0) throw new Error('File is empty')
+    if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
+    const filename = sanitizeFilename(input.filename)
+    if (!filename) throw new Error('Invalid filename')
+    const connector = await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
+    if (
+      !connector || connector.tenantId !== input.tenantId || connector.type !== 'knowledge_base' ||
+      connector.lifecycleState !== 'active' || !isKnowledgeBaseVisibleTo(connector, input.uploadedById)
+    ) {
+      throw new Error('not_found')
+    }
+    const extraction = await extractStructured({ buffer: input.buffer, filename, mimeType: input.mimeType })
+    return this.store({
+      tenantId: input.tenantId,
+      connector,
+      agentId: null,
+      uploadedById: input.uploadedById,
+      filename,
+      mimeType: input.mimeType,
+      buffer: input.buffer,
+      extraction,
+      processingMode: 'raw_text_only',
+      purpose: input.purpose,
+    })
+  }
+
   async listCatalogDocuments(input: { tenantId: string }) {
     const connector = await this.deps.connectors.findByTenantTypeAndName(
       input.tenantId,

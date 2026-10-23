@@ -91,6 +91,8 @@ export class WikiAccessService {
     actor: WikiActor
     displayName: string
     kbLanguage?: KbLanguage
+    /** #946: a wiki-szabályzat sablonja (#945 olvassa a wiki létrehozásakor). */
+    wikiTemplate?: string
   }): Promise<Connector> {
     const displayName = input.displayName.trim().slice(0, MAX_DISPLAY_NAME)
     if (!displayName) throw new WikiAccessError('invalid_args')
@@ -100,7 +102,7 @@ export class WikiAccessService {
       name: `${PRIVATE_KB_NAME_PREFIX}${randomUUID()}`,
       authMode: 'agent_owned',
       scope: 'single',
-      config: { displayName },
+      config: { displayName, ...(input.wikiTemplate ? { wikiTemplate: input.wikiTemplate } : {}) },
       visibility: 'private_to_user',
       ownerUserId: input.actor.userId,
     })

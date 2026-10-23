@@ -141,6 +141,32 @@ export type WikiServiceDeps = {
   now?: () => Date
 }
 
+export type WikiChangeSetPreview = {
+  changeSet: {
+    id: string
+    status: string
+    agentId: string | null
+    userId: string | null
+    createdAt: Date
+    sourceDocumentIds: string[]
+    logEntry: { op?: string; title?: string; note?: string | null } | null
+  }
+  connector: Connector
+  pages: Array<{
+    path: string
+    finalPath: string
+    action: WikiPageInput['action']
+    /** D5: más agent / ember oldalának archiválása vagy áthelyezése. */
+    othersPage: boolean
+    status: 'published' | 'archived'
+    before: { title: string; summary: string; body: string; status: string } | null
+    after: { title: string; summary: string; body: string; sources: WikiSourceRef[] }
+  }>
+  issues: KbValidationIssue[]
+  /** A mostani állapoton a change-set nem alkalmazható (pl. ütközés). */
+  blocking: { code: string; details: Record<string, unknown> } | null
+}
+
 type Target = { wikiId: string; connector: Connector; scope: WikiScope }
 
 type PlannedPage = {
@@ -768,6 +794,64 @@ export class WikiService {
     return true
   }
 
+  /**
+   * #946 jóváhagyó kártya: a change-set oldalai a mostani állapothoz képest,
+   * írás nélkül (ugyanaz a tervezés, mint jóváhagyáskor). Jogot nem ellenőriz.
+   */
+  async previewChangeSet(tenantId: string, changeSetId: string): Promise<WikiChangeSetPreview | null> {
+    const changeSet = await this.deps.wikis.findChangeSet(changeSetId)
+    if (!changeSet) return null
+    const connector = await this.deps.connectors.findById(changeSet.connectorId, tenantId)
+    if (!connector || connector.tenantId !== tenantId || connector.type !== 'knowledge_base') return null
+    const inputs = (Array.isArray(changeSet.pages) ? changeSet.pages : []) as unknown as WikiPageInput[]
+    const plan = await this.plan({
+      connectorId: changeSet.connectorId,
+      agentId: changeSet.agentId ?? '',
+      pages: inputs,
+      sourceDocumentIds: changeSet.sourceDocumentIds,
+    })
+    const stored = changeSet.validation && typeof changeSet.validation === 'object' ? changeSet.validation : {}
+    const storedIssues = Array.isArray((stored as { issues?: unknown }).issues)
+      ? ((stored as { issues: KbValidationIssue[] }).issues)
+      : []
+    const pages: WikiChangeSetPreview['pages'] = plan.ok
+      ? plan.planned.map((page) => ({
+          path: page.input.path,
+          finalPath: page.state.path,
+          action: page.input.action,
+          othersPage: page.othersPage,
+          status: page.status,
+          before: page.existing
+            ? { title: page.existing.title, summary: page.existing.summary, body: page.existing.body, status: page.existing.status }
+            : null,
+          after: { title: page.state.title, summary: page.state.summary, body: page.state.body, sources: page.state.sources },
+        }))
+      : inputs.map((page) => ({
+          path: page.path,
+          finalPath: page.action === 'move' ? page.newPath ?? page.path : page.path,
+          action: page.action,
+          othersPage: false,
+          status: page.action === 'archive' ? 'archived' : 'published',
+          before: null,
+          after: { title: page.title ?? '', summary: page.summary ?? '', body: page.body ?? '', sources: [] },
+        }))
+    return {
+      changeSet: {
+        id: changeSet.id,
+        status: changeSet.status,
+        agentId: changeSet.agentId,
+        userId: changeSet.userId,
+        createdAt: changeSet.createdAt,
+        sourceDocumentIds: changeSet.sourceDocumentIds,
+        logEntry: (changeSet.logEntry ?? null) as WikiChangeSetPreview['changeSet']['logEntry'],
+      },
+      connector,
+      pages,
+      issues: plan.ok ? plan.issues : storedIssues,
+      blocking: plan.ok ? null : { code: plan.code, details: plan.details ?? {} },
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Tervezés + validáció (determinisztikus, írás előtt)
 
@@ -1092,7 +1176,8 @@ export function wikiDisplayName(connector: Pick<Connector, 'name' | 'config' | '
   if (connector.visibility === 'private_to_user') return privateKnowledgeBaseDisplayName(connector) ?? 'Private knowledge base'
   if (connector.name === KB_CATALOG_CONNECTOR_NAME) return 'Company knowledge base'
   if (ownerAgentIdForKnowledgeBase(connector.name)) return 'Agent knowledge base'
-  return connector.name
+  // #946: a Control Plane-en létrehozott közös KB neve a configban él.
+  return privateKnowledgeBaseDisplayName(connector) ?? connector.name
 }
 
 function stateFromRow(page: WikiPage): WikiPageState {

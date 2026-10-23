@@ -238,6 +238,255 @@
     "failBody": "You can close this tab and retry the connection in your AI client."
   },
   "ControlPlane": {
+    "wiki": {
+      "eyebrow": "Knowledge base",
+      "back": "← Back to knowledge bases",
+      "tabsAria": "Knowledge base sections",
+      "authorAgent": "AI teammate",
+      "authorHuman": "person",
+      "tabs": {
+        "wiki": "Wiki",
+        "inbox": "Inbox",
+        "log": "Log",
+        "access": "Who has access",
+        "settings": "Download and delete"
+      },
+      "kind": {
+        "catalog": "Shared catalog",
+        "agent": "Teammate's own",
+        "shared": "Shared",
+        "private": "Private"
+      },
+      "levels": {
+        "none": "No access",
+        "read": "Can read",
+        "submit": "Can submit to inbox",
+        "write": "Can write the wiki"
+      },
+      "modes": {
+        "approval": "With approval",
+        "direct": "Directly"
+      },
+      "common": {
+        "cancel": "Cancel",
+        "close": "Close",
+        "save": "Save",
+        "saving": "Saving…"
+      },
+      "errors": {
+        "not_found": "This knowledge base was not found, or you don't have access to it.",
+        "forbidden": "You don't have permission for this. Shared knowledge bases are managed by your organization's admin.",
+        "invalid_args": "Missing or invalid data. Check the fields and try again.",
+        "too_large": "The file is larger than 10 MB. Split it into smaller parts and upload those.",
+        "generic": "Something went wrong. Please try again a little later."
+      },
+      "header": {
+        "body": "AI teammates work from this knowledge base. The wiki is built from the material uploaded here: a teammate with write access organizes it into linked pages.",
+        "privateBody": "Only you can see this knowledge base. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI)."
+      },
+      "list": {
+        "title": "Knowledge bases and wikis",
+        "intro": "Every knowledge base has a wiki: AI teammates turn the uploaded material into linked pages. Click a row to open its wiki, inbox and access settings.",
+        "empty": "No knowledge base yet. Create one below — or enable the knowledge base tool for a teammate and their own knowledge base is created automatically.",
+        "stats": "{sources} sources · {pages} pages · {size}",
+        "inboxBadge": "{count} waiting in inbox",
+        "unknownOwner": "unknown owner",
+        "privateMetaHelp": "This is someone else's private knowledge base. As an admin you only see that it exists and how big it is — you cannot open its content."
+      },
+      "create": {
+        "open": "New knowledge base",
+        "name": "Name",
+        "namePlaceholder": "e.g. Lab results 2026, Product know-how",
+        "private": "Only I can see it (private)",
+        "privateHelp": "Nobody else can see it, not even the admin — only that it exists and how big it is. You decide which AI teammate may use it.",
+        "privateOnly": "Only admins can create shared knowledge bases, so yours will be private.",
+        "privateNotice": "Only you can see its content. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI).",
+        "template": "Wiki rules template",
+        "templateHelp": "The template tells the AI teammate which pages to create and how to name them. You can change it later.",
+        "submit": "Create",
+        "creating": "Creating…"
+      },
+      "templates": {
+        "general": {
+          "name": "Basic",
+          "description": "General knowledge: sources, entities, concepts, analyses and an overview page."
+        },
+        "health-journal": {
+          "name": "Health journal",
+          "description": "For medical records: lab values over time, diagnoses, medications, providers and a timeline — with exact values and page numbers."
+        }
+      },
+      "toc": {
+        "title": "Contents",
+        "help": "The wiki's pages by category. AI teammates write them from the material in the inbox.",
+        "empty": "The wiki is empty. Upload material on the Inbox tab, then ask a teammate with write access to process it (e.g. \"Process the inbox\").",
+        "uncategorized": "Other"
+      },
+      "overview": {
+        "title": "Overview",
+        "empty": "No pages yet. The wiki starts filling up when a teammate with write access processes the material waiting in the inbox.",
+        "body": "The wiki has {pages} pages. Pick one from the contents.",
+        "inbox": "Inbox: {pending} waiting, {inProgress} in progress.",
+        "writers": "{count, plural, =0 {No teammate can write this wiki — set it up on a teammate's page (Knowledge base section).} one {# teammate can write this wiki.} other {# teammates can write this wiki.}}"
+      },
+      "page": {
+        "writtenBy": "Written by {name} ({kind})",
+        "updated": "last changed {when} · version {version}",
+        "archived": "archived page",
+        "sources": "Sources",
+        "sourcesHelp": "The original documents this page was written from. Click to open the source — for PDFs it jumps to the cited page.",
+        "pageN": "page {n}",
+        "sourceMissing": "source no longer available",
+        "history": "History ({count} versions)",
+        "current": "current",
+        "restoreLater": "Restoring an earlier version is coming later; until then the history is view-only.",
+        "notFound": "This page was not found. It may have been moved or is still waiting for approval.",
+        "missingLink": "{path} — no such page yet"
+      },
+      "source": {
+        "eyebrow": "Original source",
+        "uploaded": "Uploaded {when}",
+        "help": "The text extracted from the document, unchanged. Wiki pages cite this.",
+        "notFound": "Source not found.",
+        "back": "← Back to the wiki"
+      },
+      "inbox": {
+        "title": "Inbox",
+        "help": "Material uploaded here is processed by an AI teammate with write access when you ask it to (e.g. \"Process the inbox\").",
+        "intro": "Collect the material you want turned into wiki pages here. One upload is one batch; the bar below shows how far processing has got.",
+        "dropHere": "Drop files or a whole folder here",
+        "limit": "Many files at once are fine; at most 10 MB per file. The same file is never added twice.",
+        "pickFiles": "Choose files",
+        "pickFolder": "Choose folder",
+        "readOnly": "You can't upload to this inbox. This needs at least operator access.",
+        "uploading": "Uploading: {done}/{total}…",
+        "uploaded": "{total} new files in the inbox.",
+        "duplicates": "{count} files were already in this knowledge base and were skipped: {names}",
+        "tooLarge": "{count} files are larger than 10 MB and were skipped: {names}",
+        "failed": "{count} files could not be uploaded: {names}",
+        "statusTitle": "Processing status",
+        "autoRefresh": "refreshes automatically",
+        "latestBatch": "Latest batch",
+        "batchLine": "{done}/{total} done · {pending} waiting · {inProgress} in progress",
+        "totals": "Total: {pending} waiting · {inProgress} in progress · {processed} processed · {skipped} skipped",
+        "empty": "Nothing is waiting. Material placed here is processed by a teammate with write access.",
+        "stale": "waiting 3+ days",
+        "byAgent": "sent by {name} (AI teammate)",
+        "waitingSince": "submitted {when}",
+        "skip": "Skip",
+        "doneList": "Processed and skipped items ({count})",
+        "status": {
+          "pending": "waiting",
+          "in_progress": "in progress",
+          "inProgressBy": "in progress — {name}",
+          "processed": "processed",
+          "skipped": "skipped"
+        }
+      },
+      "log": {
+        "title": "Log",
+        "intro": "What happened to the wiki, in order: processed sources, notes, changes. The log cannot be edited.",
+        "empty": "No entries yet.",
+        "ops": {
+          "ingest": "processing",
+          "query": "saved answer",
+          "lint": "check",
+          "note": "note",
+          "schema": "rules change",
+          "revert": "restore"
+        }
+      },
+      "access": {
+        "title": "Who has access",
+        "intro": "Which AI teammates can use this wiki, and with what rights.",
+        "empty": "No teammate is connected. Grant access on a teammate's page, in the Knowledge base section.",
+        "agent": "Teammate",
+        "level": "Access",
+        "mode": "Write mode",
+        "collect": "What to collect",
+        "howToChange": "Change rights on the teammate's page (Knowledge base section); changes take effect with the next publish."
+      },
+      "owner": {
+        "downloadTitle": "Download",
+        "downloadBody": "The whole wiki in one ZIP file: wiki pages as markdown (opens in Obsidian too) and the extracted text of the uploaded sources.",
+        "download": "Download (ZIP)",
+        "deleteTitle": "Delete permanently",
+        "deleteBody": "The knowledge base is deleted with all its pages, sources, history and log. AI teammates lose access too.",
+        "deleteStart": "Delete knowledge base…",
+        "irreversible": "This cannot be undone.",
+        "typeName": "To confirm, type the knowledge base name: {name}",
+        "deleteConfirm": "Delete permanently",
+        "deleting": "Deleting…"
+      },
+      "agent": {
+        "title": "Wikis and rights",
+        "help": "Can read: the teammate searches and quotes the wiki. Can submit: it may put material in the inbox but writes no pages. Can write: it writes and edits pages — with approval or directly.",
+        "intro": "Which wikis this teammate may read, submit to or write, and what it should collect there. Other people's private knowledge bases are not shown here.",
+        "empty": "No knowledge base available. You can create one in the Knowledge base menu.",
+        "own": "Own knowledge base",
+        "pages": "{count} pages",
+        "access": "Access",
+        "accessHelp": "None: the teammate can't even see it. Can read: searches and quotes. Can submit to inbox: sends material for a writing teammate to process. Can write the wiki: writes pages.",
+        "mode": "Write mode",
+        "modeHelp": "With approval: every change goes to the wiki owner for approval and stays hidden until then. Directly: appears immediately (archiving someone else's page still needs approval).",
+        "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to agents that run on a high-quality AI model; for the others, submitting is enough.",
+        "collect": "What should it collect in this wiki?",
+        "collectHelp": "A sentence or two for the teammate: what knowledge to put here from conversations and processed material.",
+        "collectPlaceholder": "e.g. Lab results, diagnoses and medications from the uploaded records",
+        "adminOnly": "Rights on shared knowledge bases are set by the admin.",
+        "privateOwnerOnly": "This is someone else's private knowledge base; only its owner can change it.",
+        "saved": "Saved. Takes effect after publishing.",
+        "publishNote": "The change takes effect with the teammate's next publish (versioned and logged).",
+        "publishLink": "Publish"
+      },
+      "review": {
+        "loading": "Loading the wiki change…",
+        "unavailable": "We can't show the details of this wiki change (it may already be decided, or you are not the wiki owner).",
+        "headline": "{agent} would change {count, plural, one {# page} other {# pages}} in the \"{wiki}\" wiki.",
+        "details": "Open details and differences",
+        "dialogTitle": "Approve wiki change",
+        "sources": "Sources",
+        "noSources": "No source given.",
+        "changes": "Differences per page",
+        "validation": "Checks",
+        "validationOk": "The automatic check found no problems.",
+        "error": "Error",
+        "warning": "Warning",
+        "blocking": "The wiki has changed since, so this change can't be applied as is. Reject it and ask the teammate to write it again.",
+        "othersPage": "Another author's page",
+        "othersPageNote": "Highlighted: archiving or moving a page written by another teammate or a person — this always needs approval.",
+        "archivedBody": "The page will be archived: removed from the wiki and search; its history is kept.",
+        "unchangedLines": "… {count} unchanged lines …",
+        "pageSources": "Sources:",
+        "issues": {
+          "broken_link": "The page links to a page that doesn't exist yet.",
+          "sensitive_data": "The page contains text that looks sensitive (e.g. a card number or password).",
+          "frontmatter_in_body": "The page started with a technical header; it was ignored.",
+          "missing_source": "The page cites no source.",
+          "unknown_source": "The page cites a source that is not in this knowledge base.",
+          "missing_source_date": "The source page is missing the document's date.",
+          "page_too_large": "The page is too long.",
+          "invalid_path": "The page path is not valid.",
+          "reserved_path": "This page is managed by the system and cannot be written.",
+          "invalid_type": "Unknown page type.",
+          "missing_field": "The title or summary is missing.",
+          "empty_page": "The page is empty.",
+          "duplicate_path": "The same page appears more than once in the change.",
+          "page_not_found": "The page to change does not exist.",
+          "path_taken": "There is already a page at the new location.",
+          "section_not_found": "The section to change was not found on the page.",
+          "empty_patch": "The change contains no edits."
+        },
+        "approve": "Approve",
+        "reject": "Reject",
+        "kind": {
+          "new": "new",
+          "modified": "changed",
+          "archived": "archived",
+          "moved": "moved"
+        }
+      }
+    },
     "shell": {
       "appName": "E-AI",
       "appSubtitle": "Control plane",

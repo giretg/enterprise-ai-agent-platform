@@ -6,6 +6,8 @@ import { getKnowledgeCatalogLanguage, listKnowledgeCatalog } from '@/app/actions
 import { KnowledgeCatalogManager } from '@/components/knowledge/knowledge-catalog-manager'
 import { KnowledgeLanguageCard } from '@/components/knowledge/knowledge-language-card'
 import { resolveKbLanguage } from '@/lib/kb-language'
+import { listKnowledgeBasesAction } from '@/app/actions/knowledge-wiki'
+import { KnowledgeBasesList } from '@/components/knowledge/wiki/knowledge-bases-list'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,11 +15,19 @@ export default async function KnowledgeCatalogPage() {
   const ctx = await getAuthContext()
   const t = await getTranslations('ControlPlane.knowledge')
   const canView = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  // #946: a tudásbázis-lista (benne a saját privát tudásbázisok) mindenkinek látszik.
+  const bases = await listKnowledgeBasesAction()
+  const basesCard = bases.success ? (
+    <KnowledgeBasesList rows={bases.data} canCreateShared={hasMinimumRole(ctx?.activeTenantRole, 'admin')} />
+  ) : null
   if (!canView) {
     return (
-      <Card>
-        <p className="text-sm text-ink-faint">{t('needOperator')}</p>
-      </Card>
+      <div className="space-y-6">
+        {basesCard}
+        <Card>
+          <p className="text-sm text-ink-faint">{t('needOperator')}</p>
+        </Card>
+      </div>
     )
   }
   const res = await listKnowledgeCatalog()
@@ -31,6 +41,8 @@ export default async function KnowledgeCatalogPage() {
         <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">{t('title')}</h1>
         <p className="mt-2 max-w-2xl text-ink-soft">{t('body')}</p>
       </div>
+
+      {basesCard}
 
       {lang.success ? (
         <KnowledgeLanguageCard
