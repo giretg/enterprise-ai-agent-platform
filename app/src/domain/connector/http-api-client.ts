@@ -320,6 +320,7 @@ export function parseHttpApiConfig(
     : Array.isArray(raw.proposedTools)
       ? raw.proposedTools
       : undefined
+  const seededGitHubTemplate = isRecord(raw.provenance) && raw.provenance.templateKey === 'github'
   const endpoints = Array.isArray(endpointSource)
     ? endpointSource
         .filter(isRecord)
@@ -344,7 +345,9 @@ export function parseHttpApiConfig(
           const paginationResult = httpPaginationSchema.safeParse(e.pagination)
           return {
             method,
-            path: String(e.path ?? ''),
+            path: seededGitHubTemplate && e.path === '/repos/{owner}/{repo}/contents/{path}'
+              ? '/repos/{owner}/{repo}/contents/{path...}'
+              : String(e.path ?? ''),
             description: typeof e.description === 'string' ? e.description : undefined,
             profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
             idempotent: e.idempotent === true,
@@ -401,7 +404,7 @@ export function parseHttpApiConfig(
         : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
-    restrictToEndpoints: raw.restrictToEndpoints === true,
+    restrictToEndpoints: raw.restrictToEndpoints === true || (seededGitHubTemplate && Array.isArray(endpointSource)),
     ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
     ...(googleAccount ? { googleAccount } : {}),
     maxResponseChars:
@@ -760,7 +763,16 @@ export class HttpApiClient {
       throw new HttpApiError('path must be relative to the connector baseUrl', 'invalid_path')
     }
     this.assertGitHubRepositoryAllowed(path)
-    const endpoint = findHttpApiEndpoint(this.config, method, path)
+    const basePath = new URL(this.config.baseUrl).pathname.replace(/\/$/, '')
+    const requestPath = this.buildUrl(path).pathname
+    if (basePath && !requestPath.startsWith(`${basePath}/`)) {
+      throw new HttpApiError('path must stay inside the connector baseUrl', 'invalid_path')
+    }
+    const endpointPath = requestPath.slice(basePath.length)
+    const endpoint = findHttpApiEndpoint(this.config, method, endpointPath)
+    if (endpoint?.path.endsWith('/{path...}') && /%(?:2f|5c)/i.test(endpointPath)) {
+      throw new HttpApiError('encoded path separators are not allowed', 'invalid_path')
+    }
     const continuationEndpoint = continuationOf
       ? findHttpApiEndpoint(this.config, method, continuationOf)
       : undefined
@@ -770,11 +782,11 @@ export class HttpApiClient {
           method === 'GET'
           && continuationEndpoint?.pagination?.kind === 'next_link'
           && continuationEndpoint.pagination.continuationPathTemplate
-          && httpApiPathMatches(continuationEndpoint.pagination.continuationPathTemplate, path)
+          && httpApiPathMatches(continuationEndpoint.pagination.continuationPathTemplate, endpointPath)
         ) {
           return continuationEndpoint
         }
-        const reason = explainHttpApiEndpointMiss(this.config, method, path)
+        const reason = explainHttpApiEndpointMiss(this.config, method, endpointPath)
         throw new HttpApiError(
           `endpoint not allowed: ${method} ${path} — ${reason}`,
           'endpoint_not_allowed',
@@ -1416,6 +1428,9 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
 export function httpApiPathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
+  if (t.at(-1) === '{path...}') {
+    return a.length >= t.length && t.slice(0, -1).every((seg, i) => segmentMatches(seg, a[i]))
+  }
   if (t.length !== a.length) return false
   return t.every((seg, i) => segmentMatches(seg, a[i]))
 }

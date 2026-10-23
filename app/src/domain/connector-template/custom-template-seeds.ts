@@ -116,7 +116,7 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       {
         name: 'get_file_contents',
         method: 'GET',
-        path: '/repos/{owner}/{repo}/contents/{path}',
+        path: '/repos/{owner}/{repo}/contents/{path...}',
         access: 'read',
         description:
           'Egy fájl tartalma, vagy könyvtár-útvonalon a könyvtár listája. Fájlnál a platform a base64 tartalmat UTF-8 szöveggé dekódolja (encoding: "utf-8"), tehát közvetlenül olvasható. Nem alapértelmezett ághoz: ?ref=<branch|sha>.',
