@@ -50,6 +50,8 @@ import { selfServiceTenantStore } from '@/repositories/postgres/self-service-ten
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiService } from '@/domain/knowledge-base/wiki-service'
+import { WikiConsoleService } from '@/domain/knowledge-base/wiki-console-service'
+import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
@@ -194,6 +196,18 @@ const wikiService = new WikiService({
     const user = await repositories.users.findById(userId)
     return user ? user.name || user.email : null
   },
+})
+
+const wikiConsoleService = new WikiConsoleService({
+  documents: repositories.documents,
+  connectors: repositories.connectors,
+  agents: repositories.agents,
+  wikis: repositories.wikis,
+  console: new PostgresWikiConsoleRepository(),
+  wiki: wikiService,
+  wikiAccess: wikiAccessService,
+  knowledgeBase: knowledgeBaseService,
+  audit: repositories.audit,
 })
 
 const projectWorkService = new ProjectWorkService(
@@ -582,6 +596,7 @@ export const services = {
   knowledgeBase: knowledgeBaseService,
   wikiAccess: wikiAccessService,
   wiki: wikiService,
+  wikiConsole: wikiConsoleService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

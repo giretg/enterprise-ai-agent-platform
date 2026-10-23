@@ -143,6 +143,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.access.changed',
   'kb.private.created',
   'kb.private.deleted',
+  // #946 Control Plane: közös KB létrehozása, wiki-export (ZIP).
+  'kb.created',
+  'kb.wiki.exported',
 
   'skill.conversation.created',
   'skill.conversation.proposed',
