@@ -49,7 +49,9 @@ import { TenantService } from '@/domain/tenant/tenant-service'
 import { selfServiceTenantStore } from '@/repositories/postgres/self-service-tenant-store'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
-import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { WikiService } from '@/domain/knowledge-base/wiki-service'
+import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
@@ -181,6 +183,19 @@ const wikiAccessService = new WikiAccessService({
   audit: repositories.audit,
 })
 
+const wikiService = new WikiService({
+  wikis: repositories.wikis,
+  documents: repositories.documents,
+  connectors: repositories.connectors,
+  agents: repositories.agents,
+  knowledgeBase: knowledgeBaseService,
+  audit: repositories.audit,
+  async findUserLabel(userId) {
+    const user = await repositories.users.findById(userId)
+    return user ? user.name || user.email : null
+  },
+})
+
 const projectWorkService = new ProjectWorkService(
   repositories.workProjects,
   repositories.workFiles,
@@ -294,7 +309,14 @@ async function resolveDesignatedApprover(input: {
       ? repositories.connectors.findById(input.connectorId, input.tenantId)
       : Promise.resolve(null),
   ])
-  const approverUserId = connector?.approverUserId ?? agent?.approverUserId ?? null
+  // #943 D4: wiki-írásnál a wiki gazdája, nem az író agent jóváhagyója.
+  const wikiScope =
+    connector?.type === 'knowledge_base' ? await wikiService.approverScopeFor(connector) : null
+  const approverUserId = wikiScope
+    ? wikiScope.kind === 'owner_user'
+      ? wikiScope.userId
+      : wikiScope.approverUserId
+    : (connector?.approverUserId ?? agent?.approverUserId ?? null)
   if (!approverUserId) return null
   const [membership, user] = await Promise.all([
     repositories.tenantMemberships.findByTenantAndUser(input.tenantId, approverUserId),
@@ -338,6 +360,24 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   resolveDesignatedApprover,
   startAuthorization,
   audit: repositories.audit,
+  wikiChangeSets: {
+    canDecide: ({ actor, changeSetId }) => wikiService.canDecide(actor, changeSetId),
+    apply: ({ requester, definition, changeSetId }) =>
+      wikiService.applyApproved(
+        {
+          tenantId: requester.tenantId,
+          userId: requester.userId,
+          agentId: definition.agentId,
+          snapshot: {
+            connectors: scopeSnapshotConnectorsToUser(definition.snapshot.connectors, requester.userId),
+          },
+        },
+        changeSetId,
+      ),
+    reject: async ({ tenantId, changeSetId, actorUserId }) => {
+      await wikiService.reject(changeSetId, { tenantId, actorUserId })
+    },
+  },
   async recordCreatedDriveFiles({ grantId, files }) {
     for (const file of files) {
       await recordGoogleDriveAppCreatedFile({ grantId, ...file })
@@ -486,7 +526,25 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
-    executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
+    executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx, wikiService),
+  executeWikiTool: (toolName, args, ctx) => executeWikiTool(wikiService, toolName, args, ctx),
+  resolveKbConnector: async ({ tenantId, wikiId, documentId }) => {
+    const connectorId = wikiId
+      ? (await repositories.wikis.findById(wikiId))?.connectorId
+      : documentId
+        ? (await repositories.documents.findById(documentId))?.connectorId
+        : null
+    if (!connectorId) return null
+    const connector = await repositories.connectors.findById(connectorId, tenantId)
+    return connector?.tenantId === tenantId && connector.type === 'knowledge_base' ? connector.id : null
+  },
+  onWikiApprovalQueued: async ({ tenantId, changeSetId, operationId }) => {
+    if (operationId) {
+      await repositories.wikis.transitionChangeSet(changeSetId, 'pending', 'pending', { gatewayOperationId: operationId })
+    } else {
+      await wikiService.reject(changeSetId, { tenantId, actorUserId: null, reason: 'not_queued' })
+    }
+  },
   loadSkillVersion: async (skillVersionId) => {
     const version = await repositories.skills.findVersionById(skillVersionId)
     if (!version) return null
@@ -523,6 +581,7 @@ export const services = {
   connectorGrants: connectorGrantService,
   knowledgeBase: knowledgeBaseService,
   wikiAccess: wikiAccessService,
+  wiki: wikiService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

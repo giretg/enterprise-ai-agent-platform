@@ -17,10 +17,11 @@ import {
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
   KB_GET_DOCUMENT_TOOL,
-  KB_INGEST_TOOL,
   KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  KB_WIKI_WRITE_TOOL,
 } from './tool-definitions'
 
 const KB_READ_TOOLS = [KB_GET_DOCUMENT_TOOL, KB_GET_PAGE_TOOL, KB_LIST_INDEX_TOOL, KB_SEARCH_TOOL]
@@ -231,8 +232,13 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'tool_not_configured' }
   }
 
+  // #943: a wiki-írás a `kb_ingest` képességre is épülhet — a tényleges jog a kötés `wikiAccess`-e.
   const accepted =
-    input.toolName === KB_GET_DOCUMENT_TOOL ? KB_READ_TOOLS : [input.toolName]
+    input.toolName === KB_GET_DOCUMENT_TOOL
+      ? KB_READ_TOOLS
+      : input.toolName === KB_WIKI_WRITE_TOOL
+        ? [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL]
+        : [input.toolName]
   const capability = input.definition.snapshot.capabilities.find(
     (row) => accepted.includes(row.toolName) && row.allowed,
   )

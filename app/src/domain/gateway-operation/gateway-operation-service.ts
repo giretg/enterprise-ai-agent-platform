@@ -44,6 +44,8 @@ import {
   isEnterpriseGmailWriteTool,
   isEnterpriseHttpWriteTool,
   isEnterpriseWriteTool,
+  KB_WIKI_WRITE_TOOL,
+  kbWikiWriteOperationArgsSchema,
   MCP_CALL_TOOL,
   schemaForEnterpriseTool,
 } from '@/domain/enterprise-tools/tool-definitions'
@@ -59,8 +61,10 @@ import type {
   GatewayOperationView,
 } from './types'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
+import { redactMetadata } from '@/lib/audit/kb-private-redaction'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { isPrivateKnowledgeBase } from '@/lib/wiki-access'
 
 export type GatewayActor = ToolCallPrincipal
 
@@ -135,7 +139,49 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     agentId: string
     args: Record<string, unknown>
   }) => Promise<MemoryView>
+  /**
+   * #943 `kb_wiki_write`: a change-set a wikiben él, a gateway-sor csak a kártya.
+   * Hiányában a wiki-műveletről senki nem dönthet (fail-closed).
+   */
+  wikiChangeSets?: {
+    /** D4/D13: csak a wiki gazdája; privátnál admin sem. */
+    canDecide(input: { actor: GatewayActor; changeSetId: string }): Promise<boolean>
+    apply(input: {
+      requester: GatewayActor
+      definition: AgentDefinition
+      changeSetId: string
+    }): Promise<{ ok: true; result: unknown } | { ok: false; code: string }>
+    reject(input: { tenantId: string; changeSetId: string; actorUserId: string | null }): Promise<void>
+  }
   audit?: AuditSink
+}
+
+function wikiChangeSetIdOf(row: { toolName: string; argsJson: unknown }): string | null {
+  if (row.toolName !== KB_WIKI_WRITE_TOOL) return null
+  return asUuid(asRecord(row.argsJson).changeSetId) ?? null
+}
+
+/** D13: privát wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
+function wikiApplyResultJson(connector: { visibility?: unknown }, result: unknown): unknown {
+  if (!isPrivateKnowledgeBase(connector)) return result
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return { privateKb: true }
+  const row = result as Record<string, unknown>
+  const pageCount = Array.isArray(row.pages) ? row.pages.length : undefined
+  const rest = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'pages'))
+  return { ...redactMetadata(rest), ...(pageCount !== undefined ? { pageCount } : {}), privateKb: true }
+}
+
+/** #943: a wiki-kártyáról csak a change-set rögzített jóváhagyó-köre dönthet. */
+async function wikiDecisionError(
+  deps: GatewayOperationServiceDeps,
+  row: GatewayOperationRecord,
+  actor: GatewayActor,
+): Promise<GatewayOperationErr | null> {
+  if (row.toolName !== KB_WIKI_WRITE_TOOL) return null
+  const changeSetId = wikiChangeSetIdOf(row)
+  if (!changeSetId || !deps.wikiChangeSets) return err('approver_not_authorized')
+  const allowed = await deps.wikiChangeSets.canDecide({ actor, changeSetId })
+  return allowed ? null : err('approver_not_authorized')
 }
 
 const MESSAGES: Record<string, string> = {
@@ -395,7 +441,8 @@ async function loadAuthorizedWrite(
   })
   const memoryWrite = isProjectMemoryWriteTool(toolName)
   // mcp_call: a kockázati besorolás (write/danger) küldte ide az invokeEnterpriseTool (#395 §3.3).
-  if (!memoryWrite && !isEnterpriseWriteTool(toolName) && toolName !== MCP_CALL_TOOL) {
+  const wikiWrite = toolName === KB_WIKI_WRITE_TOOL
+  if (!memoryWrite && !wikiWrite && !isEnterpriseWriteTool(toolName) && toolName !== MCP_CALL_TOOL) {
     return fail('tool_not_configured')
   }
 
@@ -434,7 +481,11 @@ async function loadAuthorizedWrite(
     return fail('idempotency_key_required', ids)
   }
 
-  const schema = memoryWrite ? schemaForProjectWorkTool(toolName) : schemaForEnterpriseTool(toolName)
+  const schema = memoryWrite
+    ? schemaForProjectWorkTool(toolName)
+    : wikiWrite
+      ? kbWikiWriteOperationArgsSchema
+      : schemaForEnterpriseTool(toolName)
   if (!schema) return fail('tool_not_configured', ids)
   const parsed = schema.safeParse(args)
   if (!parsed.success) return fail('invalid_args', ids)
@@ -665,9 +716,11 @@ export async function rejectGatewayOperation(
   if (!operationId) return err('operation_not_found')
 
   const decidedAt = new Date()
+  let rejectedChangeSetId: string | null = null
   const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
-    const denied = pendingDecisionError(row, input.tenantId, input.actor)
+    const denied = pendingDecisionError(row, input.tenantId, input.actor) ?? (await wikiDecisionError(deps, row, input.actor))
     if (denied) return denied
+    rejectedChangeSetId = wikiChangeSetIdOf(row)
     const updated = await save({
       status: 'rejected',
       approval: {
@@ -697,6 +750,14 @@ export async function rejectGatewayOperation(
         ...(input.reason ? { reasonHash: computeDiffHash(input.reason) } : {}),
       },
     })
+    if (rejectedChangeSetId && deps.wikiChangeSets) {
+      // A change-set is elutasított lesz, a lezárt tálca-tétel visszakerül.
+      await deps.wikiChangeSets.reject({
+        tenantId: input.tenantId,
+        changeSetId: rejectedChangeSetId,
+        actorUserId: input.actor.userId,
+      })
+    }
   }
   return claimed
 }
@@ -716,7 +777,7 @@ export async function approveGatewayOperation(
 
   const decidedAt = new Date()
   const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
-    const denied = pendingDecisionError(row, input.tenantId, input.actor)
+    const denied = pendingDecisionError(row, input.tenantId, input.actor) ?? (await wikiDecisionError(deps, row, input.actor))
     if (denied) return denied
     await save({
       status: 'approved',
@@ -772,6 +833,16 @@ async function executeApprovedOperation(
   const args = asRecord(operation.argsJson)
 
   const fail = async (code: string) => {
+    const changeSetId = wikiChangeSetIdOf(operation)
+    if (changeSetId && deps.wikiChangeSets) {
+      // A kártya innentől nem `awaiting_approval`, Control Plane már nem rejectelhet.
+      // A tálca-tétel `processed` maradna, ha a change-setet nem zárjuk le itt.
+      await deps.wikiChangeSets.reject({
+        tenantId: operation.tenantId,
+        changeSetId,
+        actorUserId: null,
+      })
+    }
     const updated = await deps.operations.update(operation.id, {
       status: 'failed',
       errorCode: code,
@@ -884,6 +955,46 @@ async function executeApprovedOperation(
     args,
   })
   if (!authorized.allowed) return fail(authorized.reason)
+
+  if (operation.toolName === KB_WIKI_WRITE_TOOL) {
+    const changeSetId = wikiChangeSetIdOf(operation)
+    if (!changeSetId || !deps.wikiChangeSets) return fail('tool_not_configured')
+    let applied: Awaited<ReturnType<NonNullable<GatewayOperationServiceDeps['wikiChangeSets']>['apply']>>
+    try {
+      applied = await deps.wikiChangeSets.apply({ requester, definition, changeSetId })
+    } catch {
+      return fail('tool_execution_failed')
+    }
+    if (!applied.ok) return fail(applied.code)
+    const resultJson = wikiApplyResultJson(authorized.connector, applied.result)
+    const updated = await deps.operations.update(operation.id, {
+      status: 'succeeded',
+      resultJson,
+      errorCode: null,
+    })
+    const payload = {
+      operationId: operation.id,
+      connectorId: authorized.connectorId,
+      tenantId: operation.tenantId,
+      changeSetId,
+    }
+    console.info('gateway.operation.succeeded', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'gateway.operation.succeeded',
+      targetType: 'gateway_operation',
+      targetId: operation.id,
+      modelUsed: null,
+      inputRef: operation.toolName,
+      outputRef: changeSetId,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: operation.tenantId,
+    })
+    return updated ?? { ...operation, status: 'succeeded', resultJson, errorCode: null }
+  }
 
   const delegated = authorized.connector.authMode === 'user_delegated'
   const grant = delegated ? authorized.grant ?? null : null
