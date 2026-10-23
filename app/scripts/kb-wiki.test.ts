@@ -128,8 +128,24 @@ const documentRepo = {
     documents.set(row.id, row)
     return row
   },
+  async createSource(data: Record<string, unknown>) {
+    const existing = [...documents.values()].find(
+      (doc) => doc.connectorId === data.connectorId && doc.contentHash === data.contentHash,
+    )
+    return { document: existing ?? await this.create(data), duplicate: !!existing }
+  },
+  async readSource() {
+    return null
+  },
   async findById(id: string) {
     return documents.get(id) ?? null
+  },
+  async update(id: string, data: Record<string, unknown>) {
+    const current = documents.get(id)
+    if (!current) throw new Error('not_found')
+    const next = { ...current, ...data } as Document
+    documents.set(id, next)
+    return next
   },
   async searchRaw() {
     return []
