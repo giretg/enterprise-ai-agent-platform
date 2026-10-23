@@ -4,11 +4,12 @@
  * Futtatás: npm run test:conversation-skill
  */
 import assert from 'node:assert/strict'
+import { prisma } from '../src/lib/db'
+import { buildConversationSkillPorts } from '../src/repositories/postgres/conversation-skill-repository'
 import { readFileSync } from 'node:fs'
 import { REGISTERED_AUDIT_ACTIONS } from '../src/lib/audit/event-catalog'
 import {
   producerSkillAssignmentError,
-  producerSkillCountsForTenant,
   producerSkillMarkerError,
 } from '../src/lib/agent-skill-management'
 import {
@@ -572,42 +573,39 @@ async function main() {
     assert.match(producerSkillAssignmentError('viewer') ?? '', /tenant admin/)
   })
 
-  await check('kiadott (published) gyártó skill számít a tenanton, rendszer nem', () => {
-    assert.equal(
-      producerSkillCountsForTenant(
-        { producesSkills: true, tenantId: null, kind: 'published' },
-        TENANT,
-      ),
-      true,
-    )
-    assert.equal(
-      producerSkillCountsForTenant(
-        { producesSkills: true, tenantId: TENANT, kind: 'tenant' },
-        TENANT,
-      ),
-      true,
-    )
-    assert.equal(
-      producerSkillCountsForTenant(
-        { producesSkills: true, tenantId: 'other', kind: 'tenant' },
-        TENANT,
-      ),
-      false,
-    )
-    assert.equal(
-      producerSkillCountsForTenant(
-        { producesSkills: true, tenantId: null, kind: 'system' },
-        TENANT,
-      ),
-      false,
-    )
-    assert.equal(
-      producerSkillCountsForTenant(
-        { producesSkills: false, tenantId: null, kind: 'published' },
-        TENANT,
-      ),
-      false,
-    )
+  await check('az éles gyártókapu aktív tenant vagy kiadott skillt keres', async () => {
+    const original = prisma.agentSkill.findFirst
+    let calls = 0
+    prisma.agentSkill.findFirst = async (args) => {
+      calls++
+      assert.deepEqual(args, {
+        where: {
+          agentId: AGENT,
+          enabled: true,
+          skillVersion: {
+            status: 'active',
+            skill: {
+              producesSkills: true,
+              OR: [
+                { tenantId: TENANT, kind: 'tenant' },
+                { tenantId: null, kind: 'published' },
+              ],
+            },
+          },
+        },
+        select: { agentId: true },
+      })
+      return { agentId: AGENT }
+    }
+    try {
+      const ports = buildConversationSkillPorts()
+      assert.equal(await ports.producerEnabled({ tenantId: TENANT, agentId: AGENT }), true)
+      assert.equal(calls, 1)
+      prisma.agentSkill.findFirst = async () => null
+      assert.equal(await ports.producerEnabled({ tenantId: TENANT, agentId: AGENT }), false)
+    } finally {
+      prisma.agentSkill.findFirst = original
+    }
   })
 
   await check('a jóváhagyások oldal nem skill-javaslatot listáz, az audit katalógusban benne van', () => {

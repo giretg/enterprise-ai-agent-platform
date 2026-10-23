@@ -32,29 +32,6 @@ export function producerSkillAssignmentError(
 export const PRODUCER_SKILL_TAKEN =
   'Ebben a tenantban már van gyártó skill. Második létrehozását a platform elutasítja.'
 
-/**
- * Egy hozzárendelt, engedélyezett skill gyártóként számít-e ezen a tenanton?
- *
- * - Tenant-skill: csak a saját tenant gyártója.
- * - Kiadott (published) platform-skill: tenant_id nélkül is érvényes, ha
- *   `producesSkills` igaz — különben a katalógusból agentre tehető „Skill készítő”
- *   névre hallgatna, de a beszélgetésből skill beküldés mindig elutasulna.
- * - Rendszer-skill soha nem gyártó.
- */
-export function producerSkillCountsForTenant(
-  skill: {
-    producesSkills: boolean
-    tenantId: string | null
-    kind: 'tenant' | 'published' | 'system'
-  },
-  tenantId: string,
-): boolean {
-  if (!skill.producesSkills) return false
-  if (skill.kind === 'system') return false
-  if (skill.kind === 'published') return skill.tenantId === null
-  return skill.tenantId === tenantId
-}
-
 /** A jelölőt csak a katalógus admin-művelete teheti rá. Tenantonként egy. */
 export function producerSkillMarkerError(input: {
   requested: boolean

@@ -2321,11 +2321,16 @@ function ProducerSkillStatus({
   onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
   const t = useSkillT()
-  if (skill.catalogScope === 'tenant' && skill.kind === 'tenant' && canWrite) {
+  if (skill.catalogScope === 'tenant' && skill.kind === 'tenant' && (canWrite || skill.producesSkills)) {
     return (
       <div className="mb-4 rounded-xl border border-honey/30 bg-honey/5 px-4 py-3">
         <p className="text-xs font-semibold text-ink">{t('producerSectionTitle')}</p>
-        <ProducerSkillToggle skill={skill} running={running} onRun={onRun} />
+        <p className="mt-1 text-xs text-ink-soft">{t('producerPurpose')}</p>
+        {canWrite ? (
+          <ProducerSkillToggle skill={skill} running={running} onRun={onRun} />
+        ) : (
+          <p className="mt-2 text-xs text-ink-soft">{t('producerReadOnlyHint')}</p>
+        )}
       </div>
     )
   }
@@ -2333,7 +2338,8 @@ function ProducerSkillStatus({
     return (
       <div className="mb-4 rounded-xl border border-honey/30 bg-honey/5 px-4 py-3">
         <p className="text-sm font-semibold text-ink">{t('producerPublishedTitle')}</p>
-        <p className="mt-1 text-xs text-ink-soft">{t('producerPublishedHint')}</p>
+        <p className="mt-1 text-xs text-ink-soft">{t('producerPurpose')}</p>
+        <p className="mt-2 text-xs text-ink-soft">{t('producerPublishedHint')}</p>
       </div>
     )
   }

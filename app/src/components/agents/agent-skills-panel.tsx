@@ -1,6 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { useState, useTransition } from 'react'
 import {
   assignSkillAction,
@@ -94,6 +95,7 @@ export function AgentSkillsPanel({
   bare?: boolean
   onChanged?: () => void
 }) {
+  const t = useTranslations('SkillCatalog')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -147,7 +149,7 @@ export function AgentSkillsPanel({
                   ) : null}
                   {s.producesSkills ? (
                     <span className="ml-2">
-                      <Badge tone="warning">gyártó</Badge>
+                      <Badge tone="warning">{t('producer')}</Badge>
                     </span>
                   ) : null}
                 </div>
@@ -161,10 +163,10 @@ export function AgentSkillsPanel({
               </div>
               <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
               {s.producesSkills ? (
-                <p className="mt-1 text-xs text-honey">
+                <p className="mt-1 text-xs text-ink-soft">
                   {s.enabled
-                    ? 'Gyártó skill: ezen az agenten a beszélgetésből skill készülhet.'
-                    : 'Gyártó skill, de le van tiltva — a beszélgetésből skill beküldés nem megy, amíg nincs Engedélyezés.'}
+                    ? t('producerAgentEnabled')
+                    : t('producerAgentDisabled')}
                 </p>
               ) : null}
 
