@@ -1,3 +1,4 @@
+import { WIKI_TEMPLATES, type WikiTemplateId } from '@/lib/wiki-templates'
 /**
  * #942 LLM Wiki 1/6 — agent ↔ wiki kapcsolat és a privát tudásbázis életciklusa
  * (#941 D2, D13, D14, D16). UI és MCP-eszköz itt nincs; ez a szabály-réteg,
@@ -91,7 +92,9 @@ export class WikiAccessService {
     actor: WikiActor
     displayName: string
     kbLanguage?: KbLanguage
+    wikiTemplate?: WikiTemplateId
   }): Promise<Connector> {
+    if (input.wikiTemplate !== undefined && !WIKI_TEMPLATES.some(template => template.id === input.wikiTemplate)) throw new WikiAccessError('invalid_args')
     const displayName = input.displayName.trim().slice(0, MAX_DISPLAY_NAME)
     if (!displayName) throw new WikiAccessError('invalid_args')
     let connector = await this.deps.connectors.create({
@@ -100,7 +103,7 @@ export class WikiAccessService {
       name: `${PRIVATE_KB_NAME_PREFIX}${randomUUID()}`,
       authMode: 'agent_owned',
       scope: 'single',
-      config: { displayName },
+      config: { displayName, ...(input.wikiTemplate ? { wikiTemplate: input.wikiTemplate } : {}) },
       visibility: 'private_to_user',
       ownerUserId: input.actor.userId,
     })

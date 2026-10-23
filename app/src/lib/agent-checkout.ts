@@ -1,3 +1,4 @@
+import { renderAgentWikiBriefing, type AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { dump as yamlDump } from 'js-yaml'
 import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
 import type { AgentDefinition } from '@/domain/agent-definition'
@@ -410,6 +411,7 @@ function renderWriteApprovalBriefing(modes?: AgentWriteApprovalModes): string[] 
 export function renderAgentBriefing(input: {
   definition: AgentDefinition
   skills: CheckoutSkill[]
+  wikis?: AgentWikiBriefing[]
   bound?: boolean
   recentSessionLogs?: SessionLogHeadline[]
   handoffs?: Array<{ id: string; title: string; projectKey: string; createdAt: string; fromAgentName: string | null }>
@@ -494,7 +496,7 @@ export function renderAgentBriefing(input: {
     '',
     'All work for this agent runs through this MCP server — there is no separate in-platform chat runtime.',
     '',
-    renderKnowledgePlacementBlock(),
+    renderKnowledgePlacementBlock({ wikiCapable: input.wikis?.some(wiki => wiki.access !== 'read') }),
     '',
     '- Memory: memoryIndex in platform.agent.get_definition; full text via platform.project_memory.read (ids or query). Read before answering company questions or searching. Write: platform.project_memory.write (omit projectKey for general memory).',
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
@@ -615,6 +617,8 @@ export function renderAgentBriefing(input: {
       )
     }
   }
+  const wikiBlock = renderAgentWikiBriefing(input.wikis ?? [], language)
+  if (wikiBlock) lines.push('', wikiBlock)
   return lines.join('\n')
 }
 
@@ -623,6 +627,7 @@ export function renderAgentPrompt(input: {
   definition: AgentDefinition
   skills: CheckoutSkill[]
   task?: string
+  wikis?: AgentWikiBriefing[]
   bound?: boolean
   /** #717 B réteg — lásd `renderAgentBriefing`. */
   language?: TenantLanguage
@@ -644,6 +649,8 @@ function renderAgentsMd(input: {
   contentHash: string
   mcpUrl: string
   skills: CheckoutSkill[]
+  wikis?: AgentWikiBriefing[]
+  language?: TenantLanguage
 }): string {
   const lines = [
     `# ${input.definition.snapshot.name}`,
@@ -653,7 +660,7 @@ function renderAgentsMd(input: {
     `contentHash: ${input.contentHash}`,
     `mcpUrl: ${input.mcpUrl}`,
     '',
-    renderAgentBriefing({ definition: input.definition, skills: input.skills }),
+    renderAgentBriefing({ definition: input.definition, skills: input.skills, wikis: input.wikis, language: input.language }),
   ]
   if (input.skills.length > 0) {
     lines.push('', `Local copies of these skills: \`${SKILL_DIR}/<name>/SKILL.md\`.`)
@@ -676,6 +683,9 @@ export function renderAgentCheckout(input: {
   skills: CheckoutSkill[]
   mcpUrl: string
   harness?: CheckoutHarness | null
+  wikis?: AgentWikiBriefing[]
+  language?: TenantLanguage
+  publishedContentHash?: string
 }): CheckoutBundle {
   const warnings: string[] = []
   const snapshot = input.definition.snapshot
@@ -702,7 +712,7 @@ export function renderAgentCheckout(input: {
     if (count > 1) warnings.push(`skill name collision: ${slug}`)
   }
 
-  const contentHash = hashSnapshot(snapshot)
+  const contentHash = input.publishedContentHash ?? hashSnapshot(snapshot)
   const pin: CheckoutPin = {
     agentId: input.definition.agentId,
     definitionId: input.definition.definitionId,
@@ -812,6 +822,8 @@ export function renderAgentCheckout(input: {
         contentHash,
         mcpUrl: input.mcpUrl,
         skills: resolved,
+        wikis: input.wikis,
+        language: input.language,
       }),
     },
     { path: manifestPath, content: `${JSON.stringify(manifest, null, 2)}\n` },

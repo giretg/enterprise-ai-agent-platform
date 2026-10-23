@@ -1,3 +1,5 @@
+import { renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
+import { resolveKbLanguage } from './kb-language'
 /**
  * #943 LLM Wiki 2/6 — a wiki-oldalak determinisztikus, DB-mentes része (#941 §1, D8, D9).
  *
@@ -318,31 +320,6 @@ export function renderWikiPageMarkdown(state: Omit<WikiPageState, 'path'>): stri
 }
 
 /** Új wiki alap-sémája (§2). Ember szerkeszti a Control Plane-en (D15). */
-export function defaultWikiSchema(kbLanguage: string): string {
-  return `# Wiki rules
-
-This wiki is maintained by AI agents with write access. Raw sources are immutable; wiki pages summarize and connect them.
-
-## Language
-Write every page in: ${kbLanguage}.
-
-## Page types and paths
-- \`sources/<slug>.md\` (type: source) — one summary per raw source. \`source_date\` (the document's own date) is required.
-- \`entities/<slug>.md\` (type: entity) — companies, products, people, systems.
-- \`concepts/<slug>.md\` (type: concept) — terms, rules, topics.
-- \`analyses/<slug>.md\` (type: analysis) — comparisons, answers worth keeping.
-- \`overview.md\` (type: overview) — the big picture.
-Paths: lowercase letters, digits, \`-\` and \`/\`, ending in \`.md\`. \`index.md\`, \`log.md\` and \`WIKI.md\` are generated or edited by humans.
-
-## Every page
-- \`title\`, \`summary\` (one line, shown in index.md), \`category\`.
-- At least one raw source in \`frontmatter.sources\` (documentId from this knowledge base). Never invent sources.
-- Link related pages with \`[[path]]\`.
-- When sources disagree, keep both claims, mark the contradiction, and let the newer \`source_date\` win.
-
-## Ingest
-1. Read index.md and the pages you will touch.
-2. Write the source page, then update the related entity/concept pages (prefer \`patch\` for small additions).
-3. Add a logEntry describing what changed.
-`
+export function defaultWikiSchema(kbLanguage: string, template: WikiTemplateId = 'general'): string {
+  return renderWikiTemplate(template, resolveKbLanguage(kbLanguage))
 }

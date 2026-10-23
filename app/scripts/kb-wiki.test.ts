@@ -584,6 +584,19 @@ async function main() {
     )
   })
 
+  await check('#945 selected health template initializes once in the KB language', async () => {
+    const id = randomUUID()
+    connectors.set(id, connectorRow(id, 'Health', { kbLanguage: 'en', config: { wikiTemplate: 'health-journal' } }))
+    const wikiId = await wikiService.wikiIdForConnector(TENANT, id)
+    const schema = (await wikis.findById(wikiId!))!.schemaMd
+    assert.match(schema, /# Wiki rules — Health journal/)
+    assert.match(schema, /labs\/<parameter>\.md/)
+    assert.match(schema, /## Facts/)
+    connectors.get(id)!.config = { wikiTemplate: 'general' }
+    await wikiService.wikiIdForConnector(TENANT, id)
+    assert.equal((await wikis.findById(wikiId!))!.schemaMd, schema, 'existing schema remains intact')
+  })
+
   let sourceDoc = ''
   let teyaVersion = ''
   await check('1. direct: kb_ingest wiki → kb_wiki_write → olvasható, kereshető, index + log, processed', async () => {
@@ -625,7 +638,7 @@ async function main() {
     const log = await call(OWNER, DEF_A, 'kb_get_page', { wikiId: WIKI_A, path: 'log.md' })
     assert.match(log.text, /## \[2026-10-23\] ingest \| Teya árlista 2026/)
     const schema = await call(OWNER, DEF_A, 'kb_get_page', { wikiId: WIKI_A, path: 'WIKI.md' })
-    assert.match(schema.text, /Write every page in: hu/)
+    assert.match(schema.text, /Nyelv: hu/)
 
     const search = await call(OWNER, DEF_A, 'kb_search', { wikiId: WIKI_A, query: 'Hazai' })
     assert.ok(search.hits.some((hit: any) => hit.kind === 'wiki_page' && hit.path === 'entities/teya.md'), JSON.stringify(search))
@@ -868,6 +881,11 @@ async function main() {
       [{ pending: 1, inProgress: 1, processed: 3, skipped: 0 }],
     )
     assert.deepEqual(listed.items.map((row: any) => row.batchSeq), [4, 5])
+    const briefingWikis = await wikiService.listWikis({ tenantId: TENANT, userId: OWNER, agentId: AGENT_A, snapshot: definitions.get(DEF_A)!.snapshot })
+    const batch = briefingWikis.find(row => row.wikiId === WIKI_A)?.batches.find(row => row.batchId === batchId)
+    assert.deepEqual(batch, { batchId, pending: 1, inProgress: 1, processed: 3, skipped: 0 })
+    const otherBriefing = await wikiService.listWikis({ tenantId: TENANT, userId: OTHER_USER, agentId: AGENT_A, snapshot: definitions.get(DEF_A)!.snapshot })
+    assert.ok(!otherBriefing.some(row => row.connectorId === KB_PRIV))
   })
 
   await check('kind: note — a szerver bélyegzi a felhasználót és az időt (D9)', async () => {
