@@ -223,6 +223,10 @@ jobs:
       - name: Wiki console queries (Postgres)
         run: npm run test:wiki-console-db
 
+      # #947: lelet-forgatókönyv végponttól végpontig (MCP HTTP + privát KB + törlés) valódi Postgresen.
+      - name: Wiki end-to-end (Postgres + MCP)
+        run: npm run test:kb-wiki-e2e
+
   security-scan:
     name: Titok-szkennelés + CodeQL
     runs-on: ubuntu-latest

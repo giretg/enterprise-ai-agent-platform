@@ -154,13 +154,15 @@ export async function executeKnowledgeBaseTool(
         documentId,
         section: typeof args.section === 'string' ? args.section : undefined,
       })
+      // A szkennelt / rossz szövegű oldalak `pageImages`-tippje a foglalásnál se vesszen el (#947).
+      const pdfHint = 'nextStep' in document && document.nextStep ? `${document.nextStep} ` : ''
       return {
         ...document,
         inboxItemId: documentId,
         wikiId: claim.result.wikiId,
         status: 'in_progress',
         claimExpiresAt: claim.result.claimExpiresAt,
-        nextStep: 'Write the pages, then call kb_wiki_write with this wikiId and inboxItemId.',
+        nextStep: `${pdfHint}Write the pages, then call kb_wiki_write with this wikiId and inboxItemId.`,
       }
     }
     return service.getDocument({
