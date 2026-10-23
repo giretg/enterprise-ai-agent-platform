@@ -776,6 +776,38 @@ async function main() {
     assert.equal(documents.get(src.documentId)!.wikiStatus, 'pending')
   })
 
+  await check('3c. jóváhagyás agent_stale: change-set rejected, tálca visszanyílik', async () => {
+    const src = await call(OWNER, DEF_A, 'kb_ingest', {
+      filename: 'stale.md',
+      content: 'Stale.',
+      processingMode: 'wiki',
+      wikiId: WIKI_SHARED,
+    })
+    const write = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_SHARED,
+      inboxItemId: src.documentId,
+      sourceDocumentIds: [src.documentId],
+      pages: [{ path: 'concepts/stale.md', action: 'upsert', type: 'concept', title: 'S', summary: 's', body: 'Stale.' }],
+    })
+    assert.equal(documents.get(src.documentId)!.wikiStatus, 'processed')
+    const published = randomUUID()
+    define(published, AGENT_A, definitions.get(DEF_A)!.snapshot.connectors)
+    currentDefinition[AGENT_A] = published
+    try {
+      const failed = await approveGatewayOperation(gatewayDeps, {
+        tenantId: TENANT,
+        operationId: write.operationId,
+        actor: principal(APPROVER),
+      })
+      assert.equal(failed.ok && failed.view.status, 'failed', JSON.stringify(failed))
+      assert.equal(failed.ok ? failed.view.errorCode : null, 'agent_stale')
+      assert.equal((await wikis.findChangeSet(write.changeSetId))!.status, 'rejected')
+      assert.equal(documents.get(src.documentId)!.wikiStatus, 'pending')
+    } finally {
+      currentDefinition[AGENT_A] = DEF_A
+    }
+  })
+
   await check('4. D5: más által létrehozott oldal archiválása direct módban is jóváhagyásra megy', async () => {
     const src = await call(OWNER, DEF_C, 'kb_ingest', { filename: 'cili.md', content: 'Cili forrása.', processingMode: 'wiki' })
     const created = await call(OWNER, DEF_C, 'kb_wiki_write', {
@@ -941,6 +973,52 @@ async function main() {
     assert.ok(!JSON.stringify(otherInbox).includes(src.documentId))
     // A privát wiki audit-sorai tartalommentesek (path nem kerül bele).
     assert.ok(!JSON.stringify(auditLog).includes('conditions/vercukor'))
+  })
+
+  await check('10b. privát wiki jóváhagyás: resultJson nem tartalmaz path-ot', async () => {
+    const prev = definitions.get(DEF_A)!
+    define(
+      DEF_A,
+      AGENT_A,
+      prev.snapshot.connectors.map((conn) =>
+        conn.connectorId === KB_PRIV ? { ...conn, wikiWriteMode: 'approval' as const } : conn,
+      ),
+    )
+    try {
+      const src = await call(OWNER, DEF_A, 'kb_ingest', {
+        filename: 'vercukor2.md',
+        content: 'Vércukor 6,1.',
+        processingMode: 'wiki',
+        wikiId: WIKI_PRIV,
+      })
+      const write = await call(OWNER, DEF_A, 'kb_wiki_write', {
+        wikiId: WIKI_PRIV,
+        inboxItemId: src.documentId,
+        sourceDocumentIds: [src.documentId],
+        pages: [
+          {
+            path: 'conditions/vercukor-uj.md',
+            action: 'upsert',
+            type: 'concept',
+            title: 'Vércukor',
+            summary: 'v',
+            body: 'Vércukor 6,1.',
+          },
+        ],
+      })
+      assert.equal(write.status, 'awaiting_approval', JSON.stringify(write))
+      const approved = await approveGatewayOperation(gatewayDeps, {
+        tenantId: TENANT,
+        operationId: write.operationId,
+        actor: principal(OWNER),
+      })
+      assert.equal(approved.ok && approved.view.status, 'succeeded', JSON.stringify(approved))
+      const result = JSON.stringify(approved.ok ? approved.view.result : {})
+      assert.equal(result.includes('conditions/vercukor'), false, result)
+      assert.equal(result.includes('vercukor-uj'), false, result)
+    } finally {
+      define(DEF_A, AGENT_A, prev.snapshot.connectors)
+    }
   })
 
   await check('9. D3: a teljes út nem hívott hálózatot / Model Gatewayt', () => {
