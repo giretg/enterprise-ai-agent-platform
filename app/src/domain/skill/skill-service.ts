@@ -1398,6 +1398,7 @@ export class SkillService {
         version: a.skillVersion.version,
         riskTier: a.skillVersion.skill.riskTier,
         kind: a.skillVersion.skill.kind,
+        producesSkills: a.skillVersion.skill.producesSkills,
         content: parseSkillContent(a.skillVersion.content),
         requires,
         readiness,

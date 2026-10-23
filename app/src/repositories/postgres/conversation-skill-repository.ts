@@ -143,7 +143,13 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
           enabled: true,
           skillVersion: {
             status: 'active',
-            skill: { producesSkills: true, tenantId: input.tenantId },
+            skill: {
+              producesSkills: true,
+              OR: [
+                { tenantId: input.tenantId, kind: 'tenant' },
+                { tenantId: null, kind: 'published' },
+              ],
+            },
           },
         },
         select: { agentId: true },
