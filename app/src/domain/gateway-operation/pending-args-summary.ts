@@ -24,6 +24,12 @@ function clip(text: string): string {
   return `${text.slice(0, CONTENT_PREVIEW)}\n…(${text.length} chars)`
 }
 
+/** Linked-account handle execute will use (Calendar/Gmail/Drive multi-account). */
+function accountLine(args: Record<string, unknown>): string | null {
+  const account = str(args.account).trim()
+  return account ? `account: ${account}` : null
+}
+
 /** Stable, human-readable query string from a scalar map (order: key sorted). */
 export function formatScalarQuery(query: unknown): string {
   if (!query || typeof query !== 'object' || Array.isArray(query)) return ''
@@ -98,10 +104,12 @@ export function pendingOperationHeadline(
 ): string {
   const connectorName = str(args.connectorName) || options?.connectorName || 'HTTP API'
   if (toolName === 'http_api_request') {
+    const account = str(args.account).trim()
+    const accountSuffix = account ? ` (${account})` : ''
     const description = str(options?.endpointDescription) || str(args.endpointDescription)
-    if (description) return `${connectorName}: ${description}`
+    if (description) return `${connectorName}: ${description}${accountSuffix}`
     const query = formatScalarQuery(args.query)
-    return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
+    return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}${accountSuffix}`
   }
   if (toolName === 'mcp_call') {
     return `${options?.connectorName || 'MCP-szerver'}: ${str(args.tool) || '—'}`
@@ -137,7 +145,9 @@ export function pendingArgsSummary(
   if (toolName === 'http_api_request') {
     const query = formatScalarQuery(args.query)
     const description = str(labels.endpointDescription)
+    const account = accountLine(args)
     const lines = [
+      ...(account ? [account] : []),
       ...(description ? [description] : []),
       `${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`,
     ]
