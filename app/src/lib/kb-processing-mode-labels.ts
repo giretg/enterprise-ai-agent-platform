@@ -26,6 +26,7 @@ export function kbProcessingModeLabel(mode: KbProcessingModeValue | null | undef
   if (mode === 'raw_text_only') return 'Egyszerű fájl feltöltés'
   if (mode === 'wiki') return 'Feldolgozásra váró forrás'
   if (mode === 'okf') return 'Wiki formátumba alakítás'
+  if (mode === 'wiki') return 'Tanuló tudástár'
   return 'Mód nincs kiválasztva'
 }
 
