@@ -1207,7 +1207,10 @@ async function invokeKbTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return errorResult(code, error instanceof PdfPageImageError ? { nextStep: error.message } : undefined)
+    return errorResult(
+      code,
+      error instanceof PdfPageImageError ? { nextStep: error.message, message: error.message } : undefined,
+    )
   }
 }
 

@@ -388,6 +388,7 @@ export class KnowledgeBaseService {
       status: 'processed',
       processingMode: input.processingMode,
       wikiStatus: input.processingMode === 'wiki' ? 'pending' : null,
+      wikiSubmittedByAgentId: input.processingMode === 'wiki' && input.actor === 'agent' ? agentId : null,
       metadata: {
         [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
         ...(purpose ? { purpose } : {}),
@@ -396,17 +397,29 @@ export class KnowledgeBaseService {
       uploadedById,
     }, extraction.format === 'pdf' ? input.buffer : undefined)
     if (duplicate) {
+      const current =
+        extraction.format === 'pdf' && pdfPageQuality(document.metadata).length === 0
+          ? await this.deps.documents.update(document.id, {
+              metadata: {
+                ...(typeof document.metadata === 'object' && document.metadata !== null && !Array.isArray(document.metadata)
+                  ? (document.metadata as Record<string, unknown>)
+                  : {}),
+                [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
+              },
+            })
+          : document
+      const pages = pdfPageQuality(current.metadata)
       return {
-        documentId: document.id,
-        filename: document.filename,
-        processingMode: document.processingMode,
+        documentId: current.id,
+        filename: current.filename,
+        processingMode: current.processingMode,
         artifactId: null,
         chunkCount: 0,
         pageCount: 0,
-        searchable: document.status === 'processed',
-        duplicateOf: { documentId: document.id, filename: document.filename, wikiStatus: document.wikiStatus },
-        pages: pdfPageQuality(document.metadata),
-        nextStep: pdfQualityHint(pdfPageQuality(document.metadata)),
+        searchable: current.status === 'processed',
+        duplicateOf: { documentId: current.id, filename: current.filename, wikiStatus: current.wikiStatus },
+        pages,
+        nextStep: pdfQualityHint(pages),
       }
     }
 
@@ -659,7 +672,6 @@ export class KnowledgeBaseService {
     tenantId?: string; userId?: string
   }) {
     if (input.pageImages) {
-      // Defense in depth: authorization must precede fetching the original bytes.
       const connector = input.tenantId && await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
       if (!connector || !input.userId || connector.tenantId !== input.tenantId ||
         connector.type !== 'knowledge_base' || connector.lifecycleState !== 'active' ||

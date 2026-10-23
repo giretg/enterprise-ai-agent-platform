@@ -732,6 +732,7 @@ export interface DocumentRepository {
     connectorId?: string | null
     uploadedById: string
     wikiStatus?: Document['wikiStatus']
+    wikiSubmittedByAgentId?: string | null
   }): Promise<Document>
   /** Atomic, connector-scoped duplicate detection; originals cascade with the Document. */
   createSource(data: Parameters<DocumentRepository['create']>[0], rawBytes?: Buffer): Promise<{ document: Document; duplicate: boolean }>

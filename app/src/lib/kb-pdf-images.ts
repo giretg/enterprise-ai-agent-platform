@@ -54,8 +54,11 @@ export async function renderPdfPages(buffer: Buffer, selection?: string) {
         imageDataUrl: false,
       })
       const image = screenshot.pages[0]
+      if (!image?.data?.byteLength) {
+        throw new PdfPageImageError('invalid_pdf_page', 'Could not render this PDF page.')
+      }
       bytes += image.data.byteLength
-      if (!image.data.byteLength || bytes > KB_PDF_MAX_IMAGE_BYTES) {
+      if (bytes > KB_PDF_MAX_IMAGE_BYTES) {
         throw new PdfPageImageError('page_images_too_large', 'Request fewer pages per call (PNG limit: 5 MiB).')
       }
       images.push({ page: image.pageNumber, data: Buffer.from(image.data).toString('base64'), mimeType: 'image/png', width: image.width, height: image.height })

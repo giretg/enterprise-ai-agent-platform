@@ -11,6 +11,7 @@ import { executeKnowledgeBaseTool } from '../src/domain/enterprise-tools/handler
 import { invokeEnterpriseTool, type EnterpriseToolDeps } from '../src/domain/enterprise-tools'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import { kbDocumentImageResult } from '../src/auth/mcp-server'
+import { pdfPageQuality } from '../src/lib/kb-extraction'
 import { kbPdfFixtures } from './fixtures/kb-pdf'
 
 async function main() {
@@ -43,6 +44,7 @@ async function main() {
   assert.deepEqual(duplicate.duplicateOf, { documentId: first.documentId, filename: args.filename, wikiStatus: 'pending' })
   assert.equal(await prisma.document.count({ where: { connectorId: connector.id } }), 1)
   assert.equal(await prisma.document.count({ where: { connectorId: connector.id, wikiStatus: 'pending' } }), 1)
+  assert.equal((await documents.findById(first.documentId))?.wikiSubmittedByAgentId, agent.id)
   assert.deepEqual(await documents.readSource(first.documentId), fixtures.mixed)
   assert.deepEqual(first.pages.map((p) => p.textQuality), ['ok', 'no_text', 'low_text'])
   assert.match(first.nextStep!, /pageImages/)
@@ -81,6 +83,7 @@ async function main() {
   const invalid = await invokeEnterpriseTool(deps, { ...request, args: { ...request.args, pages: '1-6' } })
   assert.ok('content' in invalid && invalid.isError)
   assert.equal(JSON.parse(invalid.content[0].text).code, 'too_many_pages')
+  assert.match(JSON.parse(invalid.content[0].text).message, /5 pages/)
   assert.match(JSON.parse(invalid.content[0].text).nextStep, /5 pages/)
   // Other user of the same agent and even an admin cannot read the private original.
   const denied = await invokeEnterpriseTool(deps, { ...request, principal: { ...request.principal, userId: randomUUID(), role: 'admin' } })
@@ -117,8 +120,21 @@ async function main() {
   // Legacy duplicates can acquire missing original bytes, without a new source/inbox item.
   await prisma.documentSourceFile.delete({ where: { documentId: first.documentId } })
   assert.equal(await documents.readSource(first.documentId), null)
-  await ingest()
+  const legacy = await documents.findById(first.documentId)
+  const extraction = (legacy?.metadata as { extraction?: { format?: string; blocks?: Array<Record<string, unknown>> } })?.extraction
+  await documents.update(first.documentId, {
+    metadata: {
+      extraction: {
+        format: extraction?.format ?? 'pdf',
+        blocks: (extraction?.blocks ?? []).map(({ textQuality: _textQuality, ...block }) => block),
+      },
+    },
+  })
+  assert.equal(pdfPageQuality((await documents.findById(first.documentId))!.metadata).length, 0)
+  const backfilled = await ingest()
   assert.deepEqual(await documents.readSource(first.documentId), fixtures.mixed)
+  assert.deepEqual(backfilled.pages.map((page) => page.textQuality), ['ok', 'no_text', 'low_text'])
+  assert.match(backfilled.nextStep!, /pageImages/)
   // Ordinary document deletion and full private KB purge both cascade to original bytes.
   await documents.delete(elsewhere.documentId)
   assert.equal(await documents.readSource(elsewhere.documentId), null)
