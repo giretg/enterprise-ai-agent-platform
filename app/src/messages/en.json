@@ -542,7 +542,9 @@
         "active": "active",
         "suspended": "suspended",
         "retired": "retired"
-      }
+      },
+      "halfFinished": "Half-finished",
+      "halfFinishedHint": "Hiring was left unfinished — click to continue where you left off."
     },
     "dashboard": {
       "eyebrow": "Home",
@@ -589,9 +591,9 @@
         }
     },
     "agentNew": {
-      "eyebrow": "New agent",
-      "title": "Create a teammate",
-      "body": "It starts as a draft. Then you can add tools, skills, and connections."
+      "eyebrow": "New teammate",
+      "title": "Hire a new teammate",
+      "body": "A few simple questions and your new AI colleague is ready. Every step saves automatically; at the end, try them out and put them to work."
     },
     "agentDetail": {
       "eyebrow": "Agent",
@@ -1433,66 +1435,332 @@
   },
   "AgentCreate": {
     "steps": {
+      "start": {
+        "label": "Getting started",
+        "hint": "Where do you start from?"
+      },
       "identity": {
-        "label": "Basics",
-        "hint": "Name, responsibility, role"
+        "label": "Who are they?",
+        "hint": "Name, introduction, picture"
       },
-      "tools": {
-        "label": "Tools",
-        "hint": "What it may call"
+      "duties": {
+        "label": "What do they do?",
+        "hint": "Duties in plain sentences"
       },
-      "skills": {
-        "label": "Skills",
-        "hint": "Assigned from the catalog"
+      "access": {
+        "label": "What can they access?",
+        "hint": "Mail, documents, systems"
       },
-      "connections": {
-        "label": "Connections",
-        "hint": "External systems"
+      "knowledge": {
+        "label": "What should they know?",
+        "hint": "Documents they work from"
       },
-      "done": {
-        "label": "Done",
-        "hint": "Publish and activate"
+      "autonomy": {
+        "label": "How independent?",
+        "hint": "When to ask first"
+      },
+      "team": {
+        "label": "Who works with them?",
+        "hint": "Who can use them"
+      },
+      "advanced": {
+        "label": "Advanced",
+        "hint": "AI model, desktop client, folders"
+      },
+      "launch": {
+        "label": "Put to work",
+        "hint": "Try it and start"
       }
     },
+    "optional": "Optional",
     "back": "Back",
     "next": "Continue",
-    "creating": "Creating…",
-    "createAndContinue": "Create and continue",
-    "nameRequired": "Enter a name, a responsibility, and a role description.",
-    "clonePartial": "The teammate was created, but copying was incomplete: {warnings}",
-    "cloneTools": "tools: {error}",
-    "cloneSkill": "skill: {error}",
+    "skipOrNext": "Continue (optional)",
+    "creating": "Hiring…",
+    "createAndContinue": "Hire and continue",
+    "loading": "Loading…",
+    "saving": "Saving…",
+    "saveFailed": "Could not save. Please try again.",
+    "identityRequired": "Enter a name and one sentence on when to turn to them.",
+    "dutiesRequired": "Add at least one duty.",
+    "clonePartial": "The teammate was created, but not every setting was copied: {warnings}",
+    "cloneTools": "access: {error}",
+    "cloneSkill": "learned method: {error}",
     "cloneConnector": "connection ({name}): {error}",
-    "alreadyCreated": "The teammate already exists as a draft. You can review the basics here; later steps add tools, skills, and connections.",
-    "cloneTitle": "Copy from an existing teammate",
-    "cloneBody": "Pick an agent as a template — role, tools, skills, and connections are copied. You only need to enter the new name.",
-    "cloneSelect": "Template agent",
-    "cloneNone": "None — empty form",
-    "cloneLoading": "Loading template…",
-    "cloneLoaded": "“{name}” template loaded — enter the new name, then continue.",
-    "cloneCopied": "Tools, skills, and connections are copied when the teammate is created.",
+    "cloneApprovals": "independence: {error}",
+    "cloneModel": "AI model: {error}",
+    "cloneAccess": "access ({name}): {error}",
+    "cloneAvatar": "profile picture: {error}",
+    "expertToggle": "Expert view",
+    "expertHelp": "Shows the teammate's full settings form from their profile page on every step — for admins who want to set everything one by one.",
+    "lessMotion": "Less animation",
+    "openDetailSection": "Same on the teammate's profile page →",
     "name": "Name",
-    "scope": "Responsibility (when to call this teammate)",
-    "scopePlaceholder": "Marketing, SEO, content. Sales leads → Gábor.",
-    "role": "Role",
-    "namePlaceholder": "Wiki agent",
-    "rolePlaceholder": "You are the internal knowledge assistant. Answer only from approved documents, in English, with source citations.",
-    "identityHint": "Continue creates the teammate as a draft. After that you can add tools, skills, and connections — if you need to define a new one along the way, it opens in a new window.",
-    "newConnector": "New connection in Connectors",
-    "newConnectorHint": "If a tool has no connector yet, create it here.",
-    "newSkill": "New skill in the catalog",
-    "newSkillHint": "Import or create a skill in the app — assign it here after approval.",
-    "defineConnector": "Define a new connection",
-    "defineConnectorHint": "Draft connector in the connector wizard, in a new window.",
-    "linkedAccounts": "Linked accounts",
-    "linkedAccountsHint": "Connect your own Gmail / Drive if the teammate uses a delegated account.",
-    "draftReady": "{name} draft is ready.",
-    "draftReadyFallback": "The teammate",
-    "openAgent": "Open agent →",
-    "externalTitle": "Something else come to mind?",
-    "externalBody": "It opens in a new browser window — this wizard stays here. If you created something there, refresh the list.",
+    "namePlaceholder": "e.g. Vera from customer care",
+    "intro": "One-sentence introduction — when should people turn to them?",
+    "introHelp": "Colleagues (and other AI teammates) use this to decide when to give them work. Describe in one sentence what they are for.",
+    "introPlaceholder": "Turn to them when a customer writes to the web shop or a complaint comes in.",
+    "avatarTitle": "Profile picture",
+    "avatarAuto": "They get a face based on their name automatically — upload your own picture if you like.",
+    "avatarUpload": "Upload picture",
+    "avatarReplace": "Another picture",
+    "avatarRemove": "Remove own picture",
+    "avatarNotImage": "This is not an image — choose a JPG, PNG or WEBP file.",
+    "avatarFailed": "The picture could not be processed. Try another one.",
+    "toneTitle": "Tone",
+    "toneHelp": "How they talk to colleagues. You can change it any time.",
+    "tone": {
+      "informal": "Informal",
+      "formal": "Formal",
+      "short": "Brief",
+      "detailed": "Detailed",
+      "lang": {
+        "match": "In the asker's language",
+        "hu": "In Hungarian",
+        "en": "In English"
+      }
+    },
+    "toneManualRole": "The job description was written by hand, so tone changes only apply if you rebuild it from cards on the “What do they do?” step.",
+    "roleManualTitle": "The job description was written by hand as text",
+    "roleManualEdit": "Edit as text",
+    "roleManualRebuild": "Rebuild from cards",
+    "dutiesTitle": "Duties",
+    "dutiesBody": "Describe in plain sentences what they should do. 3–6 duties are usually enough.",
+    "dutyPlaceholder": "e.g. Answers customer questions",
+    "addCard": "Add",
+    "examples": "Examples — click to add:",
+    "dontsTitle": "What NOT to do",
+    "dontsBody": "Lines they must never cross. Optional, but it helps a lot.",
+    "dontPlaceholder": "e.g. Never promises refunds",
+    "roleRaw": "Job description as text",
+    "roleRawHelp": "The AI teammate reads this text before every task. It is built from the cards automatically; if you rewrite it here, the cards no longer overwrite it.",
+    "rolePreview": "How the job description is built",
+    "rolePreviewHint": "From the cards and the tone — they read this before every task.",
+    "createHint": "The “Hire” button saves the teammate. They do not start working yet — only at the end, when you put them to work.",
+    "cardEditAria": "Text of card {index}",
+    "cardRemoveAria": "Remove card {index}",
+    "cardsFull": "At most {max} cards can be added.",
+    "inline": {
+      "title": "Missing something?",
+      "body": "Create it right here in a pop-up window — this wizard stays open and the list refreshes when you close it.",
+      "newSystem": "Connect a new company system",
+      "newMethod": "Teach a new method",
+      "accounts": "Connect your own accounts (Gmail, Drive)"
+    },
+    "inlineDialogHint": "Changes are saved immediately. Close the window when you are done.",
+    "inlineDialogClose": "Done, close",
+    "externalTitle": "Thought of something meanwhile?",
+    "externalBody": "Opens in a new browser window — this wizard stays here. If you created something there, refresh the list.",
     "refreshing": "Refreshing…",
-    "refreshList": "Refresh list"
+    "refreshList": "Refresh list",
+    "knowledgeEmpty": "No documents yet. They answer from these and show their sources — add policies, price lists, FAQs. Without documents their answers stay generic.",
+    "autonomy": {
+      "sliderAria": "Level of independence",
+      "default": "default",
+      "custom": "Custom setting: writes are set one by one (see Details). Choosing a level overwrites it.",
+      "alwaysGates": "Approvals required by company policy (e.g. actions marked dangerous) stay in place on every level.",
+      "levels": {
+        "trainee": {
+          "title": "Trainee",
+          "body": "Shows everything before writing or sending. Every write needs human approval.",
+          "short": "Trainee"
+        },
+        "trusted": {
+          "title": "Trusted colleague",
+          "body": "Writes own notes and memory alone; mail, files and company systems with approval.",
+          "short": "Trusted colleague"
+        },
+        "autonomous": {
+          "title": "Independent",
+          "body": "Asks for approval only at gates required by company policy.",
+          "short": "Independent"
+        },
+        "custom": {
+          "title": "Custom",
+          "body": "Writes set one by one.",
+          "short": "Custom independence"
+        }
+      },
+      "detailsTitle": "Details",
+      "detailsHint": "Per write type, and who approves",
+      "driveTitle": "Where to save finished work?",
+      "driveHint": "Google Drive folder for finished documents"
+    },
+    "team": {
+      "options": {
+        "me": {
+          "title": "Only me",
+          "body": "You and the admins can see them. The safest way to start."
+        },
+        "team": {
+          "title": "The whole team",
+          "body": "All {count} colleagues can use them in chat and tasks."
+        },
+        "selected": {
+          "title": "Selected colleagues",
+          "body": "Choose person by person who can view or use them."
+        }
+      },
+      "onlyYou": "Nobody but you and the admins will see them.",
+      "nobodyElse": "There are only admins in the organization right now — they all can see them.",
+      "revokeTitle": "Revoke access?",
+      "revokeBody": "{count} colleague(s) will lose access to this teammate.",
+      "revokeConfirm": "Revoke"
+    },
+    "advanced": {
+      "modelTitle": "Thinking engine",
+      "modelHint": "Which AI model works behind them — the company setting by default",
+      "hermesTitle": "Desktop client limits",
+      "hermesHint": "What they may do in the desktop AI client on a computer",
+      "localRootsTitle": "Local folders",
+      "localRootsHint": "For developer teammates: which folders they may work in on the computer"
+    },
+    "launch": {
+      "testTitle": "Try them with these questions",
+      "testSafe": "On Trainee level they ask before every write or send — so trying them out is safe, nothing goes out without your approval.",
+      "testCareful": "Note: on this level of independence they can write without approval. Consider switching to Trainee for testing.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "retired": "This teammate has retired and cannot be put back to work.",
+      "readyBody": "If everything looks good, put them to work: from then on colleagues can work with them in chat and tasks.",
+      "updateBody": "They are working, but you changed something since. Apply the changes so colleagues work with the new settings.",
+      "cta": "Put to work",
+      "update": "Apply changes",
+      "launching": "Putting to work…",
+      "liveTitle": "{name} is now at work!",
+      "liveBody": "Write to them in your own AI client (e.g. Claude, ChatGPT, Codex), or give them a task.",
+      "chatNow": "Write to them now",
+      "giveTicket": "Give them a ticket"
+    },
+    "openAgent": "Teammate profile →",
+    "card": {
+      "unnamed": "Unnamed teammate",
+      "statusLive": "At work",
+      "statusNotYet": "Not working yet",
+      "duties": "{count, plural, one {# duty} other {# duties}}",
+      "access": "{count, plural, one {# access} other {# accesses}}",
+      "methods": "{count, plural, one {# learned method} other {# learned methods}}",
+      "knowledge": "{count, plural, one {# document} other {# documents}}"
+    },
+    "readiness": {
+      "title": "Ready for work",
+      "short": "Ready for work: {percent}%",
+      "complete": "All set — ready for work!",
+      "missing": {
+        "name": "No name yet",
+        "intro": "No introduction — colleagues won't know when to turn to them",
+        "duty": "No duties yet",
+        "access": "No access to anything — they can only chat",
+        "knowledge": "No documents yet — answers will be generic",
+        "team": "Nobody but you can see them",
+        "launch": "Not at work yet"
+      }
+    },
+    "milestones": {
+      "draft": "Suggestion ready — review it and change anything you like.",
+      "created": "{name} hired! Now choose what they can access.",
+      "access": "First access granted — {name} can already work.",
+      "launched": "{name} is at work. Congratulations! 🎉"
+    },
+    "tips": {
+      "start": "Quickest: describe in a sentence or two what they should do — you can fully rewrite the suggestion on the next steps.",
+      "identity": "A good name is short and telling, e.g. “Invoice Ivy”. Colleagues use the introduction to decide when to ask them.",
+      "duties": "One card = one duty. Write it the way you would tell a new colleague.",
+      "access": "Only switch on what they really need. “Read” is enough to start — you can allow writing later.",
+      "knowledge": "The more precise the documents, the more precise the answers. Policies, price lists and FAQs work best.",
+      "autonomy": "Start as Trainee: they ask before every write. Once you trust them, give more independence.",
+      "team": "To start, it is enough if only you can see them. Once it works, share with the team in one click.",
+      "advanced": "Feel free to skip this step — the defaults suit most teammates.",
+      "launch": "After putting them to work, try the suggested questions. If something is off, come back and change it any time."
+    },
+    "start": {
+      "recommended": "recommended",
+      "describe": {
+        "title": "Describe it in a sentence or two",
+        "body": "Tell us what they should do and we prepare a suggestion — you can change everything.",
+        "label": "What should the new teammate do?",
+        "placeholder": "Answer the web shop's customer emails, and tell me when a complaint comes in.",
+        "hint": "The suggestion only fills in the next steps — it switches nothing on and does not start working by itself.",
+        "required": "Write at least one sentence.",
+        "cta": "Suggest"
+      },
+      "sample": {
+        "title": "Pick a sample",
+        "body": "A ready starting point for common roles."
+      },
+      "clone": {
+        "title": "Copy an existing teammate",
+        "body": "Duties, access, independence and team — without passwords or personal accounts.",
+        "select": "Who do you copy?",
+        "none": "Choose a teammate…",
+        "loading": "Loading…",
+        "loaded": "Settings of “{name}” loaded — enter the new name on the next step.",
+        "copied": "Access, learned methods, independence, AI model and team are copied when hiring. Documents and memory are not copied."
+      },
+      "blank": {
+        "title": "Blank page",
+        "body": "You set everything yourself, from scratch."
+      }
+    },
+    "deck": {
+      "toolsTitle": "What can they use?",
+      "toolsHelp": "Per card choose: off, read only, or write too. “Write too” always includes reading. Every click is saved immediately.",
+      "levels": {
+        "off": "Off",
+        "read": "Read",
+        "write": "Write too"
+      },
+      "partial": "Partly on (set one by one). Choosing a level overwrites it.",
+      "needsAccount": {
+        "gmail": "Gmail account needs to be connected",
+        "drive": "Google Drive needs to be connected"
+      },
+      "cards": {
+        "mail": {
+          "title": "Mail",
+          "read": "Searches and reads emails",
+          "write": "Writes replies, sends mail, labels"
+        },
+        "documents": {
+          "title": "Documents",
+          "read": "Searches and reads files on Drive",
+          "write": "Creates and edits files and folders"
+        },
+        "sheets": {
+          "title": "Spreadsheets",
+          "read": "",
+          "write": "Writes cells in spreadsheets"
+        },
+        "company": {
+          "title": "Company systems",
+          "read": "Looks up data in company systems",
+          "write": "Writes or changes data in company systems"
+        },
+        "knowledge": {
+          "title": "Knowledge base",
+          "read": "Searches documents, shows sources",
+          "write": "Uploads new material, writes wiki pages"
+        },
+        "compute": {
+          "title": "Calculations",
+          "read": "Makes calculations and reports",
+          "write": ""
+        }
+      },
+      "systemsTitle": "Company system connections",
+      "systemsHelp": "Systems already connected at your company (e.g. CRM, invoicing). Choose which they may use, and whether they may only read or also write.",
+      "systemsEmpty": "No company system connected yet. Add one below under “Missing something?”.",
+      "modeRead": "read",
+      "modeWrite": "write too",
+      "addRead": "+ For reading",
+      "addWrite": "+ For writing too",
+      "remove": "Take away",
+      "methodsTitle": "Learned methods",
+      "methodsHelp": "Ready-made ways of working (e.g. “How we answer complaints”). Once taught, they work by these.",
+      "methodsEmpty": "No methods to teach at the company yet.",
+      "teach": "Teach",
+      "forget": "Unlearn"
+    }
   },
   "AgentPublish": {
     "cardLive": "Available on MCP",

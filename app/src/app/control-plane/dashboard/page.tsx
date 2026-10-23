@@ -187,7 +187,7 @@ export default async function DashboardPage() {
         {agentsRes.success ? (
           <div className="grid gap-4 md:grid-cols-2">
             {agents.map((agent) => (
-              <AgentCatalogCard key={agent.id} agent={agent} />
+              <AgentCatalogCard key={agent.id} agent={agent} canResumeHire={canCreateAgent} />
             ))}
             {agents.length === 0 ? (
               <Card title={tAgents('emptyTitle')}>

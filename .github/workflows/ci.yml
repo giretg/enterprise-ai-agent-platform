@@ -88,6 +88,8 @@ jobs:
           npm run test:mcp-tenant-context
           npm run test:agent-knowledge-placement
           npm run test:create-agent-wizard
+          npm run test:agent-setting-sections
+          npm run test:agent-hire
           npm run test:project-work
           npm run test:handoff
           npm run test:work-file-output

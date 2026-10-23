@@ -1,5 +1,5 @@
 /**
- * Új-agent varázsló — lépéskapuk és az új-ablakos kitérők.
+ * Új munkatárs felvétele (#957) — lépéskapuk, folytatás, másolás, munkába állítás.
  *
  * Futtatás: npx tsx scripts/create-agent-wizard.test.ts
  */
@@ -13,8 +13,12 @@ import {
   assignableConnectorsFromCatalog,
   canEnterCreateAgentWizardStep,
   cloneTemplateFromAgent,
+  CREATE_AGENT_WIZARD_RESUME_STEP,
   createAgentWizardContinueHref,
+  createAgentWizardLastStepStorageKey,
   initialEnabledToolNames,
+  isDutiesStepComplete,
+  isHalfFinishedAgent,
   isIdentityStepComplete,
   isPreCreateComplete,
   matchAssignableConnectorsByName,
@@ -52,54 +56,79 @@ const filledPre = {
 }
 
 function main() {
-  check('a varázsló végigvezeti a megmaradt konfigurációs lépéseket', () => {
+  check('a varázsló a „munkatárs-felvétel” lépéseit követi (#957)', () => {
     assert.deepEqual(
       CREATE_AGENT_WIZARD_STEPS.map((s) => s.id),
-      ['identity', 'tools', 'skills', 'connections', 'done'],
+      ['start', 'identity', 'duties', 'access', 'knowledge', 'autonomy', 'team', 'advanced', 'launch'],
+    )
+    assert.deepEqual(
+      CREATE_AGENT_WIZARD_STEPS.filter((s) => s.optional).map((s) => s.id),
+      ['advanced'],
     )
   })
 
-  check('üres űrlapon csak az Alapok lépés nyitható', () => {
+  check('üres űrlapon az Indulás és a Ki ő? nyitható', () => {
+    assert.equal(canEnterCreateAgentWizardStep('start', emptyGate), true)
     assert.equal(canEnterCreateAgentWizardStep('identity', emptyGate), true)
-    assert.equal(canEnterCreateAgentWizardStep('tools', emptyGate), false)
-    assert.equal(canEnterCreateAgentWizardStep('done', emptyGate), false)
+    assert.equal(canEnterCreateAgentWizardStep('duties', emptyGate), false)
+    assert.equal(canEnterCreateAgentWizardStep('access', emptyGate), false)
+    assert.equal(canEnterCreateAgentWizardStep('launch', emptyGate), false)
   })
 
-  check('kitöltött alapok még nem nyitják az eszközöket — előbb létre kell hozni', () => {
+  check('kötelező csak a név, a bemutatkozás és egy feladat', () => {
     assert.equal(isIdentityStepComplete(filledPre), true)
     assert.equal(isIdentityStepComplete({ ...filledPre, description: '' }), false)
+    assert.equal(isDutiesStepComplete(filledPre), true)
+    assert.equal(isDutiesStepComplete({ ...filledPre, roleInstruction: ' ' }), false)
     assert.equal(isPreCreateComplete(filledPre), true)
-    assert.equal(canEnterCreateAgentWizardStep('tools', filledPre), false)
-    assert.equal(canEnterCreateAgentWizardStep('skills', filledPre), false)
+    assert.equal(isPreCreateComplete({ ...filledPre, roleInstruction: '' }), false)
   })
 
-  check('eszköz / skill / kapcsolat csak létrehozott agentnél elérhető', () => {
+  check('kitöltött Ki ő? nyitja a Mi a dolga? lépést, de a többit csak a felvétel után', () => {
+    assert.equal(canEnterCreateAgentWizardStep('duties', filledPre), true)
+    assert.equal(canEnterCreateAgentWizardStep('access', filledPre), false)
+    assert.equal(canEnterCreateAgentWizardStep('knowledge', filledPre), false)
+  })
+
+  check('felvétel után minden további lépés elérhető, az Indulás már nem', () => {
     const created = { ...filledPre, createdAgentId: 'agent-1' }
-    assert.equal(canEnterCreateAgentWizardStep('tools', created), true)
-    assert.equal(canEnterCreateAgentWizardStep('skills', created), true)
-    assert.equal(canEnterCreateAgentWizardStep('connections', created), true)
-    assert.equal(canEnterCreateAgentWizardStep('done', created), true)
+    for (const id of ['identity', 'duties', 'access', 'knowledge', 'autonomy', 'team', 'advanced', 'launch'] as const) {
+      assert.equal(canEnterCreateAgentWizardStep(id, created), true, id)
+    }
+    assert.equal(canEnterCreateAgentWizardStep('start', created), false)
   })
 
   check('next / prev a lépéssorrendet követi', () => {
-    assert.equal(nextCreateAgentWizardStep('identity'), 'tools')
-    assert.equal(nextCreateAgentWizardStep('tools'), 'skills')
-    assert.equal(nextCreateAgentWizardStep('done'), null)
-    assert.equal(prevCreateAgentWizardStep('identity'), null)
-    assert.equal(prevCreateAgentWizardStep('tools'), 'identity')
+    assert.equal(nextCreateAgentWizardStep('start'), 'identity')
+    assert.equal(nextCreateAgentWizardStep('duties'), 'access')
+    assert.equal(nextCreateAgentWizardStep('advanced'), 'launch')
+    assert.equal(nextCreateAgentWizardStep('launch'), null)
+    assert.equal(prevCreateAgentWizardStep('start'), null)
+    assert.equal(prevCreateAgentWizardStep('access'), 'duties')
   })
 
-  check('ismeretlen step identity-re esik vissza', () => {
-    assert.equal(parseCreateAgentWizardStep('nope'), 'identity')
-    assert.equal(parseCreateAgentWizardStep('model'), 'identity')
-    assert.equal(parseCreateAgentWizardStep('skills'), 'skills')
+  check('ismeretlen step az Indulásra (vagy a megadott tartalékra) esik vissza', () => {
+    assert.equal(parseCreateAgentWizardStep('nope'), 'start')
+    assert.equal(parseCreateAgentWizardStep('tools'), 'start')
+    assert.equal(parseCreateAgentWizardStep(null, 'access'), 'access')
+    assert.equal(parseCreateAgentWizardStep('knowledge'), 'knowledge')
   })
 
-  check('folytatás URL megőrzi az agentet és a lépést', () => {
+  check('folytatás URL megőrzi az agentet és a lépést; lépés nélkül a megjegyzettre visz', () => {
     assert.equal(
-      createAgentWizardContinueHref('abc', 'connections'),
-      '/control-plane/agents/new?continue=abc&step=connections',
+      createAgentWizardContinueHref('abc', 'team'),
+      '/control-plane/agents/new?continue=abc&step=team',
     )
+    assert.equal(createAgentWizardContinueHref('abc'), '/control-plane/agents/new?continue=abc')
+    assert.equal(CREATE_AGENT_WIZARD_RESUME_STEP, 'access')
+    assert.equal(createAgentWizardLastStepStorageKey('abc'), 'agent-hire:last-step:abc')
+  })
+
+  check('Félkész = vázlat, amely még soha nem állt munkába', () => {
+    assert.equal(isHalfFinishedAgent({ status: 'draft', currentDefinitionVersionId: null }), true)
+    assert.equal(isHalfFinishedAgent({ status: 'draft', currentDefinitionVersionId: 'def-1' }), false)
+    assert.equal(isHalfFinishedAgent({ status: 'active', currentDefinitionVersionId: 'def-1' }), false)
+    assert.equal(isHalfFinishedAgent({ status: 'suspended', currentDefinitionVersionId: null }), false)
   })
 
   check('hozzárendelhető kapcsolatok: a már kötöttek nélkül', () => {
@@ -173,7 +202,7 @@ function main() {
     assert.equal(toolSelectionHasChanges(['kb_search'], ['kb_search']), false)
   })
 
-  check('másolás sablonja a forrás agent granted eszközeit, skilljeit és kapcsolatait viszi', () => {
+  check('másolás sablonja: eszközök, skillek, kapcsolatok, önállóság, modell, hozzáférés', () => {
     const template = cloneTemplateFromAgent({
       sourceAgentId: 'src',
       sourceAgentName: 'Wiki',
@@ -187,6 +216,13 @@ function main() {
       connectors: [
         { connector: { id: 'c1', name: 'Drive' }, accessMode: 'read' },
       ],
+      writeModes: { memoryWriteMode: 'direct', httpApiWriteMode: 'approval', gmailWriteMode: 'bogus' },
+      approverUserId: 'u-approver',
+      modelConfig: { provider: 'openrouter', model: 'x' },
+      access: [
+        { id: 'u1', name: 'Anna', email: 'a@x', accessLevel: 'operate' },
+        { id: 'u2', name: '', email: 'b@x', accessLevel: null },
+      ],
     })
     assert.equal(template.roleInstruction, 'Tudástárból válaszolsz.')
     assert.equal(template.description, 'Belső wiki kérdések.')
@@ -195,6 +231,15 @@ function main() {
     assert.deepEqual(template.connectors, [
       { connectorId: 'c1', accessMode: 'read', name: 'Drive' },
     ])
+    assert.deepEqual(template.writeModes, {
+      memory: 'direct',
+      httpApi: 'approval',
+      gmail: 'approval',
+      drive: 'approval',
+    })
+    assert.equal(template.approverUserId, 'u-approver')
+    assert.deepEqual(template.modelConfig, { provider: 'openrouter', model: 'x' })
+    assert.deepEqual(template.access, [{ userId: 'u1', accessLevel: 'operate', label: 'Anna' }])
   })
 
   check('a varázsló támogatja a meglévő agent másolását', () => {
@@ -203,18 +248,19 @@ function main() {
       'utf8',
     )
     assert.match(wizard, /cloneTemplateFromAgent/)
-    assert.match(wizard, /cloneTitle/)
     assert.match(wizard, /cloneableAgents/)
     assert.match(wizard, /applyCloneSettings/)
+    assert.match(wizard, /listAgentAccess/)
+    assert.match(wizard, /updateAgentModelConfig/)
   })
 
-  check('a varázsló új-ablakos kitérőket tartalmaz, gondolkodási motor nélkül', () => {
+  check('összekötés helyben nyíló ablakban, a régi új-ablakos kitérő a panelekben marad', () => {
     const wizard = readFileSync(
       resolve(process.cwd(), 'src/components/agents/create-agent-wizard.tsx'),
       'utf8',
     )
-    const publish = readFileSync(
-      resolve(process.cwd(), 'src/components/agents/publish-agent-definition-form.tsx'),
+    const dialog = readFileSync(
+      resolve(process.cwd(), 'src/components/agents/hire/inline-page-dialog.tsx'),
       'utf8',
     )
     const skills = readFileSync(
@@ -227,23 +273,48 @@ function main() {
     )
     assert.match(link, /target="_blank"/)
     assert.match(link, /rel="noopener noreferrer"/)
-    assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)
-    assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.connections/)
-    assert.match(wizard, /suggestedTools=\{/)
-    assert.match(wizard, /suggestedSkillNames=\{/)
-    assert.match(wizard, /suggestedConnectorNames=\{/)
-    assert.doesNotMatch(wizard, /draftAgentFromDescription/)
-    assert.doesNotMatch(wizard, /ModelTypeSelectField/)
-    assert.doesNotMatch(wizard, /providerUsesThinkingProfile/)
+    assert.match(wizard, /InlinePageDialog/)
+    assert.match(wizard, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\[key\]/)
+    assert.match(dialog, /<iframe/)
+    assert.match(dialog, /aria-modal="true"/)
+    assert.match(skills, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)
+  })
+
+  check('munkába állítás = élesítés + aktiválás egy gombbal; a szakértő nézet az adatlap kapcsolóját mutatja', () => {
+    const wizard = readFileSync(
+      resolve(process.cwd(), 'src/components/agents/create-agent-wizard.tsx'),
+      'utf8',
+    )
+    const launch = readFileSync(
+      resolve(process.cwd(), 'src/components/agents/hire/launch-step.tsx'),
+      'utf8',
+    )
+    const publish = readFileSync(
+      resolve(process.cwd(), 'src/components/agents/publish-agent-definition-form.tsx'),
+      'utf8',
+    )
+    assert.match(launch, /publishAgentDefinitionAction/)
+    assert.match(launch, /activateAgent/)
+    assert.match(launch, /resumeAgent/)
+    assert.match(launch, /CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS\.chat/)
+    assert.match(launch, /CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS\.ticket/)
     assert.match(wizard, /goLive/)
     assert.match(wizard, /\n\s+wizard\n/)
+    assert.doesNotMatch(wizard, /draftAgentFromDescription/)
     assert.match(publish, /mcpSwitchTitle/)
     assert.match(publish, /wizardSaved/)
     assert.match(publish, /suspendAgent/)
     assert.doesNotMatch(publish, /disabled=\{pending \|\| live\}/)
-    assert.doesNotMatch(publish, /Published definition/)
     assert.doesNotMatch(publish, />Publish</)
-    assert.match(skills, /CREATE_AGENT_WIZARD_EXTERNAL_HREFS\.skills/)
+  })
+
+  check('a lista „Félkész” címkéje a varázslóba visz vissza (adminnak)', () => {
+    const card = readFileSync(resolve(process.cwd(), 'src/components/agents/agent-catalog-card.tsx'), 'utf8')
+    const list = readFileSync(resolve(process.cwd(), 'src/app/control-plane/agents/page.tsx'), 'utf8')
+    assert.match(card, /isHalfFinishedAgent/)
+    assert.match(card, /createAgentWizardContinueHref\(agent\.id\)/)
+    assert.match(card, /halfFinished/)
+    assert.match(list, /canResumeHire=\{canCreateAgent\}/)
   })
 
   if (failures > 0) {
