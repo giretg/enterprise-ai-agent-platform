@@ -13,9 +13,10 @@ import {
 import {
   ProjectWorkService,
   WORK_FILE_MAX_BYTES,
+  WORK_FILE_MAX_COUNT,
   resolveWorkFileBody,
 } from '../src/domain/project-work/project-work-service'
-import type { WorkFileRecord } from '../src/domain/project-work/types'
+import type { WorkFileRecord, WorkFileSave } from '../src/domain/project-work/types'
 
 const TENANT = '11111111-1111-4111-8111-111111111111'
 const AGENT = '22222222-2222-4222-8222-222222222222'
@@ -36,6 +37,7 @@ function check(name: string, fn: () => void | Promise<void>) {
 
 class MemFiles {
   rows = new Map<string, WorkFileRecord>()
+  private saveQueue = Promise.resolve()
   private key(tenantId: string, projectKey: string, path: string) {
     return `${tenantId}:${projectKey}:${path}`
   }
@@ -48,24 +50,37 @@ class MemFiles {
   async find(tenantId: string, projectKey: string, path: string) {
     return this.rows.get(this.key(tenantId, projectKey, path)) ?? null
   }
-  async upsert(input: {
-    tenantId: string
-    projectKey: string
-    path: string
-    content: string
-    byteSize: number
-    lastWriterUserId: string
-  }) {
-    const existing = this.rows.get(this.key(input.tenantId, input.projectKey, input.path))
-    const now = new Date()
-    const row: WorkFileRecord = {
-      id: existing?.id ?? globalThis.crypto.randomUUID(),
-      ...input,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
+  async saveWithinQuota(input: WorkFileSave): Promise<WorkFileRecord | 'file_too_large' | 'quota_exceeded'> {
+    const previous = this.saveQueue
+    let release!: () => void
+    this.saveQueue = new Promise<void>((resolve) => { release = resolve })
+    await previous
+    try {
+      const key = this.key(input.tenantId, input.projectKey, input.path)
+      const existing = this.rows.get(key)
+      const content = input.append ? `${existing?.content ?? ''}${input.content}` : input.content
+      const byteSize = Buffer.byteLength(content, 'utf8')
+      if (byteSize > input.maxFileBytes) return 'file_too_large'
+      const quota = await this.quota(input.tenantId, input.projectKey)
+      if (quota.count + (existing ? 0 : 1) > input.maxCount ||
+          quota.bytes - (existing?.byteSize ?? 0) + byteSize > input.maxProjectBytes) return 'quota_exceeded'
+      const now = new Date()
+      const row: WorkFileRecord = {
+        id: existing?.id ?? globalThis.crypto.randomUUID(),
+        tenantId: input.tenantId,
+        projectKey: input.projectKey,
+        path: input.path,
+        content,
+        byteSize,
+        lastWriterUserId: input.lastWriterUserId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      this.rows.set(key, row)
+      return row
+    } finally {
+      release()
     }
-    this.rows.set(this.key(input.tenantId, input.projectKey, input.path), row)
-    return row
   }
   async delete(tenantId: string, projectKey: string, path: string) {
     return this.rows.delete(this.key(tenantId, projectKey, path))
@@ -137,6 +152,29 @@ await check('30 egymás utáni append sorrendhelyes', async () => {
   const lines = read.file.content.trim().split('\n')
   assert.equal(lines.length, 30)
   lines.forEach((line, i) => assert.equal(line, `sor${i}`))
+})
+
+await check('párhuzamos append nem veszít el sorokat', async () => {
+  const svc = service()
+  const results = await Promise.all(Array.from({ length: 30 }, (_, i) =>
+    svc.appendFile({ tenantId: TENANT, path: 'data/parallel.jsonl', content: `sor${i}\n`, userId: ANNA }),
+  ))
+  assert.ok(results.every((result) => result.ok))
+  const read = await svc.readFile({ tenantId: TENANT, path: 'data/parallel.jsonl' })
+  assert.equal(read.ok, true)
+  if (!read.ok) return
+  assert.deepEqual(new Set(read.file.content.trim().split('\n')), new Set(Array.from({ length: 30 }, (_, i) => `sor${i}`)))
+})
+
+await check('párhuzamos fájllétrehozás nem lépi túl a projektkvótát', async () => {
+  const svc = service()
+  const results = await Promise.all(Array.from({ length: WORK_FILE_MAX_COUNT + 10 }, (_, i) =>
+    svc.writeFile({ tenantId: TENANT, path: `data/${i}.txt`, content: 'x', userId: ANNA }),
+  ))
+  assert.equal(results.filter((result) => result.ok).length, WORK_FILE_MAX_COUNT)
+  assert.equal(results.filter((result) => !result.ok && result.code === 'quota_exceeded').length, 10)
+  const listed = await svc.listFiles({ tenantId: TENANT })
+  assert.equal(listed.ok && listed.files.length, WORK_FILE_MAX_COUNT)
 })
 
 await check('append túllépéskor file_too_large, kvóta érvényesül', async () => {

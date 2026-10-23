@@ -52,7 +52,17 @@ export type ProjectMemoryRecord = {
   createdAt: Date
 }
 
-export type WorkFileQuota = { count: number; bytes: number }
+export type WorkFileSave = {
+  tenantId: string
+  projectKey: string
+  path: string
+  content: string
+  lastWriterUserId: string
+  append: boolean
+  maxFileBytes: number
+  maxProjectBytes: number
+  maxCount: number
+}
 
 export interface WorkProjectStore {
   listByTenant(tenantId: string): Promise<WorkProjectRecord[]>
@@ -69,16 +79,8 @@ export interface WorkProjectStore {
 export interface WorkFileStore {
   list(tenantId: string, projectKey: string, prefix?: string): Promise<Omit<WorkFileRecord, 'content'>[]>
   find(tenantId: string, projectKey: string, path: string): Promise<WorkFileRecord | null>
-  upsert(input: {
-    tenantId: string
-    projectKey: string
-    path: string
-    content: string
-    byteSize: number
-    lastWriterUserId: string
-  }): Promise<WorkFileRecord>
+  saveWithinQuota(input: WorkFileSave): Promise<WorkFileRecord | 'file_too_large' | 'quota_exceeded'>
   delete(tenantId: string, projectKey: string, path: string): Promise<boolean>
-  quota(tenantId: string, projectKey: string): Promise<WorkFileQuota>
 }
 
 export interface ProjectMemoryStore {

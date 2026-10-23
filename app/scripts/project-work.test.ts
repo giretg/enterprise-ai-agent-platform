@@ -15,6 +15,7 @@ import type {
   ProjectMemoryRecord,
   ProjectMemoryStore,
   WorkFileRecord,
+  WorkFileSave,
   WorkFileStore,
   WorkProjectRecord,
   WorkProjectStore,
@@ -81,23 +82,28 @@ class MemFiles implements WorkFileStore {
   async find(tenantId: string, projectKey: string, path: string) {
     return this.rows.get(this.key(tenantId, projectKey, path)) ?? null
   }
-  async upsert(input: {
-    tenantId: string
-    projectKey: string
-    path: string
-    content: string
-    byteSize: number
-    lastWriterUserId: string
-  }) {
-    const existing = this.rows.get(this.key(input.tenantId, input.projectKey, input.path))
+  async saveWithinQuota(input: WorkFileSave): Promise<WorkFileRecord | 'file_too_large' | 'quota_exceeded'> {
+    const key = this.key(input.tenantId, input.projectKey, input.path)
+    const existing = this.rows.get(key)
+    const content = input.append ? `${existing?.content ?? ''}${input.content}` : input.content
+    const byteSize = Buffer.byteLength(content, 'utf8')
+    if (byteSize > input.maxFileBytes) return 'file_too_large'
+    const quota = await this.quota(input.tenantId, input.projectKey)
+    if (quota.count + (existing ? 0 : 1) > input.maxCount ||
+        quota.bytes - (existing?.byteSize ?? 0) + byteSize > input.maxProjectBytes) return 'quota_exceeded'
     const now = new Date()
     const row: WorkFileRecord = {
       id: existing?.id ?? globalThis.crypto.randomUUID(),
-      ...input,
+      tenantId: input.tenantId,
+      projectKey: input.projectKey,
+      path: input.path,
+      content,
+      byteSize,
+      lastWriterUserId: input.lastWriterUserId,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
-    this.rows.set(this.key(input.tenantId, input.projectKey, input.path), row)
+    this.rows.set(key, row)
     return row
   }
   async delete(tenantId: string, projectKey: string, path: string) {
