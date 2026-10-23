@@ -6,6 +6,7 @@ export type KnowledgePlacementTarget =
   | 'project_memory'
   | 'skill'
   | 'knowledge_base'
+  | 'agent_wiki'
   | 'work_file'
   | 'drive'
   | 'session_log'
@@ -15,7 +16,7 @@ export const KNOWLEDGE_PLACEMENT_TABLE = `| What | Where | Tool |
 |---|---|---|
 | Company fact, decision, location (true now) | memory | \`platform.project_memory.write\` (replaceId when it changed) |
 | Operating rule or procedure ("how we do it") | skill — propose for approval | \`platform.skills.submit\` |
-| Reference document, knowledge material | knowledge base | \`kb_ingest\` |
+| Reference document, knowledge material | knowledge base | \`kb_ingest\` (\`raw_text_only\`) |
 | Work plan, notes, draft | work file | \`platform.work_file.write\` (growing log: \`platform.work_file.append\`) |
 | Finished deliverable for humans | agent Drive folder | \`google_drive_upload_file\` |
 | What happened today | session log | \`platform.project_memory.write\` kind \`session_log\` |
@@ -24,12 +25,12 @@ export const KNOWLEDGE_PLACEMENT_TABLE = `| What | Where | Tool |
 export const KNOWLEDGE_PLACEMENT_TABLE_REF =
   'Use the "Where to save what" table in server instructions and the agent briefing — pick the row before any write.'
 
-export function renderKnowledgePlacementBlock(): string {
+export function renderKnowledgePlacementBlock(input: { wikiCapable?: boolean } = {}): string {
   return [
     'WHERE TO SAVE WHAT',
     'When the user asks to remember, save, or store something, pick exactly one row — do not put operating rules in memory, plans in memory, or reference documents in memory.',
     '',
-    KNOWLEDGE_PLACEMENT_TABLE,
+    KNOWLEDGE_PLACEMENT_TABLE + (input.wikiCapable ? '\n| Knowledge to learn and connect | agent wiki | `kb_ingest` (wiki) → `kb_wiki_write` |' : ''),
   ].join('\n')
 }
 
@@ -61,6 +62,7 @@ export function detectMisplacedMemoryWrite(input: {
   kind: string
   title: string
   body: string
+  wikiCapable?: boolean
 }): MisplacedMemoryWrite | null {
   if (input.kind === 'focus' || input.kind === 'session_log') return null
   const text = `${input.title}\n${input.body}`.trim()
@@ -68,7 +70,7 @@ export function detectMisplacedMemoryWrite(input: {
   if (proc >= 4) return { suggest: 'skill', reason: 'procedure' }
   if (input.body.length > MEMORY_FACT_SOFT_MAX) {
     const planLike = /\b(terv|plan|todo|feladatlista|outline|draft|jegyzet)\b/i.test(text)
-    return { suggest: planLike ? 'work_file' : 'knowledge_base', reason: 'document' }
+    return { suggest: planLike ? 'work_file' : input.wikiCapable ? 'agent_wiki' : 'knowledge_base', reason: 'document' }
   }
   if (proc >= 2 && input.body.length > 400) return { suggest: 'skill', reason: 'procedure' }
   return null
@@ -80,6 +82,8 @@ export function suggestToolForPlacement(target: KnowledgePlacementTarget): strin
       return 'platform.project_memory.write'
     case 'skill':
       return 'platform.skills.submit'
+    case 'agent_wiki':
+      return 'kb_wiki_write'
     case 'knowledge_base':
       return 'kb_ingest'
     case 'work_file':
