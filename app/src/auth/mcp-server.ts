@@ -1,3 +1,5 @@
+import { WIKI_MAINTAINER, withWikiMaintainer, wikiMaintainerPackage } from '@/domain/skill/llm-wiki-maintainer'
+import type { AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { auth } from '@clerk/nextjs/server'
 import type { SkillVersionStatus } from '@prisma/client'
 import {
@@ -258,6 +260,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   }) => Promise<EnterpriseToolMcpResult>
   /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
+  loadAgentWikis?: (principal: McpPrincipal, definition: AgentDefinition) => Promise<AgentWikiBriefing[]>
   agentScaffold: AgentScaffoldDeps
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
 }
@@ -368,6 +371,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       )
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
+    loadAgentWikis: (principal, definition) => services.wiki.listWikis({ ...principal, agentId: definition.agentId, snapshot: definition.snapshot }),
     canViewAgent,
     loadAgentApproverName: async ({ tenantId, agentId }) => {
       const agent = await repositories.agents.findById(agentId, tenantId)
@@ -599,7 +603,8 @@ async function loadAgentSkills(
   ) {
     return 'not_found'
   }
-  const pins = loaded.snapshot.skills
+  const scoped = withWikiMaintainer(loaded, principal.userId)
+  const pins = scoped.snapshot.skills
   const entrySkillVersionId = pins.find((pin) => pin.entry)?.skillVersionId ?? null
   const packages = [
     ...(await deps.listMcpSkills({
@@ -607,6 +612,7 @@ async function loadAgentSkills(
       skillVersionIds: pins.map((pin) => pin.skillVersionId),
     })),
   ]
+  if (pins.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) packages.push(wikiMaintainerPackage())
   if (entrySkillVersionId) {
     packages.sort(
       (a, b) =>
@@ -752,7 +758,7 @@ async function getDefinitionToolResult(
   })
   if (!allowed) return definitionNotFound()
   // #942 D13: a más felhasználó privát tudásbázisa a hívó számára nem létezik.
-  const loaded = { ...loadedRaw, snapshot: scopeSnapshotToUser(loadedRaw.snapshot, principal.userId) }
+  const loaded = withWikiMaintainer(loadedRaw, principal.userId)
   const [memoryContext, skills, tenant] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
@@ -766,6 +772,8 @@ async function getDefinitionToolResult(
     tenantId: principal.tenantId,
     agentId: loaded.agentId,
   })
+  if (loaded.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, loaded) ?? []
   const roots = loaded.snapshot.localRoots
   if (memoryContext.memoryIndex) {
     memoryContext.memoryIndex = {
@@ -777,6 +785,7 @@ async function getDefinitionToolResult(
     briefing: renderAgentBriefing({
       definition: loaded,
       skills,
+      wikis,
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
@@ -1052,11 +1061,18 @@ async function checkoutToolResult(
   const skills = await deps.loadSkillVersions(
     loaded.snapshot.skills.map((skill) => skill.skillVersionId),
   )
+  const scoped = withWikiMaintainer(loaded, principal.userId)
+  if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
+  const tenant = await deps.tenants.findById(principal.tenantId)
   // A published snapshot történeti bizonyíték: a később visszavont skill csak
   // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
     renderAgentCheckout({
-      definition: { ...loaded, snapshot: scopeSnapshotToUser(loaded.snapshot, principal.userId) },
+      definition: scoped,
+      wikis,
+      language: readTenantLanguage(tenant?.settings),
+      publishedContentHash: hashSnapshot(loaded.snapshot),
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
@@ -1092,7 +1108,10 @@ async function agentPromptResult(
   ) {
     throw new Error('Agent not found')
   }
+  const scoped = withWikiMaintainer(loaded, principal.userId)
   const skills = await deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId))
+  if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
   const tenant = await deps.tenants.findById(principal.tenantId)
   return {
     description: hermesBotTitle(loaded.snapshot),
@@ -1102,8 +1121,9 @@ async function agentPromptResult(
         content: {
           type: 'text' as const,
           text: renderAgentPrompt({
-            definition: loaded,
+            definition: scoped,
             skills,
+            wikis,
             task,
             bound: boundAgentId !== null,
             language: readTenantLanguage(tenant?.settings),
@@ -1727,7 +1747,6 @@ async function createMcpResourceHandler(
           description:
             'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. OKF sources return artifactId instead of the full text. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
-          annotations: { readOnlyHint: true },
         },
         async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
       )

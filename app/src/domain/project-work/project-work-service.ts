@@ -151,6 +151,7 @@ export type MemoryWriteInput = {
   mergeIds?: string[]
   /** Az író tudatosan új elemet kér, bár hasonló már van. Ember (UI) mindig true. */
   confirmNew?: boolean
+  wikiCapable?: boolean
   /** After wrong_placement, set true only when the text is a short fact and belongs in memory. */
   confirmMisplaced?: boolean
   withUserId: string
@@ -516,6 +517,7 @@ export class ProjectWorkService {
         kind: prepared.draft.kind,
         title: prepared.draft.title,
         body: prepared.draft.body,
+        wikiCapable: input.wikiCapable,
       })
       if (misplaced) {
         return ok({

@@ -1,3 +1,4 @@
+import { resolveWikiScopes } from '@/lib/wiki-access'
 import { z } from 'zod'
 import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/agent-knowledge-placement'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
@@ -533,6 +534,7 @@ export async function invokeProjectWork(
       mergeIds: typeof parsed.mergeIds === 'string' ? splitIds(parsed.mergeIds) : undefined,
       confirmNew: parsed.confirmNew === true,
       confirmMisplaced: parsed.confirmMisplaced === true,
+      wikiCapable: resolveWikiScopes(definition.snapshot, principal.userId).writable.length > 0,
       withUserId: principal.userId,
       mode: modeRes.mode,
     })

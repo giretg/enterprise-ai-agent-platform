@@ -62,6 +62,7 @@ import {
   type WikiApproverScope,
   type WikiDecider,
   type WikiNeed,
+  isKnowledgeBaseVisibleTo,
   type WikiScope,
   type WikiSnapshotConnector,
 } from '@/lib/wiki-access'
@@ -236,7 +237,10 @@ export class WikiService {
   private ensureWiki(connector: Connector) {
     return this.deps.wikis.ensureForConnector({
       connectorId: connector.id,
-      schemaMd: defaultWikiSchema(resolveKbLanguage(connector.kbLanguage)),
+      schemaMd: defaultWikiSchema(
+        resolveKbLanguage(connector.kbLanguage),
+        connector.config && typeof connector.config === 'object' && !Array.isArray(connector.config) && connector.config.wikiTemplate === 'health-journal' ? 'health-journal' : 'general',
+      ),
     })
   }
 
@@ -257,7 +261,10 @@ export class WikiService {
     const rows = []
     for (const scope of pool) {
       const connector = await this.deps.connectors.findById(scope.connectorId, caller.tenantId)
-      if (!connector) continue
+      if (
+        !connector || connector.tenantId !== caller.tenantId || connector.lifecycleState !== 'active' ||
+        !isKnowledgeBaseVisibleTo(connector, caller.userId)
+      ) continue
       const wiki = await this.ensureWiki(connector)
       const counts = summary.wikis.find((row) => row.connectorId === scope.connectorId)
       rows.push({
@@ -269,6 +276,9 @@ export class WikiService {
         ...(scope.collectFocus ? { collect: scope.collectFocus } : {}),
         ...(scope.visibility === 'private_to_user' ? { private: true } : {}),
         inbox: { pending: counts?.pending ?? 0, inProgress: counts?.inProgress ?? 0 },
+        batches: summary.batches
+          .filter(batch => batch.connectorId === scope.connectorId)
+          .map(batch => ({ batchId: batch.batchId, pending: batch.pending, inProgress: batch.inProgress, processed: batch.processed, skipped: batch.skipped })),
       })
     }
     return rows
