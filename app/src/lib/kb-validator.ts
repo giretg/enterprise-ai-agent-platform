@@ -287,7 +287,7 @@ export function validateWikiPages(input: {
           'error',
           'missing_source_date',
           path,
-          'type: source pages need frontmatter.source_date (YYYY-MM-DD) — the document\'s own date, not the upload date.',
+          'type: source pages need frontmatter.source_date (YYYY, YYYY-MM, or YYYY-MM-DD) — the document\'s own date, not the upload date.',
         )
       }
     }

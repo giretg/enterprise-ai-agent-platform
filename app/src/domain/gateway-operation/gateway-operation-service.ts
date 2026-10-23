@@ -61,8 +61,10 @@ import type {
   GatewayOperationView,
 } from './types'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
+import { redactMetadata } from '@/lib/audit/kb-private-redaction'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { isPrivateKnowledgeBase } from '@/lib/wiki-access'
 
 export type GatewayActor = ToolCallPrincipal
 
@@ -149,7 +151,7 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
       definition: AgentDefinition
       changeSetId: string
     }): Promise<{ ok: true; result: unknown } | { ok: false; code: string }>
-    reject(input: { tenantId: string; changeSetId: string; actorUserId: string }): Promise<void>
+    reject(input: { tenantId: string; changeSetId: string; actorUserId: string | null }): Promise<void>
   }
   audit?: AuditSink
 }
@@ -157,6 +159,16 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
 function wikiChangeSetIdOf(row: { toolName: string; argsJson: unknown }): string | null {
   if (row.toolName !== KB_WIKI_WRITE_TOOL) return null
   return asUuid(asRecord(row.argsJson).changeSetId) ?? null
+}
+
+/** D13: privát wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
+function wikiApplyResultJson(connector: { visibility?: unknown }, result: unknown): unknown {
+  if (!isPrivateKnowledgeBase(connector)) return result
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return { privateKb: true }
+  const row = result as Record<string, unknown>
+  const pageCount = Array.isArray(row.pages) ? row.pages.length : undefined
+  const rest = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'pages'))
+  return { ...redactMetadata(rest), ...(pageCount !== undefined ? { pageCount } : {}), privateKb: true }
 }
 
 /** #943: a wiki-kártyáról csak a change-set rögzített jóváhagyó-köre dönthet. */
@@ -821,6 +833,16 @@ async function executeApprovedOperation(
   const args = asRecord(operation.argsJson)
 
   const fail = async (code: string) => {
+    const changeSetId = wikiChangeSetIdOf(operation)
+    if (changeSetId && deps.wikiChangeSets) {
+      // A kártya innentől nem `awaiting_approval`, Control Plane már nem rejectelhet.
+      // A tálca-tétel `processed` maradna, ha a change-setet nem zárjuk le itt.
+      await deps.wikiChangeSets.reject({
+        tenantId: operation.tenantId,
+        changeSetId,
+        actorUserId: null,
+      })
+    }
     const updated = await deps.operations.update(operation.id, {
       status: 'failed',
       errorCode: code,
@@ -944,9 +966,10 @@ async function executeApprovedOperation(
       return fail('tool_execution_failed')
     }
     if (!applied.ok) return fail(applied.code)
+    const resultJson = wikiApplyResultJson(authorized.connector, applied.result)
     const updated = await deps.operations.update(operation.id, {
       status: 'succeeded',
-      resultJson: applied.result,
+      resultJson,
       errorCode: null,
     })
     const payload = {
@@ -970,7 +993,7 @@ async function executeApprovedOperation(
       metadata: payload,
       tenantId: operation.tenantId,
     })
-    return updated ?? { ...operation, status: 'succeeded', resultJson: applied.result, errorCode: null }
+    return updated ?? { ...operation, status: 'succeeded', resultJson, errorCode: null }
   }
 
   const delegated = authorized.connector.authMode === 'user_delegated'

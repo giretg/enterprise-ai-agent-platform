@@ -1747,7 +1747,6 @@ async function createMcpResourceHandler(
           description:
             'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. OKF sources return artifactId instead of the full text. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
-          annotations: { readOnlyHint: true },
         },
         async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
       )

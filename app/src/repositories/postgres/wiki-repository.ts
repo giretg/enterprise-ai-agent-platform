@@ -247,12 +247,14 @@ export class PostgresWikiRepository implements WikiRepository {
     })
   }
 
-  listLog(wikiId: string, limit = 200) {
-    return prisma.wikiLogEntry.findMany({
+  async listLog(wikiId: string, limit = 200) {
+    const take = Math.min(Math.max(limit, 1), 1000)
+    const rows = await prisma.wikiLogEntry.findMany({
       where: { wikiId },
-      orderBy: { createdAt: 'asc' },
-      take: Math.min(Math.max(limit, 1), 1000),
+      orderBy: { createdAt: 'desc' },
+      take,
     })
+    return rows.reverse()
   }
 
   async listInbox(
