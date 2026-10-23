@@ -1,13 +1,27 @@
 import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { getAgent, getAgentGovernance, listAgents } from '@/app/actions/platform'
+import {
+  getAgent,
+  getAgentGovernance,
+  getAgentPublishStatus,
+  listAgentAccess,
+  listAgents,
+  listKbDocuments,
+  listKnowledgeCatalog,
+} from '@/app/actions/platform'
+import { getMyGoogleDriveGrantForPicker } from '@/app/actions/connector-grants'
+import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
+import { getAgentModelSettings } from '@/app/actions/model-config'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { CreateAgentWizard } from '@/components/agents/create-agent-wizard'
+import { adminPolicyView } from '@/domain/client-policy/admin-policy'
+import { prisma } from '@/lib/db'
 import {
   assignableConnectorsFromCatalog,
-  parseCreateAgentWizardStep,
+  isCreateAgentWizardStepId,
 } from '@/lib/create-agent-wizard'
+import { modesFromAgentRow } from '@/lib/write-approval-modes'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,7 +30,7 @@ export default async function NewAgentPage({
 }: {
   searchParams: Promise<{ continue?: string; step?: string }>
 }) {
-  await requireTenantRole('admin')
+  const ctx = await requireTenantRole('admin')
   const params = await searchParams
   const continueId = params.continue?.trim() || null
   const [agentsRes, catalogRes] = await Promise.all([listAgents({ limit: 100 }), listConnectorCatalog()])
@@ -27,21 +41,49 @@ export default async function NewAgentPage({
 
   let continuation = null
   if (continueId) {
-    const [agentRes, govRes, skillsRes, assignableRes] = await Promise.all([
+    const [
+      agentRes,
+      govRes,
+      skillsRes,
+      assignableRes,
+      kbRes,
+      kbCatalogRes,
+      wikiLinksRes,
+      accessRes,
+      modelRes,
+      publishRes,
+      drivePickerRes,
+    ] = await Promise.all([
       getAgent({ id: continueId }),
       getAgentGovernance({ agentId: continueId }),
       getAgentSkillsAction(continueId),
       listAssignableSkillsAction(continueId),
+      listKbDocuments({ agentId: continueId }),
+      listKnowledgeCatalog(),
+      listAgentWikiLinksAction({ agentId: continueId }),
+      listAgentAccess({ agentId: continueId }),
+      getAgentModelSettings({ agentId: continueId }),
+      getAgentPublishStatus({ agentId: continueId }),
+      getMyGoogleDriveGrantForPicker(),
     ])
     if (agentRes.success && agentRes.data) {
+      const agent = agentRes.data
       const connectors = govRes.success ? govRes.data.connectors : []
+      const hermesPolicy = await prisma.clientPolicy.findUnique({
+        where: {
+          tenantId_scope_scopeId: { tenantId: ctx.activeTenantId, scope: 'agent', scopeId: agent.id },
+        },
+      })
+      const drivePicker = drivePickerRes.success ? drivePickerRes.data : null
       continuation = {
-        agentId: agentRes.data.id,
-        name: agentRes.data.name,
-        roleInstruction: agentRes.data.roleInstruction,
-        description: agentRes.data.description,
-        status: agentRes.data.status,
-        currentDefinitionVersionId: agentRes.data.currentDefinitionVersionId,
+        agentId: agent.id,
+        name: agent.name,
+        roleInstruction: agent.roleInstruction,
+        description: agent.description,
+        avatarUrl: agent.avatarUrl ?? null,
+        status: agent.status,
+        currentDefinitionVersionId: agent.currentDefinitionVersionId,
+        hasUnpublishedChanges: publishRes.success ? publishRes.data.stale : false,
         capabilities: govRes.success ? govRes.data.capabilities : [],
         assignedSkills: skillsRes.success ? skillsRes.data : [],
         assignableSkills: assignableRes.success ? assignableRes.data.assignable : [],
@@ -50,6 +92,22 @@ export default async function NewAgentPage({
           catalog,
           connectors.map((row) => row.connector.id),
         ),
+        writeModes: modesFromAgentRow(agent),
+        approverUserId: agent.approverUserId ?? null,
+        outputDriveFolderId: agent.outputDriveFolderId ?? null,
+        localRoots: agent.localRoots,
+        knowledgeDocuments: kbRes.success ? kbRes.data : [],
+        knowledgeCatalog: kbCatalogRes.success ? kbCatalogRes.data : [],
+        wikiLinks: wikiLinksRes.success ? wikiLinksRes.data : null,
+        accessUsers: accessRes.success ? accessRes.data.users : [],
+        currentUserId: ctx.user.id,
+        model: modelRes.success ? modelRes.data : null,
+        hermesPolicy: adminPolicyView(hermesPolicy),
+        drive: {
+          grantId: drivePicker?.grantId ?? null,
+          grants: drivePicker?.grants ?? [],
+          pickerConfigured: drivePicker?.pickerConfigured ?? false,
+        },
       }
     }
   }
@@ -64,13 +122,9 @@ export default async function NewAgentPage({
       </div>
       <CreateAgentWizard
         cloneableAgents={cloneableAgents}
-        initialStep={parseCreateAgentWizardStep(params.step)}
+        initialStep={isCreateAgentWizardStepId(params.step) ? params.step : undefined}
         continuation={continuation}
-        catalog={
-          continuation
-            ? continuation.assignableConnectors
-            : catalog
-        }
+        catalog={continuation ? continuation.assignableConnectors : catalog}
         catalogDetails={catalog}
       />
     </div>

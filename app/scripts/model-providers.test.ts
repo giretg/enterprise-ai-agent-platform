@@ -58,8 +58,9 @@ check('a gondolkodási mélység a formon a primary providerhez kötött', () =>
   assert.match(form, /providerUsesThinkingProfile\(primary\.provider\)/)
 })
 
-check('az új-agent varázsló nem tartalmazza a gondolkodási motort', () => {
+check('az új-agent varázsló a gondolkodási motort az adatlap űrlapjával állítja (#957)', () => {
   const wizard = readSrc('src/components/agents/create-agent-wizard.tsx')
+  assert.match(wizard, /UpdateModelConfigForm/)
   assert.doesNotMatch(wizard, /providerUsesThinkingProfile/)
   assert.doesNotMatch(wizard, /ModelTypeSelectField/)
 })

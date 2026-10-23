@@ -189,6 +189,8 @@
     "test:work-project": "tsx scripts/work-project.test.ts",
     "test:agent-chat-stream-input": "tsx scripts/agent-chat-stream-input.test.ts",
     "test:create-agent-wizard": "tsx scripts/create-agent-wizard.test.ts",
+    "test:agent-setting-sections": "tsx scripts/agent-setting-sections.test.ts",
+    "test:agent-hire": "tsx scripts/agent-hire.test.ts",
     "test:model-providers": "tsx scripts/model-providers.test.ts",
     "test:agent-scaffold": "tsx scripts/agent-scaffold.test.ts",
     "test:agent-scaffold-mcp": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-scaffold-mcp.test.ts",

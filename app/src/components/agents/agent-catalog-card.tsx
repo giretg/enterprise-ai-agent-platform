@@ -3,6 +3,7 @@ import { getTranslations } from 'next-intl/server'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
+import { createAgentWizardContinueHref, isHalfFinishedAgent } from '@/lib/create-agent-wizard'
 
 const AGENT_STATUS_KEYS = ['draft', 'active', 'suspended', 'retired'] as const
 type AgentStatusKey = (typeof AGENT_STATUS_KEYS)[number]
@@ -18,16 +19,34 @@ export type AgentCatalogCardModel = {
   status: string
   avatarUrl: string | null
   unpublished: boolean
+  currentDefinitionVersionId?: string | null
 }
 
-/** Munkatárs-kártya a listán és a kezdőlapon: arckép + unpublished jelzés. */
-export async function AgentCatalogCard({ agent }: { agent: AgentCatalogCardModel }) {
+/**
+ * Munkatárs-kártya a listán és a kezdőlapon: arckép + unpublished jelzés.
+ * Félbehagyott felvétel (#957) „Félkész” címkét kap, és adminnak a varázsló
+ * megjegyzett lépésére visz vissza.
+ */
+export async function AgentCatalogCard({
+  agent,
+  canResumeHire = false,
+}: {
+  agent: AgentCatalogCardModel
+  canResumeHire?: boolean
+}) {
   const t = await getTranslations('ControlPlane.agents')
   const persona = personaFor(agent.name)
   const statusLabel = isAgentStatusKey(agent.status) ? t(`status.${agent.status}`) : agent.status
-  const href = agent.unpublished
-    ? `/control-plane/agents/${agent.id}?section=elesites`
-    : `/control-plane/agents/${agent.id}`
+  const halfFinished = isHalfFinishedAgent({
+    status: agent.status,
+    currentDefinitionVersionId: agent.currentDefinitionVersionId ?? null,
+  })
+  const href =
+    halfFinished && canResumeHire
+      ? createAgentWizardContinueHref(agent.id)
+      : agent.unpublished
+        ? `/control-plane/agents/${agent.id}?section=elesites`
+        : `/control-plane/agents/${agent.id}`
 
   return (
     <Link href={href} className="block h-full">
@@ -44,7 +63,14 @@ export async function AgentCatalogCard({ agent }: { agent: AgentCatalogCardModel
               <h2 className="font-display text-lg font-semibold tracking-tight">
                 {persona.nickname || agent.name}
               </h2>
-              {agent.unpublished ? (
+              {halfFinished ? (
+                <span
+                  title={t('halfFinishedHint')}
+                  className="rounded-full border border-sky/50 bg-sky/15 px-2.5 py-0.5 text-xs font-semibold text-ink"
+                >
+                  {t('halfFinished')}
+                </span>
+              ) : agent.unpublished ? (
                 <span
                   title={t('unpublishedHint')}
                   className="rounded-full border border-amber-600/50 bg-amber-500/15 px-2.5 py-0.5 text-xs font-semibold text-ink"

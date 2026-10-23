@@ -542,7 +542,9 @@
         "active": "aktív",
         "suspended": "felfüggesztve",
         "retired": "nyugdíjazva"
-      }
+      },
+      "halfFinished": "Félkész",
+      "halfFinishedHint": "A felvétel félbemaradt — kattints, és ott folytathatod, ahol abbahagytad."
     },
     "dashboard": {
       "eyebrow": "Kezdőlap",
@@ -589,9 +591,9 @@
         }
     },
     "agentNew": {
-      "eyebrow": "Új agent",
-      "title": "Munkatárs létrehozása",
-      "body": "Vázlatként jön létre, aztán eszközöket, skilleket és kapcsolatokat adhatsz hozzá."
+      "eyebrow": "Új munkatárs",
+      "title": "Új munkatárs felvétele",
+      "body": "Néhány egyszerű kérdés, és kész az új AI-kollégád. Minden lépés automatikusan mentődik; a végén próbáld ki, és állítsd munkába."
     },
     "agentDetail": {
       "eyebrow": "Agent",
@@ -1433,66 +1435,332 @@
   },
   "AgentCreate": {
     "steps": {
+      "start": {
+        "label": "Indulás",
+        "hint": "Honnan indulsz?"
+      },
       "identity": {
-        "label": "Alapok",
-        "hint": "Név, felelősségi kör, munkakör"
+        "label": "Ki ő?",
+        "hint": "Név, bemutatkozás, kép"
       },
-      "tools": {
-        "label": "Eszközök",
-        "hint": "Mit hívhat meg"
+      "duties": {
+        "label": "Mi a dolga?",
+        "hint": "Feladatok egyszerű mondatokban"
       },
-      "skills": {
-        "label": "Képességek",
-        "hint": "Katalógusból hozzárendelve"
+      "access": {
+        "label": "Mihez fér hozzá?",
+        "hint": "Levelezés, dokumentumok, rendszerek"
       },
-      "connections": {
-        "label": "Kapcsolatok",
-        "hint": "Külső rendszerek"
+      "knowledge": {
+        "label": "Mit tudjon?",
+        "hint": "Dokumentumok, amiből dolgozik"
       },
-      "done": {
-        "label": "Kész",
-        "hint": "Publikálás és aktiválás"
+      "autonomy": {
+        "label": "Mennyire önálló?",
+        "hint": "Mikor kérdezzen meg"
+      },
+      "team": {
+        "label": "Ki dolgozik vele?",
+        "hint": "Kik használhatják"
+      },
+      "advanced": {
+        "label": "Haladó",
+        "hint": "AI-modell, asztali kliens, mappák"
+      },
+      "launch": {
+        "label": "Munkába állítás",
+        "hint": "Próba és indulás"
       }
     },
+    "optional": "Kihagyható",
     "back": "Vissza",
     "next": "Tovább",
-    "creating": "Létrehozás…",
-    "createAndContinue": "Létrehozás és tovább",
-    "nameRequired": "Add meg a nevet, a felelősségi kört és a munkaköri leírást.",
-    "clonePartial": "A munkatárs létrejött, de a másolás nem lett teljes: {warnings}",
-    "cloneTools": "eszközök: {error}",
-    "cloneSkill": "skill: {error}",
+    "skipOrNext": "Tovább (kihagyható)",
+    "creating": "Felvétel…",
+    "createAndContinue": "Felveszem, tovább",
+    "loading": "Betöltés…",
+    "saving": "Mentés…",
+    "saveFailed": "Nem sikerült menteni. Próbáld újra.",
+    "identityRequired": "Add meg a nevét és egy mondatban, mikor forduljanak hozzá.",
+    "dutiesRequired": "Adj meg legalább egy feladatot.",
+    "clonePartial": "A munkatárs létrejött, de nem minden beállítás került át: {warnings}",
+    "cloneTools": "hozzáférések: {error}",
+    "cloneSkill": "betanult módszer: {error}",
     "cloneConnector": "kapcsolat ({name}): {error}",
-    "alreadyCreated": "A munkatárs már létrejött vázlatként. Az alapokat itt átnézheted; a további lépéseken eszközöket, skilleket és kapcsolatokat adhatsz hozzá.",
-    "cloneTitle": "Másolás meglévő munkatársból",
-    "cloneBody": "Válassz egy agentet sablonnak — a munkakör, eszközök, skillek és kapcsolatok átmásolódnak. Csak az új nevet kell megadnod.",
-    "cloneSelect": "Sablon agent",
-    "cloneNone": "Nincs — üres űrlap",
-    "cloneLoading": "Sablon betöltése…",
-    "cloneLoaded": "„{name}” sablonja betöltve — add meg az új nevet, majd lépj tovább.",
-    "cloneCopied": "Eszközök, skillek és kapcsolatok a létrehozáskor másolódnak.",
+    "cloneApprovals": "önállóság: {error}",
+    "cloneModel": "AI-modell: {error}",
+    "cloneAccess": "hozzáférés ({name}): {error}",
+    "cloneAvatar": "profilkép: {error}",
+    "expertToggle": "Szakértő nézet",
+    "expertHelp": "Minden lépésben megmutatja a munkatárs adatlapjának teljes beállító űrlapját is — adminisztrátoroknak, akik mindent egyenként szeretnének állítani.",
+    "lessMotion": "Kevesebb animáció",
+    "openDetailSection": "Ugyanez a munkatárs adatlapján →",
     "name": "Név",
-    "scope": "Felelősségi kör (mikor ezt a munkatársat hívd)",
-    "scopePlaceholder": "Marketing, SEO, tartalom. Sales lead → Gábor.",
-    "role": "Munkakör",
-    "namePlaceholder": "Wiki agent",
-    "rolePlaceholder": "Te a belső tudás-asszisztens vagy. Kizárólag a jóváhagyott dokumentumokból válaszolsz, magyarul, forráshivatkozással.",
-    "identityHint": "A tovább gomb itt hozza létre a munkatársat vázlatként. Utána eszközöket, skilleket és kapcsolatokat adhatsz hozzá — ha közben újat kell definiálnod, az új ablakban nyílik.",
-    "newConnector": "Új kapcsolat a konnektoroknál",
-    "newConnectorHint": "Ha egy eszközhöz még nincs connector, itt hozod létre.",
-    "newSkill": "Új képesség a katalógusban",
-    "newSkillHint": "Importálás vagy appon belüli skill — jóváhagyás után itt hozzárendeled.",
-    "defineConnector": "Új kapcsolat definiálása",
-    "defineConnectorHint": "Draft connector a konnektor-varázslóban, új ablakban.",
-    "linkedAccounts": "Kapcsolt fiókok",
-    "linkedAccountsHint": "Saját Gmail / Drive összekötés, ha a munkatárs delegált fiókot használ.",
-    "draftReady": "{name} vázlata kész.",
-    "draftReadyFallback": "A munkatárs",
-    "openAgent": "Agent megnyitása →",
+    "namePlaceholder": "pl. Vevőszolgálat Vera",
+    "intro": "Egy mondatos bemutatkozás — mikor fordulj hozzá?",
+    "introHelp": "A kollégák (és más AI-munkatársak) ebből tudják eldönteni, mikor érdemes neki feladatot adni. Írd le egy mondatban, mire való.",
+    "introPlaceholder": "Ha vevő ír a webshopba, vagy reklamáció jön, hozzá fordulj.",
+    "avatarTitle": "Profilkép",
+    "avatarAuto": "Automatikusan kap egy arcot a neve alapján — ha szeretnéd, tölts fel saját képet.",
+    "avatarUpload": "Kép feltöltése",
+    "avatarReplace": "Másik kép",
+    "avatarRemove": "Saját kép törlése",
+    "avatarNotImage": "Ez nem képfájl — válassz JPG, PNG vagy WEBP képet.",
+    "avatarFailed": "A képet nem sikerült feldolgozni. Próbálj egy másikat.",
+    "toneTitle": "Hangnem",
+    "toneHelp": "Így beszél a kollégákkal. Bármikor átállíthatod.",
+    "tone": {
+      "informal": "Tegező",
+      "formal": "Magázó",
+      "short": "Rövid",
+      "detailed": "Részletes",
+      "lang": {
+        "match": "A kérdező nyelvén",
+        "hu": "Magyarul",
+        "en": "Angolul"
+      }
+    },
+    "toneManualRole": "A munkaköri leírás kézzel van megírva, ezért a hangnem módosítása csak akkor érvényesül, ha a „Mi a dolga?” lépésen újraírod kártyákkal.",
+    "roleManualTitle": "A munkaköri leírás szövegesen, kézzel lett megírva",
+    "roleManualEdit": "Szerkesztem szövegként",
+    "roleManualRebuild": "Újraírom kártyákkal",
+    "dutiesTitle": "Feladatai",
+    "dutiesBody": "Írd le egyszerű mondatokban, mit csináljon. 3–6 feladat általában elég.",
+    "dutyPlaceholder": "pl. Megválaszolja a vevői kérdéseket",
+    "addCard": "Hozzáadom",
+    "examples": "Példák — kattints, és felveszed:",
+    "dontsTitle": "Mit NE csináljon",
+    "dontsBody": "Határok, amiket soha ne lépjen át. Nem kötelező, de sokat segít.",
+    "dontPlaceholder": "pl. Nem ígér visszatérítést",
+    "roleRaw": "Munkaköri leírás szövegként",
+    "roleRawHelp": "Ezt a szöveget olvassa el az AI-munkatárs minden feladat előtt. A kártyákból automatikusan áll össze; ha itt átírod, a kártyák már nem írják felül.",
+    "rolePreview": "Így áll össze a munkaköri leírás",
+    "rolePreviewHint": "A kártyákból és a hangnemből — ezt olvassa el minden feladat előtt.",
+    "createHint": "A „Felveszem” gomb elmenti a munkatársat. Ekkor még nem dolgozik — csak a végén, a munkába állításkor kezd el.",
+    "cardEditAria": "{index}. kártya szövege",
+    "cardRemoveAria": "{index}. kártya törlése",
+    "cardsFull": "Legfeljebb {max} kártya adható meg.",
+    "inline": {
+      "title": "Hiányzik valami?",
+      "body": "Helyben, felugró ablakban hozhatod létre — a varázsló itt marad, bezáráskor a lista frissül.",
+      "newSystem": "Új céges rendszer összekötése",
+      "newMethod": "Új módszer betanítása",
+      "accounts": "Saját fiókok (Gmail, Drive) összekötése"
+    },
+    "inlineDialogHint": "A változások azonnal mentődnek. Ha kész vagy, zárd be az ablakot.",
+    "inlineDialogClose": "Kész, bezárom",
     "externalTitle": "Közben eszedbe jutott valami?",
     "externalBody": "Új böngészőablakban nyílik — ez a varázsló itt marad. Ha ott létrehoztál valamit, frissítsd a listát.",
     "refreshing": "Frissítés…",
-    "refreshList": "Lista frissítése"
+    "refreshList": "Lista frissítése",
+    "knowledgeEmpty": "Még nincs dokumentuma. Ezekből válaszol, és forrást is mutat — adj hozzá szabályzatot, árlistát, gyakori kérdéseket. Dokumentum nélkül a válaszai általánosak lesznek.",
+    "autonomy": {
+      "sliderAria": "Önállósági szint",
+      "default": "alap",
+      "custom": "Egyedi beállítás: az írások egyenként vannak állítva (lásd Részletek). Egy szint választása felülírja.",
+      "alwaysGates": "A céges szabályzat kötelező jóváhagyásai (pl. veszélyesnek jelölt műveletek) minden szinten megmaradnak.",
+      "levels": {
+        "trainee": {
+          "title": "Gyakornok",
+          "body": "Mindent megmutat, mielőtt ír vagy küld. Minden írás emberi jóváhagyással.",
+          "short": "Gyakornok"
+        },
+        "trusted": {
+          "title": "Megbízható kolléga",
+          "body": "Saját jegyzetet és memóriát önállóan ír; levelet, fájlt, céges rendszert jóváhagyással.",
+          "short": "Megbízható kolléga"
+        },
+        "autonomous": {
+          "title": "Önálló",
+          "body": "Csak a céges szabályzat kötelező kapuinál kér jóváhagyást.",
+          "short": "Önálló"
+        },
+        "custom": {
+          "title": "Egyedi",
+          "body": "Egyenként beállított írások.",
+          "short": "Egyedi önállóság"
+        }
+      },
+      "detailsTitle": "Részletek",
+      "detailsHint": "Írásonként és a jóváhagyó személye",
+      "driveTitle": "Hova mentse a kész anyagot?",
+      "driveHint": "Google Drive mappa a kész dokumentumoknak"
+    },
+    "team": {
+      "options": {
+        "me": {
+          "title": "Csak én",
+          "body": "Te és az adminisztrátorok látjátok. Ez a legbiztonságosabb kezdés."
+        },
+        "team": {
+          "title": "Az egész csapat",
+          "body": "Mind a(z) {count} kolléga használhatja chatben és feladatban."
+        },
+        "selected": {
+          "title": "Kiválasztott kollégák",
+          "body": "Személyenként adod meg, ki láthatja vagy használhatja."
+        }
+      },
+      "onlyYou": "Rajtad és az adminisztrátorokon kívül senki nem fogja látni.",
+      "nobodyElse": "A szervezetben jelenleg csak adminisztrátorok vannak — ők mind látják.",
+      "revokeTitle": "Visszavonod a hozzáféréseket?",
+      "revokeBody": "{count} kolléga elveszíti a hozzáférését ehhez a munkatárshoz.",
+      "revokeConfirm": "Visszavonom"
+    },
+    "advanced": {
+      "modelTitle": "Gondolkodási motor",
+      "modelHint": "Melyik AI-modell dolgozik mögötte — alapból a céges beállítás",
+      "hermesTitle": "Asztali kliens korlátai",
+      "hermesHint": "Mit tehet meg a gépen futó asztali AI-kliensben",
+      "localRootsTitle": "Helyi mappák",
+      "localRootsHint": "Fejlesztő munkatársnak: mely mappákban dolgozhat a gépen"
+    },
+    "launch": {
+      "testTitle": "Próbáld ki ezekkel a kérdésekkel",
+      "testSafe": "Gyakornok szinten minden írás és küldés előtt rákérdez — így a próba biztonságos, semmi nem megy ki jóváhagyásod nélkül.",
+      "testCareful": "Figyelem: ezen az önállósági szinten jóváhagyás nélkül is írhat. Próbához érdemes Gyakornokra állítani.",
+      "copy": "Másolás",
+      "copied": "Másolva",
+      "retired": "Ez a munkatárs nyugdíjba vonult — nem állítható újra munkába.",
+      "readyBody": "Ha minden rendben, állítsd munkába: ettől kezdve a kollégák chatben és feladatban is dolgozhatnak vele.",
+      "updateBody": "Munkában van, de azóta módosítottál rajta. Élesítsd a változásokat, hogy a kollégák már az új beállítással dolgozzanak.",
+      "cta": "Munkába állítom",
+      "update": "Változások élesítése",
+      "launching": "Munkába állítás…",
+      "liveTitle": "{name} munkába állt!",
+      "liveBody": "Írj neki a saját AI-kliensedben (pl. Claude, ChatGPT, Codex), vagy adj neki feladatot.",
+      "chatNow": "Írj neki most",
+      "giveTicket": "Adj neki ticketet"
+    },
+    "openAgent": "Munkatárs adatlapja →",
+    "card": {
+      "unnamed": "Névtelen munkatárs",
+      "statusLive": "Munkában",
+      "statusNotYet": "Még nem dolgozik",
+      "duties": "{count} feladat",
+      "access": "{count} hozzáférés",
+      "methods": "{count} betanult módszer",
+      "knowledge": "{count} dokumentum"
+    },
+    "readiness": {
+      "title": "Munkára kész",
+      "short": "Munkára kész: {percent}%",
+      "complete": "Minden megvan — munkára kész!",
+      "missing": {
+        "name": "Nincs még neve",
+        "intro": "Nincs bemutatkozása — a kollégák nem tudják, mikor forduljanak hozzá",
+        "duty": "Nincs még feladata",
+        "access": "Semmihez nem fér hozzá — csak beszélgetni tud",
+        "knowledge": "Nincs még dokumentuma — a válaszai általánosak lesznek",
+        "team": "Rajtad kívül senki nem látja",
+        "launch": "Még nem állt munkába"
+      }
+    },
+    "milestones": {
+      "draft": "Kész a javaslat — nézd át, és írd át, amit szeretnél.",
+      "created": "{name} felvéve! Most add meg, mihez férhet hozzá.",
+      "access": "Első hozzáférés megadva — {name} már dolgozni is tud.",
+      "launched": "{name} munkába állt. Gratulálunk! 🎉"
+    },
+    "tips": {
+      "start": "A leggyorsabb: mondd el egy-két mondatban, mit csináljon — a javaslatot a következő lépéseken teljesen átírhatod.",
+      "identity": "Jó név: rövid és beszédes, pl. „Számla Szilvi”. A bemutatkozás alapján döntik el a kollégák, mikor szóljanak neki.",
+      "duties": "Egy kártya = egy feladat. Írd úgy, ahogy egy új kollégának mondanád.",
+      "access": "Csak azt kapcsold be, amire tényleg szüksége van. Kezdésnek az „olvas” elég — az írást később is megadhatod.",
+      "knowledge": "Minél pontosabb dokumentumot adsz, annál pontosabban válaszol. Szabályzat, árlista, GYIK — ezek a legjobbak.",
+      "autonomy": "Kezdd Gyakornokként: minden írás előtt rákérdez. Ha megbízol benne, később több önállóságot adhatsz.",
+      "team": "Kezdésnek elég, ha csak te látod. Ha bevált, egy kattintással megoszthatod a csapattal.",
+      "advanced": "Ezt a lépést nyugodtan kihagyhatod — az alapbeállítások a legtöbb munkatársnak megfelelnek.",
+      "launch": "Munkába állás után a javasolt kérdésekkel próbáld ki. Ha valami nem tetszik, bármikor visszajöhetsz és módosíthatsz."
+    },
+    "start": {
+      "recommended": "ajánlott",
+      "describe": {
+        "title": "Mondd el egy-két mondatban",
+        "body": "Leírod, mit csináljon, és ebből javaslatot készítünk — mindent átírhatsz.",
+        "label": "Mit csináljon az új munkatárs?",
+        "placeholder": "Válaszoljon a webshop vevői leveleire, és ha reklamáció jön, szóljon nekem.",
+        "hint": "A javaslat csak kitölti a következő lépéseket — semmit nem kapcsol be, és nem áll munkába magától.",
+        "required": "Írj legalább egy mondatot.",
+        "cta": "Javaslatot kérek"
+      },
+      "sample": {
+        "title": "Válassz mintát",
+        "body": "Kész kiindulópont gyakori munkakörökhöz."
+      },
+      "clone": {
+        "title": "Másolj egy meglévő munkatársat",
+        "body": "Feladatok, hozzáférések, önállóság és csapat — jelszavak és személyes fiókok nélkül.",
+        "select": "Kit másolsz?",
+        "none": "Válassz munkatársat…",
+        "loading": "Betöltés…",
+        "loaded": "„{name}” beállításai betöltve — add meg az új nevet a következő lépésen.",
+        "copied": "A hozzáférések, betanult módszerek, önállóság, AI-modell és a csapat a felvételkor másolódnak. Dokumentumokat és memóriát nem viszünk át."
+      },
+      "blank": {
+        "title": "Üres lap",
+        "body": "Mindent magad adsz meg, a nulláról."
+      }
+    },
+    "deck": {
+      "toolsTitle": "Mire használhatja?",
+      "toolsHelp": "Kártyánként választhatsz: ki, csak olvas, vagy ír is. Az „ír is” mindig tartalmazza az olvasást. Minden kattintás azonnal mentődik.",
+      "levels": {
+        "off": "Ki",
+        "read": "Olvas",
+        "write": "Ír is"
+      },
+      "partial": "Részben bekapcsolva (egyenként állítva). Egy szint választása felülírja.",
+      "needsAccount": {
+        "gmail": "Gmail-fiók összekötése szükséges",
+        "drive": "Google Drive összekötése szükséges"
+      },
+      "cards": {
+        "mail": {
+          "title": "Levelezés",
+          "read": "E-maileket keres és olvas",
+          "write": "Választ fogalmaz, levelet küld, címkéz"
+        },
+        "documents": {
+          "title": "Dokumentumok",
+          "read": "Fájlokat keres és olvas a Drive-on",
+          "write": "Fájlt és mappát hoz létre, módosít"
+        },
+        "sheets": {
+          "title": "Táblázatok",
+          "read": "",
+          "write": "Cellákat ír a táblázatokba"
+        },
+        "company": {
+          "title": "Céges rendszerek",
+          "read": "Adatot kérdez le a céges rendszerekből",
+          "write": "Adatot ír vagy módosít a céges rendszerekben"
+        },
+        "knowledge": {
+          "title": "Tudásbázis",
+          "read": "Keres a dokumentumokban, forrást mutat",
+          "write": "Új anyagot tölt fel, wiki-oldalt ír"
+        },
+        "compute": {
+          "title": "Számolás",
+          "read": "Számításokat, kimutatásokat készít",
+          "write": ""
+        }
+      },
+      "systemsTitle": "Céges rendszerek kapcsolatai",
+      "systemsHelp": "A cégednél már összekötött rendszerek (pl. CRM, számlázó). Válaszd ki, melyiket használhatja, és hogy csak olvashat-e vagy írhat is.",
+      "systemsEmpty": "Még nincs összekötött céges rendszer. Lent, a „Hiányzik valami?” résznél hozzáadhatsz egyet.",
+      "modeRead": "olvas",
+      "modeWrite": "ír is",
+      "addRead": "+ Olvasásra",
+      "addWrite": "+ Írásra is",
+      "remove": "Elveszem",
+      "methodsTitle": "Betanult módszerek",
+      "methodsHelp": "Előre megírt munkamódszerek (pl. „Így válaszolunk reklamációra”). Ha betanítod, ezek szerint dolgozik.",
+      "methodsEmpty": "Még nincs betanítható módszer a cégnél.",
+      "teach": "Betanítom",
+      "forget": "Elfelejti"
+    }
   },
   "AgentPublish": {
     "cardLive": "Használható az MCP-n",
