@@ -55,6 +55,8 @@ assert.ok(checkout.files.some(file => file.content.includes('Process received so
 const pkg = wikiMaintainerPackage()
 assert.equal(pkg.files.length, 1)
 assert.match(pkg.files[0].text, /ingest_review/)
+assert.match(pkg.files[0].text, /kind:"note", processingMode:"wiki", wikiId/)
+assert.match(pkg.files[0].text, /citing the returned documentId and marking confidence: agent_observation/)
 assert.equal(validateSkill({ ...WIKI_MAINTAINER, attachmentPaths: [] }).ok, true)
 for (const language of ['hu', 'en'] as const) {
   for (const template of WIKI_TEMPLATES) {
