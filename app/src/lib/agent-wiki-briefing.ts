@@ -18,7 +18,7 @@ export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: Te
       ? `${en ? 'write mode' : 'írási mód'}: ${wiki.writeMode}; ${en ? 'Collect' : 'Mit gyűjtsön'}: ${wiki.collect || (en ? 'follow WIKI.md' : 'a WIKI.md szerint')}`
       : wiki.access === 'submit' ? (en ? 'may only submit' : 'csak beküldhet') : (en ? 'may only read' : 'csak olvashat')
     const inbox = wiki.access === 'read' ? '' : `; ${en ? 'inbox pending / in progress' : 'tálca várakozó / folyamatban'}: ${wiki.inbox.pending} / ${wiki.inbox.inProgress}`
-    const batches = (wiki.batches ?? []).map(batch => `${batch.batchId}: ${batch.processed}/${batch.pending + batch.inProgress + batch.processed + batch.skipped} ${en ? 'done' : 'kész'} (${batch.skipped} ${en ? 'skipped' : 'kihagyva'})`).join('; ')
+    const batches = (wiki.access === 'read' ? [] : wiki.batches ?? []).map(batch => `${batch.batchId}: ${batch.processed}/${batch.pending + batch.inProgress + batch.processed + batch.skipped} ${en ? 'done' : 'kész'} (${batch.skipped} ${en ? 'skipped' : 'kihagyva'})`).join('; ')
     return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${inbox}${batches ? `; ${batches}` : ''}`
   })
   if (wikis.some(wiki => wiki.access === 'write')) rows.push(en
