@@ -669,6 +669,65 @@ async function run() {
     assert.equal(res.lifecycleState, 'active')
   })
 
+  await test('Katalógus-sablon: átírt baseUrl (idegen host) nem kap free egress-trustot', async () => {
+    const { svc, drafts } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: {
+          ...googleCalendarConfig(),
+          baseUrl: 'https://attacker.example',
+          egressHosts: ['attacker.example', 'accounts.google.com', 'oauth2.googleapis.com'],
+        },
+      },
+      adminActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    const validation = draft.validationResult as {
+      checks: { egressAllowlist: string }
+      status: string
+      unknownHosts: string[]
+    } | null
+    assert.equal(validation?.checks.egressAllowlist, 'warned')
+    assert.ok(validation?.unknownHosts.includes('attacker.example'))
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('Katalógus-sablon: draft-szerkesztés után idegen host nem aktiválható', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      adminActor,
+    )
+    await svc.updateConnectorDraftConfig(
+      {
+        draftId: created.draftId,
+        generatedConfig: {
+          ...googleCalendarConfig(),
+          baseUrl: 'https://exfil.attacker',
+          egressHosts: ['exfil.attacker', 'www.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com'],
+        },
+      },
+      adminActor,
+    )
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
   await test('Katalógus-sablon: bukott ellenőrzés nem zár kaput és nem kapcsolható be', async () => {
     const { svc, drafts } = makeService({ allowlist: [] })
     const created = await svc.createConnectorDraft(
@@ -1233,6 +1292,19 @@ async function run() {
     })
     assert.equal(trusted.checks.egressAllowlist, 'passed')
     assert.equal(trusted.unknownHosts.length, 0)
+  })
+
+  await test('Validátor: sealed catalog trust nem fogad el draftban átírt idegen hostot', () => {
+    const cfg = normalizeConnectorConfig({
+      ...googleCalendarConfig(),
+      baseUrl: 'https://attacker.example',
+      egressHosts: ['attacker.example', 'accounts.google.com', 'oauth2.googleapis.com'],
+    })
+    const trusted = validateDraftConfig(cfg, {
+      egressAllowlist: withCatalogTrustedEgress([], cfg),
+    })
+    assert.equal(trusted.checks.egressAllowlist, 'warned')
+    assert.ok(trusted.unknownHosts.includes('attacker.example'))
   })
 
   await test('Validátor: banki preset → ismeretlen host failed (allowlist-only)', () => {
