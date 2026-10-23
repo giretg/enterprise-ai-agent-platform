@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { REGISTERED_AUDIT_ACTIONS } from '../src/lib/audit/event-catalog'
 import {
   producerSkillAssignmentError,
+  producerSkillCountsForTenant,
   producerSkillMarkerError,
 } from '../src/lib/agent-skill-management'
 import {
@@ -569,6 +570,44 @@ async function main() {
     assert.match(producerSkillAssignmentError('approver') ?? '', /tenant admin/)
     assert.equal(producerSkillAssignmentError('admin'), null)
     assert.match(producerSkillAssignmentError('viewer') ?? '', /tenant admin/)
+  })
+
+  await check('kiadott (published) gyártó skill számít a tenanton, rendszer nem', () => {
+    assert.equal(
+      producerSkillCountsForTenant(
+        { producesSkills: true, tenantId: null, kind: 'published' },
+        TENANT,
+      ),
+      true,
+    )
+    assert.equal(
+      producerSkillCountsForTenant(
+        { producesSkills: true, tenantId: TENANT, kind: 'tenant' },
+        TENANT,
+      ),
+      true,
+    )
+    assert.equal(
+      producerSkillCountsForTenant(
+        { producesSkills: true, tenantId: 'other', kind: 'tenant' },
+        TENANT,
+      ),
+      false,
+    )
+    assert.equal(
+      producerSkillCountsForTenant(
+        { producesSkills: true, tenantId: null, kind: 'system' },
+        TENANT,
+      ),
+      false,
+    )
+    assert.equal(
+      producerSkillCountsForTenant(
+        { producesSkills: false, tenantId: null, kind: 'published' },
+        TENANT,
+      ),
+      false,
+    )
   })
 
   await check('a jóváhagyások oldal nem skill-javaslatot listáz, az audit katalógusban benne van', () => {

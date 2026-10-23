@@ -145,6 +145,11 @@ export function AgentSkillsPanel({
                       <Badge tone={SKILL_KIND_BADGE_TONE[s.kind]}>{SKILL_KIND_COPY[s.kind].label}</Badge>
                     </span>
                   ) : null}
+                  {s.producesSkills ? (
+                    <span className="ml-2">
+                      <Badge tone="warning">gyártó</Badge>
+                    </span>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge tone={READINESS_TONE[s.readiness.color]}>
@@ -155,6 +160,13 @@ export function AgentSkillsPanel({
                 </div>
               </div>
               <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
+              {s.producesSkills ? (
+                <p className="mt-1 text-xs text-honey">
+                  {s.enabled
+                    ? 'Gyártó skill: ezen az agenten a beszélgetésből skill készülhet.'
+                    : 'Gyártó skill, de le van tiltva — a beszélgetésből skill beküldés nem megy, amíg nincs Engedélyezés.'}
+                </p>
+              ) : null}
 
               {s.requires.length > 0 && (
                 <ul className="mt-2 space-y-1">

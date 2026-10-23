@@ -137,13 +137,22 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
       return canOperateAgent({ role: input.role, grant, assumed: input.assumed })
     },
     async producerEnabled(input) {
+      // Tenant gyártó VAGY kiadott (published) platform gyártó — lásd
+      // producerSkillCountsForTenant. A régi `tenantId: input.tenantId` szűrő
+      // a published skill-keszito-t soha nem találta (tenant_id null).
       const row = await prisma.agentSkill.findFirst({
         where: {
           agentId: input.agentId,
           enabled: true,
           skillVersion: {
             status: 'active',
-            skill: { producesSkills: true, tenantId: input.tenantId },
+            skill: {
+              producesSkills: true,
+              OR: [
+                { tenantId: input.tenantId, kind: 'tenant' },
+                { tenantId: null, kind: 'published' },
+              ],
+            },
           },
         },
         select: { agentId: true },

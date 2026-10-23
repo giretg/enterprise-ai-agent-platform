@@ -134,6 +134,8 @@ export interface AgentSkillRow {
   version: number
   riskTier: SkillRiskTier
   kind: SkillKind
+  /** Gyártó skill: beszélgetésből skill beküldés ehhez az agenthez. */
+  producesSkills: boolean
   requires: Array<{ toolName: string; reason: string }>
   readiness: SkillReadiness
   /** A skill deklarált paraméterei (#199) — a feladat-indító űrlap mezői. */
@@ -164,6 +166,7 @@ export async function getAgentSkillsAction(
         version: r.version,
         riskTier: r.riskTier,
         kind: r.kind,
+        producesSkills: r.producesSkills,
         requires: r.requires,
         readiness: r.readiness,
         parameters: r.content.parameters.map((p) => ({
