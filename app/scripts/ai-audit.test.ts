@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import {
   MAX_CONTENT_BYTES,
+  MAX_BATCH_BYTES,
   MAX_EVENTS_PER_BATCH,
   MAX_META_BYTES,
   createGatewayAuditSink,
@@ -13,6 +14,7 @@ import {
   ingestGuardEvents,
   listAuditEvents,
   normalizeDepth,
+  readAuditBatchText,
   drainExpiredAiAuditEvents,
   sweepExpiredAiAuditEvents,
   type AiAuditDeps,
@@ -84,6 +86,35 @@ const ev = (n: number, over: Record<string, unknown> = {}) => ({
 })
 
 async function main() {
+  await check('Guard batch: Content-Length nélkül is bájthatárnál leáll és megszakítja a streamet', async () => {
+    let delivered = 0
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        delivered++
+        controller.enqueue(new Uint8Array(1024 * 1024))
+        if (delivered === 30) controller.close()
+      },
+      cancel() { cancelled = true },
+    })
+    const request = new Request('https://example.test/api/ai-audit/events', {
+      method: 'POST', body, duplex: 'half',
+    } as RequestInit & { duplex: 'half' })
+    assert.equal(await readAuditBatchText(request), null)
+    assert.ok(cancelled)
+    assert.ok(delivered < 30)
+    assert.equal(MAX_BATCH_BYTES, 8 * 1024 * 1024)
+  })
+
+  await check('Guard batch: a többbájtos szöveg is bájtban számít, kis payload átmegy', async () => {
+    const small = new Request('https://example.test', { method: 'POST', body: 'é' })
+    assert.equal(await readAuditBatchText(small), 'é')
+    const oversized = new Request('https://example.test', {
+      method: 'POST', body: 'é'.repeat(MAX_BATCH_BYTES / 2 + 1),
+    })
+    assert.equal(await readAuditBatchText(oversized), null)
+  })
+
   await check('ismeretlen audit_depth → metadata (a legkevesebbet tároló)', async () => {
     assert.equal(normalizeDepth('wat'), 'metadata')
     assert.equal(normalizeDepth(undefined), 'metadata')
