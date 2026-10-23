@@ -1655,6 +1655,20 @@ async function main() {
     assert.deepEqual(result, { allowed: false, reason: 'missing_knowledge_base_connector_write' })
   })
 
+  await check('wiki intake respects submit permission independently of legacy write access', async () => {
+    for (const wikiAccess of ['read', 'submit', 'write'] as const) {
+      const result = await authorizeToolCall(authorizeDeps({ connector: kbConnector }), {
+        principal: principal(), toolName: KB_INGEST_TOOL, args: { processingMode: 'wiki' },
+        definition: definition({ snapshot: { ...kbDefinition.snapshot, connectors: [{
+          connectorId: CONNECTOR_ID, type: 'knowledge_base', wikiAccess,
+          accessMode: wikiAccess === 'write' ? 'write' : 'read',
+        }] } }),
+      })
+      assert.equal(result.allowed, wikiAccess !== 'read')
+      if (!result.allowed) assert.equal(result.reason, 'wiki_submit_not_allowed')
+    }
+  })
+
   await check('kb_ingest invoke publishes without Drive token lookup', async () => {
     let seen: { toolName: string; filename: string } | undefined
     const result = await invokeEnterpriseTool(

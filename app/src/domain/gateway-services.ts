@@ -199,6 +199,7 @@ const wikiService = new WikiService({
 })
 
 const wikiConsoleService = new WikiConsoleService({
+  documents: repositories.documents,
   connectors: repositories.connectors,
   agents: repositories.agents,
   wikis: repositories.wikis,

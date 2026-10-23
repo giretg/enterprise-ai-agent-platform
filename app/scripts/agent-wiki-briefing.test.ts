@@ -44,9 +44,9 @@ for (const language of ['hu', 'en'] as const) {
   assert.match(briefing, /117 \/ 0; Leletek 2026-10: 23\/140/)
   assert.match(briefing, language === 'en' ? /Process received sources NOW/ : /AZONNAL/)
 }
-const readerBlock = renderAgentWikiBriefing([{ ...wikis[0], access: 'read', batches: [] }], 'en')
+const readerBlock = renderAgentWikiBriefing([{ ...wikis[0], access: 'read' }], 'en')
 assert.match(readerBlock, /may only read/)
-assert.doesNotMatch(readerBlock, /kb_wiki_write|inbox pending/)
+assert.doesNotMatch(readerBlock, /kb_wiki_write|inbox pending|Leletek 2026-10|23\/140/)
 assert.match(renderAgentWikiBriefing([{ ...wikis[0], access: 'submit' }], 'en'), /may only submit/)
 const checkout = renderAgentCheckout({ definition: writer, skills: [WIKI_MAINTAINER], wikis, language: 'en', publishedContentHash: original, mcpUrl: 'https://example.com/api/mcp/acme', harness: 'codex' })
 assert.equal(checkout.pin.contentHash, original)

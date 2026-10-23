@@ -44,7 +44,7 @@ export function withWikiMaintainer(definition: AgentDefinition, userId: string):
   if (!resolveWikiScopes(snapshot, userId).writable.length) return { ...definition, snapshot }
   return {
     ...definition,
-    snapshot: { ...snapshot, skills: [...snapshot.skills.filter(pin => pin.skillId !== WIKI_MAINTAINER.skillId), {
+    snapshot: { ...snapshot, skills: [...snapshot.skills, {
       skillId: WIKI_MAINTAINER.skillId, skillVersionId: WIKI_MAINTAINER.skillVersionId, name: WIKI_MAINTAINER.name,
     }] },
   }

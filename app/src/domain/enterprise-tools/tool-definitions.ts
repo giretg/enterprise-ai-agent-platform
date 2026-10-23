@@ -585,6 +585,8 @@ export const kbGetDocumentInputSchema = z
     agentId: optionalAgentId,
     documentId: z.string().uuid(),
     section: z.string().max(200).optional(),
+    pageImages: z.boolean().optional().describe('Return original PDF pages as PNG images; max 5 pages per call.'),
+    pages: z.string().min(1).max(100).optional().describe('1-based PDF pages, e.g. "1-3,7". Defaults to page 1.'),
     /** #943: tálca-tétel foglalása a hívó agentre (2 óra), csak írási joggal. */
     claimForWiki: z.boolean().optional(),
   })

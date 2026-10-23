@@ -112,11 +112,11 @@ async function main() {
     await check('párhuzamos azonos feltöltésből pontosan egy dokumentum készül', async () => {
       const documents = new PostgresDocumentRepository()
       const contentHash = randomUUID()
-      const results = await Promise.all(Array.from({ length: 3 }, (_, i) => documents.createIfAbsent({
+      const results = await Promise.all(Array.from({ length: 3 }, (_, i) => documents.createSource({
         tenantId: tenant.id, connectorId: priv.id, uploadedById: owner.id,
         filename: `same-${i}.txt`, contentHash, extractedText: 'same',
       })))
-      assert.equal(results.filter((result) => result.created).length, 1)
+      assert.equal(results.filter((result) => !result.duplicate).length, 1)
       assert.equal(new Set(results.map((result) => result.document.id)).size, 1)
       assert.equal(await prisma.document.count({ where: { connectorId: priv.id, contentHash } }), 1)
       await prisma.document.delete({ where: { id: results[0].document.id } })

@@ -11,7 +11,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import type { Connector, MemoryWriteMode, WikiAccess, WikiPage } from '@prisma/client'
-import type { AgentRepository, AuditRepository, ConnectorRepository, WikiRepository } from '@/repositories/interfaces'
+import type { AgentRepository, AuditRepository, ConnectorRepository, DocumentRepository, WikiRepository } from '@/repositories/interfaces'
 import type { WikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { hasMinimumRole } from '@/auth/types'
 import type { UserRole } from '@prisma/client'
@@ -64,6 +64,7 @@ export type WikiKbKind = 'catalog' | 'agent' | 'shared' | 'private'
 type Access = { view: boolean; contribute: boolean; manage: boolean; metaOnly: boolean }
 
 export type WikiConsoleDeps = {
+  documents: Pick<DocumentRepository, 'readSource'>
   connectors: Pick<ConnectorRepository, 'findById' | 'create'>
   agents: Pick<AgentRepository, 'findById' | 'findConnectorsForAgent' | 'findConnectorBinding'>
   wikis: Pick<
@@ -463,7 +464,7 @@ export class WikiConsoleService {
       buffer: input.buffer,
       purpose: input.purpose ?? null,
     })
-    if (stored.duplicate) return { status: 'duplicate', existingDocumentId: stored.documentId }
+    if (stored.duplicateOf) return { status: 'duplicate', existingDocumentId: stored.documentId }
     await this.deps.wikis.submitToInbox({
       documentId: stored.documentId,
       status: 'pending',
@@ -522,6 +523,8 @@ export class WikiConsoleService {
     }
     for (const doc of documents) {
       add(`raw/${doc.id.slice(0, 8)}-${safeFilePart(doc.filename)}.md`, doc.extractedText ?? '')
+      const original = await this.deps.documents.readSource(doc.id)
+      if (original) entries.push({ path: `${root}/raw/${doc.id.slice(0, 8)}-${safeFilePart(doc.filename)}`, bytes: original })
     }
     const schema = wikiId ? (await this.deps.wikis.findByConnectorId(connector.id))?.schemaMd : null
     if (schema) add(WIKI_SCHEMA_PATH, schema)

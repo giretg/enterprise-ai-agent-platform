@@ -120,6 +120,7 @@ enum DocumentStatus {
 enum KnowledgeProcessingMode {
   raw_text_only
   okf
+  wiki
 }
 
 enum KnowledgeArtifactStatus {
@@ -899,11 +900,21 @@ model Document {
   connector  Connector?           @relation(fields: [connectorId], references: [id], onDelete: SetNull)
   uploadedBy User                 @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
   artifacts  KnowledgeArtifact[]
+  sourceFile DocumentSourceFile?
 
   @@index([tenantId, connectorId])
   @@index([connectorId, wikiStatus])
   @@index([connectorId, contentHash])
   @@map("documents")
+}
+
+// Original source bytes stay private and are deleted with their Document (including KB purge).
+model DocumentSourceFile {
+  documentId String @id @map("document_id") @db.Uuid
+  data       Bytes
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("document_source_files")
 }
 
 model KnowledgeArtifact {

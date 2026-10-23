@@ -336,6 +336,10 @@ export class WikiService {
       extraMetadata,
     })
 
+    if (stored.duplicateOf) {
+      return { ok: true, result: { ...stored, wikiId: target.wikiId, status: 'duplicate' } }
+    }
+
     // D6: írási jognál azonnali feldolgozás a hívó nevére foglalva; különben tálca.
     const processNow = target.scope.access === 'write' && !input.defer
     const claimExpiresAt = processNow ? new Date(now.getTime() + WIKI_CLAIM_TTL_MS) : null

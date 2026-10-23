@@ -128,8 +128,24 @@ const documentRepo = {
     documents.set(row.id, row)
     return row
   },
+  async createSource(data: Record<string, unknown>) {
+    const existing = [...documents.values()].find(
+      (doc) => doc.connectorId === data.connectorId && doc.contentHash === data.contentHash,
+    )
+    return { document: existing ?? await this.create(data), duplicate: !!existing }
+  },
+  async readSource() {
+    return null
+  },
   async findById(id: string) {
     return documents.get(id) ?? null
+  },
+  async update(id: string, data: Record<string, unknown>) {
+    const current = documents.get(id)
+    if (!current) throw new Error('not_found')
+    const next = { ...current, ...data } as Document
+    documents.set(id, next)
+    return next
   },
   async searchRaw() {
     return []
@@ -648,6 +664,26 @@ async function main() {
     assert.equal(listing.wiki.categories[0].category, 'Források')
     assert.ok(listing.sources.some((s: any) => s.documentId === sourceDoc))
     assert.ok(auditLog.some((row) => row.action === 'kb.wiki.changeset.applied' && row.actorType === 'agent'))
+  })
+
+  await check('duplikált MCP-feltöltés nem nyit újra feldolgozott tételt és nem veszi át más foglalását', async () => {
+    for (const status of ['processed', 'in_progress'] as const) {
+      const content = `duplicate-state-${status}`
+      const first = await call(OWNER, DEF_A, 'kb_ingest', { ...md(content), processingMode: 'wiki', wikiId: WIKI_A })
+      const document = documents.get(first.documentId)!
+      document.wikiStatus = status
+      document.wikiClaimedByAgentId = status === 'in_progress' ? AGENT_B : null
+      const before = { ...document }
+      const count = documents.size
+      const auditCount = auditLog.filter((row) => row.action === 'kb.wiki.inbox.submitted').length
+      const repeated = await call(OWNER, DEF_A, 'kb_ingest', { ...md(content), processingMode: 'wiki', wikiId: WIKI_A })
+      assert.equal(repeated.isError, false)
+      assert.equal(repeated.status, 'duplicate')
+      assert.equal(repeated.documentId, first.documentId)
+      assert.equal(documents.size, count)
+      assert.equal(auditLog.filter((row) => row.action === 'kb.wiki.inbox.submitted').length, auditCount)
+      assert.deepEqual(documents.get(first.documentId), before)
+    }
   })
 
   await check('2. második forrás patch appendToSection-nel bővít; a revízió megmarad', async () => {

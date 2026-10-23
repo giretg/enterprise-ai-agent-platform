@@ -212,6 +212,9 @@ jobs:
       - name: Wiki private KB purge (Postgres)
         run: npm run test:wiki-private-purge-db
 
+      - name: KB PDF sources and MCP images (Postgres)
+        run: npm run test:kb-pdf-source-db
+
       # #943: wiki change-set egy tranzakcióban (rollback, chunk-csere, tálca) valódi Postgresen.
       - name: Wiki change-set apply (Postgres)
         run: npm run test:kb-wiki-db

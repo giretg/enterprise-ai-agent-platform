@@ -159,6 +159,7 @@ function setup() {
   }
 
   const service = new WikiConsoleService({
+    documents: { readSource: async () => Buffer.from('%PDF-original-bytes') },
     connectors: {
       findById: async (id: string) => connectors.get(id) ?? null,
       create: async (input: any) => {
@@ -427,8 +428,10 @@ async function main() {
       'Leletek/labs/hba1c.md',
       'Leletek/log.md',
       'Leletek/overview.md',
+      'Leletek/raw/99999999-lelet.pdf',
       'Leletek/raw/99999999-lelet.pdf.md',
     ])
+    assert.equal(Buffer.from(entries.find((entry) => entry.path === 'Leletek/raw/99999999-lelet.pdf')!.bytes).toString(), '%PDF-original-bytes')
     const text = new TextDecoder().decode(entries.find((entry) => entry.path === 'Leletek/labs/hba1c.md')!.bytes)
     assert.ok(text.startsWith('---\n') && text.includes('HbA1c 6,1 %'))
     assert.ok(audit.some((entry) => entry.action === 'kb.wiki.exported' && entry.metadata.privateKb === true))

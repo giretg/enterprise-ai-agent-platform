@@ -1745,7 +1745,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base file',
           description:
-            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. OKF sources return artifactId instead of the full text. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
+            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text. PDF pages include textQuality; for low_text/no_text use pageImages:true and pages:"1-3,7" (max 5 pages per call, default page 1) to receive PNG images. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
@@ -1755,7 +1755,7 @@ async function createMcpResourceHandler(
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into pages mechanically; wiki stores the raw source for the agent wiki — then process it NOW in this session: read it and call kb_wiki_write. Use defer:true only when the user asks to process later. Pass wikiId when several wikis are writable. kind:"note" saves a short fact learned in conversation as a raw source (no filename needed). Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+            'Load a file into the knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into pages mechanically; wiki stores the raw source for the agent wiki — then process it NOW in this session: read it and call kb_wiki_write. Use defer:true only when the user asks to process later. Pass wikiId when several wikis are writable. kind:"note" saves a short fact learned in conversation as a raw source (no filename needed). Identical files return duplicateOf. PDF responses include per-page textQuality and a pageImages nextStep when needed. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
           inputSchema: kbIngestObject,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
@@ -1950,9 +1950,34 @@ async function enterpriseToolResult(
   confirm?: WriteConfirmInput,
 ) {
   // InputRequiredToolResult is the wire shape of the SDK's InputRequiredResult.
-  return deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as Promise<
+  const result = await deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as
     CallToolResult | InputRequiredResult
-  >
+  return toolName === KB_GET_DOCUMENT_TOOL && args.pageImages === true && 'content' in result
+    ? kbDocumentImageResult(result as CallToolResult)
+    : result
+}
+
+/** Lift only server-generated KB page images into MCP image content blocks. */
+export function kbDocumentImageResult(result: CallToolResult): CallToolResult {
+  if (result.isError) return result
+  const first = result.content[0]
+  if (first?.type !== 'text') return result
+  const payload = JSON.parse(first.text)
+  if (!Array.isArray(payload.images)) return result
+  const { images, ...metadata } = payload as {
+    images: Array<{ page: number; data: string; mimeType: 'image/png'; width: number; height: number }>
+    [key: string]: unknown
+  }
+  return {
+    ...result,
+    content: [
+      { type: 'text', text: JSON.stringify({ ...metadata, pageImages: images.map(({ page, width, height, mimeType }) => ({ page, width, height, mimeType })) }) },
+      ...images.flatMap((image): CallToolResult['content'] => [
+        { type: 'text', text: `PDF page ${image.page}` },
+        { type: 'image', data: image.data, mimeType: image.mimeType },
+      ]),
+    ],
+  }
 }
 
 async function projectWorkToolResult(

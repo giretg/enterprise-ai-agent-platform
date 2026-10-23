@@ -18,6 +18,8 @@ import { isKbLanguage, resolveKbLanguage, type KbLanguage } from '@/lib/kb-langu
 import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   extractStructured,
+  pdfPageQuality,
+  pdfQualityHint,
   toExtractionMetadata,
   EXTRACTION_METADATA_KEY,
   type StructuredExtraction,
@@ -36,6 +38,7 @@ import {
 } from '@/lib/kb-retrieval'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
+import { renderPdfPages, PdfPageImageError } from '@/lib/kb-pdf-images'
 import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
@@ -124,6 +127,20 @@ export class KnowledgeBaseService {
     })
   }
 
+  /** Batch intake exposes duplicates separately for the Control Plane inbox uploader. */
+  async ingestBatch(input: Omit<Parameters<KnowledgeBaseService['ingest']>[0], 'filename' | 'mimeType' | 'buffer'> & {
+    files: Array<{ filename: string; mimeType?: string | null; buffer: Buffer }>
+  }) {
+    const { files, ...context } = input
+    const results: Awaited<ReturnType<KnowledgeBaseService['ingest']>>[] = []
+    for (const file of files) results.push(await this.ingest({ ...context, ...file }))
+    return {
+      documents: results.filter((result) => !result.duplicateOf),
+      duplicates: results.flatMap((result, index) => result.duplicateOf
+        ? [{ filename: sanitizeFilename(files[index].filename), duplicateOf: result.duplicateOf }] : []),
+    }
+  }
+
   /** Közös katalógus-tár: ugyanaz a feldolgozás, mint az agent-saját, csak agent nélkül. */
   async ingestCatalog(input: {
     tenantId: string
@@ -195,8 +212,7 @@ export class KnowledgeBaseService {
       mimeType: input.mimeType,
       buffer: input.buffer,
       extraction,
-      processingMode: 'raw_text_only',
-      deduplicate: true,
+      processingMode: 'wiki',
       purpose: input.purpose,
     })
   }
@@ -350,7 +366,8 @@ export class KnowledgeBaseService {
     const source = await this.deps.documents.findById(input.documentId)
     if (!source || source.tenantId !== input.tenantId) throw new Error('Document not found')
     if (source.connectorId !== catalogConnector.id) throw new Error('Document not found')
-    if (!source.extractedText) throw new Error('A dokumentum szövege nem elérhető')
+    const original = await this.deps.documents.readSource(source.id)
+    if (!original && !source.extractedText) throw new Error('A dokumentum szövege nem elérhető')
 
     const connector = await ensureAgentKnowledgeBase(agent, this.deps, {
       defaultKbLanguage: await this.tenantLanguage(input.tenantId),
@@ -362,10 +379,10 @@ export class KnowledgeBaseService {
       uploadedById: input.actorId,
       filename: source.filename,
       mimeType: source.mimeType,
-      buffer: Buffer.from(source.extractedText, 'utf8'),
-      extraction: {
+      buffer: original ?? Buffer.from(source.extractedText!, 'utf8'),
+      extraction: original ? await extractStructured({ buffer: original, filename: source.filename, mimeType: source.mimeType }) : {
         format: 'text',
-        markdown: source.extractedText,
+        markdown: source.extractedText ?? '',
         blocks: [],
       } satisfies StructuredExtraction,
       processingMode: (source.processingMode ?? 'raw_text_only') as KnowledgeProcessingMode,
@@ -401,19 +418,20 @@ export class KnowledgeBaseService {
     purpose?: string | null
     actor?: 'agent' | 'human'
     extraMetadata?: Record<string, Prisma.InputJsonValue>
-    deduplicate?: boolean
   }) {
     const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
     const purpose = normalizeKbPurpose(input.purpose)
-    const data = {
+    const { document, duplicate } = await this.deps.documents.createSource({
       tenantId,
       filename,
       extractedText: extraction.markdown,
       mimeType: input.mimeType ?? null,
       contentHash,
-      status: 'processed' as const,
+      status: 'processed',
       processingMode: input.processingMode,
+      wikiStatus: input.processingMode === 'wiki' ? 'pending' : null,
+      wikiSubmittedByAgentId: input.processingMode === 'wiki' && input.actor === 'agent' ? agentId : null,
       metadata: {
         ...input.extraMetadata,
         [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
@@ -421,15 +439,31 @@ export class KnowledgeBaseService {
       },
       connectorId: connector.id,
       uploadedById,
-    }
-    const stored = input.deduplicate
-      ? await this.deps.documents.createIfAbsent(data)
-      : { document: await this.deps.documents.create(data), created: true }
-    const document = stored.document
-    if (!stored.created) {
+    }, extraction.format === 'pdf' ? input.buffer : undefined)
+    if (duplicate) {
+      const current =
+        extraction.format === 'pdf' && pdfPageQuality(document.metadata).length === 0
+          ? await this.deps.documents.update(document.id, {
+              metadata: {
+                ...(typeof document.metadata === 'object' && document.metadata !== null && !Array.isArray(document.metadata)
+                  ? (document.metadata as Record<string, unknown>)
+                  : {}),
+                [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
+              },
+            })
+          : document
+      const pages = pdfPageQuality(current.metadata)
       return {
-        documentId: document.id, filename: document.filename, processingMode: input.processingMode,
-        artifactId: null, chunkCount: 0, pageCount: 0, searchable: true, duplicate: true,
+        documentId: current.id,
+        filename: current.filename,
+        processingMode: current.processingMode,
+        artifactId: null,
+        chunkCount: 0,
+        pageCount: 0,
+        searchable: current.status === 'processed',
+        duplicateOf: { documentId: current.id, filename: current.filename, wikiStatus: current.wikiStatus },
+        pages,
+        nextStep: pdfQualityHint(pages),
       }
     }
 
@@ -510,7 +544,8 @@ export class KnowledgeBaseService {
       chunkCount,
       pageCount,
       searchable: true,
-      duplicate: false,
+      pages: pdfPageQuality(document.metadata),
+      nextStep: pdfQualityHint(pdfPageQuality(document.metadata)),
     }
   }
 
@@ -678,10 +713,32 @@ export class KnowledgeBaseService {
     }
   }
 
-  async getDocument(input: { connectorId: string; documentId: string; section?: string }) {
+  async getDocument(input: {
+    connectorId: string; documentId: string; section?: string
+    pageImages?: boolean; pages?: string
+    tenantId?: string; userId?: string
+  }) {
+    if (input.pageImages) {
+      const connector = input.tenantId && await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
+      if (!connector || !input.userId || connector.tenantId !== input.tenantId ||
+        connector.type !== 'knowledge_base' || connector.lifecycleState !== 'active' ||
+        !isKnowledgeBaseVisibleTo(connector, input.userId)) throw new Error('not_found')
+    }
     const document = await this.deps.documents.findById(input.documentId)
-    if (!document || document.connectorId !== input.connectorId || document.status !== 'processed') {
+    if (!document || document.connectorId !== input.connectorId || document.status !== 'processed' ||
+      (input.tenantId !== undefined && document.tenantId !== input.tenantId)) {
+      if (input.pageImages) throw new Error('not_found')
       return { found: false, documentId: input.documentId }
+    }
+    const pages = pdfPageQuality(document.metadata)
+    const quality = { pages, nextStep: pdfQualityHint(pages) }
+    if (input.pageImages) {
+      const raw = await this.deps.documents.readSource(document.id)
+      if (!raw || !raw.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+        throw new PdfPageImageError('original_pdf_unavailable', 'Original PDF unavailable. Upload the original PDF to a new source.')
+      }
+      const rendered = await renderPdfPages(raw, input.pages)
+      return { found: true, documentId: document.id, filename: document.filename, ...quality, ...rendered }
     }
     const superseded = await this.deps.artifacts.publishedSourceDocumentIds([input.connectorId])
     if (superseded.has(document.id)) {
@@ -690,6 +747,7 @@ export class KnowledgeBaseService {
       return {
         found: true as const,
         kind: 'wiki' as const,
+        ...quality,
         documentId: document.id,
         filename: document.filename,
         purpose: readKbPurpose(document.metadata),
@@ -697,12 +755,12 @@ export class KnowledgeBaseService {
         hint: 'Wiki. Call kb_get_page with path index.md and this artifactId, then open one page.',
       }
     }
-    return assembleKbDocument({
+    return { ...quality, ...assembleKbDocument({
       documentId: document.id,
       filename: document.filename,
       purpose: readKbPurpose(document.metadata),
       text: document.extractedText ?? '',
       section: input.section,
-    })
+    }) }
   }
 }

@@ -121,7 +121,7 @@ export async function executeKnowledgeBaseTool(
       filename: String(args.filename),
       mimeType: typeof args.mimeType === 'string' ? args.mimeType : null,
       buffer: decodeIngestBuffer(args),
-      processingMode: args.processingMode === 'okf' ? 'okf' : 'raw_text_only',
+      processingMode: args.processingMode === 'wiki' ? 'wiki' : args.processingMode === 'okf' ? 'okf' : 'raw_text_only',
       purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
       actor: 'agent',
       connectorId: ctx.connectorId,
@@ -166,6 +166,10 @@ export async function executeKnowledgeBaseTool(
     return service.getDocument({
       connectorId: ctx.connectorId,
       documentId,
+      pageImages: args.pageImages === true,
+      pages: typeof args.pages === 'string' ? args.pages : undefined,
+      tenantId: ctx.tenantId,
+      userId: ctx.userId,
       section: typeof args.section === 'string' ? args.section : undefined,
     })
   }

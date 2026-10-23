@@ -1,6 +1,7 @@
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
+import { PdfPageImageError } from '@/lib/kb-pdf-images'
 import {
   GoogleDriveApiAuthError,
   GoogleDriveApiError,
@@ -1210,13 +1211,18 @@ async function invokeKbTool(
     return textResult(result)
   } catch (error) {
     const known = error instanceof KbToolError
+    const pdf = error instanceof PdfPageImageError
     const code = known
       ? error.code
-      : error instanceof Error && error.message === 'invalid_args'
-        ? 'invalid_args'
-        : error instanceof Error && error.message === 'file_too_large'
-          ? 'file_too_large'
-          : 'tool_execution_failed'
+      : pdf
+        ? error.code
+        : error instanceof Error && error.message === 'not_found'
+          ? 'not_found'
+          : error instanceof Error && error.message === 'invalid_args'
+            ? 'invalid_args'
+            : error instanceof Error && error.message === 'file_too_large'
+              ? 'file_too_large'
+              : 'tool_execution_failed'
     const payload = {
       toolName,
       tenantId: principal.tenantId,
@@ -1241,7 +1247,10 @@ async function invokeKbTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return errorResult(code, known ? error.details : undefined)
+    return errorResult(
+      code,
+      known ? error.details : pdf ? { nextStep: error.message, message: error.message } : undefined,
+    )
   }
 }
 
