@@ -723,6 +723,82 @@ export class SkillService {
     return updated
   }
 
+  /**
+   * Skill megosztása platform-adminként: az AKTÍV verzió másolata új skillként
+   * születik — vagy platform-szintű kiadott skillként (`target: 'platform'`, minden
+   * tenant olvassa), vagy egy kiválasztott tenant saját skilljeként. A forrás
+   * érintetlen marad (a másolat független: a két példány külön verziózódik),
+   * így a forrás-tenant továbbra is szerkesztheti a sajátját, és a megosztás a
+   * másolat törlésével visszavonható. A másolat azonnal aktív (a platform-admin
+   * jóváhagyásával), hogy a cél-tenant admin egyből agenthez rendelhesse.
+   */
+  async shareSkill(input: {
+    skillId: string
+    target: { kind: 'platform' } | { kind: 'tenant'; tenantId: string }
+    actor: ActorContext
+  }): Promise<{ skillId: string; versionId: string }> {
+    if (!input.actor.isPlatformAdmin) {
+      throw new SkillAccessError('Skillt más tenantnak vagy platform-szintre csak platform-admin oszthat meg.')
+    }
+    if (!input.actor.actorId) throw new SkillAccessError('Approver required')
+    const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
+    if (!skill) throw new SkillAccessError('Skill not found')
+    if (skill.kind === 'system') {
+      throw new SkillAccessError('Rendszer-skill nem osztható meg.')
+    }
+    const active = skill.versions.find((v) => v.status === 'active')
+    if (!active) {
+      throw new SkillAccessError('Csak jóváhagyott (aktív) verzióval rendelkező skill osztható meg.')
+    }
+
+    const targetTenantId = input.target.kind === 'tenant' ? input.target.tenantId : null
+    if (input.target.kind === 'platform' && skill.tenantId === null) {
+      throw new SkillAccessError('Ez a skill már platform-szinten elérhető.')
+    }
+    if (targetTenantId !== null && targetTenantId === skill.tenantId) {
+      throw new SkillAccessError('A skill már ebben a tenantban van.')
+    }
+    const existing = await this.skills.findByNameInScope(skill.name, targetTenantId)
+    if (existing) {
+      throw new SkillAccessError(
+        targetTenantId === null
+          ? `Platform-szinten már van „${existing.name}” nevű skill.`
+          : `A cél-tenantban már van „${existing.name}” nevű skill.`,
+      )
+    }
+
+    const kind: SkillKind = targetTenantId === null ? 'published' : 'tenant'
+    const { skill: copy, version } = await this.skills.createSkill({
+      name: skill.name,
+      displayName: skill.displayName,
+      description: skill.description,
+      catalogScope: catalogScopeForKind(kind),
+      tenantId: targetTenantId,
+      kind,
+      sourceType: skill.sourceType,
+      provenance: {
+        ...(isPlainObject(skill.provenance) ? skill.provenance : {}),
+        sharedFrom: {
+          skillId: skill.id,
+          tenantId: skill.tenantId,
+          version: active.version,
+          sharedBy: input.actor.actorId,
+        },
+      } as Prisma.InputJsonValue,
+      license: skill.license,
+      riskTier: skill.riskTier,
+      producesSkills: false,
+      content: active.content as Prisma.InputJsonValue,
+      requires: active.requires as Prisma.InputJsonValue,
+      ...(active.attachments !== null
+        ? { attachments: active.attachments as Prisma.InputJsonValue }
+        : {}),
+      contentHash: active.contentHash,
+    })
+    await this.skills.approveVersion(version.id, { approverId: input.actor.actorId })
+    return { skillId: copy.id, versionId: version.id }
+  }
+
   async proposeVersion(input: {
     skillId: string
     content: SkillContent
@@ -1405,4 +1481,8 @@ export class SkillService {
       }
     })
   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

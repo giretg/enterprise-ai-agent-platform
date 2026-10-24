@@ -42,6 +42,7 @@ export default async function SkillCatalogPage() {
   const isPlatformAdmin = Boolean(
     ctx?.platformRoles?.some((r) => r === 'superadmin' || r === 'platform_operator'),
   )
+  const isSuperadmin = Boolean(ctx?.platformRoles?.includes('superadmin'))
   const canView = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const t = await getTranslations('ControlPlane.skills')
 
@@ -77,7 +78,12 @@ export default async function SkillCatalogPage() {
         </Card>
       ) : null}
 
-      <SkillCatalogManager skills={res.data} isAdmin={isAdmin} isPlatformAdmin={isPlatformAdmin} />
+      <SkillCatalogManager
+        skills={res.data}
+        isAdmin={isAdmin}
+        isPlatformAdmin={isPlatformAdmin}
+        isSuperadmin={isSuperadmin}
+      />
     </div>
   )
 }

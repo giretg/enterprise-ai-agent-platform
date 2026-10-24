@@ -58,6 +58,7 @@ import {
   type SkillKind,
 } from '@/lib/skill/skill-kind'
 import { SkillKindFields } from '@/components/skills/skill-kind-fields'
+import { SkillSharePanel } from '@/components/skills/skill-share-panel'
 
 function useSkillT(): TranslateFn {
   return asTranslate(useTranslations('SkillCatalog'))
@@ -739,14 +740,18 @@ function SkillCatalogRow({
   skill,
   isAdmin,
   isPlatformAdmin,
+  isSuperadmin,
   inactive,
   onOpen,
+  onShare,
 }: {
   skill: SkillCatalogEntry
   isAdmin: boolean
   isPlatformAdmin: boolean
+  isSuperadmin: boolean
   inactive?: boolean
   onOpen: (skillId: string, tab: SkillRowTab) => void
+  onShare: (skillId: string) => void
 }) {
   const t = useSkillT()
   const locale = useLocale()
@@ -805,6 +810,16 @@ function SkillCatalogRow({
               className="rounded-full border border-coral/35 bg-coral/8 px-3 py-1.5 text-xs font-semibold text-coral hover:bg-coral/15"
             >
               {t('newVersion')}
+            </button>
+          )}
+          {isSuperadmin && !inactive && kind !== 'system' && (
+            <button
+              type="button"
+              onClick={() => onShare(skill.id)}
+              title={t('share.buttonHint')}
+              className="rounded-full border border-ink-faint/30 px-3 py-1.5 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
+            >
+              {t('share.button')}
             </button>
           )}
         </div>
@@ -909,6 +924,7 @@ export function SkillCatalogManager(props: {
   skills: SkillCatalogEntry[]
   isAdmin: boolean
   isPlatformAdmin?: boolean
+  isSuperadmin?: boolean
 }) {
   return (
     <SkillCatalogErrorBoundary>
@@ -921,11 +937,14 @@ function SkillCatalogManagerView({
   skills,
   isAdmin,
   isPlatformAdmin = false,
+  isSuperadmin = false,
 }: {
   skills: SkillCatalogEntry[]
   isAdmin: boolean
   /** Global skill meta/verzió írásához kell — tenant-admin önmagában nem elég. */
   isPlatformAdmin?: boolean
+  /** Skill megosztása platform-szintre / másik tenantba — csak superadmin. */
+  isSuperadmin?: boolean
 }) {
   const t = useSkillT()
   const router = useRouter()
@@ -938,6 +957,7 @@ function SkillCatalogManagerView({
   const [creationMode, setCreationMode] = useState<'import' | 'manual' | null>(null)
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogSkills, setCatalogSkills] = useState(skills)
+  const [shareSkillId, setShareSkillId] = useState<string | null>(null)
 
   const normalizedCatalogQuery = catalogQuery.trim().toLocaleLowerCase('hu-HU')
   const filteredSkills = normalizedCatalogQuery
@@ -959,13 +979,19 @@ function SkillCatalogManagerView({
   const filteredInactiveSkills = filteredSkills.filter((s) => !skillHasActiveVersion(s))
   const activeSkillCount = catalogSkills.filter(skillHasActiveVersion).length
   const inactiveSkillCount = catalogSkills.length - activeSkillCount
-  const modalOpen = Boolean(openSkillId || creationMode)
+  const modalOpen = Boolean(openSkillId || creationMode || shareSkillId)
 
   function openSkill(skillId: string, nextTab: SkillRowTab) {
     setError(null)
     setNotice(null)
     setOpenSkillId(skillId)
     setTab(nextTab)
+  }
+
+  function openShare(skillId: string) {
+    setError(null)
+    setNotice(null)
+    setShareSkillId(skillId)
   }
 
   function openCreationMode(mode: 'import' | 'manual') {
@@ -1005,6 +1031,9 @@ function SkillCatalogManagerView({
     })
   }
 
+  const shareSkill = shareSkillId
+    ? (catalogSkills.find((s) => s.id === shareSkillId) ?? null)
+    : null
   const current = openSkillId ? (catalogSkills.find((s) => s.id === openSkillId) ?? null) : null
   // Global skillt csak platform-admin írhat — a szerver is ezt kapuzza.
   const canWriteCurrent = Boolean(
@@ -1112,7 +1141,9 @@ function SkillCatalogManagerView({
                     skill={s}
                     isAdmin={isAdmin}
                     isPlatformAdmin={isPlatformAdmin}
+                    isSuperadmin={isSuperadmin}
                     onOpen={openSkill}
+                    onShare={openShare}
                   />
                 ))}
               </ul>
@@ -1135,8 +1166,10 @@ function SkillCatalogManagerView({
                       skill={s}
                       isAdmin={isAdmin}
                       isPlatformAdmin={isPlatformAdmin}
+                      isSuperadmin={isSuperadmin}
                       inactive
                       onOpen={openSkill}
+                      onShare={openShare}
                     />
                   ))}
                 </ul>
@@ -1207,6 +1240,31 @@ function SkillCatalogManagerView({
               onClose={() => setTab('versions')}
             />
           )}
+        </SkillModal>
+      )}
+
+      {isSuperadmin && shareSkill && (
+        <SkillModal
+          eyebrow={t('share.eyebrow')}
+          title={skillDisplayLabel(shareSkill)}
+          subtitle={<span className="font-mono">{shareSkill.name}</span>}
+          error={error}
+          notice={notice}
+          onClose={() => {
+            setError(null)
+            setNotice(null)
+            setShareSkillId(null)
+          }}
+        >
+          <SkillSharePanel
+            skill={shareSkill}
+            onError={setError}
+            onDone={(message) => {
+              setError(null)
+              setNotice(message)
+              void refreshCatalog()
+            }}
+          />
         </SkillModal>
       )}
 
