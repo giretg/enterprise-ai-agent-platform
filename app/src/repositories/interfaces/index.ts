@@ -374,6 +374,16 @@ export interface ConnectorRepository {
     ownerUserId?: string | null
   }): Promise<Connector>
   updateApprover(input: { connectorId: string; approverUserId: string | null }): Promise<Connector>
+  /** #965: tudásbázis láthatóság-váltása és/vagy config (megjelenített név, sablon) frissítése. */
+  updateKnowledgeBase(
+    connectorId: string,
+    input: {
+      name?: string
+      config?: Prisma.InputJsonValue
+      visibility?: Connector['visibility']
+      ownerUserId?: string | null
+    },
+  ): Promise<Connector>
 }
 
 export interface ConnectorDraftRepository {
@@ -943,6 +953,8 @@ export interface WikiRepository {
     approverScope: Prisma.InputJsonValue
   }): Promise<WikiChangeSet>
   findChangeSet(id: string): Promise<WikiChangeSet | null>
+  /** #965: a tudásbázis függő change-setjei (láthatóság-váltáskor elutasítjuk őket). */
+  listPendingChangeSetIds(connectorId: string): Promise<string[]>
   /** CAS: csak `from` állapotból vált; különben `null`. */
   transitionChangeSet(
     id: string,

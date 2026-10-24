@@ -101,7 +101,9 @@ function setup() {
   ])
   const pages = [page('labs/hba1c.md'), page('overview.md', { category: null, type: 'overview' })]
   const audit: any[] = []
-  const calls: Record<string, any[]> = { purge: [], link: [], setWikiAccess: [], create: [], skip: [] }
+  const calls: Record<string, any[]> = { purge: [], link: [], setWikiAccess: [], create: [], skip: [], reject: [], schema: [] }
+  const pendingChangeSets = new Map<string, string[]>([[KB_SHARED, ['cs-1', 'cs-2']]])
+  let schemaMd = '# Wiki rules'
   let docSeq = 0
 
   const consoleRepo: WikiConsoleRepository = {
@@ -168,6 +170,11 @@ function setup() {
         calls.create.push(input)
         return row
       },
+      updateKnowledgeBase: async (id: string, input: any) => {
+        const row = { ...connectors.get(id)!, ...input } as Connector
+        connectors.set(id, row)
+        return row
+      },
     } as any,
     agents: {
       findById: async (id: string) => (id === AGENT ? ({ id: AGENT, tenantId: TENANT, name: 'Réka' } as any) : null),
@@ -178,7 +185,13 @@ function setup() {
         connectorId === KB_SHARED ? ({ accessMode: 'read', wikiAccess: 'read', connector: connectors.get(KB_SHARED) } as any) : null,
     },
     wikis: {
-      findByConnectorId: async (id: string) => ({ id: 'wiki-1', connectorId: id, schemaMd: '# Wiki rules' }) as any,
+      findByConnectorId: async (id: string) => ({ id: 'wiki-1', connectorId: id, schemaMd }) as any,
+      updateSchema: async (wikiId: string, text: string) => {
+        calls.schema.push({ wikiId, text })
+        schemaMd = text
+        return {} as any
+      },
+      listPendingChangeSetIds: async (connectorId: string) => pendingChangeSets.get(connectorId) ?? [],
       listPages: async (connectorId: string) => (connectorId === KB_PRIV ? pages : []),
       findPage: async (connectorId: string, path: string) => (connectorId === KB_PRIV ? pages.find((p) => p.path === path) ?? null : null),
       listRevisions: async () => [],
@@ -215,6 +228,10 @@ function setup() {
     wiki: {
       wikiIdForConnector: async () => 'wiki-1',
       canDecide: async (actor: any) => actor.userId === OWNER,
+      reject: async (id: string, input: any) => {
+        calls.reject.push({ id, ...input })
+        return true
+      },
       previewChangeSet: async () => ({
         changeSet: { id: CHANGESET, status: 'pending', agentId: AGENT, userId: OWNER, createdAt: new Date(), sourceDocumentIds: [DOC], logEntry: { title: 'Új lelet' } },
         connector: connectors.get(KB_PRIV)!,
@@ -504,6 +521,71 @@ async function main() {
 
   await check('[[wiki-link]] kattintható linkké alakul', () => {
     assert.equal(linkifyWikiLinks('Lásd [[labs/hba1c]] és [[overview|az áttekintést]].'), 'Lásd [labs/hba1c](#wiki:labs%2Fhba1c.md) és [az áttekintést](#wiki:overview.md).')
+  })
+
+  await check('#965 közös → privát: admin teheti meg, az övé lesz, a függő change-setek elutasítódnak', async () => {
+    const { service, connectors, calls, audit } = setup()
+    await rejectsWith('forbidden', () => service.changeVisibility(operator, KB_SHARED, 'private'))
+    const result = await service.changeVisibility(admin, KB_SHARED, 'private')
+    assert.deepEqual(result, { visibility: 'private', rejectedChangeSets: 2 })
+    const row = connectors.get(KB_SHARED)!
+    assert.equal(row.visibility, 'private_to_user')
+    assert.equal(row.ownerUserId, ADMIN)
+    assert.equal(row.name, `kb:private:${KB_SHARED}`)
+    assert.deepEqual(calls.reject.map((call) => [call.id, call.reason]), [['cs-1', 'visibility_changed'], ['cs-2', 'visibility_changed']])
+    const entry = audit.find((item) => item.action === 'kb.visibility.changed')
+    assert.equal(entry.metadata.visibility, 'private_to_user')
+    assert.ok(!JSON.stringify(audit).includes('Termékismeret'), 'a privát KB auditja tartalommentes')
+    // Ezután más nem látja: operátornak nem létezik, a listában nem szerepel.
+    await rejectsWith('not_found', () => service.getOverview(operator, KB_SHARED))
+    assert.ok(!(await service.listKnowledgeBases(operator)).some((item) => item.connectorId === KB_SHARED))
+    // Az új tulajdonos teljes sort lát.
+    const own = (await service.listKnowledgeBases(admin)).find((item) => item.connectorId === KB_SHARED)!
+    assert.equal(own.metadataOnly, false)
+  })
+
+  await check('#965 privát → közös: csak az admin tulajdonos; nem-admin tulajdonosnak tiltott', async () => {
+    const { service, connectors } = setup()
+    await rejectsWith('forbidden', () => service.changeVisibility(owner, KB_PRIV, 'shared'))
+    await rejectsWith('not_found', () => service.changeVisibility(admin, KB_PRIV, 'shared'))
+    await service.changeVisibility(admin, KB_OTHER_PRIV, 'shared')
+    const row = connectors.get(KB_OTHER_PRIV)!
+    assert.equal(row.visibility, 'shared')
+    assert.equal(row.ownerUserId, null)
+    assert.equal(row.name, `kb:shared:${KB_OTHER_PRIV}`)
+    await rejectsWith('forbidden', () => service.changeVisibility(admin, KB_OTHER_PRIV, 'shared'))
+  })
+
+  await check('#965 munkatárs saját tudásbázisa nem váltható', async () => {
+    const { service, connectors } = setup()
+    connectors.set(KB_SHARED, { ...connectors.get(KB_SHARED)!, name: `kb:${AGENT}` })
+    await rejectsWith('forbidden', () => service.changeVisibility(admin, KB_SHARED, 'private'))
+    const settings = await service.getSettings(admin, KB_SHARED)
+    assert.equal(settings.kind, 'agent')
+    assert.equal(settings.canMakePrivate, false)
+  })
+
+  await check('#965 WIKI.md szerkesztése és sablonváltás: csak a kezelő, auditálva', async () => {
+    const { service, connectors, calls, audit } = setup()
+    const before = await service.getSettings(owner, KB_PRIV)
+    assert.equal(before.template, 'general')
+    assert.equal(before.schemaCustomized, true)
+    assert.equal(before.canMakeShared, false)
+    await rejectsWith('forbidden', () => service.updateSchema(operator, KB_SHARED, '# x'))
+    await rejectsWith('invalid_args', () => service.updateSchema(owner, KB_PRIV, '   '))
+    await rejectsWith('invalid_args', () => service.updateSchema(owner, KB_PRIV, 'x'.repeat(20_001)))
+    await service.updateSchema(owner, KB_PRIV, '# Saját szabály\r\n- labs/')
+    assert.equal(calls.schema.at(-1).text, '# Saját szabály\n- labs/\n')
+    await rejectsWith('invalid_args', () => service.applyTemplate(owner, KB_PRIV, 'nope'))
+    await service.applyTemplate(owner, KB_PRIV, 'health-journal')
+    assert.equal((connectors.get(KB_PRIV)!.config as any).wikiTemplate, 'health-journal')
+    assert.equal((connectors.get(KB_PRIV)!.config as any).displayName, 'Leletek', 'a többi config-mező megmarad')
+    assert.match(calls.schema.at(-1).text, /Egészség-napló/)
+    const after = await service.getSettings(owner, KB_PRIV)
+    assert.equal(after.template, 'health-journal')
+    assert.equal(after.schemaCustomized, false)
+    assert.ok(audit.some((item) => item.action === 'kb.wiki.schema.updated'))
+    assert.ok(!JSON.stringify(audit).includes('Saját szabály'), 'a szabályszöveg nem kerül az auditba')
   })
 
   if (failures > 0) {

@@ -10,7 +10,7 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
-import { WikiConsoleError, WIKI_TEMPLATE_IDS, type WikiConsoleActor } from '@/domain/knowledge-base/wiki-console-service'
+import { MAX_WIKI_SCHEMA_CHARS, WikiConsoleError, WIKI_TEMPLATE_IDS, type WikiConsoleActor } from '@/domain/knowledge-base/wiki-console-service'
 import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
 import { fail, ok } from '@/lib/result'
 
@@ -141,6 +141,48 @@ export async function purgePrivateKnowledgeBaseAction(input: { connectorId: stri
     return ok({ deleted: true, documents: counts.documents, pages: counts.pages })
   } catch (e) {
     return failFrom(e, 'Failed to delete knowledge base')
+  }
+}
+
+export async function getWikiSettingsAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiConsole.getSettings(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load settings')
+  }
+}
+
+export async function updateWikiSchemaAction(input: { connectorId: string; schemaMd: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, schemaMd: z.string().min(1).max(MAX_WIKI_SCHEMA_CHARS) }).parse(input)
+    const result = await services.wikiConsole.updateSchema(await actor(), parsed.connectorId, parsed.schemaMd)
+    revalidatePath(`/control-plane/knowledge/${parsed.connectorId}`)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save wiki rules')
+  }
+}
+
+export async function applyWikiTemplateAction(input: { connectorId: string; template: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, template: z.enum(WIKI_TEMPLATE_IDS) }).parse(input)
+    const result = await services.wikiConsole.applyTemplate(await actor(), parsed.connectorId, parsed.template)
+    revalidatePath(`/control-plane/knowledge/${parsed.connectorId}`)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to apply template')
+  }
+}
+
+export async function changeKnowledgeBaseVisibilityAction(input: { connectorId: string; to: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, to: z.enum(['private', 'shared']) }).parse(input)
+    const result = await services.wikiConsole.changeVisibility(await actor(), parsed.connectorId, parsed.to)
+    revalidatePath('/control-plane/knowledge')
+    revalidatePath(`/control-plane/knowledge/${parsed.connectorId}`)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to change visibility')
   }
 }
 

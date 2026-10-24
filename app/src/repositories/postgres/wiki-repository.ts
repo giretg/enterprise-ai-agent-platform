@@ -214,6 +214,14 @@ export class PostgresWikiRepository implements WikiRepository {
     return prisma.wikiChangeSet.findUnique({ where: { id } })
   }
 
+  async listPendingChangeSetIds(connectorId: string): Promise<string[]> {
+    const rows = await prisma.wikiChangeSet.findMany({
+      where: { connectorId, status: 'pending' },
+      select: { id: true },
+    })
+    return rows.map((row) => row.id)
+  }
+
   async transitionChangeSet(
     id: string,
     from: WikiChangeSet['status'],

@@ -4,6 +4,7 @@ import { getLocale, getTranslations } from 'next-intl/server'
 import {
   getWikiOverviewAction,
   getWikiPageAction,
+  getWikiSettingsAction,
   getWikiSourceAction,
   listWikiInboxAction,
 } from '@/app/actions/knowledge-wiki'
@@ -11,6 +12,7 @@ import { Badge, Card } from '@/components/ui/shell'
 import { WikiInboxPanel } from '@/components/knowledge/wiki/wiki-inbox-panel'
 import { WikiMarkdown } from '@/components/knowledge/wiki/wiki-markdown'
 import { WikiOwnerActions } from '@/components/knowledge/wiki/wiki-owner-actions'
+import { WikiSettingsPanel } from '@/components/knowledge/wiki/wiki-settings-panel'
 import { formatWhen, wikiHref } from '@/components/knowledge/wiki/wiki-format'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 
@@ -56,6 +58,7 @@ export default async function KnowledgeBaseWikiPage({
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <h1 className="font-display text-3xl font-semibold" data-testid="wiki-title">{wiki.name}</h1>
           <Badge tone={wiki.private ? 'warning' : 'neutral'}>{t(`kind.${wiki.kind}`)}</Badge>
+          <Badge tone="neutral">{t(`templates.${wiki.template}.name`)}</Badge>
         </div>
         <p className="mt-1 max-w-2xl text-sm text-ink-soft">
           {wiki.private ? t('header.privateBody') : t('header.body')}
@@ -151,9 +154,7 @@ export default async function KnowledgeBaseWikiPage({
           <p className="mt-3 text-xs text-ink-faint">{t('access.howToChange')}</p>
         </Card>
       ) : null}
-      {tab === 'settings' && wiki.canManage ? (
-        <WikiOwnerActions connectorId={connectorId} name={wiki.name} isPrivate={wiki.private} />
-      ) : null}
+      {tab === 'settings' && wiki.canManage ? <SettingsTab connectorId={connectorId} name={wiki.name} isPrivate={wiki.private} /> : null}
     </div>
   )
 }
@@ -350,6 +351,17 @@ function SourceView({
         {t('source.back')}
       </Link>
     </Card>
+  )
+}
+
+async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {
+  const res = await getWikiSettingsAction({ connectorId })
+  if (!res.success) notFound()
+  return (
+    <div className="space-y-4">
+      <WikiSettingsPanel connectorId={connectorId} settings={res.data} />
+      <WikiOwnerActions connectorId={connectorId} name={name} isPrivate={isPrivate} />
+    </div>
   )
 }
 

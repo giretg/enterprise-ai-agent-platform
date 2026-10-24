@@ -249,7 +249,7 @@
         "inbox": "Tálca",
         "log": "Napló",
         "access": "Kik férnek hozzá",
-        "settings": "Letöltés és törlés"
+        "settings": "Beállítások"
       },
       "kind": {
         "catalog": "Közös katalógus",
@@ -302,7 +302,7 @@
         "privateOnly": "Közös tudásbázist csak adminisztrátor hozhat létre, ezért a tiéd privát lesz.",
         "privateNotice": "A tartalmát csak te látod. Amikor egy AI-munkatárs feldolgozza vagy olvassa, a tartalom eljut a használt AI-szolgáltatóhoz (pl. Claude, OpenAI).",
         "template": "Wiki-szabályzat sablon",
-        "templateHelp": "A sablon írja le az AI-munkatársnak, milyen oldalakat készítsen és hogyan nevezze el őket. Később is módosítható.",
+        "templateHelp": "A sablon írja le az AI-munkatársnak, milyen oldalakat készítsen és hogyan nevezze el őket. Később a tudásbázis Beállítások fülén cserélheted vagy átírhatod.",
         "submit": "Létrehozás",
         "creating": "Létrehozás…"
       },
@@ -432,12 +432,59 @@
         "writeWarning": "A wiki minősége az AI-munkatárs modelljén múlik. Csak olyan agentnek adj írási jogot, amely jó minőségű AI-modellel dolgozik; a többinek elég a beküldés.",
         "collect": "Mit gyűjtsön ebbe a wikibe?",
         "collectHelp": "Egy-két mondat a munkatársnak: milyen tudást tegyen ide a beszélgetésekből és a feldolgozott anyagokból.",
-        "collectPlaceholder": "pl. Laboreredmények, diagnózisok és gyógyszerek a feltöltött leletekből",
+        "collectPlaceholder": {
+          "general": "pl. Termékinformációk, döntések és gyakori kérdések a feltöltött anyagokból",
+          "health-journal": "pl. Laboreredmények, diagnózisok és gyógyszerek a feltöltött leletekből"
+        },
         "adminOnly": "A közös tudásbázisok jogait az adminisztrátor állítja.",
         "privateOwnerOnly": "Ez valaki más privát tudásbázisa; csak a tulajdonosa módosíthatja.",
         "saved": "Mentve. Élesítés után lép életbe.",
         "publishNote": "A változás a munkatárs következő élesítésével lép életbe (verziózva, naplózva).",
-        "publishLink": "Élesítés"
+        "publishLink": "Élesítés",
+        "openWiki": "Wiki megnyitása →",
+        "kindHint": {
+          "own": "Ennek a munkatársnak a saját tudásbázisa. Mindenki látja, aki a munkatársat használhatja.",
+          "agent": "Egy másik munkatárs saját tudásbázisa. Mindenki látja, aki azt a munkatársat használhatja.",
+          "catalog": "A szervezet közös katalógusa. A szervezet minden tagja látja.",
+          "shared": "Megosztott tudásbázis: a szervezet operátorai és adminjai látják. Az admin a wiki Beállítások fülén priváttá teheti.",
+          "private": "Privát: csak te látod, az admin sem. A munkatárs is csak akkor éri el, amikor te használod."
+        }
+      },
+      "settings": {
+        "visibilityTitle": "Ki láthatja?",
+        "nowPrivate": "Privát: csak te látod. Az adminisztrátor csak annyit lát, hogy létezik és mekkora. Az AI-munkatársak csak akkor érik el, amikor te használod őket.",
+        "nowShared": {
+          "shared": "Megosztott: a szervezet operátorai és adminjai látják, és minden munkatárs, akinek hozzáférést adtak.",
+          "agent": "A munkatárs saját tudásbázisa: mindenki látja, aki a munkatársat használhatja.",
+          "catalog": "A szervezet közös katalógusa: a szervezet minden tagja látja."
+        },
+        "notChangeable": "Ennek a tudásbázisnak a láthatósága nem állítható. Ha privát tudásbázist szeretnél, hozz létre újat „Csak én láthatom” beállítással.",
+        "makeSharedAdminOnly": "Megosztani csak adminisztrátor tud, mert közös tudásbázist csak ő hozhat létre.",
+        "makePrivate": "Priváttá teszem",
+        "makeShared": "Megosztom a szervezettel",
+        "consequences": {
+          "private1": "A tudásbázis a tiéd lesz: rajtad kívül senki nem nyithatja meg, az adminisztrátor sem.",
+          "private2": "A többi felhasználó munkatársai azonnal elveszítik a hozzáférést. A függőben lévő wiki-módosítások elutasítódnak, a tálcatételek újra várakoznak.",
+          "private3": "Ami eddig már kikerült (korábbi válaszok, munkatárs-memória, napló), az ott marad. A váltás csak mostantól véd.",
+          "shared1": "A szervezet operátorai és adminjai látni fogják a teljes tartalmat, a forrásokat is.",
+          "shared2": "Más felhasználók a munkatársak következő élesítése után érik el. A jogokat ezután az admin állítja.",
+          "shared3": "A függőben lévő wiki-módosítások elutasítódnak, a tálcatételek újra várakoznak."
+        },
+        "understood": "Értem, és így szeretném.",
+        "confirmPrivate": "Igen, legyen privát",
+        "confirmShared": "Igen, legyen megosztott",
+        "rulesTitle": "Wiki-szabályzat (WIKI.md)",
+        "rulesHelp": "Ezt a szöveget olvassa el minden AI-munkatárs, mielőtt a wikibe ír: milyen oldalakat hozzon létre, hogyan nevezze el őket, és mire figyeljen.",
+        "rulesIntro": "A sablon csak a kiinduló szöveg. Itt átírhatod a saját igényeid szerint, vagy egy kattintással másik sablonra válthatsz. A meglévő oldalak nem változnak.",
+        "templateLabel": "Sablon",
+        "current": "jelenlegi",
+        "applyWarning": "A sablon alkalmazása felülírja a lenti szabályszöveget, a saját módosításaid elvesznek. A wiki oldalai megmaradnak.",
+        "applyTemplate": "Átváltok erre a sablonra",
+        "resetToTemplate": "Visszaállítom a sablon szövegét",
+        "templateApplied": "Sablon alkalmazva.",
+        "editorLabel": "Szabályszöveg",
+        "customized": "saját módosításokkal",
+        "rulesSaved": "Mentve. A munkatársak a következő wiki-írásnál már ezt követik."
       },
       "review": {
         "loading": "A wiki-változás betöltése…",

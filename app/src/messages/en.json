@@ -249,7 +249,7 @@
         "inbox": "Inbox",
         "log": "Log",
         "access": "Who has access",
-        "settings": "Download and delete"
+        "settings": "Settings"
       },
       "kind": {
         "catalog": "Shared catalog",
@@ -302,7 +302,7 @@
         "privateOnly": "Only admins can create shared knowledge bases, so yours will be private.",
         "privateNotice": "Only you can see its content. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI).",
         "template": "Wiki rules template",
-        "templateHelp": "The template tells the AI teammate which pages to create and how to name them. You can change it later.",
+        "templateHelp": "The template tells the AI teammate which pages to create and how to name them. You can switch or rewrite it later on the knowledge base Settings tab.",
         "submit": "Create",
         "creating": "Creating…"
       },
@@ -432,12 +432,59 @@
         "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to agents that run on a high-quality AI model; for the others, submitting is enough.",
         "collect": "What should it collect in this wiki?",
         "collectHelp": "A sentence or two for the teammate: what knowledge to put here from conversations and processed material.",
-        "collectPlaceholder": "e.g. Lab results, diagnoses and medications from the uploaded records",
+        "collectPlaceholder": {
+          "general": "e.g. Product information, decisions and FAQs from the uploaded material",
+          "health-journal": "e.g. Lab results, diagnoses and medications from the uploaded records"
+        },
         "adminOnly": "Rights on shared knowledge bases are set by the admin.",
         "privateOwnerOnly": "This is someone else's private knowledge base; only its owner can change it.",
         "saved": "Saved. Takes effect after publishing.",
         "publishNote": "The change takes effect with the teammate's next publish (versioned and logged).",
-        "publishLink": "Publish"
+        "publishLink": "Publish",
+        "openWiki": "Open wiki →",
+        "kindHint": {
+          "own": "This teammate's own knowledge base. Everyone who can use the teammate sees it.",
+          "agent": "Another teammate's own knowledge base. Everyone who can use that teammate sees it.",
+          "catalog": "The organization's shared catalog. Every member of the organization sees it.",
+          "shared": "Shared knowledge base: the organization's operators and admins see it. An admin can make it private on the wiki's Settings tab.",
+          "private": "Private: only you see it, not even the admin. The teammate can only reach it when you are using it."
+        }
+      },
+      "settings": {
+        "visibilityTitle": "Who can see it?",
+        "nowPrivate": "Private: only you see it. The admin only sees that it exists and how big it is. AI teammates can only reach it when you are using them.",
+        "nowShared": {
+          "shared": "Shared: the organization's operators and admins see it, plus every teammate that was given access.",
+          "agent": "The teammate's own knowledge base: everyone who can use the teammate sees it.",
+          "catalog": "The organization's shared catalog: every member of the organization sees it."
+        },
+        "notChangeable": "The visibility of this knowledge base cannot be changed. For a private one, create a new knowledge base with \"Only I can see it\".",
+        "makeSharedAdminOnly": "Only an admin can share it, because only admins can create shared knowledge bases.",
+        "makePrivate": "Make it private",
+        "makeShared": "Share with the organization",
+        "consequences": {
+          "private1": "The knowledge base becomes yours: nobody else can open it, not even the admin.",
+          "private2": "Other users' teammates lose access immediately. Pending wiki changes are rejected and their inbox items wait again.",
+          "private3": "Anything that already left it (earlier answers, teammate memory, logs) stays there. The change only protects from now on.",
+          "shared1": "The organization's operators and admins will see the full content, including the sources.",
+          "shared2": "Other users reach it after the teammates are published again. From then on the admin manages access.",
+          "shared3": "Pending wiki changes are rejected and their inbox items wait again."
+        },
+        "understood": "I understand and want this.",
+        "confirmPrivate": "Yes, make it private",
+        "confirmShared": "Yes, share it",
+        "rulesTitle": "Wiki rules (WIKI.md)",
+        "rulesHelp": "Every AI teammate reads this text before writing to the wiki: which pages to create, how to name them and what to watch out for.",
+        "rulesIntro": "The template is only the starting text. Rewrite it here to fit your needs, or switch to another template in one click. Existing pages do not change.",
+        "templateLabel": "Template",
+        "current": "current",
+        "applyWarning": "Applying a template overwrites the rules text below; your own edits are lost. The wiki pages stay.",
+        "applyTemplate": "Switch to this template",
+        "resetToTemplate": "Restore the template text",
+        "templateApplied": "Template applied.",
+        "editorLabel": "Rules text",
+        "customized": "with your edits",
+        "rulesSaved": "Saved. Teammates follow it from their next wiki write."
       },
       "review": {
         "loading": "Loading the wiki change…",

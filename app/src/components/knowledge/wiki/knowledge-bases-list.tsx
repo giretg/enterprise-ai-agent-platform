@@ -25,6 +25,7 @@ export type KnowledgeBaseListRow =
       metadataOnly: false
       name: string
       ownerLabel: string | null
+      template: 'general' | 'health-journal'
       canManage: boolean
       inbox: { pending: number; inProgress: number }
       sourceCount: number
@@ -85,6 +86,7 @@ export function KnowledgeBasesList({
                 >
                   <span className="font-medium text-ink">{row.name}</span>
                   <Badge tone={row.kind === 'private' ? 'warning' : 'neutral'}>{t(`kind.${row.kind}`)}</Badge>
+                  {row.template !== 'general' ? <Badge tone="neutral">{t(`templates.${row.template}.name`)}</Badge> : null}
                   <span className="text-ink-faint">{stats(row)}</span>
                   {row.inbox.pending + row.inbox.inProgress > 0 ? (
                     <span className="ml-auto rounded-full bg-coral/10 px-2 py-0.5 text-xs font-medium text-coral-deep">

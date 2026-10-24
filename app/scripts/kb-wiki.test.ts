@@ -1075,6 +1075,32 @@ async function main() {
   })
 
   globalThis.fetch = originalFetch
+  await check('#965 utólag priváttá tett wiki: régi snapshot mellett sem listázható / foglalható / olvasható', async () => {
+    const queued = await call(OTHER_USER, DEF_A, 'kb_ingest', { filename: 'kozos.md', content: 'Közös anyag.', processingMode: 'wiki', wikiId: WIKI_SHARED, defer: true })
+    assert.equal(queued.status, 'pending', JSON.stringify(queued))
+    const before = await call(OTHER_USER, DEF_A, 'kb_list_index', { inbox: true })
+    assert.ok(before.items.some((row: any) => row.documentId === queued.documentId), JSON.stringify(before))
+
+    const original = connectors.get(KB_SHARED)!
+    connectors.set(KB_SHARED, { ...original, visibility: 'private_to_user', ownerUserId: OWNER })
+    try {
+      // A DEF_A snapshotja még „shared”-et mond; az élő sor dönt.
+      const listed = await call(OTHER_USER, DEF_A, 'kb_list_index', { inbox: true })
+      assert.ok(!(listed.items ?? []).some((row: any) => row.documentId === queued.documentId), JSON.stringify(listed))
+      const claimed = await call(OTHER_USER, DEF_A, 'kb_get_document', { documentId: queued.documentId, claimForWiki: true })
+      assert.equal(claimed.isError, true, JSON.stringify(claimed))
+      const read = await call(OTHER_USER, DEF_A, 'kb_get_document', { documentId: queued.documentId })
+      assert.equal(read.isError, true, JSON.stringify(read))
+      const byWiki = await call(OTHER_USER, DEF_A, 'kb_list_index', { wikiId: WIKI_SHARED, inbox: true })
+      assert.equal(byWiki.isError, true)
+      // A tulajdonos továbbra is eléri.
+      const own = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_SHARED, inbox: true })
+      assert.ok(own.items.some((row: any) => row.documentId === queued.documentId), JSON.stringify(own))
+    } finally {
+      connectors.set(KB_SHARED, original)
+    }
+  })
+
   if (failures > 0) {
     console.log(`\n${failures} FAIL`)
     process.exit(1)
