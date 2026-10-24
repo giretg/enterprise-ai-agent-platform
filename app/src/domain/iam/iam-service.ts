@@ -427,6 +427,13 @@ export class IamService {
       throw new Error(`invitation: ${check.reason.toLowerCase()}`)
     }
 
+    // Felfüggesztett tagság: csak a felfüggesztés UTÁNI (friss) meghívó élesíthet újra.
+    // Stale meghívó + multi-tenant User.active ⇒ /onboarding Join bypass (#833 residual).
+    if (invitation.tenantId && this.memberships) {
+      const existing = await this.memberships.findByTenantAndUser(invitation.tenantId, params.user.id)
+      if (existing) this.assertInvitationMayRestoreSuspendedMembership(invitation, existing)
+    }
+
     const claimed = await this.invitations.claimPendingRedemption(invitation.id, params.user.email, new Date())
     if (!claimed) {
       const current = await this.invitations.findById(invitation.id)
@@ -471,6 +478,21 @@ export class IamService {
     return this.redeemClerkInvitation({ ...params, source: 'session' })
   }
 
+  /**
+   * Felfüggesztett TenantMembership-et csak a felfüggesztés után kiállított meghívó
+   * állíthat vissza (szándékos újra-meghívás). A felfüggesztéskor / előtte keletkezett
+   * pending meghívó nem kerülheti meg az admin döntését, és nem emelhet szerepet.
+   */
+  private assertInvitationMayRestoreSuspendedMembership(
+    invitation: Invitation,
+    membership: Pick<TenantMembership, 'status' | 'updatedAt'>,
+  ) {
+    if (membership.status !== 'suspended') return
+    if (invitation.createdAt.getTime() <= membership.updatedAt.getTime()) {
+      throw new Error('invitation: membership_suspended')
+    }
+  }
+
   private async completeInvitationRedemption(
     invitation: Invitation,
     user: User,
@@ -478,6 +500,8 @@ export class IamService {
   ) {
     if (invitation.tenantId) {
       if (!this.memberships) throw new Error('invitation: tenant membership repository unavailable')
+      const existing = await this.memberships.findByTenantAndUser(invitation.tenantId, user.id)
+      if (existing) this.assertInvitationMayRestoreSuspendedMembership(invitation, existing)
       const membership = await this.memberships.upsert({
         tenantId: invitation.tenantId,
         userId: user.id,
@@ -694,6 +718,31 @@ export class IamService {
     // Egyetlen tenant tagság felfüggesztése ne törölje a többi tenant grantjeit.
     if (!otherActive && this.connectorGrants) {
       await this.connectorGrants.revokeAllForUser(target.id, params.actorId)
+    }
+
+    // Függő meghívók visszavonása ebben a tenantben: különben a /onboarding Join
+    // (csak active membershipet zár ki) stale meghívóval visszaállítaná a tagságot.
+    if (params.actorTenantId) {
+      const pending = await this.invitations.findPendingByEmail(target.email, new Date())
+      for (const invite of pending) {
+        if (invite.tenantId !== params.actorTenantId) continue
+        const revoked = await this.invitations.revokePending(invite.id, new Date())
+        if (!revoked) continue
+        await this.append({
+          actorType: 'human',
+          actorId: params.actorId,
+          agentVersion: null,
+          action: 'user.invite.revoke',
+          targetType: 'invitation',
+          targetId: invite.id,
+          modelUsed: null,
+          inputRef: emailAuditRef(invite.email),
+          outputRef: null,
+          policyDecision: 'revoked',
+          metadata: { reason: 'membership_suspended', targetUserId: target.id },
+          tenantId: params.actorTenantId,
+        })
+      }
     }
 
     await this.append({
