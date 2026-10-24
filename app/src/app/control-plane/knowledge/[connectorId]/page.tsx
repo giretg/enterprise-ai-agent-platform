@@ -353,15 +353,22 @@ async function AccessTab({ connectorId }: { connectorId: string }) {
   const res = await getWikiAgentAccessAction({ connectorId })
   if (!res.success) {
     const t = await getTranslations('ControlPlane.wiki')
-    const known = ['not_found', 'forbidden', 'invalid_args', 'too_large'] as const
-    const key = known.includes(res.error as (typeof known)[number]) ? res.error : 'generic'
     return (
       <Card title={t('access.title')}>
-        <p className="text-sm text-ink-soft">{t(`errors.${key}`)}</p>
+        <p className="text-sm text-ink-soft">{t(wikiErrorMessage(res.error))}</p>
       </Card>
     )
   }
   return <WikiAgentAccessEditor connectorId={connectorId} canEdit={res.data.canEdit} rows={res.data.rows} />
+}
+
+function wikiErrorMessage(
+  code: string,
+): 'errors.not_found' | 'errors.forbidden' | 'errors.invalid_args' | 'errors.too_large' | 'errors.generic' {
+  if (code === 'not_found' || code === 'forbidden' || code === 'invalid_args' || code === 'too_large') {
+    return `errors.${code}`
+  }
+  return 'errors.generic'
 }
 
 async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {
