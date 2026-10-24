@@ -68,13 +68,15 @@ export async function listAgentMiniAppsAction(input: { agentId: string }) {
     const apps = await listMiniAppsForAgentPage(ctx.activeTenantId, agentId)
     const rows = await services.miniApps.service.describe(ctx.activeTenantId, apps, agentId)
     const settings = readMiniAppSettings((await repositories.tenants.findById(ctx.activeTenantId))?.settings)
-    const enriched: AgentMiniAppRow[] = await Promise.all(
-      rows.map(async (row, index) => {
+    const described = await Promise.all(
+      rows.map(async (row, index): Promise<AgentMiniAppRow | null> => {
         const app = apps[index]!
         const [access, current] = await Promise.all([
           miniAppHumanAccess(accessDeps, viewer(ctx), app),
           repositories.miniApps.findVersion(app.id, app.currentVersion),
         ])
+        // Archivált appot csak a kezelő lát (human-access.ts).
+        if (!access) return null
         return {
           ...row,
           canManage: access === 'manage',
@@ -83,6 +85,7 @@ export async function listAgentMiniAppsAction(input: { agentId: string }) {
         }
       }),
     )
+    const enriched = described.filter((row): row is AgentMiniAppRow => row !== null)
     return ok({
       own: enriched.filter((row) => row.relation === 'owner'),
       shared: enriched.filter((row) => row.relation === 'shared'),

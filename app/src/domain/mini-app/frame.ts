@@ -9,7 +9,9 @@ export const MINI_APP_TIME_ZONE = 'Europe/Budapest'
 
 /**
  * Az agent HTML-je: hálózat nélkül, saját opaque originben (CSP `sandbox allow-scripts`).
- * Csak a vele azonos originű keretoldal ágyazhatja be (`frame-ancestors 'self'`).
+ * A `frame-ancestors` a teljes ős-láncot nézi (Control Plane / MCP-kliens → keretoldal
+ * → tartalom), és a sandboxolt keretoldal originje opaque — ezért `'self'` itt mindig
+ * blokkolna. A tartalmat az aláírt token védi, nem a beágyazó.
  */
 export function miniAppContentCsp(): string {
   return [
@@ -21,7 +23,7 @@ export function miniAppContentCsp(): string {
     'media-src data: blob:',
     "connect-src 'none'",
     "form-action 'none'",
-    "frame-ancestors 'self'",
+    'frame-ancestors *',
     "base-uri 'none'",
     'sandbox allow-scripts',
   ].join('; ')

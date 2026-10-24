@@ -1049,7 +1049,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult({ ...result, snapshot: scopeSnapshotToUser(result.snapshot, principal.userId) })
+    return textResult({ ...result, snapshot: withoutMiniAppGuide(scopeSnapshotToUser(result.snapshot, principal.userId)) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()

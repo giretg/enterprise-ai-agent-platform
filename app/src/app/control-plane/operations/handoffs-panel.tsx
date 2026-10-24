@@ -62,7 +62,7 @@ function HandoffLinks({ raw }: { raw: string | null }) {
               rel="noreferrer"
               className="text-coral-deep underline decoration-coral/40 underline-offset-2 hover:decoration-coral"
             >
-              {item.label} · mini app
+              {item.label} · {t('handoffMiniApp')}
             </a>
           ) : (
             <span className="text-ink-soft">{item.label}</span>

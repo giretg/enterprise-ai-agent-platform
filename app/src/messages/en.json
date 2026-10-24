@@ -733,6 +733,7 @@
       "handoffProject": "Project: {name}",
       "handoffGeneralProject": "General",
       "handoffWorkFile": "open in Projects",
+      "handoffMiniApp": "open mini app",
       "handoffStatus_open": "New",
       "handoffStatus_accepted": "Yours",
       "handoffStatusHint_open": "You have not accepted this yet.",

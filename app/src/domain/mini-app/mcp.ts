@@ -419,7 +419,8 @@ export async function invokeMiniAppTool(
     if (!res.ok) return failed(res.code, res.extra)
     const handoffIds: string[] = []
     if (notify && deps.handoffs) {
-      for (const agentId of toAgentIds.filter((id) => id !== definition.agentId)) {
+      // Csak az új címzett kap átadást: az ismételt hívás nem duplikál.
+      for (const agentId of res.newlySharedAgentIds) {
         const handoff = await deps.handoffs.insert({
           tenantId: principal.tenantId,
           fromAgentId: definition.agentId,
@@ -489,12 +490,9 @@ async function checkShareTarget(
   principal: ToolCallPrincipal,
   agentId: string,
 ): Promise<'ok' | 'not_visible'> {
-  if (!asUuid(agentId) || !deps.loadDefinitionByAgent) return 'not_visible'
+  if (!asUuid(agentId) || !deps.loadDefinitionByAgent || !deps.canViewAgent) return 'not_visible'
   const target = await deps.loadDefinitionByAgent({ tenantId: principal.tenantId, agentId })
   if (!target || !isDispatchable(target.status)) return 'not_visible'
-  if (deps.canViewAgent) {
-    const visible = await deps.canViewAgent({ tenantId: principal.tenantId, userId: principal.userId, role: principal.role, agentId })
-    if (!visible) return 'not_visible'
-  }
-  return 'ok'
+  const visible = await deps.canViewAgent({ tenantId: principal.tenantId, userId: principal.userId, role: principal.role, agentId })
+  return visible ? 'ok' : 'not_visible'
 }

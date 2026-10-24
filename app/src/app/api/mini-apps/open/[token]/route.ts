@@ -23,13 +23,14 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   if (resolved.kind === 'not_found') return miniAppNotFoundResponse()
   if (resolved.kind === 'gone') return miniAppGoneResponse(resolved)
   await writeAudit(repositories.audit, {
-    actorType: resolved.payload.u ? 'human' : 'system',
-    actorId: resolved.payload.u ?? null,
+    // A gyors link továbbadható: nem tudjuk, ki nyitotta meg, csak azt, kinek készült.
+    actorType: 'system',
+    actorId: null,
     action: 'mini_app.opened',
     targetType: 'mini_app',
     targetId: resolved.app.id,
     policyDecision: 'allowed',
-    metadata: { phase: 'opened', version: resolved.version.version, contentHash: resolved.version.contentHash },
+    metadata: { phase: 'opened', linkIssuedToUserId: resolved.payload.u ?? null, version: resolved.version.version, contentHash: resolved.version.contentHash },
     tenantId: resolved.app.tenantId,
   })
   const html = renderMiniAppFrame({

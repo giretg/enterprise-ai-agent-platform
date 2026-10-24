@@ -236,6 +236,7 @@ async function call(deps: MiniAppMcpDeps, toolName: string, args: Record<string,
   const result = await invokeMiniAppTool(deps, { principal, toolName, args })
   const first = result.content[0]
   assert.equal(first?.type, 'text')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a tool-válasz szabad alakú JSON
   return { result, payload: JSON.parse((first as { text: string }).text) as Record<string, any> }
 }
 
@@ -347,6 +348,9 @@ async function main() {
     const parsed = parseHandoffLinks(handoffs[0]!.links)
     assert.equal(parsed[0]?.kind, 'mini_app')
     assert.equal(parsed[0]?.href, `mini_app:${appId}`)
+    const retry = await call(mcpDeps, MCP_MINI_APP_SHARE_TOOL, { definitionId: REKA_DEF, appId, toAgentIds: ZOLI, notify: true, idempotencyKey: 's1' })
+    assert.equal(retry.payload.handoffIds, undefined)
+    assert.equal(handoffs.length, 1)
 
     const hidden = await call({ ...mcpDeps, canViewAgent: async () => false }, MCP_MINI_APP_SHARE_TOOL, { definitionId: REKA_DEF, appId, toAgentIds: KATI, idempotencyKey: 's2' })
     assert.equal(hidden.payload.code, 'share_target_not_visible')
@@ -462,7 +466,7 @@ async function main() {
     assert.match(expired, /Megnyitás a platformon/)
     assert.equal(expired.includes('értékesítés'), false)
     const csp = miniAppContentCsp()
-    for (const directive of ["connect-src 'none'", 'sandbox allow-scripts', "form-action 'none'", "default-src 'none'"]) assert.ok(csp.includes(directive), directive)
+    for (const directive of ["connect-src 'none'", 'sandbox allow-scripts', "form-action 'none'", "default-src 'none'", 'frame-ancestors *']) assert.ok(csp.includes(directive), directive)
   })
 
   await check('ember-hozzáférés: kezelő / látó / szervezeti / megosztott / idegen', async () => {

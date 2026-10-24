@@ -733,6 +733,7 @@
       "handoffProject": "Projekt: {name}",
       "handoffGeneralProject": "Általános",
       "handoffWorkFile": "megnyitás a Projektekben",
+      "handoffMiniApp": "mini app megnyitása",
       "handoffStatus_open": "Új",
       "handoffStatus_accepted": "Nálad van",
       "handoffStatusHint_open": "Még nem vetted át.",
