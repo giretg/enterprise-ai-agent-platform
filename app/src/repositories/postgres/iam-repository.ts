@@ -162,8 +162,10 @@ export class PostgresInvitationRepository implements InvitationRepository {
         : filter,
     )
     const offset = skip ?? 0
+    // tenantId a listInvitations hívó tenantja — kihagyva cross-tenant e-mail/szerep szivárgás.
     const rows = await prisma.invitation.findMany({
       where: {
+        ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
         ...(filter?.status ? { status: filter.status } : {}),
       },
       orderBy: { createdAt: 'desc' },

@@ -817,10 +817,13 @@ export class IamService {
     tenantId: string | null,
     opts?: { limit?: number; offset?: number; unbounded?: boolean },
   ) {
-    return this.invitations.findMany({
+    const rows = await this.invitations.findMany({
       tenantId,
       ...(opts?.unbounded ? { unbounded: true } : { limit: opts?.limit ?? 100, offset: opts?.offset }),
     })
+    // Második kapu: a repo tenantId-szűrésére támaszkodunk, de a szolgáltatás
+    // soha ne adjon idegen tenant meghívót (N-IAM-6).
+    return rows.filter((row) => row.tenantId === tenantId)
   }
 
   async getPermissionMatrix() {
