@@ -14,6 +14,7 @@ import type { Connector, MemoryWriteMode, WikiAccess, WikiPage } from '@prisma/c
 import type { AgentRepository, AuditRepository, ConnectorRepository, DocumentRepository, WikiRepository } from '@/repositories/interfaces'
 import type { WikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { hasMinimumRole } from '@/auth/types'
+import { isPrivilegedAgentReader } from '@/domain/agent-definition'
 import type { UserRole } from '@prisma/client'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { buildStoredZip, type ZipWriteEntry } from '@/lib/skill/zip-writer'
@@ -551,6 +552,67 @@ export class WikiConsoleService {
       actor: { userId: actor.userId, tenantId: actor.tenantId, role: String(actor.role) },
       connectorId: connector.id,
     })
+  }
+
+  // -------------------------------------------------------------------------
+  // „Kik férnek hozzá” fül: munkatárs-jogok a tudásbázis felől (#965 folyt.)
+
+  /**
+   * A tudásbázishoz kötött munkatársak, és — ha a hívó kezelheti a kötéseket —
+   * az összes munkatárs, akinek jogot adhat (admin: mind; más: a view/operate grantosak).
+   * Ugyanazt a jogot állítja, mint az agent „Wikik és jogok” kártyája.
+   */
+  async getAgentAccess(actor: WikiConsoleActor, connectorId: string) {
+    const { connector } = await this.load(actor, connectorId, 'view')
+    const canEdit = canManageKnowledgeBaseLink(connector, { userId: actor.userId, role: String(actor.role) })
+    const [bindings, choices] = await Promise.all([
+      this.deps.console.listBindingsForConnector(connector.id),
+      canEdit
+        ? this.deps.console.listAgentsForWikiAccess(
+            actor.tenantId,
+            isPrivilegedAgentReader(String(actor.role)) || actor.assumed ? null : actor.userId,
+          )
+        : Promise.resolve([]),
+    ])
+    const ownerAgentId = ownerAgentIdForKnowledgeBase(connector.name)
+    const editable = new Set(choices.map((agent) => agent.id))
+    const rows = new Map<string, {
+      agentId: string
+      agentName: string
+      access: WikiAccess
+      writeMode: MemoryWriteMode
+      own: boolean
+      editable: boolean
+    }>()
+    for (const agent of choices) {
+      rows.set(agent.id, {
+        agentId: agent.id,
+        agentName: agent.name,
+        access: 'none',
+        writeMode: isPrivateKnowledgeBase(connector) ? 'direct' : 'approval',
+        own: agent.id.toLowerCase() === ownerAgentId,
+        editable: true,
+      })
+    }
+    for (const binding of bindings) {
+      rows.set(binding.agentId, {
+        agentId: binding.agentId,
+        agentName: binding.agentName,
+        access: effectiveWikiAccess(binding),
+        writeMode: effectiveWikiWriteMode(binding),
+        own: binding.agentId.toLowerCase() === ownerAgentId,
+        editable: editable.has(binding.agentId),
+      })
+    }
+    return {
+      canEdit,
+      rows: [...rows.values()].sort(
+        (a, b) =>
+          Number(b.own) - Number(a.own) ||
+          Number(b.access !== 'none') - Number(a.access !== 'none') ||
+          a.agentName.localeCompare(b.agentName),
+      ),
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -144,6 +144,14 @@ export async function purgePrivateKnowledgeBaseAction(input: { connectorId: stri
   }
 }
 
+export async function getWikiAgentAccessAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiConsole.getAgentAccess(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load agent access')
+  }
+}
+
 export async function getWikiSettingsAction(input: { connectorId: string }) {
   try {
     return ok(await services.wikiConsole.getSettings(await actor(), uuid.parse(input.connectorId)))
@@ -229,6 +237,7 @@ export async function setAgentWikiLinkAction(input: {
     await readableAgentOrThrow(current, parsed.agentId)
     const result = await services.wikiConsole.setAgentWikiLink(current, parsed)
     revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    revalidatePath(`/control-plane/knowledge/${parsed.connectorId}`)
     return ok(result)
   } catch (e) {
     return failFrom(e, 'Failed to update wiki access')
