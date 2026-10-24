@@ -156,6 +156,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.conversation.proposal.overwritten',
   'skill.conversation.approved',
   'skill.conversation.rejected',
+  'skill.share',
 
   'project.create',
   'project.work_file.write',
@@ -165,6 +166,21 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'handoff.created',
   'handoff.acknowledged',
+
+  // #967 mini appok — metaadat: appId, verzió, hash, méret, lint-kódok; HTML soha.
+  'mini_app.created',
+  'mini_app.version_added',
+  'mini_app.copied',
+  'mini_app.shared',
+  'mini_app.unshared',
+  'mini_app.visibility_changed',
+  'mini_app.opened',
+  'mini_app.archived',
+  'mini_app.restored',
+  'mini_app.purged',
+  'mini_app.validation_failed',
+  'agent.mini_app_guide',
+  'platform_setting.mini_app_link_ttl_changed',
 
   'model_gateway.token.issued',
   'model_gateway.token.deny',

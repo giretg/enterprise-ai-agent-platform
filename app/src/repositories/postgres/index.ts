@@ -31,6 +31,7 @@ import {
   PostgresWorkProjectRepository,
 } from './project-work-repository'
 import { PostgresContactInquiryRepository } from './contact-inquiry-repository'
+import { PostgresMiniAppRepository } from './mini-app-repository'
 import { PostgresPrivateKnowledgeBaseStore, PostgresWikiRepository } from './wiki-repository'
 
 export const repositories = {
@@ -61,4 +62,5 @@ export const repositories = {
   workFiles: new PostgresWorkFileRepository(),
   projectMemory: new PostgresProjectMemoryRepository(),
   contactInquiries: new PostgresContactInquiryRepository(),
+  miniApps: new PostgresMiniAppRepository(),
 }

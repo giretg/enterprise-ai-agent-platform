@@ -193,6 +193,18 @@ import {
   workFileReadInputSchema,
   workFileWriteInputSchema,
 } from '@/domain/project-work/mcp'
+import {
+  isMiniAppTool,
+  MINI_APP_TOOLS,
+  MINI_APP_TOOL_DESCRIPTIONS,
+  MINI_APP_VIEWER_URI,
+  schemaForMiniAppTool,
+  MCP_MINI_APP_CREATE_TOOL,
+  MCP_MINI_APP_GET_TOOL,
+  MCP_MINI_APP_UPDATE_TOOL,
+  type MiniAppMcpResult,
+} from '@/domain/mini-app/mcp'
+import { MINI_APP_VIEWER_HTML, miniAppViewerResourceMeta } from '@/domain/mini-app/viewer'
 
 export type McpAgentListItem = McpCoworkerSummary
 
@@ -258,6 +270,12 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     args: Record<string, unknown>
     origin?: string
   }) => Promise<EnterpriseToolMcpResult>
+  /** #967 `platform.mini_app.*`; hiányában az eszköz `tool_not_configured`-ot ad. */
+  invokeMiniApp?: (input: {
+    principal: McpPrincipal
+    toolName: string
+    args: Record<string, unknown>
+  }) => Promise<MiniAppMcpResult>
   /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
   loadAgentWikis?: (principal: McpPrincipal, definition: AgentDefinition) => Promise<AgentWikiBriefing[]>
@@ -420,6 +438,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
+    invokeMiniApp: (input) => services.miniApps.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
       return Promise.all(
@@ -795,11 +814,20 @@ async function getDefinitionToolResult(
       language: readTenantLanguage(tenant?.settings),
     }),
     ...loaded,
+    // #967 D12: a mini app útmutatót csak a platform.mini_app.guide adja, a definíció nem viszi.
+    snapshot: withoutMiniAppGuide(loaded.snapshot),
     // A publikált (szűretlen) snapshot hash-e — a vázlat/közzétett összevetés ezt várja.
     contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
   })
+}
+
+function withoutMiniAppGuide(snapshot: AgentDefinitionSnapshot): AgentDefinitionSnapshot {
+  if (snapshot.miniAppGuide === undefined) return snapshot
+  const rest = { ...snapshot }
+  delete rest.miniAppGuide
+  return rest
 }
 
 function isFocusMemoryItem(item: unknown): boolean {
@@ -1021,7 +1049,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult({ ...result, snapshot: scopeSnapshotToUser(result.snapshot, principal.userId) })
+    return textResult({ ...result, snapshot: withoutMiniAppGuide(scopeSnapshotToUser(result.snapshot, principal.userId)) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()
@@ -1199,6 +1227,7 @@ function toolBindsToAgentHeader(toolName: string): boolean {
     toolName === MCP_SKILLS_LIST_TOOL ||
     toolName === MCP_SKILL_READ_TOOL ||
     isProjectWorkTool(toolName) ||
+    isMiniAppTool(toolName) ||
     isEnterpriseTool(toolName)
   )
 }
@@ -1518,6 +1547,41 @@ async function createMcpResourceHandler(
           inputSchema: handoffAckInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_HANDOFF_ACK_TOOL, args, deps),
+      )
+      for (const toolName of MINI_APP_TOOLS) {
+        // #967 §3.8: a linket adó eszközök az MCP Apps nézőt is deklarálják (ahol a kliens támogatja).
+        const opensViewer =
+          toolName === MCP_MINI_APP_CREATE_TOOL || toolName === MCP_MINI_APP_UPDATE_TOOL || toolName === MCP_MINI_APP_GET_TOOL
+        server.registerTool(
+          toolName,
+          {
+            title: toolName.replace('platform.mini_app.', 'Mini app: '),
+            description: MINI_APP_TOOL_DESCRIPTIONS[toolName],
+            inputSchema: schemaForMiniAppTool(toolName),
+            ...(toolName.endsWith('.list') || toolName.endsWith('.get') || toolName.endsWith('.guide')
+              ? { annotations: { readOnlyHint: true } }
+              : {}),
+            ...(opensViewer ? { _meta: { ui: { resourceUri: MINI_APP_VIEWER_URI } } } : {}),
+          },
+          async (args) => miniAppToolResult(principal, toolName, args as Record<string, unknown>, deps),
+        )
+      }
+      server.registerResource(
+        'mini-app-viewer',
+        MINI_APP_VIEWER_URI,
+        {
+          title: 'Mini app néző',
+          description: 'Beágyazott néző a mini appokhoz (MCP Apps).',
+          mimeType: 'text/html;profile=mcp-app',
+        },
+        async () => {
+          await auditMcpResourceRead(deps, principal, MINI_APP_VIEWER_URI)
+          return {
+            contents: [
+              { uri: MINI_APP_VIEWER_URI, mimeType: 'text/html;profile=mcp-app', text: MINI_APP_VIEWER_HTML, _meta: miniAppViewerResourceMeta() },
+            ],
+          }
+        },
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
@@ -1919,6 +1983,9 @@ async function createMcpResourceHandler(
         if (isProjectWorkTool(toolName)) {
           return projectWorkToolResult(principal, toolName, args, deps, origin)
         }
+        if (isMiniAppTool(toolName)) {
+          return miniAppToolResult(principal, toolName, args, deps)
+        }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
@@ -1988,6 +2055,16 @@ async function projectWorkToolResult(
   origin?: string,
 ) {
   return deps.invokeProjectWork({ principal, toolName, args, origin })
+}
+
+async function miniAppToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+): Promise<CallToolResult> {
+  if (!deps.invokeMiniApp) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  return (await deps.invokeMiniApp({ principal, toolName, args })) as CallToolResult
 }
 
 async function getGatewayOperationToolResult(

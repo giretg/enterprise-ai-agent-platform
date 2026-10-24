@@ -147,6 +147,12 @@ check('a cégindító varázsló Clerk-sessiont kér (#830) — csak a /sign-up 
 
 check('a delegált OAuth callback és az MCP done page publikus (signed state, nincs Clerk-süti)', () => {
   assertPublic('/api/connectors/oauth/callback')
+  // #967: a mini app gyors linkje token-alapú (keretoldal + tartalom); a letöltés és az állandó link védett.
+  assertPublic('/api/mini-apps/open/abc.def')
+  assertPublic('/api/mini-apps/content/abc.def')
+  assertProtected('/api/mini-apps/admin')
+  assertProtected('/api/control-plane/mini-apps/11111111-1111-4111-8111-111111111111/download')
+  assertProtected('/control-plane/mini-apps/11111111-1111-4111-8111-111111111111')
   assertPublic('/connectors/oauth/done')
   assertProtected('/connectors/oauth')
   assertProtected('/api/connectors/oauth')

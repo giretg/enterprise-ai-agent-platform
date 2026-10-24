@@ -668,7 +668,9 @@
         "memoriairas": "Írások",
         "memoriairasDesc": "Melyik íráshoz kell emberi jóváhagyás. A projektmemóriát lent böngészheted. A betanított szabályt ez nem nyitja ki.",
         "hozzaferes": "Hozzáférés",
-        "hozzaferesDesc": "Ki indíthat chatet vagy ticketet ezzel a munkatárssal."
+        "hozzaferesDesc": "Ki indíthat chatet vagy ticketet ezzel a munkatárssal.",
+        "miniappok": "Mini appok",
+        "miniappokDesc": "A munkatárs által készített, böngészőben megnyitható oldalak (riportok): megnyitás, verziók, megosztás, útmutató."
       },
       "hermesControlTitle": "Hermes képességek felső korlátja"
     },
@@ -731,6 +733,7 @@
       "handoffProject": "Projekt: {name}",
       "handoffGeneralProject": "Általános",
       "handoffWorkFile": "megnyitás a Projektekben",
+      "handoffMiniApp": "mini app megnyitása",
       "handoffStatus_open": "Új",
       "handoffStatus_accepted": "Nálad van",
       "handoffStatusHint_open": "Még nem vetted át.",
@@ -951,6 +954,7 @@
       "geminiLoadFailed": "Nem sikerült ellenőrizni, be van-e állítva a kulcs.",
       "geminiNeedAdmin": "A kulcsot csak adminisztrátor viheti fel.",
       "language": "Nyelv",
+      "miniApps": "Mini appok",
       "languageTitle": "Tenant nyelv",
       "languageBody": "A skill-leírások és egyéb emberi szövegek ezen a nyelven készülnek. A JSON kulcsok angolul maradnak.",
       "languageSaved": "A tenant nyelve mostantól: {label}.",

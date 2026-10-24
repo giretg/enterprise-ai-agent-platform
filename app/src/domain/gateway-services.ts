@@ -58,6 +58,10 @@ import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
+import { MiniAppService } from '@/domain/mini-app/mini-app-service'
+import { invokeMiniAppTool } from '@/domain/mini-app/mcp'
+import { readMiniAppSettings } from '@/lib/mini-app-settings'
+import { miniAppPermanentUrl, mintMiniAppLinks } from '@/lib/mini-app-origin'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
 import {
   invokeProjectWork,
@@ -252,6 +256,30 @@ const mcpGateDeps = {
 function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
 }
+
+async function canViewAgentLookup(lookup: { tenantId: string; userId: string; role: string; agentId: string }) {
+  const grant = await repositories.resourceGrants.findAgentGrant({
+    tenantId: lookup.tenantId,
+    userId: lookup.userId,
+    agentId: lookup.agentId,
+  })
+  return canReadPublishedAgent({ role: lookup.role as UserRole, grant })
+}
+
+/** #967: mini appok — DB-ben tárolt statikus HTML, gyors link külön originen. */
+const miniAppService = new MiniAppService({
+  store: repositories.miniApps,
+  async agentNames(tenantId, agentIds) {
+    const rows = await Promise.all(agentIds.map((id) => repositories.agents.findById(id, tenantId)))
+    return new Map(rows.filter((row) => row !== null).map((row) => [row.id, row.name]))
+  },
+  async settings(tenantId) {
+    const tenant = await repositories.tenants.findById(tenantId)
+    return readMiniAppSettings(tenant?.settings)
+  },
+  links: { mint: mintMiniAppLinks, permanentUrl: miniAppPermanentUrl },
+  audit: repositories.audit,
+})
 
 const sharedToolLookups = {
   loadDefinition: (input: { tenantId: string; definitionId: string }) =>
@@ -612,14 +640,7 @@ export const services = {
         {
           ...sharedToolLookups,
           loadDefinitionByAgent: (lookup) => agentDefinitionService.loadAgentDefinition(lookup),
-          canViewAgent: async (lookup) => {
-            const grant = await repositories.resourceGrants.findAgentGrant({
-              tenantId: lookup.tenantId,
-              userId: lookup.userId,
-              agentId: lookup.agentId,
-            })
-            return canReadPublishedAgent({ role: lookup.role as UserRole, grant })
-          },
+          canViewAgent: canViewAgentLookup,
           isTenantMember: async (lookup) => {
             const membership = await repositories.tenantMemberships.findByTenantAndUser(
               lookup.tenantId,
@@ -646,6 +667,21 @@ export const services = {
               }),
               enqueueInput.origin,
             ),
+          audit: repositories.audit,
+        },
+        input,
+      ),
+  },
+  miniApps: {
+    service: miniAppService,
+    invoke: (input: Parameters<typeof invokeMiniAppTool>[1]) =>
+      invokeMiniAppTool(
+        {
+          ...sharedToolLookups,
+          loadDefinitionByAgent: (lookup) => agentDefinitionService.loadAgentDefinition(lookup),
+          canViewAgent: canViewAgentLookup,
+          handoffs: handoffRepository,
+          miniApps: miniAppService,
           audit: repositories.audit,
         },
         input,

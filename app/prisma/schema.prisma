@@ -454,6 +454,7 @@ model Tenant {
   clientMachineFloors ClientMachineFloor[]
   aiInteractionEvents AiInteractionEvent[]
   gatewaySurrogates GatewaySurrogate[]
+  miniApps          MiniApp[]
 
   @@index([status])
   @@index([createdById, selfService])
@@ -555,6 +556,8 @@ model Agent {
   localRoots                 String          @default("") @map("local_roots")
   /** Admin által beállított modell (#768): provider/model/modelType/temperature/maxTokens/fallbackModels. NEM kerül az MCP-snapshotba. */
   modelConfig                Json?           @map("model_config")
+  /** Mini app útmutató (#967 D12): opcionális prompt; publikáláskor a snapshot.miniAppGuide-ba fagy. ≤ 8000 karakter. */
+  miniAppGuide               String          @default("") @map("mini_app_guide")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
@@ -569,6 +572,8 @@ model Agent {
   projectMemoryItems ProjectMemoryItem[]
   handoffsSent     Handoff[] @relation("HandoffFromAgent")
   handoffsReceived Handoff[] @relation("HandoffToAgent")
+  miniApps         MiniApp[]
+  miniAppShares    MiniAppShare[]
 
   @@index([tenantId, status])
   @@map("agents")
@@ -1375,4 +1380,89 @@ model GatewaySurrogate {
   @@unique([tenantId, scopeType, scopeId, surrogate], map: "gateway_surrogates_scope_surrogate_key")
   @@index([createdAt])
   @@map("gateway_surrogates")
+}
+
+/// Mini app láthatósága (#967 D11). `agents`: van aktív MiniAppShare; `organization` ettől függetlenül mindenkinek.
+enum MiniAppVisibility {
+  private
+  agents
+  organization
+}
+
+enum MiniAppStatus {
+  active
+  archived
+}
+
+/// Mini app (#967): agent által készített, statikus, egyfájlos HTML (A0). Az app az agenté (D3).
+model MiniApp {
+  id                    String            @id @default(uuid()) @db.Uuid
+  tenantId              String            @map("tenant_id") @db.Uuid
+  ownerAgentId          String            @map("owner_agent_id") @db.Uuid
+  projectKey            String            @map("project_key")
+  name                  String
+  description           String?
+  status                MiniAppStatus     @default(active)
+  visibility            MiniAppVisibility @default(private)
+  currentVersion        Int               @map("current_version")
+  copiedFromAppId       String?           @map("copied_from_app_id") @db.Uuid
+  copiedFromVersion     Int?              @map("copied_from_version")
+  /// A létrehozó hívás idempotencia-kulcsa (ismételt create = ugyanaz az app).
+  createIdempotencyKey  String?           @map("create_idempotency_key")
+  createdByUserId       String            @map("created_by") @db.Uuid
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt            DateTime?         @map("archived_at") @db.Timestamptz
+
+  tenant     Tenant           @relation(fields: [tenantId], references: [id])
+  ownerAgent Agent            @relation(fields: [ownerAgentId], references: [id], onDelete: Cascade)
+  versions   MiniAppVersion[]
+  shares     MiniAppShare[]
+
+  @@unique([tenantId, ownerAgentId, createIdempotencyKey])
+  @@index([tenantId, ownerAgentId, status])
+  @@index([tenantId, visibility, status])
+  @@index([status, archivedAt])
+  @@map("mini_apps")
+}
+
+/// Változatlan (immutable) mini app verzió; a HTML SOHA nem kerül auditba/logba.
+model MiniAppVersion {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  appId           String   @map("app_id") @db.Uuid
+  version         Int
+  html            String   @db.Text
+  /// sha256 hex, CRLF→LF normalizálás után.
+  contentHash     String   @map("content_hash")
+  byteSize        Int      @map("byte_size")
+  lintWarnings    String[] @map("lint_warnings")
+  changeNote      String?  @map("change_note")
+  idempotencyKey  String?  @map("idempotency_key")
+  createdByUserId String   @map("created_by") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  app MiniApp @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@unique([appId, version])
+  @@unique([appId, idempotencyKey])
+  @@map("mini_app_versions")
+}
+
+/// Megosztás konkrét agenttel (olvasás + másolat, D4). Visszavonás: revokedAt.
+model MiniAppShare {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  appId          String    @map("app_id") @db.Uuid
+  agentId        String    @map("agent_id") @db.Uuid
+  sharedByUserId String    @map("shared_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz
+
+  app   MiniApp @relation(fields: [appId], references: [id], onDelete: Cascade)
+  agent Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([appId, agentId])
+  @@index([tenantId, agentId, revokedAt])
+  @@map("mini_app_shares")
 }
