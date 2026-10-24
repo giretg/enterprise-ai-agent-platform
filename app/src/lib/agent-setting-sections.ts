@@ -127,6 +127,20 @@ export const AGENT_SETTING_SECTIONS = [
       'Létrehozáskor a projektmemória üres, nincs mit böngészni — a munka során az adatlapon érhető el.',
   },
   {
+    id: 'miniApps',
+    detailSection: 'miniappok',
+    detailComponent: 'AgentMiniAppsPanel',
+    wizardSkipReason:
+      'Létrehozáskor a munkatársnak még nincs mini appja — a munka során készülnek, az adatlapon kezelhetők.',
+  },
+  {
+    id: 'miniAppGuide',
+    detailSection: 'miniappok',
+    detailComponent: 'UpdateMiniAppGuideForm',
+    wizardSkipReason:
+      'Nem kötelező, és csak akkor van értelme, ha a munkatárs már készít mini appokat — utólag az adatlapon adható meg.',
+  },
+  {
     id: 'access',
     detailSection: 'hozzaferes',
     detailComponent: 'AgentAccessPanel',

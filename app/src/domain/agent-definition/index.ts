@@ -85,6 +85,12 @@ export type AgentDefinitionSnapshot = {
    * Omitted when empty so snapshots published before this field keep their contentHash.
    */
   localRoots?: string[]
+  /**
+   * Mini app útmutató (#967 D12): az agent saját, opcionális készítési útmutatója.
+   * Csak a `platform.mini_app.guide` adja vissza (a get_definition nem). Üresen
+   * kimarad, így a korábbi snapshotok contentHash-e változatlan.
+   */
+  miniAppGuide?: string
 }
 
 export type AgentDefinition = {
@@ -239,6 +245,7 @@ async function buildSnapshot(
     hardRules?: string
     trainedRules?: string
     localRoots?: string
+    miniAppGuide?: string
   },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
@@ -264,6 +271,7 @@ async function buildSnapshot(
     description: agent.description ?? null,
     rules: collectSnapshotRules(agent),
     ...(localRoots ? { localRoots } : {}),
+    ...(agent.miniAppGuide?.trim() ? { miniAppGuide: agent.miniAppGuide.trim() } : {}),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({

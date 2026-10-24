@@ -86,6 +86,8 @@ const LOG_WRITE_TOOLS = new Set([
   'platform.work_file.write',
   'platform.work_file.append',
   'platform.skills.submit',
+  'platform.mini_app.create',
+  'platform.mini_app.update',
 ])
 
 const MEMORY_WRITE_TOOLS = new Set([

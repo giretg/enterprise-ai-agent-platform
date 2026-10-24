@@ -668,7 +668,9 @@
         "memoriairas": "Writes",
         "memoriairasDesc": "Which writes need a person to approve. Browse project memory below. This does not open trained rules.",
         "hozzaferes": "Access",
-        "hozzaferesDesc": "Who can start a chat or ticket with this teammate."
+        "hozzaferesDesc": "Who can start a chat or ticket with this teammate.",
+        "miniappok": "Mini apps",
+        "miniappokDesc": "Browser pages (reports) this teammate built: open, versions, sharing, guide."
       },
       "hermesControlTitle": "Hermes capability ceiling"
     },
@@ -951,6 +953,7 @@
       "geminiLoadFailed": "Could not check whether the key is set.",
       "geminiNeedAdmin": "Only an administrator can add this key.",
       "language": "Language",
+      "miniApps": "Mini apps",
       "languageTitle": "Workspace language",
       "languageBody": "Skill descriptions and other human-readable text are written in this language. JSON keys stay in English.",
       "languageSaved": "Workspace language is now: {label}.",

@@ -38,6 +38,16 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   missing_code_sandbox_connector_write:
     'Published definition has no code sandbox connector — grant sandbox_run and publish after the sandbox connection is bound',
   skill_not_pinned: 'This skill version is not pinned on the published agent definition',
+  // #967 mini appok
+  mini_app_not_found: 'Mini app not found — check the appId with platform.mini_app.list',
+  mini_app_not_owner: 'Only the agent that owns this mini app can change it — make your own copy with platform.mini_app.create copyFromAppId',
+  mini_app_archived: 'This mini app is archived — an admin can restore it in the Control Plane',
+  mini_app_version_not_found: 'This version does not exist — omit version for the current one',
+  mini_app_conflict: 'Another version was uploaded meanwhile — call platform.mini_app.get, merge, and retry with a new idempotencyKey',
+  mini_app_too_large: 'The HTML is larger than this organization allows (see byteSize / maxBytes) — embed less data or compress it, then retry',
+  mini_app_validation_failed: 'The HTML was rejected (see errors): remove <iframe>, <object>, <embed> and <form>, then retry — nothing was stored',
+  share_target_required: 'Pass toAgentIds (comma-separated) and/or organization=true',
+  share_target_not_visible: 'This recipient is not an active agent of this organization that the user can see (see agentId) — check platform.agents.list',
   skill_not_found: 'Skill version not found',
   skill_not_active: 'Skill version is not active',
   skill_entry_not_found: 'The skill version has no attachment at this entry path',

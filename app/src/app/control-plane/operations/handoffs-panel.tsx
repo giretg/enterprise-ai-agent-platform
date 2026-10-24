@@ -55,6 +55,15 @@ function HandoffLinks({ raw }: { raw: string | null }) {
             >
               {item.label} · {t('handoffWorkFile')}
             </Link>
+          ) : item.kind === 'mini_app' ? (
+            <a
+              href={`/control-plane/mini-apps/${item.href.replace(/^mini_app:/, '')}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-coral-deep underline decoration-coral/40 underline-offset-2 hover:decoration-coral"
+            >
+              {item.label} · mini app
+            </a>
           ) : (
             <span className="text-ink-soft">{item.label}</span>
           )}

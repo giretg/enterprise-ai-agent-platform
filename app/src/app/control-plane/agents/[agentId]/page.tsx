@@ -45,6 +45,9 @@ import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-bas
 import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
 import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { AgentAccessPanel } from '@/components/agents/agent-access-panel'
+import { AgentMiniAppsPanel } from '@/components/agents/agent-mini-apps-panel'
+import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
+import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
 
@@ -58,6 +61,7 @@ const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   eszkozok: 'eszkozokDesc',
   skillek: 'skillekDesc',
   memoriairas: 'memoriairasDesc',
+  miniappok: 'miniappokDesc',
   hozzaferes: 'hozzaferesDesc',
 }
 
@@ -94,6 +98,7 @@ export default async function AgentDetailPage({
     drivePickerCtxRes,
     modelRes,
     wikiLinksRes,
+    miniAppsRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -108,6 +113,7 @@ export default async function AgentDetailPage({
     getMyGoogleDriveGrantForPicker(),
     getAgentModelSettings({ agentId }),
     listAgentWikiLinksAction({ agentId }),
+    listAgentMiniAppsAction({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -312,6 +318,24 @@ export default async function AgentDetailPage({
               canDeleteMemory={canManage || canDelete}
               initialError={projectsError}
             />
+          </Card>
+        </div>
+      ),
+    },
+    {
+      id: 'miniappok',
+      label: sectionLabel('miniappok'),
+      description: sectionDesc('miniappok'),
+      content: (
+        <div className="space-y-4">
+          <AgentMiniAppsPanel
+            agentId={agent.id}
+            agentName={agent.name}
+            data={miniAppsRes.success ? miniAppsRes.data : null}
+            error={miniAppsRes.success ? null : miniAppsRes.error}
+          />
+          <Card title="Mini app útmutató">
+            <UpdateMiniAppGuideForm agentId={agent.id} miniAppGuide={agent.miniAppGuide} canEdit={canManage} />
           </Card>
         </div>
       ),

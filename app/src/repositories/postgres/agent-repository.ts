@@ -136,6 +136,13 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateMiniAppGuide(input: { agentId: string; miniAppGuide: string }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { miniAppGuide: input.miniAppGuide },
+    })
+  }
+
   async updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },

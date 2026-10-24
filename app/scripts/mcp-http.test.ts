@@ -51,6 +51,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 import { MCP_WORK_FILE_LIST_TOOL, PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
+import { MINI_APP_TOOLS } from '../src/domain/mini-app/mcp'
 import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -798,6 +799,7 @@ async function main() {
       MCP_SKILL_READ_TOOL,
       MCP_SKILL_SUBMIT_TOOL,
       ...PROJECT_WORK_TOOLS,
+      ...MINI_APP_TOOLS,
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
@@ -1272,6 +1274,36 @@ async function main() {
     assert.match(payload.memoryIndex?.note ?? '', /see localRoots/)
     assert.match(payload.briefing ?? '', /across machines/)
     assert.deepEqual(payload.snapshot?.localRoots, ['~/Projects/platform'])
+  })
+
+  await check('#967 get_definition does not carry the mini app guide; tools/list declares the viewer', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, miniAppGuide: 'Céges színek: zöld' },
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 63,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    const text = body.result?.content?.[0]?.text ?? ''
+    assert.ok(text.length > 0)
+    assert.equal(text.includes('Céges színek'), false)
+    assert.equal(text.includes('miniAppGuide'), false)
+
+    const listed = await post('acme', { jsonrpc: '2.0', id: 64, method: 'tools/list', params: {} }, { authorization: `Bearer ${TOKEN}` }, deps)
+    const tools = ((await readJson(listed)) as { result?: { tools?: Array<{ name: string; _meta?: { ui?: { resourceUri?: string } } }> } }).result?.tools ?? []
+    assert.equal(tools.find((tool) => tool.name === 'platform.mini_app.create')?._meta?.ui?.resourceUri, 'ui://mini-app/viewer')
+    assert.equal(tools.find((tool) => tool.name === 'platform.mini_app.list')?._meta, undefined)
   })
 
   await check('#658 get_definition: recent session logs in briefing and recentSessionLogs block', async () => {
@@ -2367,7 +2399,8 @@ async function main() {
     const resourceUris = (
       (await readJson(resources)) as { result?: { resources?: Array<{ uri: string }> } }
     ).result?.resources?.map((row) => row.uri)
-    assert.deepEqual(resourceUris?.sort(), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md'])
+    // #967: a mini app MCP Apps nézője minden kliensnek elérhető erőforrás.
+    assert.deepEqual(resourceUris?.sort(), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md', 'ui://mini-app/viewer'])
 
     const checkoutSkills = [workflowV1, seo].map((pkg) => ({
       skillId: pkg.skillId,
