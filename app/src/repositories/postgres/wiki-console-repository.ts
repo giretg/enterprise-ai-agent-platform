@@ -59,6 +59,11 @@ export interface WikiConsoleRepository {
   ): Promise<{ id: string; filename: string; extractedText: string | null; createdAt: Date } | null>
   userLabels(ids: string[]): Promise<Map<string, string>>
   agentNames(tenantId: string, ids: string[]): Promise<Map<string, string>>
+  /**
+   * #965 folyt.: munkatársak, akiknek a wiki-jogát a hívó állíthatja. `userId: null` =
+   * a tenant összes nem nyugdíjazott munkatársa (admin); különben csak a view/operate grantosak.
+   */
+  listAgentsForWikiAccess(tenantId: string, userId: string | null): Promise<Array<{ id: string; name: string }>>
 }
 
 function effectiveStatusSql(now: Date) {
@@ -156,6 +161,22 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
         batchSeq: row.wiki_batch_seq,
         createdAt: row.created_at,
       }
+    })
+  }
+
+  async listAgentsForWikiAccess(tenantId: string, userId: string | null): Promise<Array<{ id: string; name: string }>> {
+    const grantedIds = userId
+      ? (
+          await prisma.resourceGrant.findMany({
+            where: { tenantId, userId, resourceType: 'agent', accessLevel: { in: ['view', 'operate'] } },
+            select: { resourceId: true },
+          })
+        ).map((grant) => grant.resourceId)
+      : null
+    return prisma.agent.findMany({
+      where: { tenantId, status: { not: 'retired' }, ...(grantedIds ? { id: { in: grantedIds } } : {}) },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
     })
   }
 

@@ -404,7 +404,21 @@
         "level": "Access",
         "mode": "Write mode",
         "collect": "What to collect",
-        "howToChange": "Change rights on the teammate's page (Knowledge base section); changes take effect with the next publish."
+        "howToChange": "Change rights on the teammate's page (Knowledge base section); changes take effect with the next publish.",
+        "introEdit": "Choose which AI teammates may use this wiki and with what access. To allow only one teammate, leave the others on \"No access\".",
+        "noAgents": "There is no teammate you could give access to yet.",
+        "publishNote": "The change takes effect with the teammate's next publish (versioned, logged). Who can see it among people is set on the Settings tab.",
+        "ownKb": "own knowledge base"
+      },
+      "whoSees": {
+        "humans": "People:",
+        "agents": "AI teammates:",
+        "noAgents": "none uses it",
+        "change": "change",
+        "humansBy": {
+          "private": "only you (not even the admin)",
+          "shared": "the organization's operators and admins, plus anyone using a teammate linked to it"
+        }
       },
       "owner": {
         "downloadTitle": "Download",
@@ -429,7 +443,7 @@
         "accessHelp": "None: the teammate can't even see it. Can read: searches and quotes. Can submit to inbox: sends material for a writing teammate to process. Can write the wiki: writes pages.",
         "mode": "Write mode",
         "modeHelp": "With approval: every change goes to the wiki owner for approval and stays hidden until then. Directly: appears immediately (archiving someone else's page still needs approval).",
-        "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to agents that run on a high-quality AI model; for the others, submitting is enough.",
+        "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to teammates that run on a high-quality AI model; for the others, submitting is enough.",
         "collect": "What should it collect in this wiki?",
         "collectHelp": "A sentence or two for the teammate: what knowledge to put here from conversations and processed material.",
         "collectPlaceholder": {
@@ -443,10 +457,10 @@
         "publishLink": "Publish",
         "openWiki": "Open wiki →",
         "kindHint": {
-          "own": "This teammate's own knowledge base. Everyone who can use the teammate sees it.",
-          "agent": "Another teammate's own knowledge base. Everyone who can use that teammate sees it.",
-          "catalog": "The organization's shared catalog. Every member of the organization sees it.",
-          "shared": "Shared knowledge base: the organization's operators and admins see it. An admin can make it private on the wiki's Settings tab.",
+          "own": "This teammate's own knowledge base. Operators, admins and anyone who can use the teammate see it.",
+          "agent": "Another teammate's own knowledge base. Operators, admins and anyone who can use that teammate see it.",
+          "catalog": "The organization's shared catalog. Operators, admins and users of the teammates linked to it see it.",
+          "shared": "Shared knowledge base: operators, admins and users of the teammates linked to it see it. An admin can make it private on the wiki's Settings tab.",
           "private": "Private: only you see it, not even the admin. The teammate can only reach it when you are using it."
         }
       },
@@ -454,9 +468,9 @@
         "visibilityTitle": "Who can see it?",
         "nowPrivate": "Private: only you see it. The admin only sees that it exists and how big it is. AI teammates can only reach it when you are using them.",
         "nowShared": {
-          "shared": "Shared: the organization's operators and admins see it, plus every teammate that was given access.",
-          "agent": "The teammate's own knowledge base: everyone who can use the teammate sees it.",
-          "catalog": "The organization's shared catalog: every member of the organization sees it."
+          "shared": "Shared: the organization's operators and admins see it, plus anyone using a teammate linked to it.",
+          "agent": "The teammate's own knowledge base: the organization's operators and admins see it, plus anyone who can use the teammate.",
+          "catalog": "The organization's shared catalog: the organization's operators and admins see it, plus anyone using a teammate linked to it."
         },
         "notChangeable": "The visibility of this knowledge base cannot be changed. For a private one, create a new knowledge base with \"Only I can see it\".",
         "makeSharedAdminOnly": "Only an admin can share it, because only admins can create shared knowledge bases.",

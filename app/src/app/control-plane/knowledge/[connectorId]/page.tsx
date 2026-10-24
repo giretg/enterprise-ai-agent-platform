@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getLocale, getTranslations } from 'next-intl/server'
 import {
+  getWikiAgentAccessAction,
   getWikiOverviewAction,
   getWikiPageAction,
   getWikiSettingsAction,
@@ -11,6 +12,7 @@ import {
 import { Badge, Card } from '@/components/ui/shell'
 import { WikiInboxPanel } from '@/components/knowledge/wiki/wiki-inbox-panel'
 import { WikiMarkdown } from '@/components/knowledge/wiki/wiki-markdown'
+import { WikiAgentAccessEditor } from '@/components/knowledge/wiki/wiki-agent-access-editor'
 import { WikiOwnerActions } from '@/components/knowledge/wiki/wiki-owner-actions'
 import { WikiSettingsPanel } from '@/components/knowledge/wiki/wiki-settings-panel'
 import { formatWhen, wikiHref } from '@/components/knowledge/wiki/wiki-format'
@@ -63,6 +65,7 @@ export default async function KnowledgeBaseWikiPage({
         <p className="mt-1 max-w-2xl text-sm text-ink-soft">
           {wiki.private ? t('header.privateBody') : t('header.body')}
         </p>
+        <WhoSees wiki={wiki} connectorId={connectorId} t={t} />
       </div>
 
       <nav className="flex flex-wrap gap-1 border-b border-line/70" aria-label={t('tabsAria')}>
@@ -120,40 +123,7 @@ export default async function KnowledgeBaseWikiPage({
           )}
         </Card>
       ) : null}
-      {tab === 'access' ? (
-        <Card title={t('access.title')}>
-          <p className="mb-3 text-sm text-ink-soft">{t('access.intro')}</p>
-          {wiki.access.length === 0 ? (
-            <p className="text-sm text-ink-soft">{t('access.empty')}</p>
-          ) : (
-            <table className="w-full text-sm" data-testid="wiki-access-table">
-              <thead>
-                <tr className="text-left text-xs text-ink-faint">
-                  <th className="py-1 pr-3 font-medium">{t('access.agent')}</th>
-                  <th className="py-1 pr-3 font-medium">{t('access.level')}</th>
-                  <th className="py-1 pr-3 font-medium">{t('access.mode')}</th>
-                  <th className="py-1 font-medium">{t('access.collect')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {wiki.access.map((row) => (
-                  <tr key={row.agentId} className="border-t border-line/60 align-top">
-                    <td className="py-1.5 pr-3">
-                      <Link href={`/control-plane/agents/${row.agentId}?section=tudasbazis`} className="text-coral-deep hover:underline">
-                        {row.agentName}
-                      </Link>
-                    </td>
-                    <td className="py-1.5 pr-3">{t(`levels.${row.access}`)}</td>
-                    <td className="py-1.5 pr-3">{row.access === 'write' ? t(`modes.${row.writeMode}`) : '—'}</td>
-                    <td className="py-1.5 text-ink-soft">{row.collectFocus ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          <p className="mt-3 text-xs text-ink-faint">{t('access.howToChange')}</p>
-        </Card>
-      ) : null}
+      {tab === 'access' ? <AccessTab connectorId={connectorId} /> : null}
       {tab === 'settings' && wiki.canManage ? <SettingsTab connectorId={connectorId} name={wiki.name} isPrivate={wiki.private} /> : null}
     </div>
   )
@@ -352,6 +322,53 @@ function SourceView({
       </Link>
     </Card>
   )
+}
+
+/** Egy pillantásra: emberek és AI-munkatársak, akik elérik ezt a tudásbázist. */
+function WhoSees({ wiki, connectorId, t }: { wiki: Overview; connectorId: string; t: T }) {
+  const agents = wiki.access.filter((row) => row.access !== 'none')
+  return (
+    <dl className="mt-3 grid max-w-2xl gap-1 rounded-lg border border-line/70 bg-paper/60 px-3 py-2 text-sm" data-testid="wiki-who-sees">
+      <div className="flex flex-wrap gap-x-2">
+        <dt className="font-medium text-ink">{t('whoSees.humans')}</dt>
+        <dd className="text-ink-soft">{t(`whoSees.humansBy.${wiki.private ? 'private' : 'shared'}`)}</dd>
+      </div>
+      <div className="flex flex-wrap gap-x-2">
+        <dt className="font-medium text-ink">{t('whoSees.agents')}</dt>
+        <dd className="text-ink-soft">
+          {agents.length === 0
+            ? t('whoSees.noAgents')
+            : agents.map((row) => `${row.agentName} (${t(`levels.${row.access}`).toLowerCase()})`).join(', ')}
+          {' · '}
+          <Link href={wikiHref(connectorId, { tab: 'access' })} className="text-coral-deep hover:underline">
+            {t('whoSees.change')}
+          </Link>
+        </dd>
+      </div>
+    </dl>
+  )
+}
+
+async function AccessTab({ connectorId }: { connectorId: string }) {
+  const res = await getWikiAgentAccessAction({ connectorId })
+  if (!res.success) {
+    const t = await getTranslations('ControlPlane.wiki')
+    return (
+      <Card title={t('access.title')}>
+        <p className="text-sm text-ink-soft">{t(wikiErrorMessage(res.error))}</p>
+      </Card>
+    )
+  }
+  return <WikiAgentAccessEditor connectorId={connectorId} canEdit={res.data.canEdit} rows={res.data.rows} />
+}
+
+function wikiErrorMessage(
+  code: string,
+): 'errors.not_found' | 'errors.forbidden' | 'errors.invalid_args' | 'errors.too_large' | 'errors.generic' {
+  if (code === 'not_found' || code === 'forbidden' || code === 'invalid_args' || code === 'too_large') {
+    return `errors.${code}`
+  }
+  return 'errors.generic'
 }
 
 async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {

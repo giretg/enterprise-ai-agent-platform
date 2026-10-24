@@ -26,6 +26,7 @@ const KB_OTHER_PRIV = '88888888-8888-4888-8888-888888888888'
 const DOC = '99999999-9999-4999-8999-999999999999'
 const BATCH = 'b0000000-0000-4000-8000-00000000000b'
 const CHANGESET = 'c0000000-0000-4000-8000-00000000000c'
+const OTHER_AGENT = 'a1000000-0000-4000-8000-0000000000a1'
 
 const owner: WikiConsoleActor = { userId: OWNER, tenantId: TENANT, role: 'operator' }
 const admin: WikiConsoleActor = { userId: ADMIN, tenantId: TENANT, role: 'admin' }
@@ -101,7 +102,7 @@ function setup() {
   ])
   const pages = [page('labs/hba1c.md'), page('overview.md', { category: null, type: 'overview' })]
   const audit: any[] = []
-  const calls: Record<string, any[]> = { purge: [], link: [], setWikiAccess: [], create: [], skip: [], reject: [], schema: [] }
+  const calls: Record<string, any[]> = { purge: [], link: [], setWikiAccess: [], create: [], skip: [], reject: [], schema: [], agentChoices: [] }
   const pendingChangeSets = new Map<string, string[]>([[KB_SHARED, ['cs-1', 'cs-2']]])
   let schemaMd = '# Wiki rules'
   let docSeq = 0
@@ -154,6 +155,11 @@ function setup() {
     },
     async userLabels(ids) {
       return new Map(ids.map((id) => [id, `user-${id.slice(0, 4)}`]))
+    },
+    async listAgentsForWikiAccess(_tenantId, userId) {
+      calls.agentChoices.push(userId)
+      const all = [{ id: AGENT, name: 'Réka' }, { id: OTHER_AGENT, name: 'Elemér doktor' }]
+      return userId === null ? all : all.filter((agent) => agent.id === OTHER_AGENT)
     },
     async agentNames(_tenantId, ids) {
       return new Map(ids.filter((id) => id === AGENT).map((id) => [id, 'Réka']))
@@ -586,6 +592,35 @@ async function main() {
     assert.equal(after.schemaCustomized, false)
     assert.ok(audit.some((item) => item.action === 'kb.wiki.schema.updated'))
     assert.ok(!JSON.stringify(audit).includes('Saját szabály'), 'a szabályszöveg nem kerül az auditba')
+  })
+
+  await check('„Kik férnek hozzá” fül: admin minden munkatársnak állíthat jogot, operátor csak lát', async () => {
+    const { service, calls } = setup()
+    const asAdmin = await service.getAgentAccess(admin, KB_SHARED)
+    assert.equal(asAdmin.canEdit, true)
+    assert.deepEqual(calls.agentChoices, [null])
+    assert.deepEqual(asAdmin.rows.map((row) => [row.agentName, row.access, row.editable]), [
+      ['Réka', 'write', true],
+      ['Elemér doktor', 'none', true],
+    ])
+    const asOperator = await service.getAgentAccess(operator, KB_SHARED)
+    assert.equal(asOperator.canEdit, false)
+    assert.deepEqual(asOperator.rows.map((row) => [row.agentName, row.collectFocus]), [['Réka', 'Leletek']])
+    assert.equal(calls.agentChoices.length, 1, 'operátornak nem listázunk választható munkatársakat')
+  })
+
+  await check('„Kik férnek hozzá” fül privátnál: a tulajdonos csak a neki látható munkatársakat kapcsolhatja', async () => {
+    const { service, calls } = setup()
+    const asOwner = await service.getAgentAccess(owner, KB_PRIV)
+    assert.equal(asOwner.canEdit, true)
+    assert.deepEqual(calls.agentChoices, [OWNER])
+    const reka = asOwner.rows.find((row) => row.agentId === AGENT)!
+    assert.equal(reka.editable, false, 'a meglévő, de a tulajdonosnak nem látható munkatárs csak olvasható')
+    assert.equal(asOwner.rows.find((row) => row.agentId === OTHER_AGENT)!.writeMode, 'direct')
+    const asApproverOwner = await service.getAgentAccess({ ...owner, role: 'approver' }, KB_PRIV)
+    assert.equal(asApproverOwner.canEdit, true)
+    assert.deepEqual(calls.agentChoices, [OWNER, OWNER], 'approver tulajdonos sem kapja a tenant összes munkatársát')
+    await rejectsWith('not_found', () => service.getAgentAccess(admin, KB_PRIV))
   })
 
   if (failures > 0) {

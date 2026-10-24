@@ -554,6 +554,74 @@ export class WikiConsoleService {
   }
 
   // -------------------------------------------------------------------------
+  // „Kik férnek hozzá” fül: munkatárs-jogok a tudásbázis felől (#965 folyt.)
+
+  /**
+   * A tudásbázishoz kötött munkatársak, és — ha a hívó kezelheti a kötéseket —
+   * az összes munkatárs, akinek jogot adhat (admin: mind; más: a view/operate grantosak).
+   * Ugyanazt a jogot állítja, mint az agent „Wikik és jogok” kártyája.
+   */
+  async getAgentAccess(actor: WikiConsoleActor, connectorId: string) {
+    const { connector } = await this.load(actor, connectorId, 'view')
+    const canEdit = canManageKnowledgeBaseLink(connector, { userId: actor.userId, role: String(actor.role) })
+    const template = configTemplate(connector.config)
+    const [bindings, choices] = await Promise.all([
+      this.deps.console.listBindingsForConnector(connector.id),
+      canEdit
+        ? this.deps.console.listAgentsForWikiAccess(
+            actor.tenantId,
+            hasMinimumRole(role(actor), 'admin') ? null : actor.userId,
+          )
+        : Promise.resolve([]),
+    ])
+    const ownerAgentId = ownerAgentIdForKnowledgeBase(connector.name)
+    const editable = new Set(choices.map((agent) => agent.id))
+    const rows = new Map<string, {
+      agentId: string
+      agentName: string
+      access: WikiAccess
+      writeMode: MemoryWriteMode
+      collectFocus: string | null
+      template: WikiTemplateChoice
+      own: boolean
+      editable: boolean
+    }>()
+    for (const agent of choices) {
+      rows.set(agent.id, {
+        agentId: agent.id,
+        agentName: agent.name,
+        access: 'none',
+        writeMode: isPrivateKnowledgeBase(connector) ? 'direct' : 'approval',
+        collectFocus: null,
+        template,
+        own: agent.id.toLowerCase() === ownerAgentId,
+        editable: true,
+      })
+    }
+    for (const binding of bindings) {
+      rows.set(binding.agentId, {
+        agentId: binding.agentId,
+        agentName: binding.agentName,
+        access: effectiveWikiAccess(binding),
+        writeMode: effectiveWikiWriteMode(binding),
+        collectFocus: binding.wikiCollectFocus,
+        template,
+        own: binding.agentId.toLowerCase() === ownerAgentId,
+        editable: editable.has(binding.agentId),
+      })
+    }
+    return {
+      canEdit,
+      rows: [...rows.values()].sort(
+        (a, b) =>
+          Number(b.own) - Number(a.own) ||
+          Number(b.access !== 'none') - Number(a.access !== 'none') ||
+          a.agentName.localeCompare(b.agentName),
+      ),
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Beállítások: szabályfájl, sablon, láthatóság (#965)
 
   async getSettings(actor: WikiConsoleActor, connectorId: string) {

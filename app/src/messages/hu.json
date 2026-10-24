@@ -404,7 +404,21 @@
         "level": "Hozzáférés",
         "mode": "Írási mód",
         "collect": "Mit gyűjtsön",
-        "howToChange": "A jogokat a munkatárs adatlapján (Tudásbázis rész) módosíthatod; a változás a következő élesítéssel lép életbe."
+        "howToChange": "A jogokat a munkatárs adatlapján (Tudásbázis rész) módosíthatod; a változás a következő élesítéssel lép életbe.",
+        "introEdit": "Itt állíthatod be, melyik AI-munkatárs használhatja ezt a wikit, és milyen joggal. Ha csak egy munkatársnak szeretnéd megengedni, a többinél hagyd „Nincs hozzáférés”-en.",
+        "noAgents": "Még nincs munkatárs, akinek hozzáférést adhatnál.",
+        "publishNote": "A változás az érintett munkatárs következő élesítésével lép életbe (verziózva, naplózva). Az emberek láthatóságát a Beállítások fülön állíthatod.",
+        "ownKb": "saját tudásbázisa"
+      },
+      "whoSees": {
+        "humans": "Emberek:",
+        "agents": "AI-munkatársak:",
+        "noAgents": "egyik sem használja",
+        "change": "módosítás",
+        "humansBy": {
+          "private": "csak te (az admin sem)",
+          "shared": "a szervezet operátorai és adminjai, valamint bárki, aki egy ide kapcsolt munkatársat használ"
+        }
       },
       "owner": {
         "downloadTitle": "Letöltés",
@@ -429,7 +443,7 @@
         "accessHelp": "Nincs: a munkatárs nem is látja. Olvashatja: keres és idéz. Beküldhet a tálcára: anyagot küld, amit egy író munkatárs dolgoz fel. Írhatja a wikit: oldalakat ír.",
         "mode": "Írási mód",
         "modeHelp": "Jóváhagyással: minden változás a wiki gazdájához megy jóváhagyásra, addig nem látszik. Közvetlenül: azonnal megjelenik (más oldalának archiválása ilyenkor is jóváhagyást kér).",
-        "writeWarning": "A wiki minősége az AI-munkatárs modelljén múlik. Csak olyan agentnek adj írási jogot, amely jó minőségű AI-modellel dolgozik; a többinek elég a beküldés.",
+        "writeWarning": "A wiki minősége az AI-munkatárs modelljén múlik. Csak olyan munkatársnak adj írási jogot, amely jó minőségű AI-modellel dolgozik; a többinek elég a beküldés.",
         "collect": "Mit gyűjtsön ebbe a wikibe?",
         "collectHelp": "Egy-két mondat a munkatársnak: milyen tudást tegyen ide a beszélgetésekből és a feldolgozott anyagokból.",
         "collectPlaceholder": {
@@ -443,10 +457,10 @@
         "publishLink": "Élesítés",
         "openWiki": "Wiki megnyitása →",
         "kindHint": {
-          "own": "Ennek a munkatársnak a saját tudásbázisa. Mindenki látja, aki a munkatársat használhatja.",
-          "agent": "Egy másik munkatárs saját tudásbázisa. Mindenki látja, aki azt a munkatársat használhatja.",
-          "catalog": "A szervezet közös katalógusa. A szervezet minden tagja látja.",
-          "shared": "Megosztott tudásbázis: a szervezet operátorai és adminjai látják. Az admin a wiki Beállítások fülén priváttá teheti.",
+          "own": "Ennek a munkatársnak a saját tudásbázisa. Az operátorok, az adminok és bárki, aki a munkatársat használhatja, látja.",
+          "agent": "Egy másik munkatárs saját tudásbázisa. Az operátorok, az adminok és bárki, aki azt a munkatársat használhatja, látja.",
+          "catalog": "A szervezet közös katalógusa. Az operátorok, az adminok és a hozzá kapcsolt munkatársak használói látják.",
+          "shared": "Megosztott tudásbázis: az operátorok, az adminok és a hozzá kapcsolt munkatársak használói látják. Az admin a wiki Beállítások fülén priváttá teheti.",
           "private": "Privát: csak te látod, az admin sem. A munkatárs is csak akkor éri el, amikor te használod."
         }
       },
@@ -454,9 +468,9 @@
         "visibilityTitle": "Ki láthatja?",
         "nowPrivate": "Privát: csak te látod. Az adminisztrátor csak annyit lát, hogy létezik és mekkora. Az AI-munkatársak csak akkor érik el, amikor te használod őket.",
         "nowShared": {
-          "shared": "Megosztott: a szervezet operátorai és adminjai látják, és minden munkatárs, akinek hozzáférést adtak.",
-          "agent": "A munkatárs saját tudásbázisa: mindenki látja, aki a munkatársat használhatja.",
-          "catalog": "A szervezet közös katalógusa: a szervezet minden tagja látja."
+          "shared": "Megosztott: a szervezet operátorai és adminjai látják, valamint bárki, aki egy ide kapcsolt munkatársat használ.",
+          "agent": "A munkatárs saját tudásbázisa: a szervezet operátorai és adminjai látják, és bárki, aki a munkatársat használhatja.",
+          "catalog": "A szervezet közös katalógusa: a szervezet operátorai és adminjai látják, és bárki, aki egy ide kapcsolt munkatársat használ."
         },
         "notChangeable": "Ennek a tudásbázisnak a láthatósága nem állítható. Ha privát tudásbázist szeretnél, hozz létre újat „Csak én láthatom” beállítással.",
         "makeSharedAdminOnly": "Megosztani csak adminisztrátor tud, mert közös tudásbázist csak ő hozhat létre.",
