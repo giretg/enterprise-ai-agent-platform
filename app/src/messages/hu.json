@@ -907,6 +907,22 @@
       "languageTitle": "Tenant nyelv",
       "languageBody": "A skill-leírások és egyéb emberi szövegek ezen a nyelven készülnek. A JSON kulcsok angolul maradnak.",
       "languageSaved": "A tenant nyelve mostantól: {label}.",
+      "agents": "AI-munkatársak",
+      "autonomyTitle": "Az önállóság felső korlátja",
+      "autonomyBody": "Ennél önállóbbra senki nem állíthatja az AI-munkatársakat, sem felvételkor, sem az adatlapon. Ha szigorítasz, a már beállított munkatársak is a szigorúbb szabály szerint kérnek jóváhagyást.",
+      "autonomySaved": "Mostantól legfeljebb ez a szint választható: {label}.",
+      "autonomyCeiling": {
+        "trainee": "Minden írás és küldés előtt jóváhagyást kérnek.",
+        "trusted": "Memóriát önállóan írhatnak, levelet, fájlt és céges rendszert csak jóváhagyással.",
+        "autonomous": "Nincs céges korlát: a munkatárs beállítása dönt. A kötelező kapuk megmaradnak."
+      },
+      "hireDraftTitle": "„Mondd el” javaslatok napi kerete",
+      "hireDraftBody": "Új munkatárs felvételekor a céges AI-modell egy-két mondatból kitölti a vázlatot. Ennyi javaslat kérhető naponta az egész cégre (UTC éjféltől). A 0 kikapcsolja a javaslatkérést; a minták és az üres lap ilyenkor is elérhetők.",
+      "hireDraftField": "Javaslat naponta",
+      "hireDraftSave": "Mentés",
+      "hireDraftSaved": "A napi keret mostantól {limit} javaslat.",
+      "hireDraftSavedOff": "A javaslatkérés kikapcsolva.",
+      "hireDraftInvalid": "Adj meg egy egész számot 0 és {max} között.",
       "mcpIntroTitle": "MCP bemutatkozó",
       "mcpIntroBody": "Ez a szöveg jelenik meg az MCP initialize utasításában és a platform.whoami válaszában. Írd le, milyen céghez csatlakozik az AI, és hogyan értelmezze a publikált munkatárs-agenteket.",
       "mcpIntroPlaceholder": "Példa: Az Ostorosbor Zrt. magyar borászat. A munkatársak publikált AI agentek — CRM, értékesítés, tudásbázis.",
@@ -1468,7 +1484,7 @@
         "hint": "AI-modell, asztali kliens, mappák"
       },
       "launch": {
-        "label": "Munkába állítás",
+        "label": "Próbaüzem és munkába állítás",
         "hint": "Próba és indulás"
       }
     },
@@ -1559,6 +1575,10 @@
       "default": "alap",
       "custom": "Egyedi beállítás: az írások egyenként vannak állítva (lásd Részletek). Egy szint választása felülírja.",
       "alwaysGates": "A céges szabályzat kötelező jóváhagyásai (pl. veszélyesnek jelölt műveletek) minden szinten megmaradnak.",
+      "locked": "Zárolva",
+      "lockedHint": "A céged beállítása ezt a szintet nem engedi.",
+      "ceilingNote": "A céged beállítása szerint legfeljebb a(z) „{level}” szint választható. Ezt egy adminisztrátor módosíthatja a Beállításokban.",
+      "ceilingClamped": "Az ennél önállóbbra állított írások most is jóváhagyást kérnek.",
       "levels": {
         "trainee": {
           "title": "Gyakornok",
@@ -1623,9 +1643,9 @@
       "copied": "Másolva",
       "retired": "Ez a munkatárs nyugdíjba vonult — nem állítható újra munkába.",
       "readyBody": "Ha minden rendben, állítsd munkába: ettől kezdve a kollégák chatben és feladatban is dolgozhatnak vele.",
-      "updateBody": "Munkában van, de azóta módosítottál rajta. Élesítsd a változásokat, hogy a kollégák már az új beállítással dolgozzanak.",
+      "updateBody": "Munkában van, de azóta módosítottál rajta. Állítsd munkába a változásokat, hogy a kollégák már az új beállítással dolgozzanak.",
       "cta": "Munkába állítom",
-      "update": "Változások élesítése",
+      "update": "Változások munkába állítása",
       "launching": "Munkába állítás…",
       "liveTitle": "{name} munkába állt!",
       "liveBody": "Írj neki a saját AI-kliensedben (pl. Claude, ChatGPT, Codex), vagy adj neki feladatot.",
@@ -1677,12 +1697,25 @@
       "recommended": "ajánlott",
       "describe": {
         "title": "Mondd el egy-két mondatban",
-        "body": "Leírod, mit csináljon, és ebből javaslatot készítünk — mindent átírhatsz.",
+        "body": "Leírod, mit csináljon, és a céges AI ebből javaslatot készít — mindent átírhatsz.",
         "label": "Mit csináljon az új munkatárs?",
         "placeholder": "Válaszoljon a webshop vevői leveleire, és ha reklamáció jön, szóljon nekem.",
         "hint": "A javaslat csak kitölti a következő lépéseket — semmit nem kapcsol be, és nem áll munkába magától.",
         "required": "Írj legalább egy mondatot.",
-        "cta": "Javaslatot kérek"
+        "cta": "Javaslatot kérek",
+        "drafting": "Javaslat készül…",
+        "remaining": "Ma még {count} javaslat kérhető.",
+        "useSample": "Indulj ebből: {name}",
+        "browseSamples": "Minták",
+        "blank": "Üres lap",
+        "failure": {
+          "budget_exhausted": "A cég mai javaslat-kerete elfogyott. Holnap újra kérhetsz, addig indulj egy mintából vagy üres lapról.",
+          "disabled": "A javaslatkérést a céged kikapcsolta. Indulj egy mintából vagy üres lapról.",
+          "no_model": "A cégnél még nincs bekapcsolt AI-modell, ezért most nem tudunk javaslatot írni. Indulj egy mintából vagy üres lapról.",
+          "provider_unavailable": "Az AI most nem érhető el. Próbáld újra egy perc múlva, vagy indulj egy mintából.",
+          "invalid_response": "Ebből most nem sikerült használható javaslatot írni. Fogalmazd meg kicsit másképp, vagy indulj egy mintából.",
+          "error": "Nem sikerült javaslatot kérni. Próbáld újra, vagy indulj egy mintából."
+        }
       },
       "sample": {
         "title": "Válassz mintát",

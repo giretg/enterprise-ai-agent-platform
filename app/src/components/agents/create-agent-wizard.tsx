@@ -68,6 +68,8 @@ import { Spinner } from '@/components/ui/spinner'
 import {
   DEFAULT_AUTONOMY_LEVEL,
   autonomyForWriteModes,
+  clampAutonomyToCeiling,
+  clampWriteModesToCeiling,
   writeModesForAutonomy,
   type AutonomyLevel,
 } from '@/lib/agent-autonomy'
@@ -75,7 +77,6 @@ import { CAPABILITY_DECK, capabilityDeckLevel } from '@/lib/agent-capability-dec
 import {
   composeRoleInstruction,
   computeHireReadiness,
-  draftFromDescription,
   draftFromSample,
   hireSharedWithOthers,
   knownToolNames,
@@ -201,9 +202,15 @@ export function CreateAgentWizard({
   continuation = null,
   catalog = [],
   catalogDetails = [],
+  autonomyCeiling = 'autonomous',
+  hireDraftQuota = null,
 }: {
   cloneableAgents?: CreateAgentWizardCloneOption[]
   initialStep?: string
+  /** #957 D3: a céges felső korlát — ennél önállóbb szint nem választható. */
+  autonomyCeiling?: AutonomyLevel
+  /** #957 D1: a „Mondd el” javaslatok mai kerete (null = ismeretlen). */
+  hireDraftQuota?: { limit: number; remaining: number } | null
   continuation?: CreateAgentWizardContinuation | null
   catalog?: ConnectorCatalogOption[]
   /** Teljes connector-katalógus (kötött kapcsolatok leírásához). */
@@ -381,7 +388,7 @@ export function CreateAgentWizard({
     setRawRole('')
     setRoleEdited(false)
     setSuggestedTools(knownToolNames(draft.tools))
-    setSuggestedAutonomy(draft.autonomy)
+    setSuggestedAutonomy(clampAutonomyToCeiling(draft.autonomy, autonomyCeiling))
     setCloneTemplate(null)
     setCloneSourceId('')
     setError(null)
@@ -450,10 +457,9 @@ export function CreateAgentWizard({
       setRawRole(template.roleInstruction)
       setRoleEdited(parts.roleEdited)
       setSuggestedTools(template.enabledTools)
+      const sourceAutonomy = autonomyForWriteModes(template.writeModes)
       setSuggestedAutonomy(
-        autonomyForWriteModes(template.writeModes) === 'custom'
-          ? DEFAULT_AUTONOMY_LEVEL
-          : (autonomyForWriteModes(template.writeModes) as AutonomyLevel),
+        sourceAutonomy === 'custom' ? DEFAULT_AUTONOMY_LEVEL : clampAutonomyToCeiling(sourceAutonomy, autonomyCeiling),
       )
     } finally {
       setLoadingClone(false)
@@ -478,12 +484,14 @@ export function CreateAgentWizard({
       })
       if (!res.success) warnings.push(t('cloneConnector', { name: connector.name, error: res.error }))
     }
+    // A forrás lehet önállóbb, mint amit a céges korlát most enged — a másolat a korlátig kap.
+    const writeModes = clampWriteModesToCeiling(template.writeModes, autonomyCeiling)
     const writes = await updateAgentWriteApprovalModes({
       agentId,
-      memoryWriteMode: template.writeModes.memory,
-      httpApiWriteMode: template.writeModes.httpApi,
-      gmailWriteMode: template.writeModes.gmail,
-      driveWriteMode: template.writeModes.drive,
+      memoryWriteMode: writeModes.memory,
+      httpApiWriteMode: writeModes.httpApi,
+      gmailWriteMode: writeModes.gmail,
+      driveWriteMode: writeModes.drive,
       approverUserId: template.approverUserId,
     })
     if (!writes.success) warnings.push(t('cloneApprovals', { error: writes.error }))
@@ -788,7 +796,8 @@ export function CreateAgentWizard({
                   onPathChange={setStartPath}
                   describeText={describeText}
                   onDescribeTextChange={setDescribeText}
-                  onDescribe={() => applyDraft(draftFromDescription(describeText, locale))}
+                  hireDraftQuota={hireDraftQuota}
+                  onDescribeDraft={applyDraft}
                   onSample={(sample) => applyDraft(draftFromSample(sample, locale))}
                   cloneableAgents={cloneableAgents}
                   cloneSourceId={cloneSourceId}
@@ -1078,7 +1087,12 @@ export function CreateAgentWizard({
 
               {step === 'autonomy' && createdAgentId && c ? (
                 <div className="space-y-4">
-                  <AutonomySlider agentId={createdAgentId} modes={c.writeModes} onChanged={refresh} />
+                  <AutonomySlider
+                    agentId={createdAgentId}
+                    modes={c.writeModes}
+                    ceiling={autonomyCeiling}
+                    onChanged={refresh}
+                  />
                   <Collapsible key={`details-${expert}`} title={t('autonomy.detailsTitle')} subtitle={t('autonomy.detailsHint')} defaultOpen={expert}>
                     <UpdateWriteApprovalForm
                       agentId={createdAgentId}

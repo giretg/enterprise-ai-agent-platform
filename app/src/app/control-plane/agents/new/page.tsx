@@ -14,6 +14,7 @@ import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { getAgentModelSettings } from '@/app/actions/model-config'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
+import { getHireDraftQuota, getTenantAgentSettings } from '@/app/actions/tenant-agent-settings'
 import { CreateAgentWizard } from '@/components/agents/create-agent-wizard'
 import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
@@ -33,7 +34,12 @@ export default async function NewAgentPage({
   const ctx = await requireTenantRole('admin')
   const params = await searchParams
   const continueId = params.continue?.trim() || null
-  const [agentsRes, catalogRes] = await Promise.all([listAgents({ limit: 100 }), listConnectorCatalog()])
+  const [agentsRes, catalogRes, agentSettingsRes, quotaRes] = await Promise.all([
+    listAgents({ limit: 100 }),
+    listConnectorCatalog(),
+    getTenantAgentSettings(),
+    continueId ? null : getHireDraftQuota(),
+  ])
   const cloneableAgents = (agentsRes.success ? agentsRes.data : [])
     .filter((agent) => agent.id !== continueId)
     .map((agent) => ({ id: agent.id, name: agent.name }))
@@ -126,6 +132,8 @@ export default async function NewAgentPage({
         continuation={continuation}
         catalog={continuation ? continuation.assignableConnectors : catalog}
         catalogDetails={catalog}
+        autonomyCeiling={agentSettingsRes.success ? agentSettingsRes.data.autonomyCeiling : 'trainee'}
+        hireDraftQuota={quotaRes?.success ? { limit: quotaRes.data.limit, remaining: quotaRes.data.remaining } : null}
       />
     </div>
   )

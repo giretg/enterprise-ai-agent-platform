@@ -1,11 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
+import { suggestHireDraftAction } from '@/app/actions/tenant-agent-settings'
 import { Spinner } from '@/components/ui/spinner'
+import type { HireDraftFailure } from '@/domain/agent-hire-draft'
 import { asTranslate } from '@/i18n/translate'
 import { agentDisplayName } from '@/lib/agent-persona'
-import { HIRE_SAMPLES, type HireLocale, type HireSample } from '@/lib/agent-hire'
+import { HIRE_SAMPLES, matchHireSample, type HireDraft, type HireLocale, type HireSample } from '@/lib/agent-hire'
 
 export type HireStartPath = 'describe' | 'sample' | 'clone' | 'blank'
 
@@ -18,14 +20,19 @@ const PATH_ICON: Record<HireStartPath, string> = {
 
 const INPUT = 'mt-1 w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm'
 
-/** 0. lépés: négy út kártyákon (#957). */
+/**
+ * 0. lépés: négy út kártyákon (#957). A „Mondd el” a céges alapmodellel ír
+ * vázlatot (D1, napi keretből); ha nem sikerül, a hozzá illő mintát és az üres
+ * lapot ajánlja magyarázattal.
+ */
 export function StartPaths({
   locale,
   path,
   onPathChange,
   describeText,
   onDescribeTextChange,
-  onDescribe,
+  hireDraftQuota,
+  onDescribeDraft,
   onSample,
   cloneableAgents,
   cloneSourceId,
@@ -39,7 +46,9 @@ export function StartPaths({
   onPathChange: (path: HireStartPath) => void
   describeText: string
   onDescribeTextChange: (text: string) => void
-  onDescribe: () => void
+  /** Ma még kérhető javaslatok; null = nem sikerült lekérdezni (a szerver úgyis ellenőriz). */
+  hireDraftQuota: { limit: number; remaining: number } | null
+  onDescribeDraft: (draft: HireDraft) => void
   onSample: (sample: HireSample) => void
   cloneableAgents: Array<{ id: string; name: string }>
   cloneSourceId: string
@@ -50,7 +59,27 @@ export function StartPaths({
 }) {
   const t = asTranslate(useTranslations('AgentCreate'))
   const [touched, setTouched] = useState(false)
+  const [drafting, startDrafting] = useTransition()
+  const [failure, setFailure] = useState<HireDraftFailure | 'error' | null>(null)
+  const [remaining, setRemaining] = useState(hireDraftQuota?.remaining ?? null)
   const paths: HireStartPath[] = ['describe', 'sample', 'clone', 'blank']
+  const aiUnavailable = remaining === 0
+  const unavailableReason: HireDraftFailure = hireDraftQuota?.limit === 0 ? 'disabled' : 'budget_exhausted'
+  const fallbackSample = failure || aiUnavailable ? matchHireSample(describeText) : null
+
+  function describe() {
+    startDrafting(async () => {
+      setFailure(null)
+      const res = await suggestHireDraftAction({ description: describeText, locale })
+      if (!res.success) {
+        setFailure('error')
+        return
+      }
+      setRemaining(res.data.remaining)
+      if (res.data.ok) onDescribeDraft(res.data.draft)
+      else setFailure(res.data.reason)
+    })
+  }
 
   return (
     <div className="space-y-4">
@@ -103,14 +132,50 @@ export function StartPaths({
           {touched && !describeText.trim() ? (
             <p className="text-xs text-coral">{t('start.describe.required')}</p>
           ) : null}
-          <button
-            type="button"
-            disabled={!describeText.trim()}
-            onClick={onDescribe}
-            className="rounded-full bg-coral px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            {t('start.describe.cta')}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              disabled={!describeText.trim() || drafting || aiUnavailable}
+              onClick={describe}
+              className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {drafting ? <Spinner size="sm" /> : null}
+              {drafting ? t('start.describe.drafting') : t('start.describe.cta')}
+            </button>
+            {remaining !== null && remaining > 0 && remaining <= 5 ? (
+              <span className="text-xs text-ink-faint">{t('start.describe.remaining', { count: remaining })}</span>
+            ) : null}
+          </div>
+          {failure || aiUnavailable ? (
+            <div className="space-y-2 rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-xs text-ink">
+              <p>{t(`start.describe.failure.${failure && failure !== 'empty' ? failure : unavailableReason}`)}</p>
+              <div className="flex flex-wrap gap-2">
+                {fallbackSample ? (
+                  <button
+                    type="button"
+                    onClick={() => onSample(fallbackSample)}
+                    className="rounded-full border border-line bg-paper px-3 py-1 font-semibold text-ink hover:border-coral/40"
+                  >
+                    {t('start.describe.useSample', { name: fallbackSample.name[locale] })}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => onPathChange('sample')}
+                  className="rounded-full border border-line bg-paper px-3 py-1 font-semibold text-ink hover:border-coral/40"
+                >
+                  {t('start.describe.browseSamples')}
+                </button>
+                <button
+                  type="button"
+                  onClick={onBlank}
+                  className="rounded-full border border-line bg-paper px-3 py-1 font-semibold text-ink hover:border-coral/40"
+                >
+                  {t('start.describe.blank')}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
