@@ -443,7 +443,7 @@
         "accessHelp": "None: the teammate can't even see it. Can read: searches and quotes. Can submit to inbox: sends material for a writing teammate to process. Can write the wiki: writes pages.",
         "mode": "Write mode",
         "modeHelp": "With approval: every change goes to the wiki owner for approval and stays hidden until then. Directly: appears immediately (archiving someone else's page still needs approval).",
-        "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to agents that run on a high-quality AI model; for the others, submitting is enough.",
+        "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to teammates that run on a high-quality AI model; for the others, submitting is enough.",
         "collect": "What should it collect in this wiki?",
         "collectHelp": "A sentence or two for the teammate: what knowledge to put here from conversations and processed material.",
         "collectPlaceholder": {
@@ -468,7 +468,7 @@
         "visibilityTitle": "Who can see it?",
         "nowPrivate": "Private: only you see it. The admin only sees that it exists and how big it is. AI teammates can only reach it when you are using them.",
         "nowShared": {
-          "shared": "Shared: the organization's operators and admins see it, plus every teammate that was given access.",
+          "shared": "Shared: the organization's operators and admins see it, plus anyone using a teammate linked to it.",
           "agent": "The teammate's own knowledge base: the organization's operators and admins see it, plus anyone who can use the teammate.",
           "catalog": "The organization's shared catalog: the organization's operators and admins see it, plus anyone using a teammate linked to it."
         },

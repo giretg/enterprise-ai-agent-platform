@@ -351,7 +351,16 @@ function WhoSees({ wiki, connectorId, t }: { wiki: Overview; connectorId: string
 
 async function AccessTab({ connectorId }: { connectorId: string }) {
   const res = await getWikiAgentAccessAction({ connectorId })
-  if (!res.success) notFound()
+  if (!res.success) {
+    const t = await getTranslations('ControlPlane.wiki')
+    const known = ['not_found', 'forbidden', 'invalid_args', 'too_large'] as const
+    const key = known.includes(res.error as (typeof known)[number]) ? res.error : 'generic'
+    return (
+      <Card title={t('access.title')}>
+        <p className="text-sm text-ink-soft">{t(`errors.${key}`)}</p>
+      </Card>
+    )
+  }
   return <WikiAgentAccessEditor connectorId={connectorId} canEdit={res.data.canEdit} rows={res.data.rows} />
 }
 

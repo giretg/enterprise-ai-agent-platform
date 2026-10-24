@@ -5,17 +5,21 @@ import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { setAgentWikiLinkAction } from '@/app/actions/knowledge-wiki'
+import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Card } from '@/components/ui/shell'
 import { errorKey } from './knowledge-bases-list'
 
 type Access = 'none' | 'read' | 'submit' | 'write'
 type Mode = 'approval' | 'direct'
+type Template = 'general' | 'health-journal'
 
 export type WikiAgentAccessRow = {
   agentId: string
   agentName: string
   access: Access
   writeMode: Mode
+  collectFocus: string | null
+  template: Template
   own: boolean
   editable: boolean
 }
@@ -43,8 +47,24 @@ export function WikiAgentAccessEditor({
           <thead>
             <tr className="text-left text-xs text-ink-faint">
               <th className="py-1 pr-3 font-medium">{t('access.agent')}</th>
-              <th className="py-1 pr-3 font-medium">{t('access.level')}</th>
-              <th className="py-1 pr-3 font-medium">{t('access.mode')}</th>
+              <th className="py-1 pr-3 font-medium">
+                <span className="inline-flex items-center">
+                  {t('access.level')}
+                  {canEdit ? <HelpHint>{t('agent.accessHelp')}</HelpHint> : null}
+                </span>
+              </th>
+              <th className="py-1 pr-3 font-medium">
+                <span className="inline-flex items-center">
+                  {t('access.mode')}
+                  {canEdit ? <HelpHint>{t('agent.modeHelp')}</HelpHint> : null}
+                </span>
+              </th>
+              <th className="py-1 pr-3 font-medium">
+                <span className="inline-flex items-center">
+                  {t('access.collect')}
+                  {canEdit ? <HelpHint>{t('agent.collectHelp')}</HelpHint> : null}
+                </span>
+              </th>
               <th className="py-1 font-medium" />
             </tr>
           </thead>
@@ -66,8 +86,13 @@ function AccessRow({ connectorId, row, canEdit }: { connectorId: string; row: Wi
   const [pending, start] = useTransition()
   const [access, setAccess] = useState<Access>(row.access)
   const [mode, setMode] = useState<Mode>(row.writeMode)
+  const [focus, setFocus] = useState(row.collectFocus ?? '')
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  const dirty = access !== row.access || (access === 'write' && mode !== row.writeMode)
+  const showsFocus = access === 'submit' || access === 'write'
+  const dirty =
+    access !== row.access ||
+    (access === 'write' && mode !== row.writeMode) ||
+    (showsFocus ? focus.trim() || null : null) !== (row.collectFocus ?? null)
 
   const name = (
     <Link href={`/control-plane/agents/${row.agentId}?section=tudasbazis`} className="text-coral-deep hover:underline">
@@ -81,6 +106,7 @@ function AccessRow({ connectorId, row, canEdit }: { connectorId: string; row: Wi
         <td className="py-1.5 pr-3">{name}</td>
         <td className="py-1.5 pr-3">{t(`levels.${row.access}`)}</td>
         <td className="py-1.5 pr-3">{row.access === 'write' ? t(`modes.${row.writeMode}`) : '—'}</td>
+        <td className="py-1.5 pr-3 text-ink-soft">{row.collectFocus ?? '—'}</td>
         <td className="py-1.5" />
       </tr>
     )
@@ -121,6 +147,21 @@ function AccessRow({ connectorId, row, canEdit }: { connectorId: string; row: Wi
           '—'
         )}
       </td>
+      <td className="py-1.5 pr-3">
+        {showsFocus ? (
+          <textarea
+            value={focus}
+            maxLength={2000}
+            rows={2}
+            onChange={(event) => setFocus(event.target.value)}
+            placeholder={t(`agent.collectPlaceholder.${row.template}`)}
+            aria-label={t('access.collect')}
+            className="w-full min-w-40 rounded-lg border border-line/70 px-2 py-1 text-sm"
+          />
+        ) : (
+          '—'
+        )}
+      </td>
       <td className="py-1.5">
         <div className="flex items-center gap-2">
           <button
@@ -135,6 +176,7 @@ function AccessRow({ connectorId, row, canEdit }: { connectorId: string; row: Wi
                   connectorId,
                   wikiAccess: access,
                   ...(access === 'write' ? { wikiWriteMode: mode } : {}),
+                  wikiCollectFocus: showsFocus ? focus.trim() || null : null,
                 })
                 if (!res.success) {
                   setMessage({ kind: 'error', text: t(`errors.${errorKey(res.error)}`) })

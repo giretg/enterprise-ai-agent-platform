@@ -443,7 +443,7 @@
         "accessHelp": "Nincs: a munkatárs nem is látja. Olvashatja: keres és idéz. Beküldhet a tálcára: anyagot küld, amit egy író munkatárs dolgoz fel. Írhatja a wikit: oldalakat ír.",
         "mode": "Írási mód",
         "modeHelp": "Jóváhagyással: minden változás a wiki gazdájához megy jóváhagyásra, addig nem látszik. Közvetlenül: azonnal megjelenik (más oldalának archiválása ilyenkor is jóváhagyást kér).",
-        "writeWarning": "A wiki minősége az AI-munkatárs modelljén múlik. Csak olyan agentnek adj írási jogot, amely jó minőségű AI-modellel dolgozik; a többinek elég a beküldés.",
+        "writeWarning": "A wiki minősége az AI-munkatárs modelljén múlik. Csak olyan munkatársnak adj írási jogot, amely jó minőségű AI-modellel dolgozik; a többinek elég a beküldés.",
         "collect": "Mit gyűjtsön ebbe a wikibe?",
         "collectHelp": "Egy-két mondat a munkatársnak: milyen tudást tegyen ide a beszélgetésekből és a feldolgozott anyagokból.",
         "collectPlaceholder": {
@@ -468,7 +468,7 @@
         "visibilityTitle": "Ki láthatja?",
         "nowPrivate": "Privát: csak te látod. Az adminisztrátor csak annyit lát, hogy létezik és mekkora. Az AI-munkatársak csak akkor érik el, amikor te használod őket.",
         "nowShared": {
-          "shared": "Megosztott: a szervezet operátorai és adminjai látják, és minden munkatárs, akinek hozzáférést adtak.",
+          "shared": "Megosztott: a szervezet operátorai és adminjai látják, valamint bárki, aki egy ide kapcsolt munkatársat használ.",
           "agent": "A munkatárs saját tudásbázisa: a szervezet operátorai és adminjai látják, és bárki, aki a munkatársat használhatja.",
           "catalog": "A szervezet közös katalógusa: a szervezet operátorai és adminjai látják, és bárki, aki egy ide kapcsolt munkatársat használ."
         },

@@ -605,7 +605,7 @@ async function main() {
     ])
     const asOperator = await service.getAgentAccess(operator, KB_SHARED)
     assert.equal(asOperator.canEdit, false)
-    assert.deepEqual(asOperator.rows.map((row) => row.agentName), ['Réka'])
+    assert.deepEqual(asOperator.rows.map((row) => [row.agentName, row.collectFocus]), [['Réka', 'Leletek']])
     assert.equal(calls.agentChoices.length, 1, 'operátornak nem listázunk választható munkatársakat')
   })
 
@@ -617,6 +617,9 @@ async function main() {
     const reka = asOwner.rows.find((row) => row.agentId === AGENT)!
     assert.equal(reka.editable, false, 'a meglévő, de a tulajdonosnak nem látható munkatárs csak olvasható')
     assert.equal(asOwner.rows.find((row) => row.agentId === OTHER_AGENT)!.writeMode, 'direct')
+    const asApproverOwner = await service.getAgentAccess({ ...owner, role: 'approver' }, KB_PRIV)
+    assert.equal(asApproverOwner.canEdit, true)
+    assert.deepEqual(calls.agentChoices, [OWNER, OWNER], 'approver tulajdonos sem kapja a tenant összes munkatársát')
     await rejectsWith('not_found', () => service.getAgentAccess(admin, KB_PRIV))
   })
 

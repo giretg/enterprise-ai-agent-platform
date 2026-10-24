@@ -14,7 +14,6 @@ import type { Connector, MemoryWriteMode, WikiAccess, WikiPage } from '@prisma/c
 import type { AgentRepository, AuditRepository, ConnectorRepository, DocumentRepository, WikiRepository } from '@/repositories/interfaces'
 import type { WikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { hasMinimumRole } from '@/auth/types'
-import { isPrivilegedAgentReader } from '@/domain/agent-definition'
 import type { UserRole } from '@prisma/client'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { buildStoredZip, type ZipWriteEntry } from '@/lib/skill/zip-writer'
@@ -565,12 +564,13 @@ export class WikiConsoleService {
   async getAgentAccess(actor: WikiConsoleActor, connectorId: string) {
     const { connector } = await this.load(actor, connectorId, 'view')
     const canEdit = canManageKnowledgeBaseLink(connector, { userId: actor.userId, role: String(actor.role) })
+    const template = configTemplate(connector.config)
     const [bindings, choices] = await Promise.all([
       this.deps.console.listBindingsForConnector(connector.id),
       canEdit
         ? this.deps.console.listAgentsForWikiAccess(
             actor.tenantId,
-            isPrivilegedAgentReader(String(actor.role)) || actor.assumed ? null : actor.userId,
+            hasMinimumRole(role(actor), 'admin') ? null : actor.userId,
           )
         : Promise.resolve([]),
     ])
@@ -581,6 +581,8 @@ export class WikiConsoleService {
       agentName: string
       access: WikiAccess
       writeMode: MemoryWriteMode
+      collectFocus: string | null
+      template: WikiTemplateChoice
       own: boolean
       editable: boolean
     }>()
@@ -590,6 +592,8 @@ export class WikiConsoleService {
         agentName: agent.name,
         access: 'none',
         writeMode: isPrivateKnowledgeBase(connector) ? 'direct' : 'approval',
+        collectFocus: null,
+        template,
         own: agent.id.toLowerCase() === ownerAgentId,
         editable: true,
       })
@@ -600,6 +604,8 @@ export class WikiConsoleService {
         agentName: binding.agentName,
         access: effectiveWikiAccess(binding),
         writeMode: effectiveWikiWriteMode(binding),
+        collectFocus: binding.wikiCollectFocus,
+        template,
         own: binding.agentId.toLowerCase() === ownerAgentId,
         editable: editable.has(binding.agentId),
       })
