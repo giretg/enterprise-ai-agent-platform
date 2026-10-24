@@ -33,6 +33,7 @@ import {
 } from '@/domain/gateway-operation'
 import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
+import { clampWriteModesToCeiling, readTenantAutonomyCeiling } from '@/lib/agent-autonomy'
 import { iconDataUrlByTemplateKey, resolveConnectorIcon } from '@/lib/connector-template-icon-map'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { readTenantLanguage } from '@/lib/tenant-language'
@@ -535,8 +536,14 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     return agent?.outputDriveFolderId ?? null
   },
   findAgentWriteModes: async ({ agentId, tenantId }) => {
-    const agent = await repositories.agents.findById(agentId, tenantId)
-    return agent ? modesFromAgentRow(agent) : null
+    const [agent, tenant] = await Promise.all([
+      repositories.agents.findById(agentId, tenantId),
+      repositories.tenants.findById(tenantId),
+    ])
+    // #957 D3: utólag szigorított céges korlát a már beállított agentekre is érvényes.
+    return agent
+      ? clampWriteModesToCeiling(modesFromAgentRow(agent), readTenantAutonomyCeiling(tenant?.settings))
+      : null
   },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>

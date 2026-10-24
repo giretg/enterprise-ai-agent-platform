@@ -907,6 +907,22 @@
       "languageTitle": "Workspace language",
       "languageBody": "Skill descriptions and other human-readable text are written in this language. JSON keys stay in English.",
       "languageSaved": "Workspace language is now: {label}.",
+      "agents": "AI teammates",
+      "autonomyTitle": "Maximum independence",
+      "autonomyBody": "Nobody can make AI teammates more independent than this — neither when hiring nor on the detail page. If you tighten it, teammates already set up also ask for approval under the stricter rule.",
+      "autonomySaved": "From now on, at most this level can be chosen: {label}.",
+      "autonomyCeiling": {
+        "trainee": "They ask for approval before every write or send.",
+        "trusted": "They write memory on their own; mail, files and company systems only with approval.",
+        "autonomous": "No company limit: the teammate's own setting decides. Mandatory gates stay in place."
+      },
+      "hireDraftTitle": "Daily limit for “Describe it” suggestions",
+      "hireDraftBody": "When hiring a new teammate, the company AI model fills in the draft from a sentence or two. This many suggestions can be requested per day for the whole company (from midnight UTC). 0 switches suggestions off; samples and the blank page stay available.",
+      "hireDraftField": "Suggestions per day",
+      "hireDraftSave": "Save",
+      "hireDraftSaved": "The daily limit is now {limit} suggestions.",
+      "hireDraftSavedOff": "Suggestions switched off.",
+      "hireDraftInvalid": "Enter a whole number between 0 and {max}.",
       "mcpIntroTitle": "MCP introduction",
       "mcpIntroBody": "This text appears in the MCP initialize instruction and in the platform.whoami response. Describe the company the AI is joining, and how it should treat published teammate agents.",
       "mcpIntroPlaceholder": "Example: Ostorosbor Zrt. is a Hungarian winery. Teammates are published AI agents — CRM, sales, knowledge base.",
@@ -1468,7 +1484,7 @@
         "hint": "AI model, desktop client, folders"
       },
       "launch": {
-        "label": "Put to work",
+        "label": "Trial run and put to work",
         "hint": "Try it and start"
       }
     },
@@ -1559,6 +1575,10 @@
       "default": "default",
       "custom": "Custom setting: writes are set one by one (see Details). Choosing a level overwrites it.",
       "alwaysGates": "Approvals required by company policy (e.g. actions marked dangerous) stay in place on every level.",
+      "locked": "Locked",
+      "lockedHint": "Your company's settings do not allow this level.",
+      "ceilingNote": "Your company's settings allow at most the “{level}” level. An administrator can change this in Settings.",
+      "ceilingClamped": "Writes set to be more independent than this still ask for approval.",
       "levels": {
         "trainee": {
           "title": "Trainee",
@@ -1677,12 +1697,25 @@
       "recommended": "recommended",
       "describe": {
         "title": "Describe it in a sentence or two",
-        "body": "Tell us what they should do and we prepare a suggestion — you can change everything.",
+        "body": "Tell us what they should do and the company AI prepares a suggestion — you can change everything.",
         "label": "What should the new teammate do?",
         "placeholder": "Answer the web shop's customer emails, and tell me when a complaint comes in.",
         "hint": "The suggestion only fills in the next steps — it switches nothing on and does not start working by itself.",
         "required": "Write at least one sentence.",
-        "cta": "Suggest"
+        "cta": "Suggest",
+        "drafting": "Preparing a suggestion…",
+        "remaining": "{count} suggestions left today.",
+        "useSample": "Start from: {name}",
+        "browseSamples": "Samples",
+        "blank": "Blank page",
+        "failure": {
+          "budget_exhausted": "Your company's suggestions for today are used up. You can ask again tomorrow — until then, start from a sample or a blank page.",
+          "disabled": "Your company has switched suggestions off. Start from a sample or a blank page.",
+          "no_model": "Your company has no AI model switched on yet, so we cannot write a suggestion now. Start from a sample or a blank page.",
+          "provider_unavailable": "The AI is not reachable right now. Try again in a minute, or start from a sample.",
+          "invalid_response": "We could not turn this into a usable suggestion. Rephrase it a little, or start from a sample.",
+          "error": "Could not request a suggestion. Try again, or start from a sample."
+        }
       },
       "sample": {
         "title": "Pick a sample",

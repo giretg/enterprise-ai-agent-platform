@@ -66,6 +66,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.profile',
   'agent.memory_write_mode',
   'agent.write_approval_modes',
+  // #957 D1: „Mondd el” — AI-vázlat a varázslóban (a tenant napi keretéből).
+  'agent.hire_draft.suggest',
   'agent.output_folder',
   'agent.local_roots',
   'agent.approver',
@@ -116,6 +118,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'platform.mcp_host.allow',
   'platform.mcp_host.revoke',
   'tenant.self_update.policy.update',
+  // #957 D3: az agentek önállóságának céges felső korlátja.
+  'tenant.autonomy_ceiling',
 
   'privacy.connector.capability.absent',
   'privacy.connector.capability.changed',

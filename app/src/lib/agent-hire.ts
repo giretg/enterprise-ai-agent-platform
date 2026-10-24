@@ -3,7 +3,8 @@
  *
  * - feladatkártyák + hangnem → munkakör-szöveg (a nyers szöveg a szakértő
  *   nézetben szerkeszthető)
- * - beépített minták és a „mondd el egy-két mondatban” javaslat
+ * - beépített minták (a platform kezdősablonjai, #252 / D6) — a „mondd el”
+ *   AI-vázlat külön: `agent-hire-draft`
  * - tesztkérdések a próbához
  * - felkészültség-mérő
  *
@@ -339,35 +340,6 @@ export function draftFromSample(sample: HireSample, locale: HireLocale): HireDra
 
 // Ékezetes szavaknál a `\b` nem működik — sima részszó-egyezés.
 const NOTIFY_RE = /szóljon|szólj|értesít|jelezzen|jelez|notify|tell me|let me know|alert/i
-
-/**
- * „Mondd el egy-két mondatban” — gépi javaslat a leírásból: mondatokra és
- * „ha …” mellékmondatokra bontja feladatkártyákká, és a legjobban illő minta
- * nevét / tiltásait / olvasó eszközeit ajánlja. A javaslat a következő
- * lépéseken teljesen átírható; jogot magától nem ad, és a leírásban szereplő
- * utasítást nem hajtja végre (csak szövegként veszi át).
- */
-export function draftFromDescription(text: string, locale: HireLocale): HireDraft {
-  const clean = text.replace(/\s+/g, ' ').trim().slice(0, 1000)
-  const sample = matchHireSample(clean)
-  const sentences = clean
-    .split(/(?<=[.!?])\s+|;\s*|,\s*(?=(?:és\s+)?(?:ha|amikor|if|when)\b)/i)
-    .map((part) => part.replace(/^(és|and)\s+/i, '').replace(/[.!?]+$/, '').trim())
-    .filter((part) => part.length > 2)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1) + '.')
-  const duties = normalizeHireCards(sentences.length > 0 ? sentences : [clean])
-  const fallbackName = locale === 'hu' ? 'Új munkatárs' : 'New teammate'
-  return {
-    name: sample?.name[locale] ?? fallbackName,
-    description: clean.length <= 200 ? clean : (sample?.description[locale] ?? clean.slice(0, 200)),
-    duties: duties.length > 0 ? duties : [...GENERIC_DUTY_EXAMPLES[locale]],
-    donts: sample ? [...sample.donts[locale]] : [],
-    tone: { ...DEFAULT_HIRE_TONE },
-    tools: sample ? toolsForSampleAccess(sample.access) : [],
-    autonomy: 'trainee',
-    sampleId: sample?.id ?? null,
-  }
-}
 
 /** Megnevez-e értesítést a feladat (a próbakérdéshez). */
 export function dutyMentionsNotify(duty: string): boolean {

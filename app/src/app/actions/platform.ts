@@ -15,6 +15,8 @@ import { isKnowledgeBaseVisibleTo, scopeSnapshotToUser } from '@/lib/wiki-access
 import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
+import { readTenantAutonomyCeiling, writeModesAboveCeiling } from '@/lib/agent-autonomy'
+import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { ensureAgentCodeSandbox, toolsNeedCodeSandbox } from '@/lib/agent-code-sandbox'
 import {
@@ -44,6 +46,9 @@ import {
   updateConnectorApproverSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
+
+const AUTONOMY_CEILING_ERROR =
+  'A cég beállítása ennél több önállóságot nem enged. Az önállóság felső korlátját egy adminisztrátor módosíthatja a Beállításokban.'
 
 export async function getMe() {
   try {
@@ -505,6 +510,15 @@ export async function updateAgentMemoryWriteMode(input: {
     const parsed = updateAgentMemoryWriteModeSchema.parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
+    const tenant = await repositories.tenants.findById(user.activeTenantId)
+    if (
+      writeModesAboveCeiling(
+        { ...modesFromAgentRow(existing), memory: parsed.memoryWriteMode },
+        readTenantAutonomyCeiling(tenant?.settings),
+      ).includes('memory')
+    ) {
+      return fail(AUTONOMY_CEILING_ERROR)
+    }
     const updated = await repositories.agents.updateMemoryWriteMode({
       agentId: parsed.agentId,
       memoryWriteMode: parsed.memoryWriteMode,
@@ -542,6 +556,20 @@ export async function updateAgentWriteApprovalModes(input: {
     const parsed = updateAgentWriteApprovalModesSchema.parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
+    // #957 D3: a céges felső korlát felülír — sem a varázsló, sem az adatlap nem engedhet többet.
+    const tenant = await repositories.tenants.findById(user.activeTenantId)
+    const aboveCeiling = writeModesAboveCeiling(
+      {
+        memory: parsed.memoryWriteMode,
+        httpApi: parsed.httpApiWriteMode,
+        gmail: parsed.gmailWriteMode,
+        drive: parsed.driveWriteMode,
+      },
+      readTenantAutonomyCeiling(tenant?.settings),
+    )
+    if (aboveCeiling.length > 0) {
+      return fail(AUTONOMY_CEILING_ERROR)
+    }
     const updated = await repositories.agents.updateWriteApprovalModes({
       agentId: parsed.agentId,
       memoryWriteMode: parsed.memoryWriteMode,

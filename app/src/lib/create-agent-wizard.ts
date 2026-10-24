@@ -18,7 +18,7 @@ export const CREATE_AGENT_WIZARD_STEPS = [
   { id: 'autonomy', label: 'Mennyire önálló?', hint: 'Mikor kérdezzen meg', phase: 'post', optional: false },
   { id: 'team', label: 'Ki dolgozik vele?', hint: 'Kik használhatják', phase: 'post', optional: false },
   { id: 'advanced', label: 'Haladó', hint: 'Kihagyható', phase: 'post', optional: true },
-  { id: 'launch', label: 'Munkába állítás', hint: 'Próba és indulás', phase: 'post', optional: false },
+  { id: 'launch', label: 'Próbaüzem és munkába állítás', hint: 'Próba és indulás', phase: 'post', optional: false },
 ] as const
 
 export type CreateAgentWizardStepId = (typeof CREATE_AGENT_WIZARD_STEPS)[number]['id']
