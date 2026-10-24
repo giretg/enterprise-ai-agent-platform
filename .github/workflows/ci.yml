@@ -210,6 +210,9 @@ jobs:
       - name: Prisma migrate status
         run: npx prisma migrate status
 
+      - name: Handoff decision concurrency
+        run: npm run test:handoff-repository
+
       # #942: privát KB végleges törlés + 30 napos sweep + tálca-SQL valódi Postgresen.
       - name: Wiki private KB purge (Postgres)
         run: npm run test:wiki-private-purge-db
