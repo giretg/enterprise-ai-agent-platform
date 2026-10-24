@@ -22,6 +22,7 @@ import {
   WIKI_INDEX_PATH,
   WIKI_LOG_PATH,
   WIKI_SCHEMA_PATH,
+  defaultWikiSchema,
   groupWikiIndex,
   readWikiSources,
   renderWikiIndex,
@@ -46,6 +47,8 @@ import type { WikiService } from './wiki-service'
 
 export const WIKI_TEMPLATE_IDS = ['general', 'health-journal'] as const
 export type WikiTemplateChoice = (typeof WIKI_TEMPLATE_IDS)[number]
+/** A WIKI.md szabályfájl felső mérete (a sablonok ~3 KB-osak). */
+export const MAX_WIKI_SCHEMA_CHARS = 20_000
 /** D17: ennyi után a váró tétel kiemelt a wiki gazdájának. */
 export const WIKI_INBOX_STALE_MS = 3 * 24 * 60 * 60 * 1000
 const MAX_KB_NAME = 120
@@ -65,7 +68,7 @@ type Access = { view: boolean; contribute: boolean; manage: boolean; metaOnly: b
 
 export type WikiConsoleDeps = {
   documents: Pick<DocumentRepository, 'readSource'>
-  connectors: Pick<ConnectorRepository, 'findById' | 'create'>
+  connectors: Pick<ConnectorRepository, 'findById' | 'create' | 'updateKnowledgeBase'>
   agents: Pick<AgentRepository, 'findById' | 'findConnectorsForAgent' | 'findConnectorBinding'>
   wikis: Pick<
     WikiRepository,
@@ -78,9 +81,11 @@ export type WikiConsoleDeps = {
     | 'skipInboxItem'
     | 'submitToInbox'
     | 'findDocumentByContentHash'
+    | 'listPendingChangeSetIds'
+    | 'updateSchema'
   >
   console: WikiConsoleRepository
-  wiki: Pick<WikiService, 'wikiIdForConnector' | 'previewChangeSet' | 'canDecide'>
+  wiki: Pick<WikiService, 'wikiIdForConnector' | 'previewChangeSet' | 'canDecide' | 'reject'>
   wikiAccess: Pick<WikiAccessService, 'createPrivateKnowledgeBase' | 'linkKnowledgeBase' | 'setWikiAccess' | 'purgePrivateKnowledgeBase'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingestIntoKnowledgeBase'>
   audit: Pick<AuditRepository, 'append'>
@@ -197,6 +202,7 @@ export class WikiConsoleService {
         metadataOnly: false as const,
         name,
         ownerLabel: kind === 'private' ? row.ownerLabel : null,
+        template: configTemplate(row.config),
         canManage: access.manage,
         inbox: { pending: counts?.pending ?? 0, inProgress: counts?.inProgress ?? 0 },
         ...stats,
@@ -279,6 +285,7 @@ export class WikiConsoleService {
       kind: wikiKbKind(connector),
       name: await this.displayName(connector),
       private: isPrivateKnowledgeBase(connector),
+      template: configTemplate(connector.config),
       canManage: access.manage,
       canContribute: access.contribute,
       pageCount: pages.length,
@@ -547,6 +554,95 @@ export class WikiConsoleService {
   }
 
   // -------------------------------------------------------------------------
+  // Beállítások: szabályfájl, sablon, láthatóság (#965)
+
+  async getSettings(actor: WikiConsoleActor, connectorId: string) {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    const kind = wikiKbKind(connector)
+    const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
+    const wiki = wikiId ? await this.deps.wikis.findByConnectorId(connector.id) : null
+    const template = configTemplate(connector.config)
+    const schemaMd = wiki?.schemaMd ?? defaultWikiSchema(connector.kbLanguage, template)
+    return {
+      kind,
+      template,
+      schemaMd,
+      /** A szabályfájl eltér-e a választott sablon alapszövegétől. */
+      schemaCustomized: schemaMd.trim() !== defaultWikiSchema(connector.kbLanguage, template).trim(),
+      visibility: kind === 'private' ? ('private' as const) : ('shared' as const),
+      canMakePrivate: kind === 'shared',
+      canMakeShared: kind === 'private' && hasMinimumRole(role(actor), 'admin'),
+    }
+  }
+
+  async updateSchema(actor: WikiConsoleActor, connectorId: string, schemaMd: string) {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    const text = schemaMd.replace(/\r\n/g, '\n').trim()
+    if (!text || text.length > MAX_WIKI_SCHEMA_CHARS) throw new WikiConsoleError('invalid_args')
+    const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
+    if (!wikiId) throw new WikiConsoleError('not_found')
+    await this.deps.wikis.updateSchema(wikiId, `${text}\n`)
+    await this.audit(connector, actor, 'kb.wiki.schema.updated', wikiId, 'wiki', {
+      wikiId,
+      contentHash: createHash('sha256').update(text).digest('hex'),
+    })
+    return { saved: true }
+  }
+
+  /** Sablon váltása: a WIKI.md a sablon alapszövegére áll (a meglévő oldalak maradnak). */
+  async applyTemplate(actor: WikiConsoleActor, connectorId: string, template: string) {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    if (!(WIKI_TEMPLATE_IDS as readonly string[]).includes(template)) throw new WikiConsoleError('invalid_args')
+    const choice = template as WikiTemplateChoice
+    const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
+    if (!wikiId) throw new WikiConsoleError('not_found')
+    await this.deps.connectors.updateKnowledgeBase(connector.id, {
+      config: { ...configObject(connector.config), wikiTemplate: choice },
+    })
+    await this.deps.wikis.updateSchema(wikiId, defaultWikiSchema(connector.kbLanguage, choice))
+    await this.audit(connector, actor, 'kb.wiki.template.applied', wikiId, 'wiki', { wikiId, kind: choice })
+    return { template: choice }
+  }
+
+  /**
+   * Láthatóság utólagos váltása (#965).
+   * - közös → privát: a kezelő (tenant admin) teheti meg, a tudásbázis az övé lesz;
+   * - privát → közös: a tulajdonos, ha admin (közöset csak admin hozhat létre).
+   * A munkatárs saját tudásbázisa és a céges katalógus nem váltható. A függő
+   * wiki-módosítások elutasítódnak, mert a jóváhagyójuk a régi kör volt.
+   */
+  async changeVisibility(actor: WikiConsoleActor, connectorId: string, to: 'private' | 'shared') {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    const kind = wikiKbKind(connector)
+    if (to === 'private' && kind !== 'shared') throw new WikiConsoleError('forbidden')
+    if (to === 'shared' && (kind !== 'private' || !hasMinimumRole(role(actor), 'admin'))) {
+      throw new WikiConsoleError('forbidden')
+    }
+    const updated = await this.deps.connectors.updateKnowledgeBase(connector.id, {
+      // A connector-név tartalommentes marad; csak az előtag követi a fajtát.
+      name: `${to === 'private' ? 'kb:private:' : 'kb:shared:'}${connector.id}`,
+      visibility: to === 'private' ? 'private_to_user' : 'shared',
+      ownerUserId: to === 'private' ? actor.userId : null,
+    })
+    const pending = await this.deps.wikis.listPendingChangeSetIds(connector.id)
+    let rejected = 0
+    for (const changeSetId of pending) {
+      const done = await this.deps.wiki.reject(changeSetId, {
+        tenantId: actor.tenantId,
+        actorUserId: actor.userId,
+        reason: 'visibility_changed',
+      })
+      if (done) rejected++
+    }
+    await this.audit(updated, actor, 'kb.visibility.changed', connector.id, 'connector', {
+      visibility: updated.visibility,
+      ownerUserId: updated.ownerUserId,
+      rejectedChangeSets: rejected,
+    })
+    return { visibility: to, rejectedChangeSets: rejected }
+  }
+
+  // -------------------------------------------------------------------------
   // Agent-beállítás → Tudásbázis (wiki-jogok)
 
   /**
@@ -588,6 +684,7 @@ export class WikiConsoleService {
                 : kind === 'agent'
                   ? agentNames.get(ownerAgent!) ?? 'Agent knowledge base'
                   : configDisplayName(row.config) ?? row.name,
+          template: configTemplate(row.config),
           access: binding ? effectiveWikiAccess(binding) : ('none' as const),
           writeMode: binding ? effectiveWikiWriteMode(binding) : kind === 'private' ? ('direct' as const) : ('approval' as const),
           collectFocus: binding?.wikiCollectFocus ?? null,
@@ -717,6 +814,14 @@ export class WikiConsoleService {
       }),
     )
   }
+}
+
+function configObject(config: unknown): Record<string, unknown> {
+  return config && typeof config === 'object' && !Array.isArray(config) ? { ...(config as Record<string, unknown>) } : {}
+}
+
+function configTemplate(config: unknown): WikiTemplateChoice {
+  return configObject(config).wikiTemplate === 'health-journal' ? 'health-journal' : 'general'
 }
 
 function configDisplayName(config: unknown): string | null {

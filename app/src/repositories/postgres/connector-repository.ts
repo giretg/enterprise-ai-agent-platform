@@ -103,6 +103,27 @@ export class PostgresConnectorRepository implements ConnectorRepository {
     })
   }
 
+  async updateKnowledgeBase(
+    connectorId: string,
+    input: {
+      name?: string
+      config?: Prisma.InputJsonValue
+      visibility?: Connector['visibility']
+      ownerUserId?: string | null
+    },
+  ): Promise<Connector> {
+    if (input.visibility === 'private_to_user' && !input.ownerUserId) throw new Error('private_kb_owner_required')
+    return prisma.connector.update({
+      where: { id: connectorId, type: 'knowledge_base' },
+      data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.config !== undefined ? { config: input.config } : {}),
+        ...(input.visibility !== undefined ? { visibility: input.visibility, ownerMissingSince: null } : {}),
+        ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+      },
+    })
+  }
+
   /** #717 A réteg: a tudástár-connector keresési nyelve (üzleti kód: `hu`/`en`). */
   async setKbLanguage(connectorId: string, kbLanguage: string): Promise<Connector> {
     return prisma.connector.update({

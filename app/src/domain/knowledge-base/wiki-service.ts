@@ -198,6 +198,22 @@ export class WikiService {
     return resolveWikiScopes(caller.snapshot, caller.userId)
   }
 
+  /**
+   * A snapshot láthatósága élesítéskor rögzül; utólagos váltás (#965) után az
+   * élő connector-sor dönt. Ahol nincs `resolve`, ezzel szűrünk.
+   */
+  private async liveVisible(caller: WikiCaller, connectorIds: string[]): Promise<string[]> {
+    const visible: string[] = []
+    for (const connectorId of connectorIds) {
+      const row = await this.deps.connectors.findById(connectorId, caller.tenantId)
+      if (
+        row && row.tenantId === caller.tenantId && row.type === 'knowledge_base' &&
+        row.lifecycleState === 'active' && isKnowledgeBaseVisibleTo(row, caller.userId)
+      ) visible.push(connectorId)
+    }
+    return visible
+  }
+
   private async resolve(caller: WikiCaller, wikiId: string | undefined, need: WikiNeed): Promise<Target | WikiFailure> {
     const target = await resolveWikiTarget(
       {
@@ -405,7 +421,7 @@ export class WikiService {
       connectorIds = [target.connector.id]
       wikiFilter = target.wikiId
     } else {
-      connectorIds = this.scopes(caller).readable.map((scope) => scope.connectorId)
+      connectorIds = await this.liveVisible(caller, this.scopes(caller).readable.map((scope) => scope.connectorId))
     }
     const now = this.now()
     const [items, summary] = await Promise.all([
@@ -461,6 +477,7 @@ export class WikiService {
   async claim(caller: WikiCaller, input: { connectorId: string; documentId: string }): Promise<WikiOutcome<{ claimExpiresAt: string; wikiId: string }>> {
     const writable = this.scopes(caller).writable.some((scope) => scope.connectorId === input.connectorId)
     if (!writable) return { ok: false, code: 'wiki_write_not_allowed' }
+    if ((await this.liveVisible(caller, [input.connectorId])).length === 0) return { ok: false, code: 'not_found' }
     const now = this.now()
     const claimed = await this.claimFor(caller, input.connectorId, input.documentId, now)
     if (!claimed.ok) return claimed

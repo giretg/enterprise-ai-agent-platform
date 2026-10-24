@@ -17,6 +17,7 @@ export type AgentWikiLinkRow = {
   kind: 'catalog' | 'agent' | 'shared' | 'private'
   own: boolean
   name: string
+  template: 'general' | 'health-journal'
   access: Access
   writeMode: Mode
   collectFocus: string | null
@@ -71,8 +72,15 @@ function WikiLinkRow({ agentId, row }: { agentId: string; row: AgentWikiLinkRow 
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-ink">{row.name}</span>
         <Badge tone={row.kind === 'private' ? 'warning' : 'neutral'}>{row.own ? t('agent.own') : t(`kind.${row.kind}`)}</Badge>
+        {row.template !== 'general' ? <Badge tone="neutral">{t(`templates.${row.template}.name`)}</Badge> : null}
         <span className="text-xs text-ink-faint">{t('agent.pages', { count: row.pageCount })}</span>
+        <Link href={`/control-plane/knowledge/${row.connectorId}`} className="ml-auto text-xs text-coral-deep hover:underline">
+          {t('agent.openWiki')}
+        </Link>
       </div>
+      <p className="mt-1 text-xs text-ink-faint" data-testid="agent-wiki-kind-hint">
+        {t(`agent.kindHint.${row.own ? 'own' : row.kind}`)}
+      </p>
       {!row.canEdit ? (
         <p className="mt-2 text-sm text-ink-soft">
           {t(`levels.${row.access}`)}
@@ -155,7 +163,7 @@ function WikiLinkRow({ agentId, row }: { agentId: string; row: AgentWikiLinkRow 
                 maxLength={2000}
                 rows={2}
                 onChange={(event) => setFocus(event.target.value)}
-                placeholder={t('agent.collectPlaceholder')}
+                placeholder={t(`agent.collectPlaceholder.${row.template}`)}
                 data-testid="agent-wiki-collect"
                 className="w-full rounded-lg border border-line/70 px-3 py-1.5 text-sm"
               />
