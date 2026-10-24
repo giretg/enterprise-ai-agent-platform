@@ -449,6 +449,11 @@ function outlineSections(text: string): KbSection[] {
   })
 }
 
+/** #943: a nyers forrás fejezet-vázlata (`kb_ingest` wiki-válaszához). */
+export function kbDocumentOutline(text: string): string[] {
+  return outlineSections(text).map((section) => section.title)
+}
+
 /** A `splitKbSegments` szerinti szelet szakasz-útvonala (keresési találathoz). */
 export function kbSectionForSegment(text: string, segment: number): string | undefined {
   return outlineSections(text).find((section) => section.segment === segment)?.title

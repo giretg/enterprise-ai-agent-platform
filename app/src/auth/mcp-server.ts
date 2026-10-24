@@ -1,3 +1,5 @@
+import { WIKI_MAINTAINER, withWikiMaintainer, wikiMaintainerPackage } from '@/domain/skill/llm-wiki-maintainer'
+import type { AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { auth } from '@clerk/nextjs/server'
 import type { SkillVersionStatus } from '@prisma/client'
 import {
@@ -51,6 +53,7 @@ import {
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import { readTenantLanguage } from '@/lib/tenant-language'
+import { scopeSnapshotToUser } from '@/lib/wiki-access'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
@@ -76,6 +79,7 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  KB_WIKI_WRITE_TOOL,
   SANDBOX_RUN_TOOL,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
@@ -98,9 +102,10 @@ import {
   httpApiRequestInputSchema,
   kbGetDocumentInputSchema,
   kbGetPageInputSchema,
-  kbIngestInputSchema,
+  kbIngestObject,
   kbListIndexInputSchema,
   kbSearchInputSchema,
+  kbWikiWriteObject,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   type EnterpriseToolMcpResult,
@@ -255,6 +260,7 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   }) => Promise<EnterpriseToolMcpResult>
   /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
+  loadAgentWikis?: (principal: McpPrincipal, definition: AgentDefinition) => Promise<AgentWikiBriefing[]>
   agentScaffold: AgentScaffoldDeps
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
 }
@@ -365,6 +371,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       )
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
+    loadAgentWikis: (principal, definition) => services.wiki.listWikis({ ...principal, agentId: definition.agentId, snapshot: definition.snapshot }),
     canViewAgent,
     loadAgentApproverName: async ({ tenantId, agentId }) => {
       const agent = await repositories.agents.findById(agentId, tenantId)
@@ -596,7 +603,8 @@ async function loadAgentSkills(
   ) {
     return 'not_found'
   }
-  const pins = loaded.snapshot.skills
+  const scoped = withWikiMaintainer(loaded, principal.userId)
+  const pins = scoped.snapshot.skills
   const entrySkillVersionId = pins.find((pin) => pin.entry)?.skillVersionId ?? null
   const packages = [
     ...(await deps.listMcpSkills({
@@ -604,6 +612,7 @@ async function loadAgentSkills(
       skillVersionIds: pins.map((pin) => pin.skillVersionId),
     })),
   ]
+  if (pins.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) packages.push(wikiMaintainerPackage())
   if (entrySkillVersionId) {
     packages.sort(
       (a, b) =>
@@ -734,20 +743,22 @@ async function getDefinitionToolResult(
   bound = false,
 ) {
   await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL, agentCtx(args))
-  const loaded = await deps.loadDefinition({
+  const loadedRaw = await deps.loadDefinition({
     tenantId: principal.tenantId,
     definitionId: asUuid(args.definitionId),
     agentId: asUuid(args.agentId),
     version: asVersion(args.version),
   })
-  if (!loaded) return definitionNotFound()
+  if (!loadedRaw) return definitionNotFound()
   const allowed = await deps.canViewAgent({
     tenantId: principal.tenantId,
     userId: principal.userId,
     role: principal.role,
-    agentId: loaded.agentId,
+    agentId: loadedRaw.agentId,
   })
   if (!allowed) return definitionNotFound()
+  // #942 D13: a más felhasználó privát tudásbázisa a hívó számára nem létezik.
+  const loaded = withWikiMaintainer(loadedRaw, principal.userId)
   const [memoryContext, skills, tenant] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
@@ -761,6 +772,8 @@ async function getDefinitionToolResult(
     tenantId: principal.tenantId,
     agentId: loaded.agentId,
   })
+  if (loaded.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, loaded) ?? []
   const roots = loaded.snapshot.localRoots
   if (memoryContext.memoryIndex) {
     memoryContext.memoryIndex = {
@@ -772,6 +785,7 @@ async function getDefinitionToolResult(
     briefing: renderAgentBriefing({
       definition: loaded,
       skills,
+      wikis,
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
@@ -781,7 +795,8 @@ async function getDefinitionToolResult(
       language: readTenantLanguage(tenant?.settings),
     }),
     ...loaded,
-    contentHash: hashSnapshot(loaded.snapshot),
+    // A publikált (szűretlen) snapshot hash-e — a vázlat/közzétett összevetés ezt várja.
+    contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
   })
@@ -953,7 +968,7 @@ async function createDraftToolResult(
       skills,
       connectors,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError && error.code === 'invalid_args') {
       return invalidArgs(error.message)
@@ -983,7 +998,7 @@ async function getWorkingSetToolResult(
       agentId,
       tenantId: principal.tenantId,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch {
     return definitionNotFound()
   }
@@ -1006,7 +1021,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult(result)
+    return textResult({ ...result, snapshot: scopeSnapshotToUser(result.snapshot, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()
@@ -1046,11 +1061,18 @@ async function checkoutToolResult(
   const skills = await deps.loadSkillVersions(
     loaded.snapshot.skills.map((skill) => skill.skillVersionId),
   )
+  const scoped = withWikiMaintainer(loaded, principal.userId)
+  if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
+  const tenant = await deps.tenants.findById(principal.tenantId)
   // A published snapshot történeti bizonyíték: a később visszavont skill csak
   // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
     renderAgentCheckout({
-      definition: loaded,
+      definition: scoped,
+      wikis,
+      language: readTenantLanguage(tenant?.settings),
+      publishedContentHash: hashSnapshot(loaded.snapshot),
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
@@ -1086,7 +1108,10 @@ async function agentPromptResult(
   ) {
     throw new Error('Agent not found')
   }
+  const scoped = withWikiMaintainer(loaded, principal.userId)
   const skills = await deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId))
+  if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
   const tenant = await deps.tenants.findById(principal.tenantId)
   return {
     description: hermesBotTitle(loaded.snapshot),
@@ -1096,8 +1121,9 @@ async function agentPromptResult(
         content: {
           type: 'text' as const,
           text: renderAgentPrompt({
-            definition: loaded,
+            definition: scoped,
             skills,
+            wikis,
             task,
             bound: boundAgentId !== null,
             language: readTenantLanguage(tenant?.settings),
@@ -1689,7 +1715,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search knowledge base',
           description:
-            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
+            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
           inputSchema: kbSearchInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
@@ -1699,7 +1725,7 @@ async function createMcpResourceHandler(
         {
           title: 'List knowledge base index',
           description:
-            'Call this first. With no pathPrefix or artifactId, returns one row per source (filename, purpose, size; wiki rows include page titles). Pass pathPrefix or artifactId to list wiki pages.',
+            'Call this first. Returns the agent wiki index by category (if any) and one row per raw source (filename, purpose, size). With several knowledge bases and no wikiId it lists the wikis. Pass pathPrefix or artifactId to list OKF pages. inbox:true lists sources waiting to be processed into the wiki, with pending/inProgress/processed/skipped counts per wiki and batch.',
           inputSchema: kbListIndexInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
@@ -1709,7 +1735,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base page',
           description:
-            'Read one wiki page by path. For the table of contents pass path "index.md" and artifactId from kb_list_index. Do not open every page.',
+            'Read one page by path. Agent wiki: pass wikiId and path "WIKI.md" (rules), "index.md", "log.md" or a page path; the answer has baseVersion for kb_wiki_write. OKF wiki: path "index.md" and artifactId from kb_list_index. Do not open every page.',
           inputSchema: kbGetPageInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
@@ -1719,9 +1745,8 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base file',
           description:
-            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text.',
+            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text. PDF pages include textQuality; for low_text/no_text use pageImages:true and pages:"1-3,7" (max 5 pages per call, default page 1) to receive PNG images. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
-          annotations: { readOnlyHint: true },
         },
         async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
       )
@@ -1730,10 +1755,20 @@ async function createMcpResourceHandler(
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the agent knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
-          inputSchema: kbIngestInputSchema,
+            'Load a file into the knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into pages mechanically; wiki stores the raw source for the agent wiki — then process it NOW in this session: read it and call kb_wiki_write. Use defer:true only when the user asks to process later. Pass wikiId when several wikis are writable. kind:"note" saves a short fact learned in conversation as a raw source (no filename needed). Identical files return duplicateOf. PDF responses include per-page textQuality and a pageImages nextStep when needed. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+          inputSchema: kbIngestObject,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_WRITE_TOOL,
+        {
+          title: 'Write agent wiki pages',
+          description:
+            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category, frontmatter (sources [{documentId}], source_date required on source pages), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a raw source of this knowledge base. Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. Errors: invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode returns awaiting_approval and an approvalUrl — show the link, do not poll.',
+          inputSchema: kbWikiWriteObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_WRITE_TOOL, args, deps),
       )
       server.registerTool(
         SANDBOX_RUN_TOOL,
@@ -1915,9 +1950,34 @@ async function enterpriseToolResult(
   confirm?: WriteConfirmInput,
 ) {
   // InputRequiredToolResult is the wire shape of the SDK's InputRequiredResult.
-  return deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as Promise<
+  const result = await deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as
     CallToolResult | InputRequiredResult
-  >
+  return toolName === KB_GET_DOCUMENT_TOOL && args.pageImages === true && 'content' in result
+    ? kbDocumentImageResult(result as CallToolResult)
+    : result
+}
+
+/** Lift only server-generated KB page images into MCP image content blocks. */
+export function kbDocumentImageResult(result: CallToolResult): CallToolResult {
+  if (result.isError) return result
+  const first = result.content[0]
+  if (first?.type !== 'text') return result
+  const payload = JSON.parse(first.text)
+  if (!Array.isArray(payload.images)) return result
+  const { images, ...metadata } = payload as {
+    images: Array<{ page: number; data: string; mimeType: 'image/png'; width: number; height: number }>
+    [key: string]: unknown
+  }
+  return {
+    ...result,
+    content: [
+      { type: 'text', text: JSON.stringify({ ...metadata, pageImages: images.map(({ page, width, height, mimeType }) => ({ page, width, height, mimeType })) }) },
+      ...images.flatMap((image): CallToolResult['content'] => [
+        { type: 'text', text: `PDF page ${image.page}` },
+        { type: 'image', data: image.data, mimeType: image.mimeType },
+      ]),
+    ],
+  }
 }
 
 async function projectWorkToolResult(

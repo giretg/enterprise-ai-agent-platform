@@ -1187,6 +1187,48 @@ async function main() {
     assert.equal(withoutMemory.memoryIndex, undefined)
   })
 
+  await check('#945 wiki briefing and auto-pinned skill follow the caller across MCP paths', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const wikiDefinition: AgentDefinition = {
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, connectors: [{
+        connectorId: CONNECTOR_ID, type: 'knowledge_base', accessMode: 'write',
+        wikiAccess: 'write', wikiWriteMode: 'direct', visibility: 'private_to_user', ownerUserId: USER_ID,
+      }] },
+    }
+    deps.loadDefinition = async () => wikiDefinition
+    deps.loadAgentWikis = async (principal, definition) => definition.snapshot.connectors.length ? [{
+      wikiId: 'private-wiki', name: 'Private reports', access: 'write', writeMode: 'direct',
+      collect: 'Labs', inbox: { pending: 2, inProgress: 1 },
+      batches: [{ batchId: 'Reports', pending: 2, inProgress: 1, processed: 7, skipped: 0 }],
+    }] : []
+    await initialize(deps)
+    const invoke = async (name: string, args: Record<string, unknown>) => {
+      const response = await post('acme', { jsonrpc: '2.0', id: 945, method: 'tools/call', params: { name, arguments: args } }, { authorization: `Bearer ${TOKEN}` }, deps)
+      const result = await readJson(response) as { result: { isError?: boolean; content: Array<{ text: string }> } }
+      assert.equal(result.result.isError, undefined)
+      return JSON.parse(result.result.content[0].text)
+    }
+    const own = await invoke(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.match(own.briefing, /Private reports.*direct.*Labs/)
+    assert.match(own.briefing, /Reports: 7\/10/)
+    assert.ok(own.snapshot.skills.some((pin: { name: string }) => pin.name === 'llm-wiki-maintainer'))
+    const read = await invoke('platform.skills.read', { definitionId: DEFINITION_ID, uri: 'skill://llm-wiki-maintainer/SKILL.md' })
+    assert.match(read.contents[0].text, /ingest_review/)
+    const ownPrompt = await getPrompt(deps)
+    assert.match(JSON.stringify(ownPrompt), /Private reports/)
+    const checkout = await invoke(MCP_AGENT_CHECKOUT_TOOL, { agentId: AGENT_ID, harness: 'codex' })
+    assert.equal(checkout.pin.contentHash, own.contentHash)
+    assert.ok(checkout.files.some((file: { path: string }) => file.path.endsWith('/llm-wiki-maintainer/SKILL.md')))
+    // Same agent, different private owner: no private name, ID, or automatic skill.
+    wikiDefinition.snapshot.connectors[0].ownerUserId = 'other-owner'
+    const other = await invoke(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.doesNotMatch(JSON.stringify(other), /Private reports|private-wiki|llm-wiki-maintainer/)
+    assert.equal(other.snapshot.connectors.length, 0)
+    const otherPrompt = await getPrompt(deps)
+    assert.doesNotMatch(JSON.stringify(otherPrompt), /Private reports|private-wiki|llm-wiki-maintainer/)
+  })
+
   await check('#729 get_definition localRoots sibling and memory note', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     deps.loadDefinition = async () => ({
@@ -1525,6 +1567,24 @@ async function main() {
       ).code,
       'definition_not_found',
     )
+  })
+
+  await check('kb_get_document pageImages returns numbered PNG image blocks over MCP HTTP', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const { mixed } = await (await import('./fixtures/kb-pdf')).kbPdfFixtures()
+    const rendered = await (await import('../src/lib/kb-pdf-images')).renderPdfPages(mixed, '1-2')
+    deps.invokeEnterpriseTool = async () => ({ content: [{ type: 'text', text: JSON.stringify({ found: true, ...rendered }) }] })
+    await initialize(deps)
+    const response = await post('acme', {
+      jsonrpc: '2.0', id: 944, method: 'tools/call',
+      params: { name: 'kb_get_document', arguments: { definitionId: DEFINITION_ID, documentId: CONNECTOR_ID, pageImages: true, pages: '1-2' } },
+    }, { authorization: `Bearer ${TOKEN}` }, deps)
+    assert.equal(response.status, 200)
+    const body = await readJson(response) as { result: { content: Array<{ type: string; data?: string; mimeType?: string; text?: string }> } }
+    const images = body.result.content.filter((item) => item.type === 'image')
+    assert.equal(images.length, 2)
+    assert.ok(images.every((item) => item.mimeType === 'image/png' && item.data?.startsWith('iVBOR')))
+    assert.deepEqual(body.result.content.filter((item) => item.text?.startsWith('PDF page')).map((item) => item.text), ['PDF page 1', 'PDF page 2'])
   })
 
   await check('google_drive_search without grant returns authorizationUrl', async () => {

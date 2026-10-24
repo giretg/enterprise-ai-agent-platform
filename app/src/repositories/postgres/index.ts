@@ -31,6 +31,7 @@ import {
   PostgresWorkProjectRepository,
 } from './project-work-repository'
 import { PostgresContactInquiryRepository } from './contact-inquiry-repository'
+import { PostgresPrivateKnowledgeBaseStore, PostgresWikiRepository } from './wiki-repository'
 
 export const repositories = {
   users: new PostgresUserRepository(),
@@ -54,6 +55,8 @@ export const repositories = {
   documents: new PostgresDocumentRepository(),
   knowledgeArtifacts: new PostgresKnowledgeArtifactRepository(),
   knowledgeChunks: new PostgresKnowledgeChunkRepository(),
+  wikis: new PostgresWikiRepository(),
+  privateKnowledgeBases: new PostgresPrivateKnowledgeBaseStore(),
   workProjects: new PostgresWorkProjectRepository(),
   workFiles: new PostgresWorkFileRepository(),
   projectMemory: new PostgresProjectMemoryRepository(),

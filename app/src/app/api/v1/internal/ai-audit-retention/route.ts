@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { aiInteractionStore } from '@/auth/ai-audit-deps'
 import { drainExpiredAiAuditEvents } from '@/domain/ai-audit/ai-audit-service'
 import { handleAiAuditRetentionRequest } from '@/domain/ai-audit/retention-request'
+import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { repositories } from '@/repositories/postgres'
 import { writeAudit } from '@/lib/audit/types'
 
@@ -9,7 +10,7 @@ export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 /**
- * #759: napi retenciós sweep élő hívója. Cloud Scheduler hívja `x-dispatcher-token`-nel
+ * #759: napi retenciós sweep élő hívója (+ #942 privát KB 30 napos törlés). Cloud Scheduler hívja `x-dispatcher-token`-nel
  * (ugyanaz a titok, mint a dispatch-ciklusé, vagy `AI_AUDIT_SWEEP_TOKEN`). Clerk-kapu
  * nélkül, mert a Schedulernek nincs munkamenete — a minta a public-routes allowlisten van.
  */
@@ -25,6 +26,15 @@ export async function POST(request: Request): Promise<Response> {
         policyDecision: 'allowed',
         metadata: { deleted: swept.deleted, complete: swept.complete },
       })
+      // #942 D16: eltávolított tulajdonos privát tudásbázisa 30 nap után végleg törlődik
+      // (KB-nként saját `kb.private.deleted` audit-sor). Ugyanez a napi retenciós hívó.
+      await new WikiAccessService({
+        connectors: repositories.connectors,
+        agents: repositories.agents,
+        wikis: repositories.wikis,
+        privateKnowledgeBases: repositories.privateKnowledgeBases,
+        audit: repositories.audit,
+      }).sweepOrphanedPrivateKnowledgeBases()
       return swept
     },
   )

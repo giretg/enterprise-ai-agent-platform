@@ -42,6 +42,8 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
+import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
+import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { AgentAccessPanel } from '@/components/agents/agent-access-panel'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
@@ -91,6 +93,7 @@ export default async function AgentDetailPage({
     projectsRes,
     drivePickerCtxRes,
     modelRes,
+    wikiLinksRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -104,6 +107,7 @@ export default async function AgentDetailPage({
     listWorkProjectsAction(),
     getMyGoogleDriveGrantForPicker(),
     getAgentModelSettings({ agentId }),
+    listAgentWikiLinksAction({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -237,12 +241,15 @@ export default async function AgentDetailPage({
       label: sectionLabel('tudasbazis'),
       description: sectionDesc('tudasbazis'),
       content: (
-        <AgentKnowledgeBasePanel
-          agentId={agent.id}
-          documents={kbDocs}
-          catalog={kbCatalog}
-          canManage={canManage}
-        />
+        <div className="space-y-4">
+          {wikiLinksRes.success ? <AgentWikiAccessPanel agentId={agent.id} rows={wikiLinksRes.data} /> : null}
+          <AgentKnowledgeBasePanel
+            agentId={agent.id}
+            documents={kbDocs}
+            catalog={kbCatalog}
+            canManage={canManage}
+          />
+        </div>
       ),
     },
     {

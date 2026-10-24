@@ -1181,6 +1181,12 @@ function SkillCatalogManagerView({
             </>
           }
         >
+          <ProducerSkillStatus
+            skill={current}
+            canWrite={canWriteCurrent}
+            running={pending}
+            onRun={run}
+          />
           {tab === 'details' && <SkillDetailPanel skill={current} />}
           {tab === 'versions' && (
             <SkillVersionsPanel
@@ -1371,9 +1377,6 @@ function SkillVersionsPanel({
                   isPlatformAdmin={isPlatformAdmin}
                 />
                 <SkillDescriptionEditor skill={skill} running={pending} onRun={onRun} />
-                {skill.catalogScope === 'tenant' && skill.kind === 'tenant' ? (
-                  <ProducerSkillToggle skill={skill} running={pending} onRun={onRun} />
-                ) : null}
               </div>
             )}
           </div>
@@ -2303,6 +2306,51 @@ function ProducerSkillToggle({
       </span>
     </label>
   )
+}
+
+/** Gyártó állapot a skill-modal tetején — ne a Meta panel mélyén legyen elrejtve. */
+function ProducerSkillStatus({
+  skill,
+  canWrite,
+  running,
+  onRun,
+}: {
+  skill: SkillCatalogEntry
+  canWrite: boolean
+  running: boolean
+  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+}) {
+  const t = useSkillT()
+  if (skill.catalogScope === 'tenant' && skill.kind === 'tenant' && (canWrite || skill.producesSkills)) {
+    return (
+      <div className="mb-4 rounded-xl border border-honey/30 bg-honey/5 px-4 py-3">
+        <p className="text-xs font-semibold text-ink">{t('producerSectionTitle')}</p>
+        <p className="mt-1 text-xs text-ink-soft">{t('producerPurpose')}</p>
+        {canWrite ? (
+          <ProducerSkillToggle skill={skill} running={running} onRun={onRun} />
+        ) : (
+          <p className="mt-2 text-xs text-ink-soft">{t('producerReadOnlyHint')}</p>
+        )}
+      </div>
+    )
+  }
+  if (skill.producesSkills && skill.kind === 'published') {
+    return (
+      <div className="mb-4 rounded-xl border border-honey/30 bg-honey/5 px-4 py-3">
+        <p className="text-sm font-semibold text-ink">{t('producerPublishedTitle')}</p>
+        <p className="mt-1 text-xs text-ink-soft">{t('producerPurpose')}</p>
+        <p className="mt-2 text-xs text-ink-soft">{t('producerPublishedHint')}</p>
+      </div>
+    )
+  }
+  if (skill.producesSkills && skill.kind === 'system') {
+    return (
+      <div className="mb-4 rounded-xl border border-ink-faint/20 bg-card/50 px-4 py-3">
+        <p className="text-xs text-ink-soft">{t('producerSystemHint')}</p>
+      </div>
+    )
+  }
+  return null
 }
 
 function SkillDescriptionEditor({

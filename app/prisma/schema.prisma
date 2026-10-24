@@ -120,6 +120,7 @@ enum DocumentStatus {
 enum KnowledgeProcessingMode {
   raw_text_only
   okf
+  wiki
 }
 
 enum KnowledgeArtifactStatus {
@@ -130,6 +131,60 @@ enum KnowledgeArtifactStatus {
 
 enum KnowledgeArtifactFormat {
   okf
+  /** #942: connectoronkénti wiki-konténer a wiki-oldalak chunkjaihoz. */
+  llm_wiki
+}
+
+/** #942 LLM Wiki (#941 §7). */
+enum WikiPageStatus {
+  published
+  pending_approval
+  archived
+}
+
+enum WikiPageType {
+  source
+  entity
+  concept
+  analysis
+  overview
+}
+
+enum WikiLogOp {
+  ingest
+  query
+  lint
+  note
+  schema
+  revert
+}
+
+/** Agent ↔ wiki kapcsolat joga (D2): nem látja / olvassa / tálcára küldhet / írhatja. */
+enum WikiAccess {
+  none
+  read
+  submit
+  write
+}
+
+enum WikiInboxStatus {
+  pending
+  in_progress
+  processed
+  skipped
+}
+
+enum WikiChangeSetStatus {
+  pending
+  applied
+  rejected
+  reverted
+}
+
+/** D13: `private_to_user` tartalmát csak `Connector.ownerUserId` éri el. */
+enum KnowledgeBaseVisibility {
+  shared
+  private_to_user
 }
 
 enum ConnectorAuthMode {
@@ -639,6 +694,13 @@ model Connector {
   approverUserId String?                 @map("approver_user_id") @db.Uuid
   /** KB-keresés nyelve (#717 A réteg): `hu`/`en`, más típusnál figyelmen kívül. */
   kbLanguage     String                  @default("hu") @map("kb_language")
+  /**
+   * #942 D13: csak `knowledge_base`-nél lehet `private_to_user`; ilyenkor az
+   * `ownerUserId` kötelező (DB check constraint, 0031), és visszaállítani `shared`-re nem lehet.
+   */
+  visibility     KnowledgeBaseVisibility @default(shared)
+  ownerUserId    String?                 @map("owner_user_id") @db.Uuid
+  ownerMissingSince DateTime?            @map("owner_missing_since") @db.Timestamptz
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
@@ -655,8 +717,12 @@ model Connector {
   documents         Document[]
   knowledgeArtifacts KnowledgeArtifact[]
   knowledgeChunks   KnowledgeChunk[]
+  wiki              AgentWiki?
+  wikiPages         WikiPage[]
+  wikiChangeSets    WikiChangeSet[]
 
   @@unique([tenantId, type, name])
+  @@index([tenantId, visibility, ownerUserId])
   @@map("connectors")
 }
 
@@ -776,6 +842,12 @@ model AgentConnector {
   agentId     String              @map("agent_id") @db.Uuid
   connectorId String              @map("connector_id") @db.Uuid
   accessMode  ConnectorAccessMode @map("access_mode")
+  /** #942 D2: wiki-jog; `write` csak `accessMode: write` mellett érvényes. Csak knowledge_base-nél számít. */
+  wikiAccess       WikiAccess      @default(read) @map("wiki_access")
+  /** #942 D1: a `wiki` write-kind módja kapcsolatonként (nem az Agent táblán). */
+  wikiWriteMode    MemoryWriteMode @default(approval) @map("wiki_write_mode")
+  /** „Mit gyűjtsön ebbe a wikibe?" */
+  wikiCollectFocus String?         @map("wiki_collect_focus")
 
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
@@ -811,15 +883,38 @@ model Document {
   uploadedById    String                    @map("uploaded_by") @db.Uuid
   /** KB-nyelv felülírás (#717): NULL = öröklés a connectorról. */
   kbLanguageOverride String?                @map("kb_language_override")
+  /**
+   * #942 D6 tálca: `null` = nem wiki-forrás. `in_progress` + lejárt `wikiClaimExpiresAt`
+   * olvasáskor `pending`-nek számít (háttérjob nincs).
+   */
+  wikiStatus                 WikiInboxStatus? @map("wiki_status")
+  wikiSubmittedByAgentId     String?          @map("wiki_submitted_by_agent_id") @db.Uuid
+  wikiClaimedByAgentId       String?          @map("wiki_claimed_by_agent_id") @db.Uuid
+  wikiClaimExpiresAt         DateTime?        @map("wiki_claim_expires_at") @db.Timestamptz
+  wikiProcessedByChangeSetId String?          @map("wiki_processed_by_change_set_id") @db.Uuid
+  wikiBatchId                String?          @map("wiki_batch_id") @db.Uuid
+  wikiBatchSeq               Int?             @map("wiki_batch_seq")
   createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz
 
   tenant     Tenant               @relation(fields: [tenantId], references: [id])
   connector  Connector?           @relation(fields: [connectorId], references: [id], onDelete: SetNull)
   uploadedBy User                 @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
   artifacts  KnowledgeArtifact[]
+  sourceFile DocumentSourceFile?
 
   @@index([tenantId, connectorId])
+  @@index([connectorId, wikiStatus])
+  @@index([connectorId, contentHash])
   @@map("documents")
+}
+
+// Original source bytes stay private and are deleted with their Document (including KB purge).
+model DocumentSourceFile {
+  documentId String @id @map("document_id") @db.Uuid
+  data       Bytes
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("document_source_files")
 }
 
 model KnowledgeArtifact {
@@ -864,6 +959,124 @@ model KnowledgeChunk {
   @@index([connectorId])
   @@index([artifactId, path])
   @@map("knowledge_chunks")
+}
+
+/** #942: egy knowledge_base connectorhoz egy élő wiki (D11). */
+model AgentWiki {
+  id          String   @id @default(uuid()) @db.Uuid
+  connectorId String   @unique @map("connector_id") @db.Uuid
+  /** WIKI.md — csak ember szerkeszti (D15). */
+  schemaMd    String   @map("schema_md") @db.Text
+  lastLint    Json?    @map("last_lint")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  connector  Connector       @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  pages      WikiPage[]
+  changeSets WikiChangeSet[]
+  logEntries WikiLogEntry[]
+
+  @@map("agent_wikis")
+}
+
+model WikiPage {
+  id               String         @id @default(uuid()) @db.Uuid
+  wikiId           String         @map("wiki_id") @db.Uuid
+  /** Scope-kulcs (D-B): minden lekérdezés connectorra szűr. */
+  connectorId      String         @map("connector_id") @db.Uuid
+  path             String
+  type             WikiPageType
+  title            String
+  summary          String
+  category         String?
+  frontmatter      Json           @default("{}")
+  body             String         @db.Text
+  /** `[{ documentId, page?, section?, cell? }]` */
+  sourceRefs       Json           @default("[]") @map("source_refs")
+  outLinks         String[]       @default([]) @map("out_links")
+  status           WikiPageStatus @default(published)
+  version          Int            @default(1)
+  contentHash      String         @map("content_hash")
+  /** D5: „más oldala" — archiválás/áthelyezés mindig jóváhagyással. */
+  createdByAgentId String?        @map("created_by_agent_id") @db.Uuid
+  createdByUserId  String?        @map("created_by_user_id") @db.Uuid
+  updatedByAgentId String?        @map("updated_by_agent_id") @db.Uuid
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz
+
+  wiki      AgentWiki          @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+  connector Connector          @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  revisions WikiPageRevision[]
+
+  @@unique([connectorId, path])
+  @@index([wikiId, status])
+  @@map("wiki_pages")
+}
+
+/** Egy `kb_wiki_write` hívás — a jóváhagyás egysége (D1/D4). */
+model WikiChangeSet {
+  id                 String              @id @default(uuid()) @db.Uuid
+  wikiId             String              @map("wiki_id") @db.Uuid
+  connectorId        String              @map("connector_id") @db.Uuid
+  agentId            String?             @map("agent_id") @db.Uuid
+  userId             String?             @map("user_id") @db.Uuid
+  status             WikiChangeSetStatus @default(pending)
+  /** Javasolt oldal-műveletek + `baseVersion`. */
+  pages              Json                @default("[]")
+  validation         Json?
+  logEntry           Json?               @map("log_entry")
+  sourceDocumentIds  String[]            @default([]) @map("source_document_ids")
+  inboxItemId        String?             @map("inbox_item_id") @db.Uuid
+  gatewayOperationId String?             @map("gateway_operation_id") @db.Uuid
+  /** D4: `{ kind: agent_owner | tenant_admin | owner_user, ... }` */
+  approverScope      Json                @default("{}") @map("approver_scope")
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  appliedAt          DateTime?           @map("applied_at") @db.Timestamptz
+
+  wiki      AgentWiki          @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+  connector Connector          @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  revisions WikiPageRevision[]
+
+  @@index([wikiId, status])
+  @@map("wiki_change_sets")
+}
+
+model WikiPageRevision {
+  id          String   @id @default(uuid()) @db.Uuid
+  pageId      String   @map("page_id") @db.Uuid
+  changeSetId String?  @map("change_set_id") @db.Uuid
+  version     Int
+  title       String
+  summary     String
+  body        String   @db.Text
+  frontmatter Json     @default("{}")
+  contentHash String   @map("content_hash")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  page      WikiPage       @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  changeSet WikiChangeSet? @relation(fields: [changeSetId], references: [id], onDelete: SetNull)
+
+  @@unique([pageId, version])
+  @@map("wiki_page_revisions")
+}
+
+/** `log.md` forrása (D8): append-only. */
+model WikiLogEntry {
+  id           String    @id @default(uuid()) @db.Uuid
+  wikiId       String    @map("wiki_id") @db.Uuid
+  op           WikiLogOp
+  title        String
+  note         String?
+  pagePaths    String[]  @default([]) @map("page_paths")
+  changeSetId  String?   @map("change_set_id") @db.Uuid
+  actorAgentId String?   @map("actor_agent_id") @db.Uuid
+  actorUserId  String?   @map("actor_user_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  wiki AgentWiki @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+
+  @@index([wikiId, createdAt])
+  @@map("wiki_log_entries")
 }
 
 model WorkProject {
