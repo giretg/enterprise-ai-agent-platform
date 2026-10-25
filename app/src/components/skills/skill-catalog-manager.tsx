@@ -29,6 +29,7 @@ import {
   rollbackSkillVersionAction,
   deactivateSkillAction,
   deleteSkillAction,
+  getSkillUsageAction,
   proposeSkillVersionAction,
   getSkillVersionAction,
   diffSkillVersionsAction,
@@ -744,6 +745,8 @@ function SkillCatalogRow({
   inactive,
   onOpen,
   onShare,
+  onDelete,
+  disabled,
 }: {
   skill: SkillCatalogEntry
   isAdmin: boolean
@@ -752,6 +755,8 @@ function SkillCatalogRow({
   inactive?: boolean
   onOpen: (skillId: string, tab: SkillRowTab) => void
   onShare: (skillId: string) => void
+  onDelete: (skill: SkillCatalogEntry) => void
+  disabled?: boolean
 }) {
   const t = useSkillT()
   const locale = useLocale()
@@ -820,6 +825,16 @@ function SkillCatalogRow({
               className="rounded-full border border-ink-faint/30 px-3 py-1.5 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
             >
               {t('share.button')}
+            </button>
+          )}
+          {canWriteSkill && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onDelete(skill)}
+              className="rounded-full border border-coral/35 px-3 py-1.5 text-xs font-semibold text-coral hover:bg-coral/10 disabled:opacity-50"
+            >
+              {t('delete')}
             </button>
           )}
         </div>
@@ -1031,6 +1046,37 @@ function SkillCatalogManagerView({
     })
   }
 
+  /** Törlés előtt megmutatja, mely agentek használják — és törléskor onnan is lekerül. */
+  async function confirmAndDeleteSkill(skill: SkillCatalogEntry) {
+    const name = skillDisplayLabel(skill)
+    const usage = await getSkillUsageAction(skill.id)
+    if (!usage.success) {
+      setError(usage.error ?? t('unknownError'))
+      return
+    }
+    const confirmed = await confirmDialog({
+      title: t('deleteSkillTitle'),
+      description:
+        usage.data.length > 0
+          ? t('deleteSkillBodyInUse', {
+              name,
+              count: usage.data.length,
+              agents: usage.data.map((a) => a.name).join(', '),
+            })
+          : t('deleteSkillBody', { name }),
+      confirmLabel: t('delete'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    run(
+      () => deleteSkillAction(skill.id),
+      t('deleted', { name }),
+      () => {
+        if (openSkillId === skill.id) setOpenSkillId(null)
+      },
+    )
+  }
+
   const shareSkill = shareSkillId
     ? (catalogSkills.find((s) => s.id === shareSkillId) ?? null)
     : null
@@ -1143,6 +1189,8 @@ function SkillCatalogManagerView({
                     isPlatformAdmin={isPlatformAdmin}
                     isSuperadmin={isSuperadmin}
                     onOpen={openSkill}
+                    onDelete={confirmAndDeleteSkill}
+                    disabled={pending}
                     onShare={openShare}
                   />
                 ))}
@@ -1169,6 +1217,8 @@ function SkillCatalogManagerView({
                       isSuperadmin={isSuperadmin}
                       inactive
                       onOpen={openSkill}
+                      onDelete={confirmAndDeleteSkill}
+                      disabled={pending}
                       onShare={openShare}
                     />
                   ))}
@@ -1228,7 +1278,7 @@ function SkillCatalogManagerView({
               isPlatformAdmin={isPlatformAdmin}
               pending={pending}
               onRun={run}
-              onDeleted={() => setOpenSkillId(null)}
+              onDelete={confirmAndDeleteSkill}
             />
           )}
           {tab === 'edit' && canWriteCurrent && (
@@ -1315,7 +1365,7 @@ function SkillVersionsPanel({
   isPlatformAdmin,
   pending,
   onRun,
-  onDeleted,
+  onDelete,
 }: {
   skill: SkillCatalogEntry
   canWrite: boolean
@@ -1326,7 +1376,7 @@ function SkillVersionsPanel({
     okMsg: string,
     onSuccess?: () => void | Promise<void>,
   ) => void
-  onDeleted: () => void
+  onDelete: (skill: SkillCatalogEntry) => void
 }) {
   const t = useSkillT()
   const locale = useLocale()
@@ -1462,22 +1512,7 @@ function SkillVersionsPanel({
               <button
                 type="button"
                 disabled={pending}
-                onClick={() => {
-                  void (async () => {
-                    const confirmed = await confirmDialog({
-                      title: t('deleteSkillTitle'),
-                      description: t('deleteSkillBody', { name: skillDisplayLabel(skill) }),
-                      confirmLabel: t('delete'),
-                      tone: 'danger',
-                    })
-                    if (!confirmed) return
-                    onRun(
-                      () => deleteSkillAction(skill.id),
-                      t('deleted', { name: skillDisplayLabel(skill) }),
-                      onDeleted,
-                    )
-                  })()
-                }}
+                onClick={() => onDelete(skill)}
                 className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
               >
                 {t('delete')}

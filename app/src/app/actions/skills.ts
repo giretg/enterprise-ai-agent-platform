@@ -1080,12 +1080,25 @@ export async function shareSkillAction(
   }
 }
 
-export async function deleteSkillAction(skillId: string): Promise<ActionResult<null>> {
+export async function getSkillUsageAction(
+  skillId: string,
+): Promise<ActionResult<Array<{ id: string; name: string }>>> {
   try {
     const ctx = await requireTenantRole('admin')
-    await services.skills.deleteSkill({ skillId, actor: actorFrom(ctx) })
+    return ok(await services.skills.getSkillUsage({ skillId, actor: actorFrom(ctx) }))
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+export async function deleteSkillAction(
+  skillId: string,
+): Promise<ActionResult<{ detachedAgentCount: number }>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const res = await services.skills.deleteSkill({ skillId, actor: actorFrom(ctx) })
     revalidatePath('/control-plane/skills')
-    return ok(null)
+    return ok(res)
   } catch (err) {
     return fail(messageFrom(err))
   }

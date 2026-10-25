@@ -940,32 +940,36 @@ export class SkillService {
     return { versionId: retired.id, version: retired.version, detachedAssignmentCount }
   }
 
+  /** Mely agentek használják a skillt — a törlés előtti figyelmeztetéshez. */
+  async getSkillUsage(input: {
+    skillId: string
+    actor: ActorContext
+  }): Promise<Array<{ id: string; name: string }>> {
+    await this.requireWritableSkill(input.skillId, input.actor)
+    return this.skills.listAgentsUsingSkill(input.skillId)
+  }
+
   /**
-   * Skill törlése a katalógusból. Csak ha nincs agent-hozzárendelés egyetlen verzióhoz sem.
+   * Skill törlése a katalógusból. A hozzárendelések az adatbázis kaszkádján át
+   * együtt törlődnek, így a használó agentekről is lekerül (nincs árva hivatkozás).
    */
-  async deleteSkill(input: { skillId: string; actor: ActorContext }): Promise<void> {
-    const skill = await this.getReadableSkill(input.actor.actorTenantId, input.skillId)
+  async deleteSkill(input: {
+    skillId: string
+    actor: ActorContext
+  }): Promise<{ detachedAgentCount: number }> {
+    await this.requireWritableSkill(input.skillId, input.actor)
+    const agents = await this.skills.listAgentsUsingSkill(input.skillId)
+    await this.skills.deleteSkill(input.skillId)
+    return { detachedAgentCount: agents.length }
+  }
+
+  private async requireWritableSkill(skillId: string, actor: ActorContext) {
+    const skill = await this.getReadableSkill(actor.actorTenantId, skillId)
     if (!skill) throw new SkillAccessError('Skill not found')
-    if (
-      !isSkillWritableFromTenant(
-        skill.tenantId,
-        input.actor.actorTenantId,
-        input.actor.isPlatformAdmin,
-      )
-    ) {
+    if (!isSkillWritableFromTenant(skill.tenantId, actor.actorTenantId, actor.isPlatformAdmin)) {
       throw new SkillAccessError()
     }
-
-    const assignmentCount = await this.skills.countAssignmentsForSkill(input.skillId)
-    if (assignmentCount > 0) {
-      throw new SkillAccessError(
-        `A skill ${assignmentCount} agenthez van rendelve — előbb vedd le a hozzárendeléseket, vagy deaktiváld.`,
-      )
-    }
-
-    await this.skills.deleteSkill(input.skillId)
-
-
+    return skill
   }
 
   // ── Hozzárendelés + readiness (WP-4) ──────────────────────────────────────
