@@ -5,16 +5,16 @@ import { CustomerPromiseService, type CustomerPromiseStore, type CustomerPromise
 class MemoryPromises implements CustomerPromiseStore {
   rows: CustomerPromiseRecord[] = []
   async insertUnderLimit(input: CustomerPromiseInsert) {
-    if (this.rows.filter(row => row.tenantId === input.tenantId && row.agentId === input.agentId && ['open', 'claimed'].includes(row.status)).length >= 50) return null
+    if (this.rows.filter(row => row.tenantId === input.tenantId && row.agentId === input.agentId && ['open', 'claimed'].includes(row.status) && row.dueAt >= new Date()).length >= 50) return null
     const row: CustomerPromiseRecord = { ...input, id: randomUUID(), status: 'open', claimedAt: null, claimClient: null, claimExternalId: null, resolvedAt: null, resolvedNote: null, createdAt: new Date(), updatedAt: new Date() }
     this.rows.push(row)
     return row
   }
   async findById(tenantId: string, id: string) { return this.rows.find(row => row.tenantId === tenantId && row.id === id) ?? null }
   async list(input: CustomerPromiseListInput, now: Date) {
-    return this.rows.filter(row => row.tenantId === input.tenantId && (!input.ownerUserId || input.ownerUserId === row.ownerUserId) && (!input.agentId || input.agentId === row.agentId) && (!input.status || (input.status === 'active' ? ['open', 'claimed'].includes(row.status) : row.status === input.status)) && (input.due !== 'overdue' || (row.status === 'open' && row.dueAt < now)) && (input.due !== 'upcoming' || row.dueAt >= now)).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50))
+    return this.rows.filter(row => row.tenantId === input.tenantId && (!input.ownerUserId || input.ownerUserId === row.ownerUserId) && (!input.agentId || input.agentId === row.agentId) && (!input.status || (input.status === 'active' ? ['open', 'claimed'].includes(row.status) : row.status === input.status)) && (input.due !== 'overdue' || (['open', 'claimed'].includes(row.status) && row.dueAt < now)) && (input.due !== 'upcoming' || row.dueAt >= now)).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50))
   }
-  async countUrgentForUser(tenantId: string, userId: string, until: Date) { return this.rows.filter(row => row.tenantId === tenantId && row.ownerUserId === userId && row.status === 'open' && row.dueAt <= until).length }
+  async countUrgentForUser(tenantId: string, userId: string, until: Date) { return this.rows.filter(row => row.tenantId === tenantId && row.ownerUserId === userId && ['open', 'claimed'].includes(row.status) && row.dueAt <= until).length }
   async resolve(input: Parameters<CustomerPromiseStore['resolve']>[0]) {
     const row = await this.findById(input.tenantId, input.id)
     if (!row || !['open', 'claimed'].includes(row.status)) return null
@@ -53,11 +53,20 @@ async function main() {
   const active = store.rows.find(row => row.tenantId === input.tenantId && row.status === 'open')!
   active.status = 'claimed'
   assert.deepEqual(await service.register(input), { ok: false, code: 'limit_exceeded' })
+  // A lejárt, de le nem zárt vállalás nem foglal helyet, és folyamatban státuszban is lejártként látszik.
+  active.dueAt = new Date(Date.now() - 1000)
+  active.ownerUserId = input.ownerUserId
+  const claimedOverdue = (await service.list({ tenantId: input.tenantId, due: 'overdue' })).find(row => row.id === active.id)
+  assert.equal(claimedOverdue?.overdue, true)
+  assert.equal(await service.countUrgentForUser(input.tenantId, input.ownerUserId), 1)
+  const afterOverdue = await service.register(input)
+  assert(afterOverdue.ok)
+  assert.deepEqual(await service.register(input), { ok: false, code: 'limit_exceeded' })
   assert((await service.register({ ...input, tenantId: randomUUID() })).ok)
   assert.equal((await service.list({ tenantId: input.tenantId, limit: 200 })).length, 51)
   const firstPage = await service.list({ tenantId: input.tenantId, limit: 50 })
   const secondPage = await service.list({ tenantId: input.tenantId, limit: 50, offset: 50 })
-  assert.equal(secondPage.length, 2)
+  assert.equal(secondPage.length, 3)
   assert(!firstPage.some(row => secondPage.some(other => other.id === row.id)))
   assert.equal((await service.list({ tenantId: input.tenantId, offset: -1.5 }))[0].id, firstPage[0].id)
   const serialized = JSON.stringify(audits)

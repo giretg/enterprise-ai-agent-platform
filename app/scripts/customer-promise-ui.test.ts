@@ -20,7 +20,7 @@ const deps: Record<string, unknown> = {
   '@/auth/tenant-context': { requireTenantRole: async () => ({ activeTenantId: 'tenant-a', activeTenantRole: role, user: { id: userId } }), TenantAuthError: class extends Error {} },
   '@/lib/iam-policy': { hasMinimumRole },
   '@/lib/result': { ok: (data: unknown) => ({ success: true, data }), fail: (error: string) => ({ success: false, error }) },
-  '@/repositories/postgres': { repositories: { users: { findManyByIds: async () => [] }, agents: { findById: async () => ({ name: 'Teammate' }) } } },
+  '@/repositories/postgres': { repositories: { users: { findManyByIds: async () => [] }, agents: { findMany: async ({ ids }: { ids: string[] }) => ids.map((id) => ({ id, name: 'Teammate' })) } } },
   '@/domain/gateway-services': { services: { customerPromises: {
     list: async (input: Record<string, unknown>) => { listInput = input; return Array.from({ length: rowCount }, (_, index) => ({ id: String(index), agentId: 'agent', ownerUserId: userId, status: 'open', dueAt: new Date('2026-12-01T10:00:00Z') })) },
     // A denied domain response must remain denied at the action boundary.

@@ -50,6 +50,7 @@ import {
   renderAgentCheckout,
   renderAgentPrompt,
   type CheckoutSkill,
+  type CustomerPromiseHeadline,
 } from '@/lib/agent-checkout'
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
@@ -282,6 +283,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   loadAgentWikis?: (principal: McpPrincipal, definition: AgentDefinition) => Promise<AgentWikiBriefing[]>
   agentScaffold: AgentScaffoldDeps
   invokeCustomerPromise?: (input: { principal: McpPrincipal; toolName: string; args: Record<string, unknown> }) => Promise<EnterpriseToolMcpResult>
+  /** The caller's active promises for the briefing; get_definition already checked view access. */
+  listCustomerPromises?: (input: { tenantId: string; ownerUserId: string; agentId: string }) => Promise<CustomerPromiseHeadline[]>
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
 }
 
@@ -441,6 +444,15 @@ export function productionMcpDeps(): McpRuntimeDeps {
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
     invokeCustomerPromise: (input) => services.customerPromiseTools.invoke(input),
+    listCustomerPromises: async (input) =>
+      (await services.customerPromises.list({ ...input, status: 'active', limit: 50 })).map((row) => ({
+        id: row.id,
+        title: row.title,
+        dueAt: row.dueAt.toISOString(),
+        customerName: row.customerName,
+        customerEmail: row.customerEmail,
+        overdue: row.overdue,
+      })),
     invokeMiniApp: (input) => services.miniApps.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
@@ -786,7 +798,7 @@ async function getDefinitionToolResult(
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
     deps.tenants.findById(principal.tenantId),
-    readCustomerPromises(principal, loaded.definitionId, deps),
+    readCustomerPromises(principal, loaded.agentId, deps),
   ])
   const approverName = await deps.loadAgentApproverName?.({
     tenantId: principal.tenantId,
@@ -830,16 +842,10 @@ async function getDefinitionToolResult(
   })
 }
 
-async function readCustomerPromises(principal: McpPrincipal, definitionId: string, deps: McpRuntimeDeps): Promise<import('@/lib/agent-checkout').CustomerPromiseHeadline[]> {
-  if (!deps.invokeCustomerPromise) return []
-  const response = await deps.invokeCustomerPromise({ principal, toolName: 'platform.promise.list', args: { definitionId } })
-  if (response.isError) return []
-  const text = response.content.find((item) => item.type === 'text')
-  if (!text || text.type !== 'text') return []
-  const payload = JSON.parse(text.text)
-  return (payload.promises ?? []).map((row: {id: string; title: string; dueAt: string; customerName: string | null; customerEmail: string | null; overdue: boolean}) => ({
-    id: row.id, title: row.title, dueAt: row.dueAt, customerName: row.customerName, customerEmail: row.customerEmail, overdue: row.overdue,
-  }))
+// Optional add-on: a failing promise lookup must not break get_definition.
+async function readCustomerPromises(principal: McpPrincipal, agentId: string, deps: McpRuntimeDeps): Promise<CustomerPromiseHeadline[]> {
+  if (!deps.listCustomerPromises) return []
+  return deps.listCustomerPromises({ tenantId: principal.tenantId, ownerUserId: principal.userId, agentId }).catch(() => [])
 }
 
 function withoutMiniAppGuide(snapshot: AgentDefinitionSnapshot): AgentDefinitionSnapshot {
@@ -2092,8 +2098,7 @@ async function customerPromiseToolResult(
   args: Record<string, unknown>,
   deps: McpRuntimeDeps,
 ) {
-  await auditMcpToolCall(deps, principal, toolName)
-  if (!deps.invokeCustomerPromise) return textResult({ code: 'not_allowed' }, true)
+  if (!deps.invokeCustomerPromise) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
   return deps.invokeCustomerPromise({ principal, toolName, args })
 }
 

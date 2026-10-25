@@ -638,6 +638,7 @@ export const services = {
     invoke: (input: Parameters<typeof invokeCustomerPromise>[1]) => invokeCustomerPromise({
       ...sharedToolLookups,
       customerPromises: customerPromiseService,
+      audit: repositories.audit,
     }, input),
   },
   wikiAccess: wikiAccessService,

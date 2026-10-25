@@ -2,12 +2,13 @@ import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { listCustomerPromisesAction } from '@/app/actions/customer-promise'
+import { parsePromisePage } from '@/lib/customer-promise-page'
 import { PromisesPanel } from './promises-panel'
 
 export default async function PromisesPage({ searchParams }: { searchParams: Promise<{ history?: string; promisePage?: string }> }) {
   const query = await searchParams
   const history = query.history === '1'
-  const page = Number(query.promisePage ?? 0)
+  const page = parsePromisePage(query.promisePage)
   await requireTenantRole('viewer')
   const [result, t] = await Promise.all([listCustomerPromisesAction(undefined, history, page), getTranslations('ControlPlane.promises')])
   return (

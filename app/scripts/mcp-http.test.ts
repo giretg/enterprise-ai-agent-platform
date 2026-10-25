@@ -578,12 +578,20 @@ async function main() {
       },
     }
     let accessLevel: string | null = 'operate'
+    let currentDefinitionId = DEFINITION_ID
+    let briefingLookupFails = false
+    const promiseService = new CustomerPromiseService(store, {async append(data) { audit.push(data) }})
     deps.invokeCustomerPromise = input => invokeCustomerPromise({
       loadDefinition: lookup => deps.loadDefinition(lookup),
-      findCurrentDefinitionId: async () => DEFINITION_ID,
+      findCurrentDefinitionId: async () => currentDefinitionId,
       findAgentGrant: async () => accessLevel ? {accessLevel} : null,
-      customerPromises: new CustomerPromiseService(store, {async append(data) { audit.push(data) }}),
+      customerPromises: promiseService,
+      audit: {async append(data) { audit.push(data) }},
     }, input)
+    deps.listCustomerPromises = async input => {
+      if (briefingLookupFails) throw new Error('relation "customer_promises" does not exist')
+      return (await promiseService.list({...input, status: 'active'})).map(row => ({id: row.id, title: row.title, dueAt: row.dueAt.toISOString(), customerName: row.customerName, customerEmail: row.customerEmail, overdue: row.overdue}))
+    }
     async function call(tool: string, fields: Record<string, unknown>) {
       const response = await post('acme', {jsonrpc: '2.0', id: 672, method: 'tools/call', params: {name: tool, arguments: {definitionId: DEFINITION_ID, ...fields}}}, {authorization: `Bearer ${TOKEN}`}, deps)
       assert.equal(response.status, 200)
@@ -600,19 +608,30 @@ async function main() {
     assert.equal(briefing.customerPromises.entries[0].id, promiseId)
     assert.match(briefing.briefing, /Open customer promises/)
     assert.match(briefing.briefing, /Callback/)
+    briefingLookupFails = true
+    const withoutPromises = await call(MCP_AGENT_GET_DEFINITION_TOOL, {})
+    assert.equal(withoutPromises.isError, undefined)
+    assert.deepEqual(withoutPromises.customerPromises.entries, [])
+    briefingLookupFails = false
+    currentDefinitionId = '77777777-7777-4777-8777-777777777777'
+    const stale = await call('platform.promise.register', fields)
+    assert.equal(stale.code, 'agent_stale')
+    assert.equal(stale.currentDefinitionId, currentDefinitionId)
+    currentDefinitionId = DEFINITION_ID
+    assert.equal((await call('platform.promise.list', {agentId: AGENT_ID})).promises.length, 1)
     accessLevel = 'view'
     assert.equal((await call('platform.promise.list', {})).promises.length, 1)
     for (const tool of CUSTOMER_PROMISE_TOOLS.filter(name => name !== 'platform.promise.list')) {
       const denied = await call(tool, tool.endsWith('register') ? fields : {promiseId})
       assert.equal(denied.isError, true)
-      assert.equal(denied.code, 'not_allowed')
+      assert.equal(denied.code, 'agent_access_denied')
     }
+    assert.ok(audit.some(row => row.action === 'enterprise.tool.denied' && row.inputRef === 'platform.promise.register' && row.targetId === AGENT_ID))
     accessLevel = null
-    assert.equal((await call('platform.promise.list', {})).code, 'not_allowed')
-    assert.deepEqual((await call(MCP_AGENT_GET_DEFINITION_TOOL, {})).customerPromises.entries, [])
+    assert.equal((await call('platform.promise.list', {})).code, 'agent_access_denied')
     accessLevel = 'operate'
     for (const tool of CUSTOMER_PROMISE_TOOLS) {
-      const invalid = await call(tool, {...(tool.endsWith('register') ? fields : tool.endsWith('list') ? {} : {promiseId}), tenantId: TENANT_ID})
+      const invalid = await call(tool, tool.endsWith('register') ? {...fields, dueAt: 'tomorrow'} : tool.endsWith('list') ? {status: 'unknown'} : {promiseId: 'not-a-uuid'})
       assert.equal(invalid.isError, true)
       assert.equal(invalid.code, 'invalid_args')
     }

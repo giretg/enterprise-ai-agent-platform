@@ -1,7 +1,7 @@
 import { resolveWikiScopes } from '@/lib/wiki-access'
 import { z } from 'zod'
 import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/agent-knowledge-placement'
-import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
+import { canOperateAgent, canReadPublishedAgent, type AgentDefinition } from '@/domain/agent-definition'
 import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
 import {
   asUuid,
@@ -328,7 +328,7 @@ function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseT
   return textResult(enterpriseToolErrorPayload(code, extra), true)
 }
 
-async function auditDenied(
+export async function auditDenied(
   deps: Pick<ProjectWorkMcpDeps, 'audit'>,
   principal: ToolCallPrincipal,
   toolName: string,
@@ -395,6 +395,7 @@ export async function authorizeProjectWorkCall(
   toolName: string,
   args: Record<string, unknown>,
   schema: z.ZodTypeAny = schemaForProjectWorkTool(toolName),
+  access: 'operate' | 'view' = 'operate',
 ): Promise<
   | { ok: true; definition: AgentDefinition; parsed: Record<string, unknown> }
   | { ok: false; result: EnterpriseToolMcpResult }
@@ -430,7 +431,10 @@ export async function authorizeProjectWorkCall(
     userId: principal.userId,
     agentId: definition.agentId,
   })
-  if (!canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })) {
+  const allowed = access === 'view'
+    ? canReadPublishedAgent({ role: principal.role, grant })
+    : canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })
+  if (!allowed) {
     await auditDenied(deps, principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
     return { ok: false, result: errorResult('agent_access_denied') }
   }

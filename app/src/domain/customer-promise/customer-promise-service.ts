@@ -54,7 +54,7 @@ export class CustomerPromiseService {
     const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(Math.floor(input.limit!), 51)) : 50
     const offset = Number.isFinite(input.offset) ? Math.max(0, Math.floor(input.offset!)) : 0
     const rows = await this.store.list({ ...input, limit, offset }, now)
-    return rows.map((row) => ({ ...row, overdue: row.status === 'open' && row.dueAt < now }))
+    return rows.map((row) => ({ ...row, overdue: (row.status === 'open' || row.status === 'claimed') && row.dueAt < now }))
   }
 
   countUrgentForUser(tenantId: string, userId: string) {

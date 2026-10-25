@@ -46,12 +46,11 @@ export async function listCustomerPromisesAction(agentId?: string, history = fal
       offset: page * 50,
     })
     const rows = fetched.slice(0, 50)
-    const agentIds = [...new Set(rows.map((row) => row.agentId))]
     const [agents, owners] = await Promise.all([
-      Promise.all(agentIds.map((id) => repositories.agents.findById(id, ctx.activeTenantId))),
+      repositories.agents.findMany({ tenantId: ctx.activeTenantId, ids: [...new Set(rows.map((row) => row.agentId))] }),
       repositories.users.findManyByIds([...new Set(rows.map((row) => row.ownerUserId))]),
     ])
-    const agentNames = new Map(agentIds.map((id, index) => [id, agents[index]?.name ?? id]))
+    const agentNames = new Map(agents.map((agent) => [agent.id, agent.name]))
     const ownerNames = new Map(owners.map((owner) => [owner.id, owner.name]))
     return ok({ hasMore: fetched.length > 50, promises: rows.map((row) => ({
       id: row.id,
