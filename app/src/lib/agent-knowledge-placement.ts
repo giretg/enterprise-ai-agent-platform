@@ -52,7 +52,8 @@ export function parsePlacementOverrides(value: unknown): PlacementOverrides {
   for (const key of PLACEMENT_ROW_KEYS) {
     const raw = (value as Record<string, unknown>)[key]
     if (typeof raw !== 'string') continue
-    const text = raw.replace(/\s+/g, ' ').trim().slice(0, PLACEMENT_OVERRIDE_MAX)
+    // A `|` szétszedné a markdown-táblát a briefingben.
+    const text = raw.replace(/\s+/g, ' ').replace(/\|/g, '/').trim().slice(0, PLACEMENT_OVERRIDE_MAX)
     if (text) out[key] = text
   }
   return out

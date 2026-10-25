@@ -70,6 +70,10 @@ check('agent override replaces only its own row and is marked as agent rule', ()
   assert.equal(renderKnowledgePlacementBlock({ overrides: {} }), renderKnowledgePlacementBlock())
 })
 
+check('parsePlacementOverrides keeps the markdown table intact (no pipe)', () => {
+  assert.deepEqual(parsePlacementOverrides({ fact: 'memória | tudásbázis' }), { fact: 'memória / tudásbázis' })
+})
+
 check('parsePlacementOverrides drops unknown keys, blanks and non-strings, clips length', () => {
   assert.deepEqual(parsePlacementOverrides(null), {})
   assert.deepEqual(parsePlacementOverrides(['fact']), {})
