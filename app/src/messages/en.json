@@ -1754,8 +1754,7 @@
       "launching": "Putting to work…",
       "liveTitle": "{name} is now at work!",
       "liveBody": "Write to them in your own AI client (e.g. Claude, ChatGPT, Codex), or give them a task.",
-      "chatNow": "Write to them now",
-      "giveTicket": "Give them a ticket"
+      "chatNow": "Write to them now"
     },
     "openAgent": "Teammate profile →",
     "card": {

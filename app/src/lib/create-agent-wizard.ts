@@ -32,10 +32,9 @@ export const CREATE_AGENT_WIZARD_EXTERNAL_HREFS = {
   connectors: '/control-plane/account',
 } as const
 
-/** Munkába állítás után: hol írhat neki / adhat neki feladatot a felhasználó. */
+/** Munkába állítás után: hol írhat neki a felhasználó. */
 export const CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS = {
   chat: '/control-plane/get-started',
-  ticket: '/control-plane/operations',
 } as const
 
 export type CreateAgentWizardGate = {
