@@ -249,7 +249,8 @@ export interface SkillRepository {
   ): Promise<SkillVersionActivationResult>
   retireActiveVersion(skillId: string): Promise<SkillVersion | null>
   getActiveVersion(skillId: string): Promise<SkillVersion | null>
-  countAssignmentsForSkill(skillId: string): Promise<number>
+  /** Azok az agentek (egyedileg), amelyekhez a skill bármely verziója hozzá van rendelve. */
+  listAgentsUsingSkill(skillId: string): Promise<Array<{ id: string; name: string }>>
   detachAllAssignmentsForSkill(skillId: string): Promise<number>
   deleteSkill(skillId: string): Promise<void>
   assign(input: {

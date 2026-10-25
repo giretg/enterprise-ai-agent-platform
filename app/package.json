@@ -338,6 +338,7 @@
     "test:mcp-parity": "tsx scripts/mcp-parity.test.ts",
     "test:mcp-parity-eval": "tsx scripts/mcp-parity-eval.test.ts",
     "test:skill-share": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/skill-share.test.ts",
+    "test:skill-delete": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/skill-delete.test.ts",
     "test:skill-catalog": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/skill-catalog.test.ts",
     "test:conversation-skill": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/conversation-skill.test.ts",
     "smoke:kb-nav": "tsx scripts/kb-nav-live-smoke.ts",
