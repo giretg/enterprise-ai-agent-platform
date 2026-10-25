@@ -18,7 +18,12 @@ import {
   type LiveConnectorRow,
   type ToolCallPrincipal,
 } from './authorize-tool-call'
-import { checkDefinitionPin, type DefinitionPinDeps } from './definition-pin'
+import {
+  checkDefinitionPin,
+  invalidArgsDetails,
+  withDefinitionUpdatedNotice,
+  type DefinitionPinDeps,
+} from './definition-pin'
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
@@ -47,6 +52,7 @@ import {
   isEnterpriseHttpTool,
   isEnterpriseKbTool,
   isEnterpriseMcpTool,
+  isEnterpriseReadOnlyTool,
   isEnterpriseSandboxTool,
   isEnterpriseTool,
   isEnterpriseWriteTool,
@@ -504,6 +510,8 @@ export async function invokeEnterpriseTool(
     args: Record<string, unknown>
     origin?: string
     confirm?: WriteConfirmInput
+    /** Belső: egyszer már átváltottunk a régi definícióról az aktuálisra (nincs második ugrás). */
+    followedStaleDefinition?: boolean
   },
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, origin, confirm } = input
@@ -532,6 +540,18 @@ export async function invokeEnterpriseTool(
     definition,
   })
   if (!pin.current) {
+    if (pin.currentDefinitionId && isEnterpriseReadOnlyTool(toolName) && !input.followedStaleDefinition) {
+      const result = await invokeEnterpriseTool(deps, {
+        ...input,
+        args: { ...args, definitionId: pin.currentDefinitionId },
+        followedStaleDefinition: true,
+      })
+      if (!('content' in result)) return result
+      return withDefinitionUpdatedNotice(result, {
+        previousDefinitionId: definitionId,
+        currentDefinitionId: pin.currentDefinitionId,
+      })
+    }
     await auditDenied(deps, principal, toolName, 'agent_stale', definitionId, definition.agentId)
     return errorResult('agent_stale', {
       agentId: definition.agentId,
@@ -605,8 +625,9 @@ export async function invokeEnterpriseTool(
   }
   const parsed = schema.safeParse(args)
   if (!parsed.success) {
-    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
-    return errorResult('invalid_args')
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, details)
+    return errorResult('invalid_args', details)
   }
 
   const authorized = await authorizeToolCall(deps, {
@@ -950,7 +971,8 @@ async function invokeMcpTool(
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, definitionId, definition } = input
   const deny = async (code: string, extra?: Record<string, unknown>) => {
-    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
+    const auditDetails = code === 'invalid_args' ? extra : undefined
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId, auditDetails)
     return errorResult(code, extra)
   }
   const linkFields = (reason: string, connectorId?: string) =>
@@ -966,7 +988,7 @@ async function invokeMcpTool(
 
   if (toolName === MCP_LIST_TOOLS_TOOL) {
     const parsed = mcpListToolsInputSchema.safeParse(args)
-    if (!parsed.success) return deny('invalid_args')
+    if (!parsed.success) return deny('invalid_args', invalidArgsDetails(parsed.error))
     const wantedName = parsed.data.connectorName?.trim().toLowerCase()
     const candidates = definition.snapshot.connectors.filter(
       (row) =>
@@ -1020,7 +1042,7 @@ async function invokeMcpTool(
   }
 
   const parsed = mcpCallInputSchema.safeParse(args)
-  if (!parsed.success) return deny('invalid_args')
+  if (!parsed.success) return deny('invalid_args', invalidArgsDetails(parsed.error))
   const callArgs = parsed.data as Record<string, unknown>
   const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: callArgs })
   if (!authorized.allowed) {
@@ -1153,12 +1175,14 @@ async function invokeKbTool(
   }
   const parsed = schemaForEnterpriseKbTool(toolName).safeParse(args)
   if (!parsed.success) {
-    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
-    return errorResult('invalid_args')
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, details)
+    return errorResult('invalid_args', details)
   }
   const parsedArgs = { ...(parsed.data as Record<string, unknown>) }
   const deny = async (code: string, details?: Record<string, unknown>) => {
-    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId)
+    const auditDetails = code === 'invalid_args' ? details : undefined
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId, auditDetails)
     return errorResult(code, details)
   }
 
@@ -1399,8 +1423,9 @@ async function invokeSandboxTool(
   const { principal, toolName, args, definitionId, definition } = input
   const parsed = schemaForEnterpriseSandboxTool('sandbox_run').safeParse(args)
   if (!parsed.success) {
-    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
-    return errorResult('invalid_args')
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, details)
+    return errorResult('invalid_args', details)
   }
   const parsedArgs = parsed.data
   const authorized = await authorizeToolCall(deps, {

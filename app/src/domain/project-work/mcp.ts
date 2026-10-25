@@ -2,7 +2,12 @@ import { resolveWikiScopes } from '@/lib/wiki-access'
 import { z } from 'zod'
 import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/agent-knowledge-placement'
 import { canOperateAgent, canReadPublishedAgent, type AgentDefinition } from '@/domain/agent-definition'
-import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
+import {
+  checkDefinitionPin,
+  invalidArgsDetails,
+  withDefinitionUpdatedNotice,
+  type DefinitionPinDeps,
+} from '@/domain/enterprise-tools/definition-pin'
 import {
   asUuid,
   enterpriseToolErrorPayload,
@@ -335,6 +340,7 @@ export async function auditDenied(
   reason: string,
   definitionId?: string,
   agentId?: string,
+  details?: Record<string, unknown>,
 ) {
   const payload = {
     toolName,
@@ -343,6 +349,7 @@ export async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...details,
   }
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -389,6 +396,13 @@ async function auditOk(
   })
 }
 
+const PROJECT_WORK_READ_TOOLS = new Set<string>([
+  MCP_PROJECTS_LIST_TOOL,
+  MCP_WORK_FILE_LIST_TOOL,
+  MCP_WORK_FILE_READ_TOOL,
+  MCP_PROJECT_MEMORY_READ_TOOL,
+])
+
 export async function authorizeProjectWorkCall(
   deps: Pick<ProjectWorkMcpDeps, 'loadDefinition' | 'findCurrentDefinitionId' | 'findAgentGrant' | 'audit'>,
   principal: ToolCallPrincipal,
@@ -398,7 +412,7 @@ export async function authorizeProjectWorkCall(
   access: 'operate' | 'view' = 'operate',
 ): Promise<
   | { ok: true; definition: AgentDefinition; parsed: Record<string, unknown> }
-  | { ok: false; result: EnterpriseToolMcpResult }
+  | { ok: false; result: EnterpriseToolMcpResult; currentDefinitionId?: string }
 > {
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) {
@@ -424,6 +438,7 @@ export async function authorizeProjectWorkCall(
         definitionId,
         currentDefinitionId: pin.currentDefinitionId,
       }),
+      ...(pin.currentDefinitionId ? { currentDefinitionId: pin.currentDefinitionId } : {}),
     }
   }
   const grant = await deps.findAgentGrant({
@@ -440,8 +455,9 @@ export async function authorizeProjectWorkCall(
   }
   const parsed = schema.safeParse(args)
   if (!parsed.success) {
-    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
-    return { ok: false, result: errorResult('invalid_args') }
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, details)
+    return { ok: false, result: errorResult('invalid_args', details) }
   }
   return { ok: true, definition, parsed: parsed.data as Record<string, unknown> }
 }
@@ -453,12 +469,28 @@ export async function invokeProjectWork(
     toolName: string
     args: Record<string, unknown>
     origin?: string
+    /** Belső: egyszer már átváltottunk a régi definícióról az aktuálisra. */
+    followedStaleDefinition?: boolean
   },
 ): Promise<EnterpriseToolMcpResult> {
   const { principal, toolName, args, origin } = input
   if (!isProjectWorkTool(toolName)) return errorResult('tool_not_configured')
   const authorized = await authorizeProjectWorkCall(deps, principal, toolName, args)
-  if (!authorized.ok) return authorized.result
+  if (!authorized.ok) {
+    // Újrapublikálás munka közben: olvasás az aktuális verzión fut, a válasz jelzi a váltást.
+    if (authorized.currentDefinitionId && PROJECT_WORK_READ_TOOLS.has(toolName) && !input.followedStaleDefinition) {
+      const result = await invokeProjectWork(deps, {
+        ...input,
+        args: { ...args, definitionId: authorized.currentDefinitionId },
+        followedStaleDefinition: true,
+      })
+      return withDefinitionUpdatedNotice(result, {
+        previousDefinitionId: String(args.definitionId),
+        currentDefinitionId: authorized.currentDefinitionId,
+      })
+    }
+    return authorized.result
+  }
   const { definition, parsed } = authorized
   const svc = deps.projectWork
   const tenantId = principal.tenantId
