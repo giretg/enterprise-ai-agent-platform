@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { Connector, KnowledgeProcessingMode } from '@prisma/client'
+import type { Connector, KnowledgeProcessingMode, Prisma } from '@prisma/client'
 import type {
   AgentRepository,
   AuditRepository,
@@ -18,6 +18,8 @@ import { isKbLanguage, resolveKbLanguage, type KbLanguage } from '@/lib/kb-langu
 import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   extractStructured,
+  pdfPageQuality,
+  pdfQualityHint,
   toExtractionMetadata,
   EXTRACTION_METADATA_KEY,
   type StructuredExtraction,
@@ -36,6 +38,9 @@ import {
 } from '@/lib/kb-retrieval'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
+import { renderPdfPages, PdfPageImageError } from '@/lib/kb-pdf-images'
+import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
+import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
 export const KB_MAX_FILE_BYTES = 10 * 1024 * 1024
 
@@ -45,6 +50,7 @@ export type KnowledgeBaseDeps = {
   chunks: KnowledgeChunkRepository
   agents: Pick<AgentRepository, 'findById' | 'upsertConnectorBinding'>
   connectors: Pick<ConnectorRepository, 'findByTenantTypeAndName' | 'create'> & {
+    findById?: ConnectorRepository['findById']
     /** #717: tudástár-connector keresési nyelve (concrete repo; fakes nélkül is megy). */
     setKbLanguage?: (connectorId: string, kbLanguage: KbLanguage) => Promise<Connector>
   }
@@ -75,6 +81,11 @@ export class KnowledgeBaseService {
     buffer: Buffer
     processingMode: KnowledgeProcessingMode
     purpose?: string | null
+    /** #942: `agent` = az agent hívta (MCP `kb_ingest`); a Control Plane-feltöltés `human`. */
+    actor?: 'agent' | 'human'
+    connectorId?: string
+    /** #943: pl. `kind: note` bélyeg; a kinyerési metaadat mellé kerül. */
+    extraMetadata?: Record<string, Prisma.InputJsonValue>
   }) {
     if (input.buffer.byteLength === 0) throw new Error('File is empty')
     if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
@@ -83,9 +94,17 @@ export class KnowledgeBaseService {
 
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
-    const connector = await ensureAgentKnowledgeBase(agent, this.deps, {
-      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
-    })
+    const connector = input.connectorId
+      ? await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
+      : await ensureAgentKnowledgeBase(agent, this.deps, {
+          defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+        })
+    if (
+      !connector || connector.tenantId !== input.tenantId || connector.type !== 'knowledge_base' ||
+      connector.lifecycleState !== 'active' || !isKnowledgeBaseVisibleTo(connector, input.uploadedById)
+    ) {
+      throw new Error('not_found')
+    }
 
     const extraction = await extractStructured({
       buffer: input.buffer,
@@ -103,7 +122,23 @@ export class KnowledgeBaseService {
       extraction,
       processingMode: input.processingMode,
       purpose: input.purpose,
+      actor: input.actor ?? 'human',
+      extraMetadata: input.extraMetadata,
     })
+  }
+
+  /** Batch intake exposes duplicates separately for the Control Plane inbox uploader. */
+  async ingestBatch(input: Omit<Parameters<KnowledgeBaseService['ingest']>[0], 'filename' | 'mimeType' | 'buffer'> & {
+    files: Array<{ filename: string; mimeType?: string | null; buffer: Buffer }>
+  }) {
+    const { files, ...context } = input
+    const results: Awaited<ReturnType<KnowledgeBaseService['ingest']>>[] = []
+    for (const file of files) results.push(await this.ingest({ ...context, ...file }))
+    return {
+      documents: results.filter((result) => !result.duplicateOf),
+      duplicates: results.flatMap((result, index) => result.duplicateOf
+        ? [{ filename: sanitizeFilename(files[index].filename), duplicateOf: result.duplicateOf }] : []),
+    }
   }
 
   /** Közös katalógus-tár: ugyanaz a feldolgozás, mint az agent-saját, csak agent nélkül. */
@@ -139,6 +174,45 @@ export class KnowledgeBaseService {
       buffer: input.buffer,
       extraction,
       processingMode: input.processingMode,
+      purpose: input.purpose,
+    })
+  }
+
+  /**
+   * #946 tálca-feltöltés a Control Plane-ről: egy adott tudásbázisba, agent nélkül.
+   * A láthatóságot (privát KB) itt is ellenőrizzük, nem csak a hívóban.
+   */
+  async ingestIntoKnowledgeBase(input: {
+    tenantId: string
+    connectorId: string
+    uploadedById: string
+    filename: string
+    mimeType?: string | null
+    buffer: Buffer
+    purpose?: string | null
+  }) {
+    if (input.buffer.byteLength === 0) throw new Error('File is empty')
+    if (input.buffer.byteLength > KB_MAX_FILE_BYTES) throw new Error('File is too large')
+    const filename = sanitizeFilename(input.filename)
+    if (!filename) throw new Error('Invalid filename')
+    const connector = await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
+    if (
+      !connector || connector.tenantId !== input.tenantId || connector.type !== 'knowledge_base' ||
+      connector.lifecycleState !== 'active' || !isKnowledgeBaseVisibleTo(connector, input.uploadedById)
+    ) {
+      throw new Error('not_found')
+    }
+    const extraction = await extractStructured({ buffer: input.buffer, filename, mimeType: input.mimeType })
+    return this.store({
+      tenantId: input.tenantId,
+      connector,
+      agentId: null,
+      uploadedById: input.uploadedById,
+      filename,
+      mimeType: input.mimeType,
+      buffer: input.buffer,
+      extraction,
+      processingMode: 'wiki',
       purpose: input.purpose,
     })
   }
@@ -292,7 +366,8 @@ export class KnowledgeBaseService {
     const source = await this.deps.documents.findById(input.documentId)
     if (!source || source.tenantId !== input.tenantId) throw new Error('Document not found')
     if (source.connectorId !== catalogConnector.id) throw new Error('Document not found')
-    if (!source.extractedText) throw new Error('A dokumentum szövege nem elérhető')
+    const original = await this.deps.documents.readSource(source.id)
+    if (!original && !source.extractedText) throw new Error('A dokumentum szövege nem elérhető')
 
     const connector = await ensureAgentKnowledgeBase(agent, this.deps, {
       defaultKbLanguage: await this.tenantLanguage(input.tenantId),
@@ -304,10 +379,10 @@ export class KnowledgeBaseService {
       uploadedById: input.actorId,
       filename: source.filename,
       mimeType: source.mimeType,
-      buffer: Buffer.from(source.extractedText, 'utf8'),
-      extraction: {
+      buffer: original ?? Buffer.from(source.extractedText!, 'utf8'),
+      extraction: original ? await extractStructured({ buffer: original, filename: source.filename, mimeType: source.mimeType }) : {
         format: 'text',
-        markdown: source.extractedText,
+        markdown: source.extractedText ?? '',
         blocks: [],
       } satisfies StructuredExtraction,
       processingMode: (source.processingMode ?? 'raw_text_only') as KnowledgeProcessingMode,
@@ -341,11 +416,13 @@ export class KnowledgeBaseService {
     extraction: StructuredExtraction
     processingMode: KnowledgeProcessingMode
     purpose?: string | null
+    actor?: 'agent' | 'human'
+    extraMetadata?: Record<string, Prisma.InputJsonValue>
   }) {
     const { tenantId, connector, agentId, uploadedById, filename, extraction } = input
     const contentHash = createHash('sha256').update(input.buffer).digest('hex')
     const purpose = normalizeKbPurpose(input.purpose)
-    const document = await this.deps.documents.create({
+    const { document, duplicate } = await this.deps.documents.createSource({
       tenantId,
       filename,
       extractedText: extraction.markdown,
@@ -353,13 +430,42 @@ export class KnowledgeBaseService {
       contentHash,
       status: 'processed',
       processingMode: input.processingMode,
+      wikiStatus: input.processingMode === 'wiki' ? 'pending' : null,
+      wikiSubmittedByAgentId: input.processingMode === 'wiki' && input.actor === 'agent' ? agentId : null,
       metadata: {
+        ...input.extraMetadata,
         [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
         ...(purpose ? { purpose } : {}),
       },
       connectorId: connector.id,
       uploadedById,
-    })
+    }, extraction.format === 'pdf' ? input.buffer : undefined)
+    if (duplicate) {
+      const current =
+        extraction.format === 'pdf' && pdfPageQuality(document.metadata).length === 0
+          ? await this.deps.documents.update(document.id, {
+              metadata: {
+                ...(typeof document.metadata === 'object' && document.metadata !== null && !Array.isArray(document.metadata)
+                  ? (document.metadata as Record<string, unknown>)
+                  : {}),
+                [EXTRACTION_METADATA_KEY]: toExtractionMetadata(extraction),
+              },
+            })
+          : document
+      const pages = pdfPageQuality(current.metadata)
+      return {
+        documentId: current.id,
+        filename: current.filename,
+        processingMode: current.processingMode,
+        artifactId: null,
+        chunkCount: 0,
+        pageCount: 0,
+        searchable: current.status === 'processed',
+        duplicateOf: { documentId: current.id, filename: current.filename, wikiStatus: current.wikiStatus },
+        pages,
+        nextStep: pdfQualityHint(pages),
+      }
+    }
 
     let artifactId: string | undefined
     let chunkCount = 0
@@ -404,25 +510,31 @@ export class KnowledgeBaseService {
       pageCount = bundle.files.filter((file) => file.path !== 'index.md').length
     }
 
-    await this.deps.audit.append({
-      actorType: 'human',
-      actorId: uploadedById,
-      agentVersion: null,
-      action: 'kb.document.ingested',
-      targetType: 'document',
-      targetId: document.id,
-      modelUsed: null,
-      inputRef: filename,
-      outputRef: connector.id,
-      policyDecision: 'allowed',
-      metadata: {
-        agentId,
-        processingMode: input.processingMode,
-        artifactId: artifactId ?? null,
-        chunkCount,
-      },
-      tenantId,
-    })
+    // #942: agent-hívásnál az actor az agent, a hívó felhasználó a metadatában.
+    const byAgent = input.actor === 'agent' && !!agentId
+    await this.deps.audit.append(
+      redactKbAuditForVisibility(connector, {
+        actorType: byAgent ? 'agent' : 'human',
+        actorId: byAgent ? agentId : uploadedById,
+        agentVersion: null,
+        action: 'kb.document.ingested',
+        targetType: 'document',
+        targetId: document.id,
+        modelUsed: null,
+        inputRef: filename,
+        outputRef: connector.id,
+        policyDecision: 'allowed',
+        metadata: {
+          agentId,
+          userId: uploadedById,
+          processingMode: input.processingMode,
+          artifactId: artifactId ?? null,
+          chunkCount,
+          contentHash,
+        },
+        tenantId,
+      }),
+    )
 
     return {
       documentId: document.id,
@@ -432,6 +544,8 @@ export class KnowledgeBaseService {
       chunkCount,
       pageCount,
       searchable: true,
+      pages: pdfPageQuality(document.metadata),
+      nextStep: pdfQualityHint(pdfPageQuality(document.metadata)),
     }
   }
 
@@ -465,20 +579,22 @@ export class KnowledgeBaseService {
     if (document.connectorId !== connector.id) throw new Error('Document not found')
     await this.deps.artifacts.deleteBySourceDocumentId(document.id)
     await this.deps.documents.delete(document.id)
-    await this.deps.audit.append({
-      actorType: 'human',
-      actorId: input.actorId,
-      agentVersion: null,
-      action: 'kb.document.deleted',
-      targetType: 'document',
-      targetId: document.id,
-      modelUsed: null,
-      inputRef: document.filename,
-      outputRef: connector.id,
-      policyDecision: 'deleted',
-      metadata: { agentId: agent.id },
-      tenantId: input.tenantId,
-    })
+    await this.deps.audit.append(
+      redactKbAuditForVisibility(connector, {
+        actorType: 'human',
+        actorId: input.actorId,
+        agentVersion: null,
+        action: 'kb.document.deleted',
+        targetType: 'document',
+        targetId: document.id,
+        modelUsed: null,
+        inputRef: document.filename,
+        outputRef: connector.id,
+        policyDecision: 'deleted',
+        metadata: { agentId: agent.id },
+        tenantId: input.tenantId,
+      }),
+    )
     return { deleted: true }
   }
 
@@ -487,10 +603,13 @@ export class KnowledgeBaseService {
     // Bővebb jelölt-halmaz, hogy az IDF-rangsor legyen miből válogasson.
     const candidates = Math.max(k * 4, 20)
     const connectorIds = [input.connectorId]
-    const [okfChunkHits, rawHits] = await Promise.all([
+    const [okfChunkHits, rawHits, artifacts] = await Promise.all([
       this.deps.chunks.searchChunks(connectorIds, input.query, candidates),
       this.deps.documents.searchRaw(input.connectorId, input.query, candidates),
+      this.deps.artifacts.findByConnector(input.connectorId, 'published'),
     ])
+    // #943: a wiki-konténer chunkjai wiki-oldalak — a találat ezt jelzi (kb_get_page path).
+    const wikiArtifactIds = new Set(artifacts.filter((row) => row.format === 'llm_wiki').map((row) => row.id))
     const okfHits = assembleKbHits({
       query: input.query,
       k: okfChunkHits.length,
@@ -504,7 +623,7 @@ export class KnowledgeBaseService {
     return rankKbHits(
       [
         ...okfHits.map((hit, i) => ({
-          hit,
+          hit: wikiArtifactIds.has(okfChunkHits[i].artifactId) ? { ...hit, kind: 'wiki_page' as const } : hit,
           matched: okfChunkHits[i].matched ?? [],
           rank: okfChunkHits[i].score,
         })),
@@ -594,10 +713,32 @@ export class KnowledgeBaseService {
     }
   }
 
-  async getDocument(input: { connectorId: string; documentId: string; section?: string }) {
+  async getDocument(input: {
+    connectorId: string; documentId: string; section?: string
+    pageImages?: boolean; pages?: string
+    tenantId?: string; userId?: string
+  }) {
+    if (input.pageImages) {
+      const connector = input.tenantId && await this.deps.connectors.findById?.(input.connectorId, input.tenantId)
+      if (!connector || !input.userId || connector.tenantId !== input.tenantId ||
+        connector.type !== 'knowledge_base' || connector.lifecycleState !== 'active' ||
+        !isKnowledgeBaseVisibleTo(connector, input.userId)) throw new Error('not_found')
+    }
     const document = await this.deps.documents.findById(input.documentId)
-    if (!document || document.connectorId !== input.connectorId || document.status !== 'processed') {
+    if (!document || document.connectorId !== input.connectorId || document.status !== 'processed' ||
+      (input.tenantId !== undefined && document.tenantId !== input.tenantId)) {
+      if (input.pageImages) throw new Error('not_found')
       return { found: false, documentId: input.documentId }
+    }
+    const pages = pdfPageQuality(document.metadata)
+    const quality = { pages, nextStep: pdfQualityHint(pages) }
+    if (input.pageImages) {
+      const raw = await this.deps.documents.readSource(document.id)
+      if (!raw || !raw.subarray(0, 5).equals(Buffer.from('%PDF-'))) {
+        throw new PdfPageImageError('original_pdf_unavailable', 'Original PDF unavailable. Upload the original PDF to a new source.')
+      }
+      const rendered = await renderPdfPages(raw, input.pages)
+      return { found: true, documentId: document.id, filename: document.filename, ...quality, ...rendered }
     }
     const superseded = await this.deps.artifacts.publishedSourceDocumentIds([input.connectorId])
     if (superseded.has(document.id)) {
@@ -606,6 +747,7 @@ export class KnowledgeBaseService {
       return {
         found: true as const,
         kind: 'wiki' as const,
+        ...quality,
         documentId: document.id,
         filename: document.filename,
         purpose: readKbPurpose(document.metadata),
@@ -613,12 +755,12 @@ export class KnowledgeBaseService {
         hint: 'Wiki. Call kb_get_page with path index.md and this artifactId, then open one page.',
       }
     }
-    return assembleKbDocument({
+    return { ...quality, ...assembleKbDocument({
       documentId: document.id,
       filename: document.filename,
       purpose: readKbPurpose(document.metadata),
       text: document.extractedText ?? '',
       section: input.section,
-    })
+    }) }
   }
 }

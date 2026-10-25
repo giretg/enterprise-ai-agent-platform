@@ -14,6 +14,11 @@
  * Snapshots never contain secrets, `tokenRef`, `secretAlias`, `modelConfig`,
  * session, queue, or Clerk ids. They may contain published hard/trained rule text.
  */
+import {
+  hasPlacementOverrides,
+  parsePlacementOverrides,
+  type PlacementOverrides,
+} from '@/lib/agent-knowledge-placement'
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
 import { describeGoogleAccountBinding } from '@/domain/connector/google-account-binding'
@@ -28,6 +33,7 @@ import type {
   SkillRepository,
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
+import { isWikiAccessLevel, type WikiAccessLevel } from '@/lib/wiki-access'
 import { writeAudit } from '@/lib/audit/types'
 import { snapshotLocalRoots } from '@/lib/agent-local-roots'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
@@ -66,6 +72,17 @@ export type AgentDefinitionSnapshot = {
      * engedélyezettek. Hiányzik, ha a connector configja hibás/hiányos (fail-soft).
      */
     endpoints?: HttpApiEndpointSummary[]
+    /**
+     * #942 (csak `knowledge_base`): wiki-jog, írási mód, gyűjtési fókusz. Az
+     * alapértéknél (`read` / `approval` / üres) kimarad, így a korábbi snapshotok
+     * contentHash-e változatlan; hiányzó mező = alapérték (fail-closed).
+     */
+    wikiAccess?: WikiAccessLevel
+    wikiWriteMode?: 'approval' | 'direct'
+    wikiCollectFocus?: string
+    /** #942 D13: csak privát KB-nál jelenik meg (`private_to_user` + tulajdonos). */
+    visibility?: 'private_to_user'
+    ownerUserId?: string
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
   /**
@@ -73,6 +90,17 @@ export type AgentDefinitionSnapshot = {
    * Omitted when empty so snapshots published before this field keep their contentHash.
    */
   localRoots?: string[]
+  /**
+   * Mini app útmutató (#967 D12): az agent saját, opcionális készítési útmutatója.
+   * Csak a `platform.mini_app.guide` adja vissza (a get_definition nem). Üresen
+   * kimarad, így a korábbi snapshotok contentHash-e változatlan.
+   */
+  miniAppGuide?: string
+  /**
+   * „Hová mit ments” tábla agentenkénti felülírása (sor-kulcs → saját szabály). Üresen
+   * kimarad, így a korábbi snapshotok contentHash-e változatlan.
+   */
+  placementOverrides?: PlacementOverrides
 }
 
 export type AgentDefinition = {
@@ -153,10 +181,35 @@ type DraftWorkingSet = {
     skillVersion: { skillId: string; status: string; skill: { name: string } }
   }>
   connectors: Array<{
-    connector: { id: string; name: string; type: string }
+    connector: {
+      id: string
+      name: string
+      type: string
+      visibility?: string | null
+      ownerUserId?: string | null
+    }
     accessMode: 'read' | 'write'
+    wikiAccess?: string | null
+    wikiWriteMode?: string | null
+    wikiCollectFocus?: string | null
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
+}
+
+/** #942: a knowledge_base kötés wiki-mezői a snapshotba — csak a nem-alapértékek. */
+function knowledgeBaseSnapshotFields(
+  row: DraftWorkingSet['connectors'][number],
+): Partial<AgentDefinitionSnapshot['connectors'][number]> {
+  if (row.connector.type !== 'knowledge_base') return {}
+  const access = isWikiAccessLevel(row.wikiAccess) ? row.wikiAccess : 'read'
+  const focus = row.wikiCollectFocus?.trim()
+  const isPrivate = row.connector.visibility === 'private_to_user' && !!row.connector.ownerUserId
+  return {
+    ...(access !== 'read' ? { wikiAccess: access } : {}),
+    ...(row.wikiWriteMode === 'direct' ? { wikiWriteMode: 'direct' as const } : {}),
+    ...(focus ? { wikiCollectFocus: focus.slice(0, 2000) } : {}),
+    ...(isPrivate ? { visibility: 'private_to_user' as const, ownerUserId: row.connector.ownerUserId! } : {}),
+  }
 }
 
 /**
@@ -202,6 +255,8 @@ async function buildSnapshot(
     hardRules?: string
     trainedRules?: string
     localRoots?: string
+    miniAppGuide?: string
+    placementOverrides?: unknown
   },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
@@ -213,6 +268,7 @@ async function buildSnapshot(
         name: row.connector.name,
         type: row.connector.type,
         accessMode: row.accessMode,
+        ...knowledgeBaseSnapshotFields(row),
       }
       if (row.connector.type !== 'http_api' || !connectors) return base
       const meta = await resolveHttpApiConnectorMeta(connectors, row.connector.id, agent.tenantId)
@@ -220,12 +276,15 @@ async function buildSnapshot(
     }),
   )
   const localRoots = snapshotLocalRoots(agent.localRoots)
+  const placementOverrides = parsePlacementOverrides(agent.placementOverrides)
   return {
     name: agent.name,
     roleInstruction: agent.roleInstruction,
     description: agent.description ?? null,
     rules: collectSnapshotRules(agent),
     ...(localRoots ? { localRoots } : {}),
+    ...(agent.miniAppGuide?.trim() ? { miniAppGuide: agent.miniAppGuide.trim() } : {}),
+    ...(hasPlacementOverrides(placementOverrides) ? { placementOverrides } : {}),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({

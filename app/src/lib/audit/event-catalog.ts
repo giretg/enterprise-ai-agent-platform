@@ -66,6 +66,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.profile',
   'agent.memory_write_mode',
   'agent.write_approval_modes',
+  // #957 D1: „Mondd el” — AI-vázlat a varázslóban (a tenant napi keretéből).
+  'agent.hire_draft.suggest',
   'agent.output_folder',
   'agent.local_roots',
   'agent.approver',
@@ -116,6 +118,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'platform.mcp_host.allow',
   'platform.mcp_host.revoke',
   'tenant.self_update.policy.update',
+  // #957 D3: az agentek önállóságának céges felső korlátja.
+  'tenant.autonomy_ceiling',
 
   'privacy.connector.capability.absent',
   'privacy.connector.capability.changed',
@@ -124,12 +128,36 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.document.deleted',
   'kb.catalog.attached',
   'kb.language.set',
+  // #942 LLM Wiki (#941 §6). Privát KB-nál tartalommentes metaadat (`kb-private-redaction`).
+  'kb.wiki.changeset.submitted',
+  'kb.wiki.changeset.applied',
+  'kb.wiki.changeset.approved',
+  'kb.wiki.changeset.rejected',
+  'kb.wiki.changeset.reverted',
+  'kb.wiki.page.created',
+  'kb.wiki.page.updated',
+  'kb.wiki.page.archived',
+  'kb.wiki.inbox.submitted',
+  'kb.wiki.inbox.claimed',
+  'kb.wiki.inbox.released',
+  'kb.wiki.inbox.processed',
+  'kb.wiki.inbox.skipped',
+  'kb.wiki.lint.run',
+  'kb.wiki.schema.changed',
+  'kb.wiki.access.changed',
+  'kb.private.created',
+  'kb.private.deleted',
+  // #946 Control Plane: közös KB létrehozása, wiki-export (ZIP).
+  'kb.created',
+  'kb.wiki.exported',
 
   'skill.conversation.created',
   'skill.conversation.proposed',
   'skill.conversation.proposal.overwritten',
   'skill.conversation.approved',
   'skill.conversation.rejected',
+  'skill.conversation.revised',
+  'skill.share',
 
   'project.create',
   'project.work_file.write',
@@ -139,6 +167,22 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'handoff.created',
   'handoff.acknowledged',
+
+  // #967 mini appok — metaadat: appId, verzió, hash, méret, lint-kódok; HTML soha.
+  'mini_app.created',
+  'mini_app.version_added',
+  'mini_app.copied',
+  'mini_app.shared',
+  'mini_app.unshared',
+  'mini_app.visibility_changed',
+  'mini_app.opened',
+  'mini_app.archived',
+  'mini_app.restored',
+  'mini_app.purged',
+  'mini_app.validation_failed',
+  'agent.mini_app_guide',
+  'agent.placement_overrides',
+  'platform_setting.mini_app_link_ttl_changed',
 
   'model_gateway.token.issued',
   'model_gateway.token.deny',

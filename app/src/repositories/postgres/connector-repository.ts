@@ -72,7 +72,12 @@ export class PostgresConnectorRepository implements ConnectorRepository {
     authMode: Connector['authMode']
     scope: Connector['scope']
     config?: Prisma.InputJsonValue
+    visibility?: Connector['visibility']
+    ownerUserId?: string | null
   }): Promise<Connector> {
+    if (input.visibility === 'private_to_user' && (input.type !== 'knowledge_base' || !input.ownerUserId)) {
+      throw new Error('private_kb_owner_required')
+    }
     return prisma.connector.create({
       data: {
         tenantId: input.tenantId,
@@ -82,6 +87,8 @@ export class PostgresConnectorRepository implements ConnectorRepository {
         scope: input.scope,
         lifecycleState: 'active',
         ...(input.config !== undefined ? { config: input.config } : {}),
+        ...(input.visibility ? { visibility: input.visibility } : {}),
+        ...(input.ownerUserId ? { ownerUserId: input.ownerUserId } : {}),
       },
     })
   }
@@ -93,6 +100,27 @@ export class PostgresConnectorRepository implements ConnectorRepository {
     return prisma.connector.update({
       where: { id: input.connectorId },
       data: { approverUserId: input.approverUserId },
+    })
+  }
+
+  async updateKnowledgeBase(
+    connectorId: string,
+    input: {
+      name?: string
+      config?: Prisma.InputJsonValue
+      visibility?: Connector['visibility']
+      ownerUserId?: string | null
+    },
+  ): Promise<Connector> {
+    if (input.visibility === 'private_to_user' && !input.ownerUserId) throw new Error('private_kb_owner_required')
+    return prisma.connector.update({
+      where: { id: connectorId, type: 'knowledge_base' },
+      data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.config !== undefined ? { config: input.config } : {}),
+        ...(input.visibility !== undefined ? { visibility: input.visibility, ownerMissingSince: null } : {}),
+        ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+      },
     })
   }
 

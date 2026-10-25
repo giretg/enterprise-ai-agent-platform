@@ -43,6 +43,7 @@ export type ExtractedBlock = {
   heading: string
   text: string
   sourceRef: OkfSourceRef
+  textQuality?: 'ok' | 'low_text' | 'no_text'
 }
 
 export type OkfBundleFile = {
@@ -326,4 +327,45 @@ function stripQuotes(value: string): string {
     }
   }
   return value
+}
+
+/**
+ * #943: egy wiki-oldal chunkjai (heading-alapú, mint az OKF-oldalaké). Az
+ * oldal-írás csak ennek az oldalnak a chunkjait cseréli a wiki-konténer alatt.
+ * A forrás-ref az oldal első nyers forrása; a `section` a fejezetcím.
+ */
+export function chunkWikiPage(page: {
+  path: string
+  title: string
+  type: string
+  summary: string
+  body: string
+  sources: OkfSourceRef[]
+}): OkfChunk[] {
+  const sourceRef = page.sources[0] ? { ...page.sources[0] } : null
+  const sections: Array<{ section: string; text: string }> = []
+  let current = { section: page.title, lines: [page.summary] as string[] }
+  for (const line of page.body.split('\n')) {
+    const heading = line.match(/^#{1,3}[ \t]+(.*)$/)
+    if (heading) {
+      sections.push({ section: current.section, text: current.lines.join('\n').trim() })
+      current = { section: heading[1].trim() || page.title, lines: [] }
+      continue
+    }
+    current.lines.push(line)
+  }
+  sections.push({ section: current.section, text: current.lines.join('\n').trim() })
+
+  return sections
+    .filter((row) => row.text)
+    .map((row, chunkIndex) => ({
+      path: page.path,
+      title: page.title,
+      type: page.type,
+      section: row.section,
+      chunkIndex,
+      text: row.text,
+      sourceRef: sourceRef ? { ...sourceRef, section: sourceRef.section ?? row.section } : null,
+      contentHash: sha256(row.text),
+    }))
 }

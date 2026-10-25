@@ -15,7 +15,7 @@ import type {
   SkillWithVersions,
 } from '../interfaces'
 
-async function migrateAgentAssignmentsToVersion(
+export async function migrateAgentAssignmentsToVersion(
   tx: Prisma.TransactionClient,
   skillId: string,
   activeVersionId: string,
@@ -277,9 +277,11 @@ export class PostgresSkillRepository implements SkillRepository {
     })
   }
 
-  async countAssignmentsForSkill(skillId: string): Promise<number> {
-    return prisma.agentSkill.count({
-      where: { skillVersion: { skillId } },
+  async listAgentsUsingSkill(skillId: string): Promise<Array<{ id: string; name: string }>> {
+    return prisma.agent.findMany({
+      where: { agentSkills: { some: { skillVersion: { skillId } } } },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
     })
   }
 

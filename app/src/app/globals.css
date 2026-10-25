@@ -194,7 +194,31 @@
   animation: activity-run-row 1.6s ease-in-out infinite;
 }
 
+/* Új munkatárs felvétele — mérföldkő és munkába állás (#957) */
+@keyframes hire-pop {
+  0%   { opacity: 0; transform: scale(0.92) translateY(6px); }
+  60%  { opacity: 1; transform: scale(1.03) translateY(0); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+.animate-hire-pop { animation: hire-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@keyframes hire-float {
+  0%   { opacity: 0; transform: translateY(0) scale(0.6); }
+  25%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-48px) scale(1.1); }
+}
+.animate-hire-float { animation: hire-float 1.6s ease-out both; }
+
+/* „Kevesebb animáció” kapcsoló a varázslóban */
+[data-less-motion='true'] .animate-hire-pop,
+[data-less-motion='true'] .animate-hire-float,
+[data-less-motion='true'] .animate-breathe,
+[data-less-motion='true'] .animate-rise { animation: none !important; }
+[data-less-motion='true'] .animate-hire-float { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
+  .animate-hire-pop, .animate-hire-float { animation: none !important; }
+  .animate-hire-float { display: none; }
   .animate-breathe, .animate-soul, .animate-rise,
   .animate-activity-run-dot, .animate-activity-run-row,
   .animate-marquee, .animate-blink, .signal-mark { animation: none !important; }

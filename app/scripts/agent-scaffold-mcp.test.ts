@@ -617,6 +617,30 @@ async function main() {
     )
   })
 
+  await check('private KB: scaffold cannot link another owner; working/publish responses hide existing links', async () => {
+    const memory = memoryScaffoldDeps()
+    const [connector] = await memory.deps.connectors.listForTenant(TENANT_ID)
+    Object.assign(connector, { type: 'knowledge_base', visibility: 'private_to_user', ownerUserId: OTHER_TENANT_ID })
+    const created = await createDraftAgent(memory.deps, {
+      tenantId: TENANT_ID, actorId: USER_ID, name: 'Private scope',
+      roleInstruction: 'Use only visible knowledge.', description: 'Scoped test',
+      connectors: [{ name: connector.name }],
+    })
+    assert.equal(created.workingSet.connectors.length, 0)
+    assert.ok(created.warnings.some((row) => row.code === 'UNKNOWN_CONNECTOR'))
+    // An existing link created by its owner remains stored, but is hidden from this admin.
+    await memory.deps.agents.upsertConnectorBinding({ agentId: created.agentId, connectorId: connector.id, accessMode: 'write' })
+    const raw = await memory.service.getWorkingSet({ agentId: created.agentId, tenantId: TENANT_ID })
+    assert.equal(raw.workingSet.connectors.length, 1)
+    const admin = stubMcpDeps(memory, 'admin')
+    const working = await callTool(admin, MCP_AGENT_GET_WORKING_SET_TOOL, { agentId: created.agentId })
+    assert.equal((working.workingSet as { connectors: unknown[] }).connectors.length, 0)
+    assert.equal(working.contentHash, raw.contentHash)
+    const published = await callTool(admin, MCP_AGENT_PUBLISH_TOOL, { agentId: created.agentId })
+    assert.equal((published.snapshot as { connectors: unknown[] }).connectors.length, 0)
+    assert.equal((memory.versions[0].snapshot as { connectors: unknown[] }).connectors.length, 1)
+  })
+
   await check('get_working_set hash matches create output', async () => {
     const memory = memoryScaffoldDeps()
     const deps = stubMcpDeps(memory, 'admin')

@@ -12,7 +12,7 @@ const OUTPUT_SIZE = 256 // px, négyzetes portré
 
 // A böngészőben kicsinyítjük az avatárt 256px-es négyzetre és webp/jpeg data
 // URL-t készítünk, hogy a DB-be mentett kép garantáltan kicsi maradjon.
-async function fileToAvatarDataUrl(file: File): Promise<string> {
+export async function fileToAvatarDataUrl(file: File): Promise<string> {
   const objectUrl = URL.createObjectURL(file)
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {

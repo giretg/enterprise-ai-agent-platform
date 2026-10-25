@@ -88,8 +88,11 @@ jobs:
           npm run test:mcp-tenant-context
           npm run test:agent-knowledge-placement
           npm run test:create-agent-wizard
+          npm run test:agent-setting-sections
+          npm run test:agent-hire
           npm run test:project-work
           npm run test:handoff
+          npm run test:mini-app
           npm run test:work-file-output
           npm run test:mcp-skills
           npm run test:conversation-skill
@@ -124,6 +127,9 @@ jobs:
           npm run test:agentmail-connector
           npm run test:kb-gate
           npm run test:kb-retrieval
+          npm run test:wiki-foundation
+          npm run test:kb-wiki
+          npm run test:wiki-console
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -204,6 +210,32 @@ jobs:
 
       - name: Prisma migrate status
         run: npx prisma migrate status
+
+      - name: Handoff decision concurrency
+        run: npm run test:handoff-repository
+
+      # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
+      - name: Mini app repository (Postgres)
+        run: npm run test:mini-app-db
+
+      # #942: privát KB végleges törlés + 30 napos sweep + tálca-SQL valódi Postgresen.
+      - name: Wiki private KB purge (Postgres)
+        run: npm run test:wiki-private-purge-db
+
+      - name: KB PDF sources and MCP images (Postgres)
+        run: npm run test:kb-pdf-source-db
+
+      # #943: wiki change-set egy tranzakcióban (rollback, chunk-csere, tálca) valódi Postgresen.
+      - name: Wiki change-set apply (Postgres)
+        run: npm run test:kb-wiki-db
+
+      # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
+      - name: Wiki console queries (Postgres)
+        run: npm run test:wiki-console-db
+
+      # #947: lelet-forgatókönyv végponttól végpontig (MCP HTTP + privát KB + törlés) valódi Postgresen.
+      - name: Wiki end-to-end (Postgres + MCP)
+        run: npm run test:kb-wiki-e2e
 
   security-scan:
     name: Titok-szkennelés + CodeQL

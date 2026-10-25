@@ -1,3 +1,4 @@
+import { resolveWikiScopes } from '@/lib/wiki-access'
 import { z } from 'zod'
 import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/agent-knowledge-placement'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
@@ -328,7 +329,7 @@ function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseT
 }
 
 async function auditDenied(
-  deps: ProjectWorkMcpDeps,
+  deps: Pick<ProjectWorkMcpDeps, 'audit'>,
   principal: ToolCallPrincipal,
   toolName: string,
   reason: string,
@@ -389,10 +390,11 @@ async function auditOk(
 }
 
 export async function authorizeProjectWorkCall(
-  deps: ProjectWorkMcpDeps,
+  deps: Pick<ProjectWorkMcpDeps, 'loadDefinition' | 'findCurrentDefinitionId' | 'findAgentGrant' | 'audit'>,
   principal: ToolCallPrincipal,
   toolName: string,
   args: Record<string, unknown>,
+  schema: z.ZodTypeAny = schemaForProjectWorkTool(toolName),
 ): Promise<
   | { ok: true; definition: AgentDefinition; parsed: Record<string, unknown> }
   | { ok: false; result: EnterpriseToolMcpResult }
@@ -432,7 +434,6 @@ export async function authorizeProjectWorkCall(
     await auditDenied(deps, principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
     return { ok: false, result: errorResult('agent_access_denied') }
   }
-  const schema = schemaForProjectWorkTool(toolName)
   const parsed = schema.safeParse(args)
   if (!parsed.success) {
     await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
@@ -533,6 +534,7 @@ export async function invokeProjectWork(
       mergeIds: typeof parsed.mergeIds === 'string' ? splitIds(parsed.mergeIds) : undefined,
       confirmNew: parsed.confirmNew === true,
       confirmMisplaced: parsed.confirmMisplaced === true,
+      wikiCapable: resolveWikiScopes(definition.snapshot, principal.userId).writable.length > 0,
       withUserId: principal.userId,
       mode: modeRes.mode,
     })

@@ -1,44 +1,41 @@
-/** Új-agent varázsló: lépések, kapuk és a „közben eszembe jutott” új-ablakos útvonalak. */
+/**
+ * Új munkatárs felvétele (#957): lépések, kapuk és a folytatás.
+ *
+ * Az `pre` lépések a munkatárs létrejötte előtt futnak (Indulás, Ki ő?, Mi a
+ * dolga?); a „Mi a dolga?” után jön létre a még nem dolgozó munkatárs, a `post`
+ * lépések már erre mentenek. A beállítás-jegyzék (`agent-setting-sections`)
+ * minden adatlap-területet ezek egyikéhez köt.
+ */
+
+import { modesFromAgentRow, type AgentWriteApprovalModes } from '@/lib/write-approval-modes'
 
 export const CREATE_AGENT_WIZARD_STEPS = [
-  {
-    id: 'identity',
-    label: 'Alapok',
-    hint: 'Név, felelősségi kör, munkakör',
-    phase: 'pre',
-  },
-  {
-    id: 'tools',
-    label: 'Eszközök',
-    hint: 'Mit hívhat meg',
-    phase: 'post',
-  },
-  {
-    id: 'skills',
-    label: 'Képességek',
-    hint: 'Katalógusból hozzárendelve',
-    phase: 'post',
-  },
-  {
-    id: 'connections',
-    label: 'Kapcsolatok',
-    hint: 'Külső rendszerek',
-    phase: 'post',
-  },
-  {
-    id: 'done',
-    label: 'Kész',
-    hint: 'Publikálás és aktiválás',
-    phase: 'post',
-  },
+  { id: 'start', label: 'Indulás', hint: 'Honnan indulsz?', phase: 'pre', optional: false },
+  { id: 'identity', label: 'Ki ő?', hint: 'Név, bemutatkozás, kép', phase: 'pre', optional: false },
+  { id: 'duties', label: 'Mi a dolga?', hint: 'Feladatok és hangnem', phase: 'pre', optional: false },
+  { id: 'access', label: 'Mihez fér hozzá?', hint: 'Levelezés, dokumentumok, rendszerek', phase: 'post', optional: false },
+  { id: 'knowledge', label: 'Mit tudjon?', hint: 'Dokumentumok, amiből dolgozik', phase: 'post', optional: false },
+  { id: 'autonomy', label: 'Mennyire önálló?', hint: 'Mikor kérdezzen meg', phase: 'post', optional: false },
+  { id: 'team', label: 'Ki dolgozik vele?', hint: 'Kik használhatják', phase: 'post', optional: false },
+  { id: 'advanced', label: 'Haladó', hint: 'Kihagyható', phase: 'post', optional: true },
+  { id: 'launch', label: 'Próbaüzem és munkába állítás', hint: 'Próba és indulás', phase: 'post', optional: false },
 ] as const
 
 export type CreateAgentWizardStepId = (typeof CREATE_AGENT_WIZARD_STEPS)[number]['id']
+
+/** Félbehagyott munkatárs folytatása, ha nincs megjegyzett lépés. */
+export const CREATE_AGENT_WIZARD_RESUME_STEP: CreateAgentWizardStepId = 'access'
 
 export const CREATE_AGENT_WIZARD_EXTERNAL_HREFS = {
   skills: '/control-plane/skills',
   connections: '/control-plane/provisioning',
   connectors: '/control-plane/account',
+} as const
+
+/** Munkába állítás után: hol írhat neki / adhat neki feladatot a felhasználó. */
+export const CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS = {
+  chat: '/control-plane/get-started',
+  ticket: '/control-plane/operations',
 } as const
 
 export type CreateAgentWizardGate = {
@@ -54,26 +51,27 @@ export function isCreateAgentWizardStepId(value: unknown): value is CreateAgentW
 
 export function parseCreateAgentWizardStep(
   value: string | null | undefined,
+  fallback: CreateAgentWizardStepId = 'start',
 ): CreateAgentWizardStepId {
-  return isCreateAgentWizardStepId(value) ? value : 'identity'
+  return isCreateAgentWizardStepId(value) ? value : fallback
 }
 
 export function createAgentWizardStepIndex(id: CreateAgentWizardStepId): number {
   return CREATE_AGENT_WIZARD_STEPS.findIndex((step) => step.id === id)
 }
 
-export function isIdentityStepComplete(
-  gate: Pick<CreateAgentWizardGate, 'name' | 'roleInstruction' | 'description'>,
-) {
-  return (
-    gate.name.trim().length > 0 &&
-    gate.roleInstruction.trim().length > 0 &&
-    gate.description.trim().length > 0
-  )
+/** Kötelező a név és az egy mondatos bemutatkozás. */
+export function isIdentityStepComplete(gate: Pick<CreateAgentWizardGate, 'name' | 'description'>) {
+  return gate.name.trim().length > 0 && gate.description.trim().length > 0
+}
+
+/** Legalább egy feladat — a munkakör-szöveg ebből áll össze. */
+export function isDutiesStepComplete(gate: Pick<CreateAgentWizardGate, 'roleInstruction'>) {
+  return gate.roleInstruction.trim().length > 0
 }
 
 export function isPreCreateComplete(gate: CreateAgentWizardGate) {
-  return isIdentityStepComplete(gate)
+  return isIdentityStepComplete(gate) && isDutiesStepComplete(gate)
 }
 
 export function canEnterCreateAgentWizardStep(
@@ -83,7 +81,9 @@ export function canEnterCreateAgentWizardStep(
   const step = CREATE_AGENT_WIZARD_STEPS.find((item) => item.id === stepId)
   if (!step) return false
   if (step.phase === 'post') return Boolean(gate.createdAgentId)
-  return stepId === 'identity'
+  if (stepId === 'start') return !gate.createdAgentId
+  if (stepId === 'duties') return Boolean(gate.createdAgentId) || isIdentityStepComplete(gate)
+  return true
 }
 
 export function nextCreateAgentWizardStep(
@@ -102,10 +102,24 @@ export function prevCreateAgentWizardStep(
 
 export function createAgentWizardContinueHref(
   agentId: string,
-  stepId: CreateAgentWizardStepId,
+  stepId?: CreateAgentWizardStepId,
 ): string {
-  const params = new URLSearchParams({ continue: agentId, step: stepId })
+  const params = new URLSearchParams({ continue: agentId })
+  if (stepId) params.set('step', stepId)
   return `/control-plane/agents/new?${params.toString()}`
+}
+
+/** Félkész = még nem dolgozik: vázlat, és soha nem állt munkába. */
+export function isHalfFinishedAgent(agent: {
+  status: string
+  currentDefinitionVersionId: string | null
+}): boolean {
+  return agent.status === 'draft' && !agent.currentDefinitionVersionId
+}
+
+/** Böngészőnkénti emlék: melyik lépésnél hagyta félbe (a lista-link ide visz). */
+export function createAgentWizardLastStepStorageKey(agentId: string): string {
+  return `agent-hire:last-step:${agentId}`
 }
 
 export function matchAssignableSkillsByName<T extends { name: string }>(
@@ -166,7 +180,10 @@ export function assignableConnectorsFromCatalog<T extends { id: string }>(
   return catalog.filter((connector) => !assigned.has(connector.id))
 }
 
-/** Meglévő agent másolásához — pre-create + post-create beállítások sablonja. */
+/**
+ * Meglévő agent másolásához — pre-create + post-create beállítások sablonja.
+ * Titkot, személyes fiók-összekötést és projektmemóriát nem visz át.
+ */
 export type CreateAgentWizardCloneTemplate = {
   sourceAgentId: string
   sourceAgentName: string
@@ -175,6 +192,11 @@ export type CreateAgentWizardCloneTemplate = {
   enabledTools: string[]
   skillVersionIds: string[]
   connectors: Array<{ connectorId: string; accessMode: 'read' | 'write'; name: string }>
+  writeModes: AgentWriteApprovalModes
+  approverUserId: string | null
+  /** A forrás nyers modell-beállítása; a szerver mentéskor újra ellenőrzi a céges korlátot. */
+  modelConfig: unknown
+  access: Array<{ userId: string; accessLevel: 'view' | 'operate'; label: string }>
 }
 
 export function cloneTemplateFromAgent(source: {
@@ -187,6 +209,20 @@ export function cloneTemplateFromAgent(source: {
   connectors: Array<{
     connector: { id: string; name: string }
     accessMode: 'read' | 'write'
+  }>
+  writeModes?: {
+    memoryWriteMode?: unknown
+    httpApiWriteMode?: unknown
+    gmailWriteMode?: unknown
+    driveWriteMode?: unknown
+  }
+  approverUserId?: string | null
+  modelConfig?: unknown
+  access?: Array<{
+    id: string
+    name: string
+    email: string
+    accessLevel: 'view' | 'operate' | null
   }>
 }): CreateAgentWizardCloneTemplate {
   return {
@@ -201,5 +237,13 @@ export function cloneTemplateFromAgent(source: {
       accessMode: row.accessMode,
       name: row.connector.name,
     })),
+    writeModes: modesFromAgentRow(source.writeModes ?? {}),
+    approverUserId: source.approverUserId ?? null,
+    modelConfig: source.modelConfig ?? null,
+    access: (source.access ?? []).flatMap((user) =>
+      user.accessLevel
+        ? [{ userId: user.id, accessLevel: user.accessLevel, label: user.name || user.email }]
+        : [],
+    ),
   }
 }
