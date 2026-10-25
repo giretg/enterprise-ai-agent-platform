@@ -12,25 +12,87 @@ export type KnowledgePlacementTarget =
   | 'session_log'
   | 'focus'
 
-export const KNOWLEDGE_PLACEMENT_TABLE = `| What | Where | Tool |
-|---|---|---|
-| Company fact, decision, location (true now) | memory | \`platform.project_memory.write\` (replaceId when it changed) |
-| Operating rule or procedure ("how we do it") | skill — propose for approval | \`platform.skills.submit\` |
-| Reference document, knowledge material | knowledge base | \`kb_ingest\` (\`raw_text_only\`) |
-| Work plan, notes, draft | work file | \`platform.work_file.write\` (growing log: \`platform.work_file.append\`) |
-| Finished deliverable for humans | agent Drive folder | \`google_drive_upload_file\` |
-| What happened today | session log | \`platform.project_memory.write\` kind \`session_log\` |
-| What we are working on now | focus | \`platform.project_memory.write\` kind \`focus\` |`
+/** A tábla sorai. A `key` az agentenkénti felülírás azonosítója — ne nevezd át. */
+export const PLACEMENT_ROW_KEYS = [
+  'fact',
+  'rule',
+  'reference',
+  'plan',
+  'deliverable',
+  'session_log',
+  'focus',
+  'wiki',
+] as const
+export type PlacementRowKey = (typeof PLACEMENT_ROW_KEYS)[number]
+
+type PlacementRow = { key: PlacementRowKey; what: string; where: string; tool: string }
+
+export const KNOWLEDGE_PLACEMENT_ROWS: readonly PlacementRow[] = [
+  { key: 'fact', what: 'Company fact, decision, location (true now)', where: 'memory', tool: '`platform.project_memory.write` (replaceId when it changed)' },
+  { key: 'rule', what: 'Operating rule or procedure ("how we do it")', where: 'skill — propose for approval', tool: '`platform.skills.submit`' },
+  { key: 'reference', what: 'Reference document, knowledge material', where: 'knowledge base', tool: '`kb_ingest` (`raw_text_only`)' },
+  { key: 'plan', what: 'Work plan, notes, draft', where: 'work file', tool: '`platform.work_file.write` (growing log: `platform.work_file.append`)' },
+  { key: 'deliverable', what: 'Finished deliverable for humans', where: 'agent Drive folder', tool: '`google_drive_upload_file`' },
+  { key: 'session_log', what: 'What happened today', where: 'session log', tool: '`platform.project_memory.write` kind `session_log`' },
+  { key: 'focus', what: 'What we are working on now', where: 'focus', tool: '`platform.project_memory.write` kind `focus`' },
+  { key: 'wiki', what: 'Knowledge to learn and connect', where: 'agent wiki', tool: '`kb_ingest` (wiki) → `kb_wiki_write`' },
+]
+
+/** Admin által agentenként felülírt sorok: sor-kulcs → saját szabály (a „Where + Tool” helyett). */
+export type PlacementOverrides = Partial<Record<PlacementRowKey, string>>
+
+export const PLACEMENT_OVERRIDE_MAX = 300
+
+const ROW_KEY_SET: ReadonlySet<string> = new Set(PLACEMENT_ROW_KEYS)
+
+/** Ismeretlen kulcsot, nem szöveget és üreset eldob; a hosszt vágja. Üres eredmény = nincs felülírás. */
+export function parsePlacementOverrides(value: unknown): PlacementOverrides {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const out: PlacementOverrides = {}
+  for (const key of PLACEMENT_ROW_KEYS) {
+    const raw = (value as Record<string, unknown>)[key]
+    if (typeof raw !== 'string') continue
+    // A `|` szétszedné a markdown-táblát a briefingben.
+    const text = raw.replace(/\s+/g, ' ').replace(/\|/g, '/').trim().slice(0, PLACEMENT_OVERRIDE_MAX)
+    if (text) out[key] = text
+  }
+  return out
+}
+
+export function hasPlacementOverrides(overrides: PlacementOverrides | undefined): boolean {
+  return Object.keys(overrides ?? {}).some((key) => ROW_KEY_SET.has(key))
+}
+
+function renderPlacementTable(rows: readonly PlacementRow[], overrides: PlacementOverrides = {}): string {
+  const lines = rows.map((row) => {
+    const own = overrides[row.key]
+    return own
+      ? `| ${row.what} | ${own} | agent rule |`
+      : `| ${row.what} | ${row.where} | ${row.tool} |`
+  })
+  return ['| What | Where | Tool |', '|---|---|---|', ...lines].join('\n')
+}
+
+export const KNOWLEDGE_PLACEMENT_TABLE = renderPlacementTable(
+  KNOWLEDGE_PLACEMENT_ROWS.filter((row) => row.key !== 'wiki'),
+)
 
 export const KNOWLEDGE_PLACEMENT_TABLE_REF =
   'Use the "Where to save what" table in server instructions and the agent briefing — pick the row before any write.'
 
-export function renderKnowledgePlacementBlock(input: { wikiCapable?: boolean } = {}): string {
+export function renderKnowledgePlacementBlock(
+  input: { wikiCapable?: boolean; overrides?: PlacementOverrides } = {},
+): string {
+  const overrides = input.overrides ?? {}
+  const rows = KNOWLEDGE_PLACEMENT_ROWS.filter((row) => row.key !== 'wiki' || input.wikiCapable || overrides.wiki)
   return [
     'WHERE TO SAVE WHAT',
     'When the user asks to remember, save, or store something, pick exactly one row — do not put operating rules in memory, plans in memory, or reference documents in memory.',
+    ...(hasPlacementOverrides(overrides)
+      ? ['A row marked "agent rule" is this agent\'s own choice: it replaces the default for that row.']
+      : []),
     '',
-    KNOWLEDGE_PLACEMENT_TABLE + (input.wikiCapable ? '\n| Knowledge to learn and connect | agent wiki | `kb_ingest` (wiki) → `kb_wiki_write` |' : ''),
+    renderPlacementTable(rows, overrides),
   ].join('\n')
 }
 

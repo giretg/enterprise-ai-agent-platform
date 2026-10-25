@@ -5,6 +5,7 @@ import {
   type ConversationSkillDraft,
   type ConversationSkillPorts,
   type OpenConversationSkillProposal,
+  type RevisableSkill,
 } from '@/domain/skill/conversation-skill'
 import { writeAudit } from '@/lib/audit/types'
 import { prisma } from '@/lib/db'
@@ -12,6 +13,7 @@ import { parseSkillAttachments } from '@/lib/skill/skill-attachments'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import { computeSkillContentHash } from '@/lib/skill/skill-content-hash'
 import { repositories } from './index'
+import { migrateAgentAssignmentsToVersion } from './skill-repository'
 
 type Db = Prisma.TransactionClient | typeof prisma
 
@@ -100,6 +102,77 @@ async function insertLiveSkill(
   return skill.id
 }
 
+/** Tenant-saját, aktív, közönséges (nem gyártó) skill a névvel — csak ilyennek adhat a beszélgetés új verziót. */
+async function findRevisableByWhere(
+  db: Db,
+  where: { tenantId: string; name?: { equals: string; mode: 'insensitive' }; id?: string },
+): Promise<RevisableSkill | null> {
+  const skill = await db.skill.findFirst({
+    where: {
+      ...where,
+      kind: 'tenant',
+      producesSkills: false,
+      versions: { some: { status: 'active' } },
+    },
+    select: {
+      id: true,
+      versions: { where: { status: 'active' }, orderBy: { version: 'desc' }, take: 1 },
+    },
+  })
+  const active = skill?.versions[0]
+  if (!skill || !active) return null
+  return {
+    skillId: skill.id,
+    version: active.version,
+    content: parseSkillContent(active.content),
+    requires: parseSkillRequires(active.requires),
+    attachments: parseSkillAttachments(active.attachments),
+  }
+}
+
+async function reviseSkillInTx(
+  tx: Prisma.TransactionClient,
+  input: { tenantId: string; userId: string; skillId: string; draft: ConversationSkillDraft },
+): Promise<{ ok: true; version: number } | { ok: false; reason: 'not_found' }> {
+  const current = await findRevisableByWhere(tx, { tenantId: input.tenantId, id: input.skillId })
+  if (!current) return { ok: false, reason: 'not_found' }
+  const latest = await tx.skillVersion.findFirst({
+    where: { skillId: input.skillId },
+    orderBy: { version: 'desc' },
+    select: { version: true },
+  })
+  const number = (latest?.version ?? current.version) + 1
+  await tx.skillVersion.updateMany({
+    where: { skillId: input.skillId, status: 'active' },
+    data: { status: 'retired' },
+  })
+  const version = await tx.skillVersion.create({
+    data: {
+      skillId: input.skillId,
+      version: number,
+      content: input.draft.content as unknown as Prisma.InputJsonValue,
+      requires: input.draft.requires as unknown as Prisma.InputJsonValue,
+      ...(input.draft.attachments.length > 0
+        ? { attachments: input.draft.attachments as unknown as Prisma.InputJsonValue }
+        : {}),
+      contentHash: computeSkillContentHash(
+        input.draft.content,
+        input.draft.requires,
+        input.draft.attachments,
+      ),
+      status: 'active',
+      approvedById: input.userId,
+    },
+  })
+  // A leírás nem verziózott metaadat: a skill-listában az új szöveg látszik.
+  await tx.skill.update({
+    where: { id: input.skillId },
+    data: { description: input.draft.description, riskTier: input.draft.riskTier },
+  })
+  await migrateAgentAssignmentsToVersion(tx, input.skillId, version.id, input.userId)
+  return { ok: true, version: number }
+}
+
 function toOpen(row: {
   id: string
   tenantId: string
@@ -110,6 +183,7 @@ function toOpen(row: {
   content: Prisma.JsonValue
   requires: Prisma.JsonValue
   attachments: Prisma.JsonValue | null
+  targetSkillId: string | null
 }): OpenConversationSkillProposal {
   return {
     id: row.id,
@@ -121,6 +195,7 @@ function toOpen(row: {
     content: parseSkillContent(row.content),
     requires: parseSkillRequires(row.requires),
     attachments: parseSkillAttachments(row.attachments),
+    targetSkillId: row.targetSkillId,
   }
 }
 
@@ -173,6 +248,12 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
       return row?.id ?? null
     },
     nameTaken: (input) => nameTaken(prisma, input),
+    findRevisable: (input) =>
+      findRevisableByWhere(prisma, {
+        tenantId: input.tenantId,
+        name: { equals: input.name.trim(), mode: 'insensitive' },
+      }),
+    reviseLive: (input) => prisma.$transaction((tx) => reviseSkillInTx(tx, input)),
     async createLive(input) {
       return prisma.$transaction(async (tx) => {
         if (await nameTaken(tx, { tenantId: input.tenantId, name: input.draft.name })) {
@@ -193,16 +274,19 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
               status: 'open',
             },
           })
+          // Új verzió javaslatánál a név természetesen foglalt (a célskilléé).
           if (
-            await nameTaken(tx, {
+            !input.targetSkillId &&
+            (await nameTaken(tx, {
               tenantId: input.tenantId,
               name: input.draft.name,
               exceptProposalId: existing?.id,
-            })
+            }))
           ) {
             return { ok: false as const, reason: 'name_taken' as const }
           }
           const data = {
+            targetSkillId: input.targetSkillId ?? null,
             name: input.draft.name,
             description: input.draft.description,
             content: input.draft.content as unknown as Prisma.InputJsonValue,
@@ -270,6 +354,33 @@ export function buildConversationSkillPorts(): ConversationSkillPorts {
           where: { id: input.proposalId, tenantId: input.tenantId, status: 'open' },
         })
         if (!proposal) return { ok: false as const, reason: 'not_open' as const }
+        if (proposal.targetSkillId) {
+          const revised = await reviseSkillInTx(tx, {
+            tenantId: input.tenantId,
+            userId: input.adminId,
+            skillId: proposal.targetSkillId,
+            draft: input.draft,
+          })
+          if (!revised.ok) return { ok: false as const, reason: 'target_gone' as const }
+          await tx.conversationSkillProposal.update({
+            where: { id: proposal.id },
+            data: {
+              status: 'approved',
+              skillId: proposal.targetSkillId,
+              decidedById: input.adminId,
+              decidedAt: new Date(),
+              name: input.draft.name,
+              description: input.draft.description,
+              content: input.draft.content as unknown as Prisma.InputJsonValue,
+            },
+          })
+          return {
+            ok: true as const,
+            skillId: proposal.targetSkillId,
+            agentId: proposal.agentId,
+            version: revised.version,
+          }
+        }
         if (
           await nameTaken(tx, {
             tenantId: input.tenantId,
@@ -348,6 +459,9 @@ export type OpenConversationSkillListRow = {
   agentName: string
   requestedByName: string
   updatedAt: string
+  /** Meglévő skill új verziójának javaslata (nem új skill). */
+  revisesSkillId: string | null
+  triggerKeywords: string[]
 }
 
 export async function listOpenConversationSkillProposals(
@@ -374,5 +488,7 @@ export async function listOpenConversationSkillProposals(
     agentName: row.agent.name,
     requestedByName: row.requestedBy.name,
     updatedAt: row.updatedAt.toISOString(),
+    revisesSkillId: row.targetSkillId,
+    triggerKeywords: parseSkillContent(row.content).triggerKeywords,
   }))
 }

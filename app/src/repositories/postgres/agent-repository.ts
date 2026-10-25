@@ -1,4 +1,5 @@
-import type { Agent, Connector, ConnectorAccessMode, MemoryWriteMode, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import type { Agent, Connector, ConnectorAccessMode, MemoryWriteMode } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
@@ -140,6 +141,16 @@ export class PostgresAgentRepository implements AgentRepository {
     return prisma.agent.update({
       where: { id: input.agentId },
       data: { miniAppGuide: input.miniAppGuide },
+    })
+  }
+
+  async updatePlacementOverrides(input: {
+    agentId: string
+    placementOverrides: Prisma.InputJsonValue | null
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { placementOverrides: input.placementOverrides ?? Prisma.DbNull },
     })
   }
 

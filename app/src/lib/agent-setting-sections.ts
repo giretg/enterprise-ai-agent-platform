@@ -120,6 +120,13 @@ export const AGENT_SETTING_SECTIONS = [
     wizardUses: ['UpdateOutputFolderForm'],
   },
   {
+    id: 'placementOverrides',
+    detailSection: 'memoriairas',
+    detailComponent: 'UpdatePlacementOverridesForm',
+    wizardSkipReason:
+      'Nem kötelező: az alapszabály (tények a memóriába, szabályok skillbe) a legtöbb munkatársnak megfelel — eltérés utólag az adatlapon adható meg.',
+  },
+  {
     id: 'projectMemory',
     detailSection: 'memoriairas',
     detailComponent: 'AgentProjectMemoryBrowser',

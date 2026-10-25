@@ -156,6 +156,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.conversation.proposal.overwritten',
   'skill.conversation.approved',
   'skill.conversation.rejected',
+  'skill.conversation.revised',
   'skill.share',
 
   'project.create',
@@ -180,6 +181,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'mini_app.purged',
   'mini_app.validation_failed',
   'agent.mini_app_guide',
+  'agent.placement_overrides',
   'platform_setting.mini_app_link_ttl_changed',
 
   'model_gateway.token.issued',

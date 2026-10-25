@@ -352,12 +352,12 @@ async function main() {
     assert.ok(agents?.content.includes(briefing))
   })
 
-  await check('#652 briefing size: tables of contents only, bounded besides roleInstruction', () => {
+  await check('#652 briefing size: skill description and triggers are never clipped, the list is capped at 25', () => {
     const many = Array.from({ length: 200 }, (_, i) => {
       const id = `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`
       return {
         ...skill(id, id, `skill-${i}`, { ...pinnedBody, triggerKeywords: Array.from({ length: 50 }, (_, t) => `trigger-${t}`) }),
-        description: 'x'.repeat(5000),
+        description: 'x'.repeat(1024),
       }
     })
     const roleInstruction = 'r'.repeat(20000)
@@ -370,7 +370,9 @@ async function main() {
     })
     const briefing = renderAgentBriefing({ definition: def, skills: many })
     assert.ok(briefing.includes(roleInstruction))
-    assert.ok(briefing.length - roleInstruction.length < 16000, `${briefing.length - roleInstruction.length}`)
+    assert.ok(briefing.length - roleInstruction.length < 50000, `${briefing.length - roleInstruction.length}`)
+    assert.ok(briefing.includes('x'.repeat(1024)), 'full description')
+    assert.ok(briefing.includes('trigger-49.'), 'last trigger of the skill is listed')
     assert.match(briefing, /…and 175 more/)
   })
 

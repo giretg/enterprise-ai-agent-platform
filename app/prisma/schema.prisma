@@ -558,6 +558,8 @@ model Agent {
   modelConfig                Json?           @map("model_config")
   /** Mini app útmutató (#967 D12): opcionális prompt; publikáláskor a snapshot.miniAppGuide-ba fagy. ≤ 8000 karakter. */
   miniAppGuide               String          @default("") @map("mini_app_guide")
+  /// „Hová mit ments” tábla agentenkénti felülírása: { sor-kulcs: saját szabály }. Publikáláskor a snapshot.placementOverrides-ba fagy.
+  placementOverrides         Json?           @map("placement_overrides")
   createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
@@ -672,6 +674,8 @@ model ConversationSkillProposal {
   decidedAt     DateTime?                       @map("decided_at") @db.Timestamptz
   decidedById   String?                         @map("decided_by") @db.Uuid
   skillId       String?                         @map("skill_id") @db.Uuid
+  /// Meglévő tenant-skill, amelynek a javaslat új verzióját adja (nincs FK: a jóváhagyáskor újra ellenőrizzük).
+  targetSkillId String?                         @map("target_skill_id") @db.Uuid
 
   tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   agent       Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)

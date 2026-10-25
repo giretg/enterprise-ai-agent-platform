@@ -13,6 +13,7 @@ import {
   SKILL_NAME_MAX,
   skillRequiresSchema,
   type SkillContent,
+  type SkillParameter,
   type SkillRequirement,
 } from '@/lib/skill/skill-content'
 import { findInjectionPatterns, validateSkill } from '@/lib/skill/skill-validator'
@@ -30,6 +31,7 @@ export const CONVERSATION_SKILL_AUDIT = {
   overwritten: 'skill.conversation.proposal.overwritten',
   approved: 'skill.conversation.approved',
   rejected: 'skill.conversation.rejected',
+  revised: 'skill.conversation.revised',
 } as const
 
 /** A beszélgetésből jövő skill mindig közönséges tenant skill. */
@@ -44,6 +46,9 @@ export function conversationSkillRecord(): {
 const NAME_TAKEN_MESSAGE =
   'Elutasítva: ez a név foglalt (aktív skill vagy nyitott javaslat). Semmi nem került tárolásra. Hívj újra másik névvel.'
 
+export const TRIGGER_KEYWORDS_MAX = 30
+export const TRIGGER_KEYWORD_MAX_LENGTH = 80
+
 const attachmentInputSchema = z.object({
   path: z.string().min(1).max(300),
   text: z.string(),
@@ -56,6 +61,14 @@ export const conversationSkillSubmitSchema = z.object({
   name: z.string().min(1).max(SKILL_NAME_MAX),
   description: z.string().min(1).max(SKILL_DESCRIPTION_MAX),
   instructions: z.string().min(1).max(SKILL_INSTRUCTIONS_MAX),
+  // Same reason as requires/attachments: a plain string, the server splits it.
+  triggerKeywords: z
+    .string()
+    .max(2_000)
+    .describe(
+      `Comma- or newline-separated words and phrases that tell the agent WHEN to use this skill (max ${TRIGGER_KEYWORDS_MAX}, each up to ${TRIGGER_KEYWORD_MAX_LENGTH} characters). They are shown next to the description in the agent's skill list. Omit to keep the current ones when you update an existing skill.`,
+    )
+    .optional(),
   // ponytail: string, not array — Claude.ai drops advertised array schemas.
   // Attachments cap is 2× the text budget so JSON quotes fit; the real byte cap is applied after parse.
   requires: z
@@ -94,21 +107,55 @@ function decodeJsonList<T>(
 }
 
 /** A hirdetett MCP-séma szöveg. A tömböt csak a szerver bontja ki. */
+export function parseTriggerKeywords(
+  raw: string | undefined,
+): { ok: true; data: string[] | undefined } | { ok: false; message: string } {
+  if (raw == null) return { ok: true, data: undefined }
+  const seen = new Set<string>()
+  const words: string[] = []
+  for (const part of raw.split(/[,\n;]/)) {
+    const word = part.trim().replace(/\s+/g, ' ')
+    if (!word || seen.has(word.toLowerCase())) continue
+    seen.add(word.toLowerCase())
+    words.push(word)
+  }
+  if (words.length > TRIGGER_KEYWORDS_MAX) {
+    return { ok: false, message: `Legfeljebb ${TRIGGER_KEYWORDS_MAX} trigger-kulcsszó adható meg.` }
+  }
+  const tooLong = words.find((word) => word.length > TRIGGER_KEYWORD_MAX_LENGTH)
+  if (tooLong) {
+    return {
+      ok: false,
+      message: `A(z) „${tooLong.slice(0, 30)}…” trigger-kulcsszó túl hosszú (max ${TRIGGER_KEYWORD_MAX_LENGTH} karakter).`,
+    }
+  }
+  return { ok: true, data: words }
+}
+
 export function parseConversationSkillJsonLists(input: {
   requires?: string
   attachments?: string
+  triggerKeywords?: string
 }):
   | {
       ok: true
       requires: SkillRequirement[] | undefined
       attachments: Array<{ path: string; text: string }> | undefined
+      triggerKeywords: string[] | undefined
     }
   | { ok: false; message: string } {
   const requires = decodeJsonList('requires', input.requires, skillRequiresSchema)
   if (!requires.ok) return requires
   const attachments = decodeJsonList('attachments', input.attachments, attachmentListSchema)
   if (!attachments.ok) return attachments
-  return { ok: true, requires: requires.data, attachments: attachments.data }
+  const triggerKeywords = parseTriggerKeywords(input.triggerKeywords)
+  if (!triggerKeywords.ok) return triggerKeywords
+  return {
+    ok: true,
+    requires: requires.data,
+    attachments: attachments.data,
+    triggerKeywords: triggerKeywords.data,
+  }
 }
 
 export type ConversationSkillDraft = {
@@ -137,6 +184,17 @@ export type OpenConversationSkillProposal = {
   content: SkillContent
   requires: SkillRequirement[]
   attachments: SkillAttachment[]
+  /** Ha be van állítva, a jóváhagyás ennek a skillnek ad új verziót, nem új skillt hoz létre. */
+  targetSkillId: string | null
+}
+
+/** A tenant meglévő, beszélgetésből is módosítható skillje: az aktív verzió tartalmával. */
+export type RevisableSkill = {
+  skillId: string
+  version: number
+  content: SkillContent
+  requires: SkillRequirement[]
+  attachments: SkillAttachment[]
 }
 
 export type ConversationSkillPorts = {
@@ -153,6 +211,15 @@ export type ConversationSkillPorts = {
     name: string
     exceptProposalId?: string
   }) => Promise<boolean>
+  /** Tenant-saját, aktív, nem gyártó skill ezen a néven (a név kis-nagybetű nélkül egyezik). */
+  findRevisable: (input: { tenantId: string; name: string }) => Promise<RevisableSkill | null>
+  /** Új aktív verzió + leírás-frissítés; az agentek hozzárendelése az új verzióra áll át. */
+  reviseLive: (input: {
+    tenantId: string
+    userId: string
+    skillId: string
+    draft: ConversationSkillDraft
+  }) => Promise<{ ok: true; version: number } | { ok: false; reason: 'not_found' }>
   createLive: (input: {
     tenantId: string
     userId: string
@@ -164,6 +231,7 @@ export type ConversationSkillPorts = {
     userId: string
     agentId: string
     draft: ConversationSkillDraft
+    targetSkillId?: string
   }) => Promise<
     | { ok: true; proposalId: string; overwritten: boolean }
     | { ok: false; reason: 'name_taken' }
@@ -185,8 +253,8 @@ export type ConversationSkillPorts = {
     adminId: string
     draft: ConversationSkillDraft
   }) => Promise<
-    | { ok: true; skillId: string; agentId: string }
-    | { ok: false; reason: 'name_taken' | 'not_open' }
+    | { ok: true; skillId: string; agentId: string; version?: number }
+    | { ok: false; reason: 'name_taken' | 'not_open' | 'target_gone' }
   >
   rejectOpen: (input: {
     tenantId: string
@@ -212,8 +280,17 @@ export type ConversationSkillOutcome =
       message: string
     }
   | {
+      outcome: 'revised'
+      skillId: string
+      version: number
+      missingTools: string[]
+      message: string
+    }
+  | {
       outcome: 'pending_approval'
       proposalId: string
+      /** Meglévő skill új verziójának javaslata (nem új skill). */
+      revisesSkillId?: string
       missingTools: string[]
       message: string
     }
@@ -269,12 +346,15 @@ export function prepareConversationSkillDraft(input: {
   instructions: string
   requires: SkillRequirement[]
   attachments: Array<{ path: string; text: string }>
+  triggerKeywords?: string[]
+  /** Meglévő skill új verziójánál az eddigi paraméterek megmaradnak. */
+  parameters?: SkillParameter[]
 }): { ok: true; draft: ConversationSkillDraft } | { ok: false; errors: string[] } {
   const instructions = input.instructions.trim()
   const content: SkillContent = {
     instructions: instructions ? [instructions] : [],
-    triggerKeywords: [],
-    parameters: [],
+    triggerKeywords: input.triggerKeywords ?? [],
+    parameters: input.parameters ?? [],
   }
   let attachments: SkillAttachment[]
   try {
@@ -317,6 +397,7 @@ export async function submitConversationSkill(
     instructions: string
     requires?: SkillRequirement[]
     attachments?: Array<{ path: string; text: string }>
+    triggerKeywords?: string[]
   },
   ports: ConversationSkillPorts,
 ): Promise<ConversationSkillOutcome> {
@@ -339,12 +420,20 @@ export async function submitConversationSkill(
       message: 'Elutasítva: ezen az agenten nincs bekapcsolt gyártó skill. A skill nem került sorba.',
     }
   }
+  // Foglalt név egy tenant-saját aktív skillnél = új verzió ahhoz a skillhez. Amit a hívás nem ad meg
+  // (trigger, requires, mellékletek, paraméterek), az az eddigi verzióból marad.
+  const existing = await ports.findRevisable({ tenantId: input.tenantId, name: input.name })
   const prepared = prepareConversationSkillDraft({
     name: input.name,
     description: input.description,
     instructions: input.instructions,
-    requires: input.requires ?? [],
-    attachments: input.attachments ?? [],
+    requires: input.requires ?? existing?.requires ?? [],
+    attachments:
+      input.attachments ??
+      existing?.attachments.map((attachment) => ({ path: attachment.path, text: attachment.text })) ??
+      [],
+    triggerKeywords: input.triggerKeywords ?? existing?.content.triggerKeywords ?? [],
+    parameters: existing?.content.parameters,
   })
   if (!prepared.ok) {
     return {
@@ -354,21 +443,23 @@ export async function submitConversationSkill(
     }
   }
 
-  const exceptProposalId =
-    input.role === 'admin'
-      ? undefined
-      : (await ports.openProposalId({
-          tenantId: input.tenantId,
-          userId: input.userId,
-          agentId: input.agentId,
-        })) ?? undefined
-  const taken = await ports.nameTaken({
-    tenantId: input.tenantId,
-    name: prepared.draft.name,
-    exceptProposalId,
-  })
-  if (taken) {
-    return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
+  if (!existing) {
+    const exceptProposalId =
+      input.role === 'admin'
+        ? undefined
+        : (await ports.openProposalId({
+            tenantId: input.tenantId,
+            userId: input.userId,
+            agentId: input.agentId,
+          })) ?? undefined
+    const taken = await ports.nameTaken({
+      tenantId: input.tenantId,
+      name: prepared.draft.name,
+      exceptProposalId,
+    })
+    if (taken) {
+      return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
+    }
   }
 
   const missingTools = missingToolNames(
@@ -376,6 +467,34 @@ export async function submitConversationSkill(
     await ports.allowedToolNames(input.agentId),
   )
   const live = input.role === 'admin'
+  if (live && existing) {
+    const revised = await ports.reviseLive({
+      tenantId: input.tenantId,
+      userId: input.userId,
+      skillId: existing.skillId,
+      draft: prepared.draft,
+    })
+    if (!revised.ok) {
+      return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
+    }
+    await ports.audit({
+      action: CONVERSATION_SKILL_AUDIT.revised,
+      actorId: input.userId,
+      agentId: input.agentId,
+      targetId: existing.skillId,
+      tenantId: input.tenantId,
+    })
+    return {
+      outcome: 'revised',
+      skillId: existing.skillId,
+      version: revised.version,
+      missingTools,
+      message: withMissingTools(
+        `A(z) „${prepared.draft.name}” skill új verziója (v${revised.version}) él. A leírás és a trigger-kulcsszavak is frissültek, a skillt használó agentek az új verziót kapják. Az előző verzió az admin felületen visszaállítható.`,
+        missingTools,
+      ),
+    }
+  }
   if (live) {
     const created = await ports.createLive({
       tenantId: input.tenantId,
@@ -411,6 +530,7 @@ export async function submitConversationSkill(
     userId: input.userId,
     agentId: input.agentId,
     draft: prepared.draft,
+    ...(existing ? { targetSkillId: existing.skillId } : {}),
   })
   if (!queued.ok) {
     return { outcome: 'rejected', reason: 'name_taken', message: NAME_TAKEN_MESSAGE }
@@ -424,15 +544,23 @@ export async function submitConversationSkill(
     targetId: queued.proposalId,
     tenantId: input.tenantId,
   })
+  const subject = existing
+    ? `A(z) „${prepared.draft.name}” skill új verziója`
+    : 'A skill'
   const pendingBase = queued.overwritten
-    ? 'A skill jóváhagyásra vár. A korábbi nyitott javaslatod ehhez az agenthez felülíródott, a régi név felszabadult.'
-    : 'A skill jóváhagyásra vár. Tenant admin a képességek katalógusában bírálja.'
+    ? `${subject} jóváhagyásra vár. A korábbi nyitott javaslatod ehhez az agenthez felülíródott, a régi név felszabadult.`
+    : `${subject} jóváhagyásra vár. Tenant admin a képességek katalógusában bírálja.`
   return {
     outcome: 'pending_approval',
     proposalId: queued.proposalId,
+    ...(existing ? { revisesSkillId: existing.skillId } : {}),
     missingTools,
     message: withMissingTools(pendingBase, missingTools),
   }
+}
+
+function namesEqual(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
 const ADMIN_ONLY = 'Csak tenant admin bírálhat skill-javaslatot.'
@@ -460,13 +588,19 @@ export async function reviseConversationSkillProposal(
       path: attachment.path,
       text: attachment.text,
     })),
+    triggerKeywords: open.content.triggerKeywords,
+    parameters: open.content.parameters,
   })
   if (!prepared.ok) return { ok: false, message: prepared.errors.join(' · ') }
-  const taken = await ports.nameTaken({
-    tenantId: input.tenantId,
-    name: prepared.draft.name,
-    exceptProposalId: open.id,
-  })
+  // Új verzió javaslatánál a név a célskill neve: ott a „foglalt” az elvárt állapot.
+  const keepsTargetName = open.targetSkillId != null && namesEqual(prepared.draft.name, open.name)
+  const taken =
+    !keepsTargetName &&
+    (await ports.nameTaken({
+      tenantId: input.tenantId,
+      name: prepared.draft.name,
+      exceptProposalId: open.id,
+    }))
   if (taken) {
     return {
       ok: false,
@@ -524,13 +658,17 @@ export async function decideConversationSkillProposal(
       path: attachment.path,
       text: attachment.text,
     })),
+    triggerKeywords: open.content.triggerKeywords,
+    parameters: open.content.parameters,
   })
   if (!prepared.ok) return { ok: false, message: prepared.errors.join(' · ') }
-  const taken = await ports.nameTaken({
-    tenantId: input.tenantId,
-    name: prepared.draft.name,
-    exceptProposalId: open.id,
-  })
+  const taken = open.targetSkillId
+    ? false
+    : await ports.nameTaken({
+        tenantId: input.tenantId,
+        name: prepared.draft.name,
+        exceptProposalId: open.id,
+      })
   if (taken) {
     return {
       ok: false,
@@ -549,7 +687,9 @@ export async function decideConversationSkillProposal(
       message:
         approved.reason === 'name_taken'
           ? 'Ez a név foglalt (aktív skill vagy másik nyitott javaslat). Írd át a nevet, aztán hagyd jóvá.'
-          : 'Nincs ilyen nyitott javaslat.',
+          : approved.reason === 'target_gone'
+            ? 'A módosítandó skill időközben megszűnt vagy visszavonták. Utasítsd el a javaslatot, és küldd be újra új skillként.'
+            : 'Nincs ilyen nyitott javaslat.',
     }
   }
   await ports.audit({
