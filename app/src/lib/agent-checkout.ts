@@ -361,8 +361,6 @@ function skillFolderName(skill: CheckoutSkill, colliding: boolean): string {
 }
 
 const BRIEFING_MAX_SKILLS = 25
-const BRIEFING_SKILL_DESCRIPTION_MAX = 240
-const BRIEFING_MAX_TRIGGERS = 8
 
 function mcpToolNames(capabilities: Array<{ toolName: string; allowed: boolean }>): string[] {
   return capabilities.filter((row) => row.allowed && MCP_TOOL_SET.has(row.toolName)).map((row) => row.toolName)
@@ -504,7 +502,10 @@ export function renderAgentBriefing(input: {
     '',
     'All work for this agent runs through this MCP server — there is no separate in-platform chat runtime.',
     '',
-    renderKnowledgePlacementBlock({ wikiCapable: input.wikis?.some(wiki => wiki.access !== 'read') }),
+    renderKnowledgePlacementBlock({
+      wikiCapable: input.wikis?.some((wiki) => wiki.access !== 'read'),
+      overrides: snapshot.placementOverrides,
+    }),
     '',
     '- Memory: memoryIndex in platform.agent.get_definition; full text via platform.project_memory.read (ids or query). Read before answering company questions or searching. Write: platform.project_memory.write (omit projectKey for general memory).',
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
@@ -549,9 +550,10 @@ export function renderAgentBriefing(input: {
       '',
     )
     for (const { pin, skill } of skills.slice(0, BRIEFING_MAX_SKILLS)) {
-      const triggers = skill.content.triggerKeywords.slice(0, BRIEFING_MAX_TRIGGERS)
+      // The description and triggers are how the agent knows WHEN to use a skill: never clip them.
+      const triggers = skill.content.triggerKeywords
       const trigger = triggers.length > 0 ? ` Triggers: ${triggers.join(', ')}.` : ''
-      const text = clipLabel(skill.description.trim().replace(/\s+/g, ' '), BRIEFING_SKILL_DESCRIPTION_MAX)
+      const text = skill.description.trim().replace(/\s+/g, ' ')
       const label = pin.entry ? ' (entry skill — read first on every new task)' : ''
       lines.push(`- ${pin.name}${label}: ${text}${trigger} ${skillUri(pin.name)}`)
     }

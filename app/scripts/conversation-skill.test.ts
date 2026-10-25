@@ -23,6 +23,7 @@ import {
   submitConversationSkill,
   type ConversationSkillDraft,
   type ConversationSkillPorts,
+  type RevisableSkill,
 } from '../src/domain/skill/conversation-skill'
 
 let failures = 0
@@ -54,6 +55,8 @@ type Proposal = {
   requires: Array<{ toolName: string; reason: string }>
   status: 'open' | 'rejected' | 'approved'
   skillId?: string
+  triggerKeywords?: string[]
+  targetSkillId?: string
 }
 
 type Mem = {
@@ -66,6 +69,9 @@ type Mem = {
   audits: Array<{ action: string; actorId: string; agentId: string; targetId: string }>
   grants: string[]
   seq: number
+  /** Tenant-saját aktív skillek, amelyeknek a beszélgetés új verziót adhat (kulcs: kisbetűs név). */
+  revisable: Map<string, RevisableSkill>
+  revisions: Array<{ skillId: string; draft: ConversationSkillDraft }>
 }
 
 function memory(): { mem: Mem; ports: ConversationSkillPorts } {
@@ -79,6 +85,8 @@ function memory(): { mem: Mem; ports: ConversationSkillPorts } {
     audits: [],
     grants: [],
     seq: 1,
+    revisable: new Map(),
+    revisions: [],
   }
   const namesEqual = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
   const nameTaken = (name: string, exceptProposalId?: string) =>
@@ -113,6 +121,16 @@ function memory(): { mem: Mem; ports: ConversationSkillPorts } {
     async nameTaken(input) {
       return nameTaken(input.name, input.exceptProposalId)
     },
+    async findRevisable(input) {
+      return mem.revisable.get(input.name.trim().toLowerCase()) ?? null
+    },
+    async reviseLive(input) {
+      const target = [...mem.revisable.values()].find((row) => row.skillId === input.skillId)
+      if (!target) return { ok: false, reason: 'not_found' }
+      target.version += 1
+      mem.revisions.push({ skillId: input.skillId, draft: input.draft })
+      return { ok: true, version: target.version }
+    },
     async createLive(input) {
       if (nameTaken(input.draft.name)) return { ok: false, reason: 'name_taken' }
       const id = `skill-${mem.seq++}`
@@ -133,8 +151,12 @@ function memory(): { mem: Mem; ports: ConversationSkillPorts } {
           proposal.userId === input.userId &&
           proposal.agentId === input.agentId,
       )
-      if (nameTaken(input.draft.name, existing?.id)) return { ok: false, reason: 'name_taken' }
+      if (!input.targetSkillId && nameTaken(input.draft.name, existing?.id)) {
+        return { ok: false, reason: 'name_taken' }
+      }
       const next = {
+        triggerKeywords: input.draft.content.triggerKeywords,
+        targetSkillId: input.targetSkillId,
         name: input.draft.name,
         description: input.draft.description,
         instructions: input.draft.content.instructions.join('\n\n'),
@@ -172,7 +194,7 @@ function memory(): { mem: Mem; ports: ConversationSkillPorts } {
         description: proposal.description,
         content: {
           instructions: [proposal.instructions],
-          triggerKeywords: [],
+          triggerKeywords: proposal.triggerKeywords ?? [],
           parameters: [],
         },
         requires: proposal.requires,
@@ -181,6 +203,7 @@ function memory(): { mem: Mem; ports: ConversationSkillPorts } {
           bytes: attachment.text.length,
           sha256: 'abc',
         })),
+        targetSkillId: proposal.targetSkillId ?? null,
       }
     },
     async updateOpen(input) {
@@ -198,6 +221,14 @@ function memory(): { mem: Mem; ports: ConversationSkillPorts } {
         (row) => row.id === input.proposalId && row.status === 'open',
       )
       if (!proposal) return { ok: false, reason: 'not_open' }
+      if (proposal.targetSkillId) {
+        const target = [...mem.revisable.values()].find((row) => row.skillId === proposal.targetSkillId)
+        if (!target) return { ok: false, reason: 'target_gone' }
+        target.version += 1
+        mem.revisions.push({ skillId: target.skillId, draft: input.draft })
+        proposal.status = 'approved'
+        return { ok: true, skillId: target.skillId, agentId: proposal.agentId, version: target.version }
+      }
       if (nameTaken(input.draft.name, proposal.id)) return { ok: false, reason: 'name_taken' }
       const id = `skill-${mem.seq++}`
       mem.skills.push({
@@ -254,6 +285,7 @@ async function submit(
     instructions: string
     requires: Array<{ toolName: string; reason: string }>
     attachments: Array<{ path: string; text: string }>
+    triggerKeywords: string[]
   }>,
 ) {
   return submitConversationSkill(
@@ -606,6 +638,119 @@ async function main() {
     } finally {
       prisma.agentSkill.findFirst = original
     }
+  })
+
+  const existingSkill = (): RevisableSkill => ({
+    skillId: 'skill-existing',
+    version: 3,
+    content: { instructions: ['Régi szöveg.'], triggerKeywords: ['régi-kulcs'], parameters: [] },
+    requires: [{ toolName: 'kb_search', reason: 'olvasas' }],
+    attachments: [{ path: 'scripts/old.py', text: 'print(0)\n', bytes: 9, sha256: 'old' }],
+  })
+  const withExisting = (box: ReturnType<typeof memory>) => {
+    box.mem.revisable.set(draftInput.name, existingSkill())
+    box.mem.activeNames.add(draftInput.name)
+  }
+
+  await check('trigger-kulcsszó: a beküldés a tartalomba teszi, duplikátumot és túl hosszút nem enged', async () => {
+    const parsed = parseConversationSkillJsonLists({ triggerKeywords: ' heti jelentés,Heti Jelentés\nriport ; ' })
+    assert.equal(parsed.ok, true)
+    if (parsed.ok) assert.deepEqual(parsed.triggerKeywords, ['heti jelentés', 'riport'])
+    assert.equal(parseConversationSkillJsonLists({ triggerKeywords: 'x'.repeat(81) }).ok, false)
+    assert.equal(
+      parseConversationSkillJsonLists({ triggerKeywords: Array.from({ length: 31 }, (_, i) => `k${i}`).join(',') }).ok,
+      false,
+    )
+    assert.equal(conversationSkillSubmitSchema.safeParse({
+      agentId: AGENT, ...draftInput, triggerKeywords: 'a, b',
+    }).success, true)
+    const prepared = prepareConversationSkillDraft({
+      ...draftInput, requires: [], attachments: [], triggerKeywords: ['a', 'b'],
+    })
+    assert.equal(prepared.ok && prepared.draft.content.triggerKeywords.join(), 'a,b')
+  })
+
+  await check('admin foglalt névnél új verziót ad: leírás/trigger frissül, a kihagyott requires és melléklet marad', async () => {
+    const box = memory()
+    allow(box.mem, ADMIN)
+    withExisting(box)
+    const result = await submit(box, { userId: ADMIN, role: 'admin' }, {
+      description: 'Új, jobb leírás.',
+      triggerKeywords: ['heti', 'riport'],
+    })
+    assert.equal(result.outcome, 'revised')
+    if (result.outcome !== 'revised') return
+    assert.equal(result.skillId, 'skill-existing')
+    assert.equal(result.version, 4)
+    assert.equal(box.mem.skills.length, 0, 'nem jött létre új skill')
+    const rev = box.mem.revisions[0]!
+    assert.equal(rev.draft.description, 'Új, jobb leírás.')
+    assert.deepEqual(rev.draft.content.triggerKeywords, ['heti', 'riport'])
+    assert.deepEqual(rev.draft.requires, [{ toolName: 'kb_search', reason: 'olvasas' }])
+    assert.deepEqual(rev.draft.attachments.map((a) => a.path), ['scripts/old.py'])
+    assert.equal(box.mem.audits[0]?.action, CONVERSATION_SKILL_AUDIT.revised)
+    assert.equal(box.mem.audits[0]?.targetId, 'skill-existing')
+  })
+
+  await check('új verziónál a megadott trigger nélkül a régi trigger marad, üres lista töröl', async () => {
+    const keep = memory()
+    allow(keep.mem, ADMIN)
+    withExisting(keep)
+    await submit(keep, { userId: ADMIN, role: 'admin' })
+    assert.deepEqual(keep.mem.revisions[0]?.draft.content.triggerKeywords, ['régi-kulcs'])
+    const clear = memory()
+    allow(clear.mem, ADMIN)
+    withExisting(clear)
+    await submit(clear, { userId: ADMIN, role: 'admin' }, { triggerKeywords: [] })
+    assert.deepEqual(clear.mem.revisions[0]?.draft.content.triggerKeywords, [])
+  })
+
+  await check('operátor új verziója javaslat a célskill azonosítóval, a név nem foglalt-hiba', async () => {
+    const box = memory()
+    allow(box.mem, OPERATOR)
+    withExisting(box)
+    const queued = await submit(box, { userId: OPERATOR, role: 'operator' }, { triggerKeywords: ['riport'] })
+    assert.equal(queued.outcome, 'pending_approval')
+    if (queued.outcome !== 'pending_approval') return
+    assert.equal(queued.revisesSkillId, 'skill-existing')
+    assert.match(queued.message, /új verziója/)
+    assert.equal(box.mem.revisions.length, 0, 'jóváhagyásig nem változik semmi')
+    assert.equal(box.mem.proposals[0]?.targetSkillId, 'skill-existing')
+
+    const approved = await decideConversationSkillProposal(
+      { actorRole: 'admin', tenantId: TENANT, adminId: ADMIN, proposalId: queued.proposalId, decision: 'approve' },
+      box.ports,
+    )
+    assert.equal(approved.ok, true)
+    assert.equal(box.mem.skills.length, 0)
+    assert.deepEqual(box.mem.revisions[0]?.draft.content.triggerKeywords, ['riport'])
+    assert.equal(box.mem.audits.at(-1)?.action, CONVERSATION_SKILL_AUDIT.approved)
+  })
+
+  await check('jóváhagyáskor megszűnt célskillnél érthető hiba, nem új skill', async () => {
+    const box = memory()
+    allow(box.mem, OPERATOR)
+    withExisting(box)
+    const queued = await submit(box, { userId: OPERATOR, role: 'operator' })
+    assert.equal(queued.outcome, 'pending_approval')
+    if (queued.outcome !== 'pending_approval') return
+    box.mem.revisable.clear()
+    const approved = await decideConversationSkillProposal(
+      { actorRole: 'admin', tenantId: TENANT, adminId: ADMIN, proposalId: queued.proposalId, decision: 'approve' },
+      box.ports,
+    )
+    assert.equal(approved.ok, false)
+    if (!approved.ok) assert.match(approved.message, /időközben megszűnt/)
+    assert.equal(box.mem.skills.length, 0)
+  })
+
+  await check('foglalt név, de nem módosítható skillnél (nincs revisable) továbbra is name_taken', async () => {
+    const box = memory()
+    allow(box.mem, ADMIN)
+    box.mem.activeNames.add(draftInput.name)
+    const result = await submit(box, { userId: ADMIN, role: 'admin' })
+    assert.equal(result.outcome, 'rejected')
+    if (result.outcome === 'rejected') assert.equal(result.reason, 'name_taken')
   })
 
   await check('a jóváhagyások oldal nem skill-javaslatot listáz, az audit katalógusban benne van', () => {

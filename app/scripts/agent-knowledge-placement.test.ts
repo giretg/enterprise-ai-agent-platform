@@ -7,6 +7,7 @@ import {
   detectMisplacedMemoryWrite,
   KNOWLEDGE_PLACEMENT_TABLE,
   renderKnowledgePlacementBlock,
+  parsePlacementOverrides,
   type KnowledgePlacementTarget,
 } from '../src/lib/agent-knowledge-placement'
 import { buildMcpServerInstructions } from '../src/lib/mcp-tenant-context'
@@ -58,6 +59,45 @@ check('server instructions and briefing share the table block', () => {
   }
   const briefing = renderAgentBriefing({ definition: def, skills: [] })
   assert.ok(briefing.includes(block))
+})
+
+check('agent override replaces only its own row and is marked as agent rule', () => {
+  const block = renderKnowledgePlacementBlock({ overrides: { fact: 'knowledge base, page "Tények"' } })
+  assert.match(block, /\| Company fact, decision, location \(true now\) \| knowledge base, page "Tények" \| agent rule \|/)
+  assert.match(block, /marked "agent rule"/)
+  assert.match(block, /\| Operating rule or procedure \("how we do it"\) \| skill — propose for approval \| `platform\.skills\.submit` \|/)
+  assert.equal(block.includes('platform.project_memory.write` (replaceId'), false)
+  assert.equal(renderKnowledgePlacementBlock({ overrides: {} }), renderKnowledgePlacementBlock())
+})
+
+check('parsePlacementOverrides drops unknown keys, blanks and non-strings, clips length', () => {
+  assert.deepEqual(parsePlacementOverrides(null), {})
+  assert.deepEqual(parsePlacementOverrides(['fact']), {})
+  assert.deepEqual(
+    parsePlacementOverrides({ fact: '  a\n b ', rule: '   ', bogus: 'x', plan: 5 }),
+    { fact: 'a b' },
+  )
+  assert.equal(parsePlacementOverrides({ fact: 'x'.repeat(999) }).fact?.length, 300)
+})
+
+check('briefing shows the snapshot override', () => {
+  const def: AgentDefinition = {
+    agentId: 'a',
+    definitionId: 'd',
+    version: 1,
+    status: 'active',
+    snapshot: {
+      name: 'Agent',
+      description: null,
+      roleInstruction: 'Role',
+      capabilities: [],
+      connectors: [],
+      skills: [],
+      placementOverrides: { deliverable: 'Drive folder "Heti riportok"' },
+    },
+  }
+  const briefing = renderAgentBriefing({ definition: def, skills: [] })
+  assert.match(briefing, /Finished deliverable for humans \| Drive folder "Heti riportok" \| agent rule/)
 })
 
 check('detectMisplacedMemoryWrite flags long document-like body', () => {

@@ -46,6 +46,8 @@ import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-pane
 import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { AgentAccessPanel } from '@/components/agents/agent-access-panel'
 import { AgentMiniAppsPanel } from '@/components/agents/agent-mini-apps-panel'
+import { parsePlacementOverrides } from '@/lib/agent-knowledge-placement'
+import { UpdatePlacementOverridesForm } from '@/components/agents/update-placement-overrides-form'
 import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
 import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
@@ -306,6 +308,13 @@ export default async function AgentDetailPage({
               driveGrantId={drivePickerCtx?.grantId ?? null}
               driveGrants={drivePickerCtx?.grants ?? []}
               drivePickerConfigured={drivePickerCtx?.pickerConfigured ?? false}
+              canEdit={canManage}
+            />
+          </Card>
+          <Card title="Hová mit ment a munkatárs">
+            <UpdatePlacementOverridesForm
+              agentId={agent.id}
+              placementOverrides={parsePlacementOverrides(agent.placementOverrides)}
               canEdit={canManage}
             />
           </Card>

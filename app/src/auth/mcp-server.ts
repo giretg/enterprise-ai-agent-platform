@@ -730,6 +730,7 @@ async function submitSkillToolResult(
       instructions: parsed.data.instructions,
       requires: lists.requires,
       attachments: lists.attachments,
+      triggerKeywords: lists.triggerKeywords,
     },
     buildConversationSkillPorts(),
   )
@@ -1429,7 +1430,7 @@ async function createMcpResourceHandler(
         {
           title: 'Submit skill from conversation',
           description:
-            'Submit a new tenant skill written in this conversation for the named agentId — use for operating rules and procedures ("how we do it"), not for one-off facts (see Where to save what table). requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
+            'Submit a tenant skill written in this conversation for the named agentId — use for operating rules and procedures ("how we do it"), not for one-off facts (see Where to save what table). The description and triggerKeywords are what tells the agent WHEN to use the skill, so write them so that the role briefing never has to name the skill: say what the skill is for and list the words or situations that should make the agent reach for it. requires and attachments are JSON strings, not arrays; triggerKeywords is a comma-separated string. If a tenant skill with this name already exists, the call adds a NEW VERSION to it (description and instructions are replaced; triggerKeywords, requires and attachments you omit stay as they were) — use this to fix a description or add trigger keywords. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), revised (new version of an existing skill is live), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken — the name belongs to a skill that cannot be changed from a conversation). A tenant admin gets the skill or the new version live without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
           inputSchema: conversationSkillSubmitSchema,
         },
         async (args) =>

@@ -114,6 +114,7 @@ export interface AgentRepository {
   updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent>
   updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent>
   updateMiniAppGuide(input: { agentId: string; miniAppGuide: string }): Promise<Agent>
+  updatePlacementOverrides(input: { agentId: string; placementOverrides: Prisma.InputJsonValue | null }): Promise<Agent>
   updateModelConfig(input: { agentId: string; modelConfig: Prisma.InputJsonValue }): Promise<Agent>
   updateApprover(input: { agentId: string; approverUserId: string | null }): Promise<Agent>
   setCurrentDefinitionVersionId(agentId: string, versionId: string): Promise<Agent>

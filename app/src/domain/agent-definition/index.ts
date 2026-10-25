@@ -14,6 +14,11 @@
  * Snapshots never contain secrets, `tokenRef`, `secretAlias`, `modelConfig`,
  * session, queue, or Clerk ids. They may contain published hard/trained rule text.
  */
+import {
+  hasPlacementOverrides,
+  parsePlacementOverrides,
+  type PlacementOverrides,
+} from '@/lib/agent-knowledge-placement'
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
 import { describeGoogleAccountBinding } from '@/domain/connector/google-account-binding'
@@ -91,6 +96,11 @@ export type AgentDefinitionSnapshot = {
    * kimarad, így a korábbi snapshotok contentHash-e változatlan.
    */
   miniAppGuide?: string
+  /**
+   * „Hová mit ments” tábla agentenkénti felülírása (sor-kulcs → saját szabály). Üresen
+   * kimarad, így a korábbi snapshotok contentHash-e változatlan.
+   */
+  placementOverrides?: PlacementOverrides
 }
 
 export type AgentDefinition = {
@@ -246,6 +256,7 @@ async function buildSnapshot(
     trainedRules?: string
     localRoots?: string
     miniAppGuide?: string
+    placementOverrides?: unknown
   },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
@@ -265,6 +276,7 @@ async function buildSnapshot(
     }),
   )
   const localRoots = snapshotLocalRoots(agent.localRoots)
+  const placementOverrides = parsePlacementOverrides(agent.placementOverrides)
   return {
     name: agent.name,
     roleInstruction: agent.roleInstruction,
@@ -272,6 +284,7 @@ async function buildSnapshot(
     rules: collectSnapshotRules(agent),
     ...(localRoots ? { localRoots } : {}),
     ...(agent.miniAppGuide?.trim() ? { miniAppGuide: agent.miniAppGuide.trim() } : {}),
+    ...(hasPlacementOverrides(placementOverrides) ? { placementOverrides } : {}),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({

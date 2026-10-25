@@ -15,7 +15,7 @@ import type {
   SkillWithVersions,
 } from '../interfaces'
 
-async function migrateAgentAssignmentsToVersion(
+export async function migrateAgentAssignmentsToVersion(
   tx: Prisma.TransactionClient,
   skillId: string,
   activeVersionId: string,
