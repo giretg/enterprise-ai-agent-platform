@@ -1101,6 +1101,42 @@ async function main() {
     }
   })
 
+  await check('#965 shared→private: lefagyott tenant_admin scope nem ad adminnak review/decide jogot', async () => {
+    const wikiId = await wikiIdOf(KB_SHARED)
+    const cs = await wikis.createChangeSet({
+      wikiId,
+      connectorId: KB_SHARED,
+      pages: [],
+      approverScope: { kind: 'tenant_admin', approverUserId: null },
+    })
+    assert.equal(
+      await wikiService.canDecide({ userId: OTHER_USER, role: 'admin', tenantId: TENANT }, cs.id),
+      true,
+      'közös wikinél az admin dönthet',
+    )
+
+    const original = connectors.get(KB_SHARED)!
+    connectors.set(KB_SHARED, { ...original, visibility: 'private_to_user', ownerUserId: OWNER })
+    try {
+      assert.equal(
+        await wikiService.canDecide({ userId: OTHER_USER, role: 'admin', tenantId: TENANT }, cs.id),
+        false,
+        'priváttá váltás után más admin nem láthatja a review élő oldaltörzseit',
+      )
+      assert.equal(
+        await wikiService.canDecide({ userId: OTHER_USER, role: 'admin', assumed: true, tenantId: TENANT }, cs.id),
+        false,
+      )
+      assert.equal(
+        await wikiService.canDecide({ userId: OWNER, role: 'member', tenantId: TENANT }, cs.id),
+        true,
+        'az új tulajdonos továbbra is dönthet / reviewelhet',
+      )
+    } finally {
+      connectors.set(KB_SHARED, original)
+    }
+  })
+
   if (failures > 0) {
     console.log(`\n${failures} FAIL`)
     process.exit(1)

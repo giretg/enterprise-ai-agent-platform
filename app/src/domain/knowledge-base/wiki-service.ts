@@ -55,6 +55,7 @@ import {
   WIKI_CLAIM_TTL_MS,
   canDecideWikiChange,
   effectiveInboxStatus,
+  isPrivateKnowledgeBase,
   ownerAgentIdForKnowledgeBase,
   resolveWikiApprover,
   resolveWikiScopes,
@@ -741,12 +742,20 @@ export class WikiService {
     return this.approverScopeFor(connector)
   }
 
-  /** Csak a change-set rögzített jóváhagyó-köre dönthet (privátnál admin sem). */
+  /**
+   * Csak a change-set rögzített jóváhagyó-köre dönthet (privátnál admin sem).
+   * Élő privát KB (#965 shared→private): a lefagyott `tenant_admin` scope nem
+   * élheti túl a váltást — D13 szerint csak a jelenlegi tulajdonos láthatja /
+   * döntheti (a review `previewChangeSet` élő oldaltörzseket tölt).
+   */
   async canDecide(actor: WikiDecider & { tenantId: string }, changeSetId: string): Promise<boolean> {
     const changeSet = await this.deps.wikis.findChangeSet(changeSetId)
     if (!changeSet) return false
     const connector = await this.deps.connectors.findById(changeSet.connectorId, actor.tenantId)
     if (!connector || connector.tenantId !== actor.tenantId) return false
+    if (isPrivateKnowledgeBase(connector)) {
+      return !!connector.ownerUserId && connector.ownerUserId === actor.userId
+    }
     const scope = parseApproverScope(changeSet.approverScope)
     return scope ? canDecideWikiChange(actor, scope) : false
   }
