@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import type { UserRole } from '@prisma/client'
+import { AUTONOMY_LEVELS } from '@/lib/agent-autonomy'
+import { MAX_HIRE_DESCRIPTION_LENGTH, MAX_HIRE_DRAFT_DAILY_LIMIT } from '@/lib/agent-hire-draft'
 
 const userRoleSchema = z.enum(['viewer', 'operator', 'approver', 'admin']) satisfies z.ZodType<UserRole>
 
@@ -174,6 +176,21 @@ export const setNavVisibilitySchema = z.object({
 
 export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),
+})
+
+/** #957 D3: az agentek önállóságának céges felső korlátja. */
+export const setTenantAutonomyCeilingSchema = z.object({
+  ceiling: z.enum(AUTONOMY_LEVELS),
+})
+
+/** #957 D1: a „Mondd el” AI-vázlatok napi kerete (0 = kikapcsolva). */
+export const setHireDraftDailyLimitSchema = z.object({
+  limit: z.number().int().min(0).max(MAX_HIRE_DRAFT_DAILY_LIMIT),
+})
+
+export const suggestHireDraftSchema = z.object({
+  description: z.string().trim().min(1).max(MAX_HIRE_DESCRIPTION_LENGTH),
+  locale: z.enum(['hu', 'en']),
 })
 
 /** #717: KB-nyelv űrlap-határ (a `KB_LANGUAGE_REGISTRY` kulcsaival egyezik — unit-teszt őrzi). */

@@ -1,4 +1,13 @@
 import type { OkfBundle } from './kb-v3'
+import {
+  WIKI_MAX_PAGE_CHARS,
+  WIKI_PAGE_TYPES,
+  extractWikiLinks,
+  isReservedWikiPath,
+  isValidWikiPath,
+  renderWikiPageMarkdown,
+  type WikiPageState,
+} from './kb-wiki'
 
 /**
  * KB-v3 §7.6 OKF-validator.
@@ -220,4 +229,97 @@ export function validateOkfBundle(bundle: OkfBundle, options: ValidateOptions): 
     warnings,
     issues,
   }
+}
+
+// ---------------------------------------------------------------------------
+// #943 LLM Wiki: a `kb_wiki_write` change-set validátora (#941 §6, D9).
+
+export type WikiValidationPage = {
+  path: string
+  /** `archive`-nál a tartalmat nem nézzük, csak a path-t. */
+  action: 'upsert' | 'patch' | 'archive' | 'move'
+  state: WikiPageState
+}
+
+export type WikiValidationResult = {
+  ok: boolean
+  errors: number
+  warnings: number
+  issues: KbValidationIssue[]
+}
+
+const SOURCE_DATE_RE = /^\d{4}(-\d{2}(-\d{2})?)?$/
+
+/**
+ * Írás előtti, determinisztikus ellenőrzés. Hard hiba → `invalid_wiki_change`, és
+ * semmi nem íródik; a figyelmeztetés (törött link, érzékeny adat) nem blokkol.
+ * Az üzenetek angolok: az agent olvassa és javítja őket.
+ */
+export function validateWikiPages(input: {
+  pages: WikiValidationPage[]
+  /** Az ugyanebben a KB-ban létező nyers források (D9). */
+  knownSourceIds: ReadonlySet<string>
+  /** Az írás után létező (nem archivált) oldalak path-jai — a link-ellenőrzéshez. */
+  pathsAfterWrite: ReadonlySet<string>
+}): WikiValidationResult {
+  const issues: KbValidationIssue[] = []
+  const add = (severity: KbValidationSeverity, code: string, path: string, message: string) =>
+    issues.push({ severity, code, path, message })
+
+  for (const { path, action, state } of input.pages) {
+    if (!isValidWikiPath(state.path)) {
+      add('error', 'invalid_path', path, 'Path must match ^[a-z0-9-/]+\\.md$ (e.g. entities/teya.md).')
+    } else if (isReservedWikiPath(state.path)) {
+      add('error', 'reserved_path', path, 'index.md, log.md and WIKI.md are generated or human-edited; do not write them.')
+    }
+    if (action === 'archive') continue
+
+    if (!(WIKI_PAGE_TYPES as readonly string[]).includes(state.type)) {
+      add('error', 'invalid_type', path, `type must be one of: ${WIKI_PAGE_TYPES.join(', ')}.`)
+    }
+    if (!state.title.trim()) add('error', 'missing_field', path, 'title is required.')
+    if (!state.summary.trim()) add('error', 'missing_field', path, 'summary (one line for index.md) is required.')
+    if (!state.body.trim()) add('error', 'empty_page', path, 'body is empty.')
+    if (state.type === 'source') {
+      const sourceDate = state.frontmatter.source_date
+      if (typeof sourceDate !== 'string' || !SOURCE_DATE_RE.test(sourceDate.trim())) {
+        add(
+          'error',
+          'missing_source_date',
+          path,
+          'type: source pages need frontmatter.source_date (YYYY, YYYY-MM, or YYYY-MM-DD) — the document\'s own date, not the upload date.',
+        )
+      }
+    }
+    if (state.type !== 'overview' && state.sources.length === 0) {
+      add(
+        'error',
+        'missing_source',
+        path,
+        'Every page (except overview) must cite at least one raw source: frontmatter.sources [{ documentId }] or sourceDocumentIds.',
+      )
+    }
+    for (const ref of state.sources) {
+      if (!input.knownSourceIds.has(ref.documentId)) {
+        add('error', 'unknown_source', path, `Source ${ref.documentId} is not a raw source in this knowledge base.`)
+      }
+    }
+    const size = renderWikiPageMarkdown(state).length
+    if (size > WIKI_MAX_PAGE_CHARS) {
+      add('error', 'page_too_large', path, `Page is ${size} characters; the limit is ${WIKI_MAX_PAGE_CHARS}. Split it.`)
+    }
+
+    for (const link of extractWikiLinks(state.body, state.path)) {
+      if (!input.pathsAfterWrite.has(link) && !isReservedWikiPath(link)) {
+        add('warning', 'broken_link', path, `Link to missing page: ${link}.`)
+      }
+    }
+    const sensitive = SENSITIVE_PATTERNS.filter((p) => p.re.test(state.body)).map((p) => p.label)
+    if (sensitive.length > 0) {
+      add('warning', 'sensitive_data', path, `Possible sensitive data: ${sensitive.join(', ')}.`)
+    }
+  }
+
+  const errors = issues.filter((i) => i.severity === 'error').length
+  return { ok: errors === 0, errors, warnings: issues.length - errors, issues }
 }

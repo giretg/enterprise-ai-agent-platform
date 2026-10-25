@@ -3,21 +3,27 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { getGeminiKeyStatus, getOpenRouterKeyStatus, getTenantModelPolicy } from '@/app/actions/model-config'
 import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
+import { getTenantAgentSettings } from '@/app/actions/tenant-agent-settings'
 import { getTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
+import { getMiniAppSettingsAction } from '@/app/actions/mini-apps'
+import { MiniAppSettingsPanel } from './mini-app-settings-panel'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { GeminiKeyPanel } from './gemini-key-panel'
 import { OpenRouterKeyPanel } from './openrouter-key-panel'
+import { TenantAgentSettingsPanel } from './tenant-agent-settings-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 
 export default async function TenantSettingsPage() {
   await requireTenantRole('admin')
-  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey] = await Promise.all([
+  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings] = await Promise.all([
     getTenantLanguage(),
     getTenantMcpIntro(),
     getTenantModelPolicy(),
     getOpenRouterKeyStatus(),
     getGeminiKeyStatus(),
+    getTenantAgentSettings(),
+    getMiniAppSettingsAction(),
   ])
   const t = await getTranslations('ControlPlane.settings')
 
@@ -65,6 +71,28 @@ export default async function TenantSettingsPage() {
                   <p className="text-sm text-coral-deep">{t('geminiLoadFailed')}</p>
                 )}
               </div>
+            ),
+          },
+          {
+            id: 'agents',
+            label: t('agents'),
+            content: agentSettings.success ? (
+              <TenantAgentSettingsPanel
+                initialCeiling={agentSettings.data.autonomyCeiling}
+                initialDailyLimit={agentSettings.data.hireDraftDailyLimit}
+                canEdit
+              />
+            ) : (
+              <p className="text-sm text-coral-deep">{agentSettings.error}</p>
+            ),
+          },
+          {
+            id: 'mini-apps',
+            label: t('miniApps'),
+            content: miniAppSettings.success ? (
+              <MiniAppSettingsPanel initial={miniAppSettings.data} canEdit />
+            ) : (
+              <p className="text-sm text-coral-deep">{miniAppSettings.error}</p>
             ),
           },
           {

@@ -10,6 +10,7 @@ export const AGENT_DETAIL_SECTION_IDS = [
   'skillek',
   'memoriairas',
   'igeretek',
+  'miniappok',
   'hozzaferes',
 ] as const
 
@@ -30,5 +31,6 @@ export const AGENT_DETAIL_SECTION_LABELS: Record<AgentDetailSectionId, string> =
   skillek: 'Skillek',
   memoriairas: 'Írások',
   igeretek: 'Ígéretek',
+  miniappok: 'Mini appok',
   hozzaferes: 'Hozzáférés',
 }

@@ -33,6 +33,7 @@ import {
 } from '@/domain/gateway-operation'
 import type { GatewayOperationRecord } from '@/domain/gateway-operation/types'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
+import { clampWriteModesToCeiling, readTenantAutonomyCeiling } from '@/lib/agent-autonomy'
 import { iconDataUrlByTemplateKey, resolveConnectorIcon } from '@/lib/connector-template-icon-map'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { readTenantLanguage } from '@/lib/tenant-language'
@@ -48,13 +49,22 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { TenantService } from '@/domain/tenant/tenant-service'
 import { selfServiceTenantStore } from '@/repositories/postgres/self-service-tenant-store'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
-import { executeKnowledgeBaseTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
+import { WikiService } from '@/domain/knowledge-base/wiki-service'
+import { WikiConsoleService } from '@/domain/knowledge-base/wiki-console-service'
+import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
+import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
 import { PostgresCustomerPromiseRepository } from '@/repositories/postgres/customer-promise-repository'
 import { invokeCustomerPromise } from '@/domain/customer-promise/mcp'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
+import { MiniAppService } from '@/domain/mini-app/mini-app-service'
+import { invokeMiniAppTool } from '@/domain/mini-app/mcp'
+import { readMiniAppSettings } from '@/lib/mini-app-settings'
+import { miniAppPermanentUrl, mintMiniAppLinks } from '@/lib/mini-app-origin'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
 import {
   invokeProjectWork,
@@ -175,6 +185,39 @@ const knowledgeBaseService = new KnowledgeBaseService({
   resolveTenantLanguage,
 })
 
+const wikiAccessService = new WikiAccessService({
+  connectors: repositories.connectors,
+  agents: repositories.agents,
+  wikis: repositories.wikis,
+  privateKnowledgeBases: repositories.privateKnowledgeBases,
+  audit: repositories.audit,
+})
+
+const wikiService = new WikiService({
+  wikis: repositories.wikis,
+  documents: repositories.documents,
+  connectors: repositories.connectors,
+  agents: repositories.agents,
+  knowledgeBase: knowledgeBaseService,
+  audit: repositories.audit,
+  async findUserLabel(userId) {
+    const user = await repositories.users.findById(userId)
+    return user ? user.name || user.email : null
+  },
+})
+
+const wikiConsoleService = new WikiConsoleService({
+  documents: repositories.documents,
+  connectors: repositories.connectors,
+  agents: repositories.agents,
+  wikis: repositories.wikis,
+  console: new PostgresWikiConsoleRepository(),
+  wiki: wikiService,
+  wikiAccess: wikiAccessService,
+  knowledgeBase: knowledgeBaseService,
+  audit: repositories.audit,
+})
+
 const projectWorkService = new ProjectWorkService(
   repositories.workProjects,
   repositories.workFiles,
@@ -217,6 +260,30 @@ const mcpGateDeps = {
 function isStubDriveCredential(tokenRef: string): boolean {
   return tokenRef.startsWith('stub-') || process.env.GOOGLE_DRIVE_API_STUB === 'true'
 }
+
+async function canViewAgentLookup(lookup: { tenantId: string; userId: string; role: string; agentId: string }) {
+  const grant = await repositories.resourceGrants.findAgentGrant({
+    tenantId: lookup.tenantId,
+    userId: lookup.userId,
+    agentId: lookup.agentId,
+  })
+  return canReadPublishedAgent({ role: lookup.role as UserRole, grant })
+}
+
+/** #967: mini appok — DB-ben tárolt statikus HTML, gyors link külön originen. */
+const miniAppService = new MiniAppService({
+  store: repositories.miniApps,
+  async agentNames(tenantId, agentIds) {
+    const rows = await Promise.all(agentIds.map((id) => repositories.agents.findById(id, tenantId)))
+    return new Map(rows.filter((row) => row !== null).map((row) => [row.id, row.name]))
+  },
+  async settings(tenantId) {
+    const tenant = await repositories.tenants.findById(tenantId)
+    return readMiniAppSettings(tenant?.settings)
+  },
+  links: { mint: mintMiniAppLinks, permanentUrl: miniAppPermanentUrl },
+  audit: repositories.audit,
+})
 
 const sharedToolLookups = {
   loadDefinition: (input: { tenantId: string; definitionId: string }) =>
@@ -289,7 +356,14 @@ async function resolveDesignatedApprover(input: {
       ? repositories.connectors.findById(input.connectorId, input.tenantId)
       : Promise.resolve(null),
   ])
-  const approverUserId = connector?.approverUserId ?? agent?.approverUserId ?? null
+  // #943 D4: wiki-írásnál a wiki gazdája, nem az író agent jóváhagyója.
+  const wikiScope =
+    connector?.type === 'knowledge_base' ? await wikiService.approverScopeFor(connector) : null
+  const approverUserId = wikiScope
+    ? wikiScope.kind === 'owner_user'
+      ? wikiScope.userId
+      : wikiScope.approverUserId
+    : (connector?.approverUserId ?? agent?.approverUserId ?? null)
   if (!approverUserId) return null
   const [membership, user] = await Promise.all([
     repositories.tenantMemberships.findByTenantAndUser(input.tenantId, approverUserId),
@@ -333,6 +407,24 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
   resolveDesignatedApprover,
   startAuthorization,
   audit: repositories.audit,
+  wikiChangeSets: {
+    canDecide: ({ actor, changeSetId }) => wikiService.canDecide(actor, changeSetId),
+    apply: ({ requester, definition, changeSetId }) =>
+      wikiService.applyApproved(
+        {
+          tenantId: requester.tenantId,
+          userId: requester.userId,
+          agentId: definition.agentId,
+          snapshot: {
+            connectors: scopeSnapshotConnectorsToUser(definition.snapshot.connectors, requester.userId),
+          },
+        },
+        changeSetId,
+      ),
+    reject: async ({ tenantId, changeSetId, actorUserId }) => {
+      await wikiService.reject(changeSetId, { tenantId, actorUserId })
+    },
+  },
   async recordCreatedDriveFiles({ grantId, files }) {
     for (const file of files) {
       await recordGoogleDriveAppCreatedFile({ grantId, ...file })
@@ -476,12 +568,36 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     return agent?.outputDriveFolderId ?? null
   },
   findAgentWriteModes: async ({ agentId, tenantId }) => {
-    const agent = await repositories.agents.findById(agentId, tenantId)
-    return agent ? modesFromAgentRow(agent) : null
+    const [agent, tenant] = await Promise.all([
+      repositories.agents.findById(agentId, tenantId),
+      repositories.tenants.findById(tenantId),
+    ])
+    // #957 D3: utólag szigorított céges korlát a már beállított agentekre is érvényes.
+    return agent
+      ? clampWriteModesToCeiling(modesFromAgentRow(agent), readTenantAutonomyCeiling(tenant?.settings))
+      : null
   },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
-    executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx),
+    executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx, wikiService),
+  executeWikiTool: (toolName, args, ctx) => executeWikiTool(wikiService, toolName, args, ctx),
+  resolveKbConnector: async ({ tenantId, wikiId, documentId }) => {
+    const connectorId = wikiId
+      ? (await repositories.wikis.findById(wikiId))?.connectorId
+      : documentId
+        ? (await repositories.documents.findById(documentId))?.connectorId
+        : null
+    if (!connectorId) return null
+    const connector = await repositories.connectors.findById(connectorId, tenantId)
+    return connector?.tenantId === tenantId && connector.type === 'knowledge_base' ? connector.id : null
+  },
+  onWikiApprovalQueued: async ({ tenantId, changeSetId, operationId }) => {
+    if (operationId) {
+      await repositories.wikis.transitionChangeSet(changeSetId, 'pending', 'pending', { gatewayOperationId: operationId })
+    } else {
+      await wikiService.reject(changeSetId, { tenantId, actorUserId: null, reason: 'not_queued' })
+    }
+  },
   loadSkillVersion: async (skillVersionId) => {
     const version = await repositories.skills.findVersionById(skillVersionId)
     if (!version) return null
@@ -524,6 +640,9 @@ export const services = {
       customerPromises: customerPromiseService,
     }, input),
   },
+  wikiAccess: wikiAccessService,
+  wiki: wikiService,
+  wikiConsole: wikiConsoleService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,
@@ -532,14 +651,7 @@ export const services = {
         {
           ...sharedToolLookups,
           loadDefinitionByAgent: (lookup) => agentDefinitionService.loadAgentDefinition(lookup),
-          canViewAgent: async (lookup) => {
-            const grant = await repositories.resourceGrants.findAgentGrant({
-              tenantId: lookup.tenantId,
-              userId: lookup.userId,
-              agentId: lookup.agentId,
-            })
-            return canReadPublishedAgent({ role: lookup.role as UserRole, grant })
-          },
+          canViewAgent: canViewAgentLookup,
           isTenantMember: async (lookup) => {
             const membership = await repositories.tenantMemberships.findByTenantAndUser(
               lookup.tenantId,
@@ -566,6 +678,21 @@ export const services = {
               }),
               enqueueInput.origin,
             ),
+          audit: repositories.audit,
+        },
+        input,
+      ),
+  },
+  miniApps: {
+    service: miniAppService,
+    invoke: (input: Parameters<typeof invokeMiniAppTool>[1]) =>
+      invokeMiniAppTool(
+        {
+          ...sharedToolLookups,
+          loadDefinitionByAgent: (lookup) => agentDefinitionService.loadAgentDefinition(lookup),
+          canViewAgent: canViewAgentLookup,
+          handoffs: handoffRepository,
+          miniApps: miniAppService,
           audit: repositories.audit,
         },
         input,

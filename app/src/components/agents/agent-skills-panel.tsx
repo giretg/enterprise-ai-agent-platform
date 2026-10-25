@@ -1,6 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
+import { useTranslations } from 'next-intl'
 import { useState, useTransition } from 'react'
 import {
   assignSkillAction,
@@ -94,6 +95,7 @@ export function AgentSkillsPanel({
   bare?: boolean
   onChanged?: () => void
 }) {
+  const t = useTranslations('SkillCatalog')
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -145,6 +147,11 @@ export function AgentSkillsPanel({
                       <Badge tone={SKILL_KIND_BADGE_TONE[s.kind]}>{SKILL_KIND_COPY[s.kind].label}</Badge>
                     </span>
                   ) : null}
+                  {s.producesSkills ? (
+                    <span className="ml-2">
+                      <Badge tone="warning">{t('producer')}</Badge>
+                    </span>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge tone={READINESS_TONE[s.readiness.color]}>
@@ -155,6 +162,13 @@ export function AgentSkillsPanel({
                 </div>
               </div>
               <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
+              {s.producesSkills ? (
+                <p className="mt-1 text-xs text-ink-soft">
+                  {s.enabled
+                    ? t('producerAgentEnabled')
+                    : t('producerAgentDisabled')}
+                </p>
+              ) : null}
 
               {s.requires.length > 0 && (
                 <ul className="mt-2 space-y-1">

@@ -71,5 +71,9 @@ export const PUBLIC_ROUTE_PATTERNS = [
   // Delegált OAuth callback: a Google ide redirectel. MCP-consentnél nincs
   // Clerk-süti — a handler a signed OAuth state-tel hitelesít (lásd route).
   '/api/connectors/oauth/callback',
+  // #967 mini app gyors link: Clerk-süti NÉLKÜL, az aláírt token hitelesít a handlerben
+  // (keretoldal + tartalom). SZŰKEN ez a két path — a letöltés és az állandó link védett.
+  '/api/mini-apps/open/(.*)',
+  '/api/mini-apps/content/(.*)',
   '/connectors/oauth/done',
 ] as const

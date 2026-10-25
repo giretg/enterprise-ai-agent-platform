@@ -44,7 +44,14 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
+import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
+import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { AgentAccessPanel } from '@/components/agents/agent-access-panel'
+import { AgentMiniAppsPanel } from '@/components/agents/agent-mini-apps-panel'
+import { parsePlacementOverrides } from '@/lib/agent-knowledge-placement'
+import { UpdatePlacementOverridesForm } from '@/components/agents/update-placement-overrides-form'
+import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
+import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
 
@@ -58,6 +65,7 @@ const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   eszkozok: 'eszkozokDesc',
   skillek: 'skillekDesc',
   memoriairas: 'memoriairasDesc',
+  miniappok: 'miniappokDesc',
   hozzaferes: 'hozzaferesDesc',
 }
 
@@ -94,6 +102,8 @@ export default async function AgentDetailPage({
     drivePickerCtxRes,
     modelRes,
     promisesRes,
+    wikiLinksRes,
+    miniAppsRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -108,6 +118,8 @@ export default async function AgentDetailPage({
     getMyGoogleDriveGrantForPicker(),
     getAgentModelSettings({ agentId }),
     listCustomerPromisesAction(agentId, false, Number(query.promisePage ?? 0)),
+    listAgentWikiLinksAction({ agentId }),
+    listAgentMiniAppsAction({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -241,12 +253,15 @@ export default async function AgentDetailPage({
       label: sectionLabel('tudasbazis'),
       description: sectionDesc('tudasbazis'),
       content: (
-        <AgentKnowledgeBasePanel
-          agentId={agent.id}
-          documents={kbDocs}
-          catalog={kbCatalog}
-          canManage={canManage}
-        />
+        <div className="space-y-4">
+          {wikiLinksRes.success ? <AgentWikiAccessPanel agentId={agent.id} rows={wikiLinksRes.data} /> : null}
+          <AgentKnowledgeBasePanel
+            agentId={agent.id}
+            documents={kbDocs}
+            catalog={kbCatalog}
+            canManage={canManage}
+          />
+        </div>
       ),
     },
     {
@@ -305,6 +320,13 @@ export default async function AgentDetailPage({
               canEdit={canManage}
             />
           </Card>
+          <Card title="Hová mit ment a munkatárs">
+            <UpdatePlacementOverridesForm
+              agentId={agent.id}
+              placementOverrides={parsePlacementOverrides(agent.placementOverrides)}
+              canEdit={canManage}
+            />
+          </Card>
           <Card title={t('projectMemory')}>
             <AgentProjectMemoryBrowser
               agentId={agent.id}
@@ -314,6 +336,24 @@ export default async function AgentDetailPage({
               canDeleteMemory={canManage || canDelete}
               initialError={projectsError}
             />
+          </Card>
+        </div>
+      ),
+    },
+    {
+      id: 'miniappok',
+      label: sectionLabel('miniappok'),
+      description: sectionDesc('miniappok'),
+      content: (
+        <div className="space-y-4">
+          <AgentMiniAppsPanel
+            agentId={agent.id}
+            agentName={agent.name}
+            data={miniAppsRes.success ? miniAppsRes.data : null}
+            error={miniAppsRes.success ? null : miniAppsRes.error}
+          />
+          <Card title="Mini app útmutató">
+            <UpdateMiniAppGuideForm agentId={agent.id} miniAppGuide={agent.miniAppGuide} canEdit={canManage} />
           </Card>
         </div>
       ),
