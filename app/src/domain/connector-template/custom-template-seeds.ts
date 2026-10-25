@@ -107,7 +107,7 @@ export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       {
         name: 'get_repository_tree',
         method: 'GET',
-        path: '/repos/{owner}/{repo}/git/trees/{ref}',
+        path: '/repos/{owner}/{repo}/git/trees/{ref...}',
         access: 'read',
         description:
           'A repository teljes fájllistája EGY hívásban (ref = branch neve vagy commit SHA), recursive=1 query paraméterrel az alkönyvtárakkal együtt. Kódkérdésnél ezzel kezdj: ebből válaszd ki, melyik fájlt kell elolvasni — ne lépkedj könyvtáranként.',

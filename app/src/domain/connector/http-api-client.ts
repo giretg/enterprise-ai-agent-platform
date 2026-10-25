@@ -320,7 +320,10 @@ export function parseHttpApiConfig(
     : Array.isArray(raw.proposedTools)
       ? raw.proposedTools
       : undefined
-  const seededGitHubTemplate = isRecord(raw.provenance) && raw.provenance.templateKey === 'github'
+  // A githubRepositoryAccess-t csak sablon adhatja, így a régi, korlátozás nélkül tárolt
+  // GitHub sablonkapcsolatok is a kiválasztott műveletlistára szűkülnek, sablonkulcstól függetlenül.
+  const legacyGitHubTemplate =
+    (isRecord(raw.provenance) && raw.provenance.templateKey === 'github') || isRecord(raw.githubRepositoryAccess)
   const endpoints = Array.isArray(endpointSource)
     ? endpointSource
         .filter(isRecord)
@@ -345,9 +348,8 @@ export function parseHttpApiConfig(
           const paginationResult = httpPaginationSchema.safeParse(e.pagination)
           return {
             method,
-            path: seededGitHubTemplate && e.path === '/repos/{owner}/{repo}/contents/{path}'
-              ? '/repos/{owner}/{repo}/contents/{path...}'
-              : String(e.path ?? ''),
+            path: (legacyGitHubTemplate && typeof e.path === 'string' && LEGACY_GITHUB_CATCH_ALL_PATHS[e.path])
+              || String(e.path ?? ''),
             description: typeof e.description === 'string' ? e.description : undefined,
             profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
             idempotent: e.idempotent === true,
@@ -404,7 +406,7 @@ export function parseHttpApiConfig(
         : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
-    restrictToEndpoints: raw.restrictToEndpoints === true || (seededGitHubTemplate && Array.isArray(endpointSource)),
+    restrictToEndpoints: raw.restrictToEndpoints === true || (legacyGitHubTemplate && Array.isArray(endpointSource)),
     ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
     ...(googleAccount ? { googleAccount } : {}),
     maxResponseChars:
@@ -770,7 +772,7 @@ export class HttpApiClient {
     }
     const endpointPath = requestPath.slice(basePath.length)
     const endpoint = findHttpApiEndpoint(this.config, method, endpointPath)
-    if (endpoint?.path.endsWith('/{path...}') && /%(?:2f|5c)/i.test(endpointPath)) {
+    if (endpoint && isCatchAllPath(endpoint.path) && /%(?:2f|5c)/i.test(endpointPath)) {
       throw new HttpApiError('encoded path separators are not allowed', 'invalid_path')
     }
     const continuationEndpoint = continuationOf
@@ -1428,8 +1430,10 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
 export function httpApiPathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
-  if (t.at(-1) === '{path...}') {
-    return a.length >= t.length && t.slice(0, -1).every((seg, i) => segmentMatches(seg, a[i]))
+  if (isCatchAllSegment(t.at(-1))) {
+    // A `{name...}` záró szegmens nulla vagy több path-szegmenst fed le (repo gyökér, `feature/x` ág).
+    const prefix = t.slice(0, -1)
+    return a.length >= prefix.length && prefix.every((seg, i) => segmentMatches(seg, a[i]))
   }
   if (t.length !== a.length) return false
   return t.every((seg, i) => segmentMatches(seg, a[i]))
@@ -1505,10 +1509,17 @@ export function findOverlappingHttpApiEndpoints(
 }
 
 function templatesOverlap(left: string, right: string): boolean {
-  const l = left.split('/').filter(Boolean)
-  const r = right.split('/').filter(Boolean)
-  if (l.length !== r.length) return false
-  return l.every((seg, i) => {
+  const lSegments = left.split('/').filter(Boolean)
+  const rSegments = right.split('/').filter(Boolean)
+  const lCatchAll = isCatchAllSegment(lSegments.at(-1))
+  const rCatchAll = isCatchAllSegment(rSegments.at(-1))
+  const l = lCatchAll ? lSegments.slice(0, -1) : lSegments
+  const r = rCatchAll ? rSegments.slice(0, -1) : rSegments
+  if (!lCatchAll && !rCatchAll && l.length !== r.length) return false
+  if (lCatchAll && !rCatchAll && r.length < l.length) return false
+  if (rCatchAll && !lCatchAll && l.length < r.length) return false
+  const shared = Math.min(l.length, r.length)
+  return l.slice(0, shared).every((seg, i) => {
     const other = r[i]
     if (!hasPathParam(seg)) return segmentMatches(other, seg)
     if (!hasPathParam(other)) return segmentMatches(seg, other)
@@ -1520,6 +1531,20 @@ function templatesOverlap(left: string, right: string): boolean {
 
 const BRACE_PARAM = /\{[^{}/]+\}/g
 
+/** A régi GitHub sablonkapcsolatok egy-szegmenses útvonalai, amelyek valójában több szegmenst fednek le. */
+const LEGACY_GITHUB_CATCH_ALL_PATHS: Record<string, string> = {
+  '/repos/{owner}/{repo}/contents/{path}': '/repos/{owner}/{repo}/contents/{path...}',
+  '/repos/{owner}/{repo}/git/trees/{ref}': '/repos/{owner}/{repo}/git/trees/{ref...}',
+}
+
+function isCatchAllSegment(segment: string | undefined): boolean {
+  return segment !== undefined && /^\{[^{}/]+\.\.\.\}$/.test(segment)
+}
+
+function isCatchAllPath(template: string): boolean {
+  return isCatchAllSegment(template.split('/').filter(Boolean).at(-1))
+}
+
 function isPathParamSegment(segment: string): boolean {
   return segment.startsWith(':') || (segment.startsWith('{') && segment.endsWith('}'))
 }
@@ -1530,12 +1555,24 @@ function hasPathParam(segment: string): boolean {
 
 function segmentMatches(templateSegment: string, actual: string): boolean {
   if (isPathParamSegment(templateSegment)) return actual.length > 0
-  if (!templateSegment.includes('{')) return templateSegment === actual
+  // A kliens a normalizált (percent-kódolt) URL-pathname-mel illeszt; a literál sablon
+  // (pl. `/Ügyfelek/{id}`) a dekódolt alakkal is egyezzen.
+  const decoded = decodePathSegment(actual)
+  if (!templateSegment.includes('{')) return templateSegment === actual || templateSegment === decoded
   const pattern = templateSegment
     .split(BRACE_PARAM)
     .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('[^/]+')
-  return new RegExp(`^${pattern}$`).test(actual)
+  const regex = new RegExp(`^${pattern}$`)
+  return regex.test(actual) || regex.test(decoded)
+}
+
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
 }
 
 function templateLiteralLength(template: string): number {

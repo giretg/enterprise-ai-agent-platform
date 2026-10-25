@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
-import { HttpApiClient, HttpApiError, parseHttpApiConfig } from '../src/domain/connector/http-api-client'
+import {
+  findOverlappingHttpApiEndpoints,
+  HttpApiClient,
+  HttpApiError,
+  parseHttpApiConfig,
+} from '../src/domain/connector/http-api-client'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import {
@@ -292,6 +297,95 @@ async function main() {
     await assert.rejects(
       client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
       (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('GitHub template permits repository root listings and slash branch trees', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: 'bearer',
+        instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' },
+        selectedEndpoints: ['get_file_contents', 'get_repository_tree'],
+      },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const client = new HttpApiClient(parseHttpApiConfig(config), 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents' })).ok, true)
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/?ref=main' })).ok, true)
+    assert.equal(
+      (await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/git/trees/feature/login?recursive=1' })).ok,
+      true,
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/git/trees/feature%2Flogin' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'invalid_path',
+    )
+  })
+
+  await test('legacy GitHub-style connectors are restricted regardless of template key', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      { authMethodKind: 'bearer', instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' }, selectedEndpoints: ['get_repository_tree'] },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const { proposedTools, ...storedConfig } = config
+    const oldConfig = {
+      ...storedConfig,
+      provenance: { ...storedConfig.provenance, templateKey: 'github-internal' },
+      restrictToEndpoints: false,
+      endpoints: proposedTools.map((tool) => ({ ...tool, path: tool.path.replace('{ref...}', '{ref}') })),
+    }
+    const runtime = parseHttpApiConfig(oldConfig)
+    assert.equal(runtime.restrictToEndpoints, true)
+    assert.ok(runtime.endpoints?.some((endpoint) => endpoint.path === '/repos/{owner}/{repo}/git/trees/{ref...}'))
+    const client = new HttpApiClient(runtime, 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/git/trees/release/1.2' })).ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('restricted endpoints match literal non-ASCII path segments', async () => {
+    const client = new HttpApiClient(
+      parseHttpApiConfig({
+        baseUrl: 'https://api.example.com/v1',
+        auth: { scheme: 'none' },
+        restrictToEndpoints: true,
+        endpoints: [{ method: 'GET', path: '/Ügyfelek/{id}' }],
+      }),
+      'stub-api-key',
+    )
+    assert.equal((await client.request({ method: 'GET', path: '/Ügyfelek/42' })).ok, true)
+  })
+
+  await test('catch-all endpoints are reported as overlapping with the paths they shadow', () => {
+    assert.deepEqual(
+      findOverlappingHttpApiEndpoints([
+        { method: 'GET', path: '/repos/{owner}/{repo}/contents/{path...}' },
+        { method: 'GET', path: '/repos/{owner}/{repo}/contents/docs/{file}' },
+        { method: 'GET', path: '/repos/{owner}/{repo}/issues' },
+      ]),
+      [['GET /repos/{owner}/{repo}/contents/{path...}', 'GET /repos/{owner}/{repo}/contents/docs/{file}']],
+    )
+  })
+
+  await test('a selection the repository scope filters to nothing is rejected', () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    assert.throws(
+      () => materializeConnectorConfig(
+        descriptor,
+        {
+          authMethodKind: 'bearer',
+          instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' },
+          selectedEndpoints: ['list_user_repositories'],
+        },
+        { personalAccessToken: 'secret-ref:github-pat' },
+      ),
+      /a kiválasztott repository-n belüli műveletet/,
     )
   })
 

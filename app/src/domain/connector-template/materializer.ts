@@ -77,6 +77,13 @@ export function materializeConnectorConfig(
           ),
         }
       : withFields
+  if (descriptor.endpoints.length > 0 && scopedConfig.proposedTools.length === 0) {
+    throw new ConnectorTemplateMaterializationError(
+      scopedConfig === withFields
+        ? 'Válassz legalább egy elérhető műveletet.'
+        : 'Válassz legalább egy, a kiválasztott repository-n belüli műveletet.',
+    )
+  }
 
   // A sablon műveletlistája a futásidejű jogosultsági határ, üres választásnál is.
   // A GitHub repository-korlát ettől függetlenül, további szűrőként érvényesül.
