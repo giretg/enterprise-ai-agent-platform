@@ -148,6 +148,13 @@ export const AGENT_SETTING_SECTIONS = [
       'Nem kötelező, és csak akkor van értelme, ha a munkatárs már készít mini appokat — utólag az adatlapon adható meg.',
   },
   {
+    id: 'customerPromises',
+    detailSection: 'igeretek',
+    detailComponent: 'PromisesPanel',
+    wizardSkipReason:
+      'Létrehozáskor a munkatárs még nem tett ügyfélvállalást — az ígéretek a munka során keletkeznek, az adatlapon kezelhetők.',
+  },
+  {
     id: 'access',
     detailSection: 'hozzaferes',
     detailComponent: 'AgentAccessPanel',

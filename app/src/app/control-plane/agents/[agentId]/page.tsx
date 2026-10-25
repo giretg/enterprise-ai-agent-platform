@@ -1,3 +1,6 @@
+import { listCustomerPromisesAction } from '@/app/actions/customer-promise'
+import { parsePromisePage } from '@/lib/customer-promise-page'
+import { PromisesPanel } from '@/app/control-plane/promises/promises-panel'
 import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
 import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
@@ -72,11 +75,12 @@ export default async function AgentDetailPage({
   searchParams,
 }: {
   params: Promise<{ agentId: string }>
-  searchParams: Promise<{ section?: string }>
+  searchParams: Promise<{ section?: string; promisePage?: string }>
 }) {
   const { agentId } = await params
   const query = await searchParams
   const initialSection = isAgentDetailSectionId(query.section) ? query.section : undefined
+  const promisePage = parsePromisePage(query.promisePage)
 
   let ctx
   try {
@@ -99,6 +103,7 @@ export default async function AgentDetailPage({
     projectsRes,
     drivePickerCtxRes,
     modelRes,
+    promisesRes,
     wikiLinksRes,
     miniAppsRes,
   ] = await Promise.all([
@@ -114,6 +119,7 @@ export default async function AgentDetailPage({
     listWorkProjectsAction(),
     getMyGoogleDriveGrantForPicker(),
     getAgentModelSettings({ agentId }),
+    listCustomerPromisesAction(agentId, false, promisePage),
     listAgentWikiLinksAction({ agentId }),
     listAgentMiniAppsAction({ agentId }),
   ])
@@ -283,6 +289,11 @@ export default async function AgentDetailPage({
           isAdmin={canManage}
         />
       ),
+    },
+    {
+      id: 'igeretek',
+      label: sectionLabel('igeretek'),
+      content: promisesRes.success ? <PromisesPanel promises={promisesRes.data.promises} pagination={{ page: promisePage, hasMore: promisesRes.data.hasMore, pageHref: `/control-plane/agents/${agentId}?section=igeretek&promisePage=` }} /> : <p role="alert" className="text-red-800">{(await getTranslations('ControlPlane.promises'))('error')}</p>,
     },
     {
       id: 'memoriairas',

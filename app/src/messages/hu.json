@@ -238,6 +238,42 @@
     "failBody": "Bezárhatod ezt a lapot, és próbáld újra az AI kliensben."
   },
   "ControlPlane": {
+    "promises": {
+      "pageEmpty": "Ezen az oldalon nincs több vállalás. Lépj vissza az előző oldalra.",
+      "pagination": "Lapozás",
+      "previous": "Előző",
+      "next": "Következő",
+      "page": "{page}. oldal",
+      "filterLabel": "Ígéretek szűrése",
+      "active": "Nyitott vállalások",
+      "history": "Előzményekkel",
+      "title": "Ígéretek",
+      "body": "Mit ígértünk az ügyfélnek, ki felel érte, és mikorra kell teljesülnie.",
+      "helpLabel": "Hogyan kerülnek ide az ígéretek?",
+      "help": "A munkatárs akkor rögzít ide egy sort, amikor határidőt mond az ügyfélnek. A határidő után, ha nincs pipa, a sor lejártnak számít — így nem a reklamációból derül ki.",
+      "empty": "Nincs nyitott vállalásod. Ha a munkatárs határidőt ígér az ügyfélnek, itt fog megjelenni.",
+      "commitment": "Mit ígértünk",
+      "customer": "Ügyfél",
+      "agent": "Munkatárs",
+      "dueAt": "Határidő",
+      "status": "Állapot",
+      "owner": "Gazda",
+      "actions": "Műveletek",
+      "resolve": "Lezárás",
+      "complete": "Teljesült",
+      "cancel": "Mégsem ígértük",
+      "back": "Vissza",
+      "note": "Rövid megjegyzés (nem kötelező)",
+      "error": "Az ígéreteket most nem sikerült betölteni vagy módosítani. Próbáld újra.",
+      "statuses": {
+        "open": "Nyitott",
+        "overdue": "Lejárt",
+        "claimed": "Folyamatban",
+        "fulfilled": "Teljesült",
+        "cancelled": "Törölve",
+        "missed": "Elmaradt"
+      }
+    },
     "wiki": {
       "eyebrow": "Tudásbázis",
       "back": "← Vissza a tudásbázisokhoz",
@@ -578,6 +614,7 @@
       "admin_platform-iam": "Platform · IAM",
       "admin_platform-contact": "Platform · Kapcsolatfelvételek",
       "admin_platform-settings": "Platform · Beállítások",
+      "promises": "Ígéretek",
       "admin_ai-client-policy": "Hermes céges kontroll"
     },
     "pending": {
@@ -664,6 +701,7 @@
       "navHeading": "Beállítások",
       "projectMemory": "Projektmemória",
       "sections": {
+        "igeretek": "Ígéretek",
         "elesites": "Élesítés",
         "elesitesDesc": "Melyik definíció fut élesben, és van-e még nem publikált változás.",
         "profil": "Név és felelősségi kör",

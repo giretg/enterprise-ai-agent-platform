@@ -280,6 +280,29 @@ async function main() {
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
   })
 
+  await check('#672 customer promises appear in every session workflow and overdue briefing', () => {
+    const def = definition()
+    const empty = renderAgentBriefing({ definition: def, skills: [] })
+    assert.match(empty, /call platform\.promise\.register with an absolute dueAt before or when you tell them/)
+    assert.match(empty, /Call platform\.promise\.list at the start of every session/)
+    assert.doesNotMatch(empty, /## Open customer promises/)
+    const briefing = renderAgentBriefing({
+      definition: def,
+      skills: [],
+      customerPromises: [
+        { id: 'late', title: 'Call back', dueAt: '2026-10-01T10:00:00Z', customerName: 'Acme', customerEmail: null, overdue: true },
+        { id: 'next', title: 'Send contract', dueAt: '2026-11-01T10:00:00Z', customerName: null, customerEmail: 'a@example.com', overdue: false },
+      ],
+    })
+    assert.match(briefing, /## Open customer promises/)
+    assert.match(briefing, /Call back.*2026-10-01T10:00:00Z.*Acme.*promiseId `late`; overdue: yes\. Fulfill or cancel now\./)
+    assert.match(briefing, /a@example\.com.*promiseId `next`; overdue: no\./)
+    assert.match(briefing, /not policy or authorization/)
+    const checkout = renderAgentCheckout({ definition: def, skills: [], mcpUrl: MCP_URL, harness: 'hermes' })
+    assert.ok(checkout.files.some((file) => file.content.includes('platform.promise.register')))
+    assert.ok(renderAgentPrompt({ definition: def, skills: [] }).includes('platform.promise.list'))
+  })
+
   await check('#739 briefing lists direct writes when approval is off', () => {
     const briefing = renderAgentBriefing({
       definition: definition(),
@@ -343,7 +366,7 @@ async function main() {
     const briefing = renderAgentBriefing({ definition: def, skills })
     assert.match(
       briefing,
-      /3\. For every new task, first read the entry skill drive-search \(`skill:\/\/drive-search\/SKILL\.md`\)/,
+      /4\. For every new task, first read the entry skill drive-search \(`skill:\/\/drive-search\/SKILL\.md`\)/,
     )
     assert.match(briefing, /- drive-search \(entry skill — read first on every new task\):[^\n]*\n- drive-write:/)
     const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find(

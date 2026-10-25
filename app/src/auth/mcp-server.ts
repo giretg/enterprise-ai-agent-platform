@@ -1,3 +1,4 @@
+import { CUSTOMER_PROMISE_TOOLS, isCustomerPromiseTool, promiseRegisterSchema, promiseGetSchema, promiseListSchema, promiseResolveSchema } from '@/domain/customer-promise/mcp'
 import { WIKI_MAINTAINER, withWikiMaintainer, wikiMaintainerPackage } from '@/domain/skill/llm-wiki-maintainer'
 import type { AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { auth } from '@clerk/nextjs/server'
@@ -49,6 +50,7 @@ import {
   renderAgentCheckout,
   renderAgentPrompt,
   type CheckoutSkill,
+  type CustomerPromiseHeadline,
 } from '@/lib/agent-checkout'
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
@@ -280,6 +282,9 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
   loadAgentWikis?: (principal: McpPrincipal, definition: AgentDefinition) => Promise<AgentWikiBriefing[]>
   agentScaffold: AgentScaffoldDeps
+  invokeCustomerPromise?: (input: { principal: McpPrincipal; toolName: string; args: Record<string, unknown> }) => Promise<EnterpriseToolMcpResult>
+  /** The caller's active promises for the briefing; get_definition already checked view access. */
+  listCustomerPromises?: (input: { tenantId: string; ownerUserId: string; agentId: string }) => Promise<CustomerPromiseHeadline[]>
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
 }
 
@@ -438,6 +443,16 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
+    invokeCustomerPromise: (input) => services.customerPromiseTools.invoke(input),
+    listCustomerPromises: async (input) =>
+      (await services.customerPromises.list({ ...input, status: 'active', limit: 50 })).map((row) => ({
+        id: row.id,
+        title: row.title,
+        dueAt: row.dueAt.toISOString(),
+        customerName: row.customerName,
+        customerEmail: row.customerEmail,
+        overdue: row.overdue,
+      })),
     invokeMiniApp: (input) => services.miniApps.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
@@ -779,10 +794,11 @@ async function getDefinitionToolResult(
   if (!allowed) return definitionNotFound()
   // #942 D13: a más felhasználó privát tudásbázisa a hívó számára nem létezik.
   const loaded = withWikiMaintainer(loadedRaw, principal.userId)
-  const [memoryContext, skills, tenant] = await Promise.all([
+  const [memoryContext, skills, tenant, customerPromises] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
     deps.tenants.findById(principal.tenantId),
+    readCustomerPromises(principal, loaded.agentId, deps),
   ])
   const approverName = await deps.loadAgentApproverName?.({
     tenantId: principal.tenantId,
@@ -809,6 +825,7 @@ async function getDefinitionToolResult(
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
+      customerPromises,
       approverName: approverName ?? null,
       writeModes: writeModes ?? undefined,
       // #717 B réteg: a briefing platform-szövegei a tenant kimeneti nyelvén.
@@ -821,7 +838,14 @@ async function getDefinitionToolResult(
     contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
+    customerPromises: { entries: customerPromises },
   })
+}
+
+// Optional add-on: a failing promise lookup must not break get_definition.
+async function readCustomerPromises(principal: McpPrincipal, agentId: string, deps: McpRuntimeDeps): Promise<CustomerPromiseHeadline[]> {
+  if (!deps.listCustomerPromises) return []
+  return deps.listCustomerPromises({ tenantId: principal.tenantId, ownerUserId: principal.userId, agentId }).catch(() => [])
 }
 
 function withoutMiniAppGuide(snapshot: AgentDefinitionSnapshot): AgentDefinitionSnapshot {
@@ -1228,6 +1252,7 @@ function toolBindsToAgentHeader(toolName: string): boolean {
     toolName === MCP_SKILLS_LIST_TOOL ||
     toolName === MCP_SKILL_READ_TOOL ||
     isProjectWorkTool(toolName) ||
+    isCustomerPromiseTool(toolName) ||
     isMiniAppTool(toolName) ||
     isEnterpriseTool(toolName)
   )
@@ -1529,6 +1554,22 @@ async function createMcpResourceHandler(
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
       )
+      for (const toolName of CUSTOMER_PROMISE_TOOLS) {
+        server.registerTool(toolName, {
+          title: toolName.replace('platform.promise.', 'Customer promise: '),
+          description: toolName === 'platform.promise.register'
+            ? 'Record a time-bound customer commitment before or when making it. Resolve relative dates to an absolute ISO dueAt. Use the published definitionId, or omit it on a bound client. This is a ledger; fulfillment is explicit.'
+            : toolName === 'platform.promise.list'
+              ? 'List your customer promises for this agent (active by default). Call at session start, including when the briefing is empty. Filter by status and due upcoming|overdue|all.'
+              : toolName === 'platform.promise.get'
+                ? 'Read your customer promise by promiseId.'
+                : 'Explicitly resolve your open or claimed customer promise by promiseId. Optional note: at most 500 characters.',
+          inputSchema: toolName === 'platform.promise.register' ? promiseRegisterSchema
+            : toolName === 'platform.promise.list' ? promiseListSchema
+              : toolName === 'platform.promise.get' ? promiseGetSchema : promiseResolveSchema,
+          annotations: { readOnlyHint: toolName === 'platform.promise.get' || toolName === 'platform.promise.list' },
+        }, async (args: Record<string, unknown>) => customerPromiseToolResult(principal, toolName, args, deps))
+      }
       server.registerTool(
         MCP_HANDOFF_TOOL,
         {
@@ -1981,6 +2022,9 @@ async function createMcpResourceHandler(
         if (toolName === MCP_SKILL_SUBMIT_TOOL) {
           return submitSkillToolResult(principal, args, deps)
         }
+        if (isCustomerPromiseTool(toolName)) {
+          return customerPromiseToolResult(principal, toolName, args, deps)
+        }
         if (isProjectWorkTool(toolName)) {
           return projectWorkToolResult(principal, toolName, args, deps, origin)
         }
@@ -2046,6 +2090,16 @@ export function kbDocumentImageResult(result: CallToolResult): CallToolResult {
       ]),
     ],
   }
+}
+
+async function customerPromiseToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  if (!deps.invokeCustomerPromise) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  return deps.invokeCustomerPromise({ principal, toolName, args })
 }
 
 async function projectWorkToolResult(

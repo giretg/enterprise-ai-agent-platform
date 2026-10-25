@@ -95,6 +95,14 @@ enum ProjectMemoryStatus {
   superseded
 }
 
+enum CustomerPromiseStatus {
+  open
+  claimed
+  fulfilled
+  cancelled
+  missed
+}
+
 enum HandoffStatus {
   open
   accepted
@@ -369,6 +377,7 @@ model User {
   workProjectsCreated         WorkProject[]         @relation("WorkProjectCreatedBy")
   workFilesWritten            WorkFile[]            @relation("WorkFileLastWriter")
   projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
+  customerPromises CustomerPromise[]
   handoffsCreated             Handoff[]             @relation("HandoffCreatedBy")
   handoffsReceived            Handoff[]             @relation("HandoffToUser")
   reviewedContactInquiries     ContactInquiry[]       @relation("ContactInquiryReviewedBy")
@@ -448,6 +457,7 @@ model Tenant {
   workProjects      WorkProject[]
   workFiles         WorkFile[]
   projectMemoryItems ProjectMemoryItem[]
+  customerPromises CustomerPromise[]
   handoffs          Handoff[]
   clientPolicies    ClientPolicy[]
   clientInstalls    ClientInstall[]
@@ -572,6 +582,7 @@ model Agent {
   agentSkills       AgentSkill[]
   conversationSkillProposals ConversationSkillProposal[]
   projectMemoryItems ProjectMemoryItem[]
+  customerPromises CustomerPromise[]
   handoffsSent     Handoff[] @relation("HandoffFromAgent")
   handoffsReceived Handoff[] @relation("HandoffToAgent")
   miniApps         MiniApp[]
@@ -1384,6 +1395,38 @@ model GatewaySurrogate {
   @@unique([tenantId, scopeType, scopeId, surrogate], map: "gateway_surrogates_scope_surrogate_key")
   @@index([createdAt])
   @@map("gateway_surrogates")
+}
+
+model CustomerPromise {
+  id              String                @id @default(uuid()) @db.Uuid
+  tenantId        String                @map("tenant_id") @db.Uuid
+  agentId         String                @map("agent_id") @db.Uuid
+  ownerUserId     String                @map("owner_user_id") @db.Uuid
+  definitionId    String                @map("definition_id") @db.Uuid
+  title           String
+  commitment      String                @db.Text
+  customerName    String?               @map("customer_name")
+  customerEmail   String?               @map("customer_email")
+  customerRef     String?               @map("customer_ref")
+  channel         String?
+  dueAt           DateTime              @map("due_at") @db.Timestamptz
+  timezone        String
+  status          CustomerPromiseStatus @default(open)
+  claimedAt       DateTime?             @map("claimed_at") @db.Timestamptz
+  claimClient     String?               @map("claim_client")
+  claimExternalId String?               @map("claim_external_id")
+  resolvedAt      DateTime?             @map("resolved_at") @db.Timestamptz
+  resolvedNote    String?               @map("resolved_note") @db.Text
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  owner  User   @relation(fields: [ownerUserId], references: [id])
+
+  @@index([tenantId, ownerUserId, status, dueAt])
+  @@index([tenantId, agentId, status, dueAt])
+  @@map("customer_promises")
 }
 
 /// Mini app láthatósága (#967 D11). `agents`: van aktív MiniAppShare; `organization` ettől függetlenül mindenkinek.

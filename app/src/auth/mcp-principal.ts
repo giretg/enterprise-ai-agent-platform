@@ -13,6 +13,7 @@ import type {
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { CUSTOMER_PROMISE_TOOLS } from '@/domain/customer-promise/mcp'
 import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '@/domain/mini-app/mcp'
 
@@ -39,6 +40,7 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_SKILL_READ_TOOL,
   MCP_SKILL_SUBMIT_TOOL,
   ...PROJECT_WORK_TOOLS,
+  ...CUSTOMER_PROMISE_TOOLS,
   ...MINI_APP_TOOLS,
   MCP_GATEWAY_OPERATION_GET_TOOL,
 ] as const

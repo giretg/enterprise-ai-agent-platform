@@ -26,6 +26,10 @@ export const CORE_MVP_AUDIT_ACTIONS = [
 export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   ...CORE_MVP_AUDIT_ACTIONS,
 
+  'promise.register',
+  'promise.complete',
+  'promise.cancel',
+
   'user.authz.deny',
   'user.invite.issue',
   'user.invite.redeem',

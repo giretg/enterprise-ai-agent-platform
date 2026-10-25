@@ -57,6 +57,9 @@ import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-t
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
+import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
+import { PostgresCustomerPromiseRepository } from '@/repositories/postgres/customer-promise-repository'
+import { invokeCustomerPromise } from '@/domain/customer-promise/mcp'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
 import { MiniAppService } from '@/domain/mini-app/mini-app-service'
 import { invokeMiniAppTool } from '@/domain/mini-app/mcp'
@@ -239,6 +242,7 @@ const projectWorkService = new ProjectWorkService(
 )
 
 const handoffRepository = new PostgresHandoffRepository()
+const customerPromiseService = new CustomerPromiseService(new PostgresCustomerPromiseRepository(), repositories.audit)
 
 /** #395: az MCP-connector aktív, jóváhagyott eszközlistája (null = nincs aktív verzió → fail-closed). */
 const mcpGateDeps = {
@@ -629,6 +633,14 @@ export const services = {
   selfUpdatingConnectors: selfUpdatingConnectorService,
   connectorGrants: connectorGrantService,
   knowledgeBase: knowledgeBaseService,
+  customerPromises: customerPromiseService,
+  customerPromiseTools: {
+    invoke: (input: Parameters<typeof invokeCustomerPromise>[1]) => invokeCustomerPromise({
+      ...sharedToolLookups,
+      customerPromises: customerPromiseService,
+      audit: repositories.audit,
+    }, input),
+  },
   wikiAccess: wikiAccessService,
   wiki: wikiService,
   wikiConsole: wikiConsoleService,
