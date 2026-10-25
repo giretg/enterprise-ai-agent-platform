@@ -98,6 +98,27 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_MCP_TOOLS,
 ] as const
 
+/**
+ * Csak olvasó eszközök: újrapublikálás után a régi definitionId-val érkező hívás az
+ * aktuális verzión lefuthat (`withDefinitionUpdatedNotice`). Írás és külső hívás nem.
+ */
+export const ENTERPRISE_READ_ONLY_TOOLS = [
+  GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_READ_FILE_TOOL,
+  GMAIL_SEARCH_TOOL,
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_LIST_LABELS_TOOL,
+  GMAIL_LIST_DRAFTS_TOOL,
+  HTTP_API_GET_TOOL,
+  HTTP_API_GET_ALL_TOOL,
+  KB_SEARCH_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_GET_DOCUMENT_TOOL,
+  MCP_LIST_TOOLS_TOOL,
+] as const
+
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
 export type EnterpriseDriveTool = (typeof ENTERPRISE_DRIVE_TOOLS)[number]
 export type EnterpriseGmailTool = (typeof ENTERPRISE_GMAIL_TOOLS)[number]
@@ -120,6 +141,7 @@ const ENTERPRISE_KB_TOOL_SET = new Set<string>(ENTERPRISE_KB_TOOLS)
 const ENTERPRISE_SANDBOX_TOOL_SET = new Set<string>(ENTERPRISE_SANDBOX_TOOLS)
 const ENTERPRISE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_WRITE_TOOLS)
 const ENTERPRISE_TOOL_SET = new Set<string>(ENTERPRISE_TOOLS)
+const ENTERPRISE_READ_ONLY_TOOL_SET = new Set<string>(ENTERPRISE_READ_ONLY_TOOLS)
 
 export function isEnterpriseDriveTool(toolName: string): toolName is EnterpriseDriveTool {
   return ENTERPRISE_DRIVE_TOOL_SET.has(toolName)
@@ -155,6 +177,10 @@ export function isEnterpriseSandboxTool(toolName: string): toolName is Enterpris
 
 export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcpTool {
   return toolName === MCP_LIST_TOOLS_TOOL || toolName === MCP_CALL_TOOL
+}
+
+export function isEnterpriseReadOnlyTool(toolName: string): boolean {
+  return ENTERPRISE_READ_ONLY_TOOL_SET.has(toolName)
 }
 
 export function isEnterpriseWriteTool(toolName: string): toolName is EnterpriseWriteTool {

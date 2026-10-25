@@ -9,7 +9,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   definition_not_found: 'Agent definition not found',
   definition_mismatch: 'agentId does not match the loaded definition',
   agent_stale:
-    'Published agent changed since checkout — call platform.agent.checkout, overwrite generated paths, then retry',
+    'The agent was republished — call platform.agent.get_definition to load the new version, then retry with currentDefinitionId (with a local checkout, also re-run platform.agent.checkout)',
   agent_access_denied: 'Operate grant required to invoke this agent',
   tool_not_configured: 'Tool is not configured',
   capability_not_allowed: 'Tool is not allowed by the published agent definition',
@@ -66,7 +66,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   acting_user_required: 'This tool requires a delegated user grant',
   google_drive_scope_not_granted: 'Google Drive scopes are insufficient',
   gmail_scope_not_granted: 'Gmail scopes are insufficient',
-  invalid_args: 'Invalid tool arguments',
+  invalid_args: 'Invalid tool arguments — fix the fields listed in issues and retry',
   idempotency_key_required: 'idempotencyKey is required',
   idempotency_key_conflict:
     'idempotencyKey is already used by a different principal, tool, or arguments',

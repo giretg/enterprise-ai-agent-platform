@@ -502,7 +502,83 @@ async function main() {
     assert.equal(parsePayload(result).code, 'agent_inactive')
   })
 
-  await check('stale definitionId is agent_stale', async () => {
+  await check('stale definitionId on a write is agent_stale with currentDefinitionId', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: definition({ definitionId: STALE_DEFINITION_ID }),
+        currentDefinitionId: DEFINITION_ID,
+      }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: { definitionId: STALE_DEFINITION_ID, name: 'x' },
+      },
+    )
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result)
+    assert.equal(payload.code, 'agent_stale')
+    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
+    assert.match(String(payload.message), /platform\.agent\.get_definition/)
+  })
+
+  // Újrapublikálás munka közben: az olvasás az aktuális verzión fut, és a válasz jelzi.
+  const byId = (current: AgentDefinition) => async ({ definitionId }: { definitionId: string }) =>
+    definitionId === STALE_DEFINITION_ID ? definition({ definitionId: STALE_DEFINITION_ID }) : current
+
+  await check('stale definitionId on a read runs on the current version with a notice', async () => {
+    let calls = 0
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps({
+        currentDefinitionId: DEFINITION_ID,
+        executeDriveTool: async () => {
+          calls++
+          return { files: [] }
+        },
+      }),
+      loadDefinition: byId(definition()),
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: STALE_DEFINITION_ID },
+    })
+    assert.ok('content' in result)
+    assert.equal(result.isError, undefined)
+    assert.equal(calls, 1)
+    const notice = JSON.parse(result.content[1]?.text ?? '{}') as {
+      definitionUpdated?: { previousDefinitionId: string; currentDefinitionId: string; message: string }
+    }
+    assert.equal(notice.definitionUpdated?.previousDefinitionId, STALE_DEFINITION_ID)
+    assert.equal(notice.definitionUpdated?.currentDefinitionId, DEFINITION_ID)
+    assert.match(notice.definitionUpdated?.message ?? '', /platform\.agent\.get_definition/)
+  })
+
+  await check('stale read follows the current version permissions, not the old ones', async () => {
+    let calls = 0
+    const revoked = definition({
+      snapshot: { ...definition().snapshot, capabilities: [] },
+    })
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps({
+        currentDefinitionId: DEFINITION_ID,
+        executeDriveTool: async () => {
+          calls++
+          return { files: [] }
+        },
+      }),
+      loadDefinition: byId(revoked),
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: STALE_DEFINITION_ID },
+    })
+    assert.equal(result.isError, true)
+    assert.equal(calls, 0)
+    assert.notEqual(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('stale read does not follow twice when the current version is stale too', async () => {
     const result = await invokeEnterpriseTool(
       invokeDeps({
         definition: definition({ definitionId: STALE_DEFINITION_ID }),
@@ -515,9 +591,33 @@ async function main() {
       },
     )
     assert.equal(result.isError, true)
-    const payload = parsePayload(result)
-    assert.equal(payload.code, 'agent_stale')
-    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
+    assert.equal(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('invalid_args names the bad fields for the client and the audit', async () => {
+    const audit: Array<{ action: string; metadata?: unknown }> = []
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps(),
+      audit: {
+        async append(data) {
+          audit.push({ action: data.action, metadata: data.metadata })
+        },
+      },
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_READ_FILE_TOOL,
+      args: { definitionId: DEFINITION_ID },
+    })
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result as { content: Array<{ text: string }> })
+    assert.equal(payload.code, 'invalid_args')
+    const issues = payload.issues as Array<{ path: string; message: string }>
+    assert.ok(issues.some((issue) => issue.path === 'fileId'))
+    const denied = audit.find((row) => row.action === 'enterprise.tool.denied')
+    assert.ok(
+      (denied?.metadata as { issues?: Array<{ path: string }> }).issues?.some((issue) => issue.path === 'fileId'),
+    )
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {
