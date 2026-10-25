@@ -1353,6 +1353,8 @@
     "driveFullWriteDesc": "Write every manageable file — admin permission only.",
     "oauthScopes": "Google did not grant the requested service permission — the response only includes earlier access (e.g. Drive). Try Connect again, and allow Gmail access on the consent screen. If Gmail and Drive share the same Google OAuth app, split them into separate clients (Platform → Settings).",
     "oauthUnrequested": "The OAuth response does not include the requested service permission. Try again, or disconnect the other Google connection if they share the same OAuth app.",
+    "oauthPrivacyNotice": "By linking your Google account you allow AI workers to access your Google data with the permissions shown. You can disconnect at any time; the stored access token is then deleted.",
+    "oauthPrivacyLink": "Privacy Policy",
     "usageCapableOne": "{list} has the required tool permission.",
     "usageCapableMany": "{list} have the required tool permission.",
     "usageCapableCount": "{count} active teammates have the required tool permission.",
