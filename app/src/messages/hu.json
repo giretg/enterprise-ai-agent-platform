@@ -1353,6 +1353,8 @@
     "driveFullWriteDesc": "Minden kezelhető fájl írása — csak admin engedéllyel.",
     "oauthScopes": "A Google nem adta meg a kért szolgáltatás jogosultságát — a válasz csak korábbi (pl. Drive) hozzáférést tartalmaz. Próbáld újra az Összekötés gombbal, és a consent képernyőn engedélyezd a Gmail hozzáférést is. Ha Gmail és Drive ugyanazt a Google OAuth appot használja, érdemes külön kliensbe szétválasztani őket (Platform → Beállítások).",
     "oauthUnrequested": "Az OAuth válasz nem tartalmazza a kért szolgáltatás jogosultságát. Próbáld újra, vagy bontsd a másik Google-összekötést, ha ugyanazt az OAuth appot használják.",
+    "oauthPrivacyNotice": "A Google-fiók összekötésével engedélyezed, hogy az AI munkatársak a megadott jogosultságokkal hozzáférjenek a Google-adataidhoz. Az összekötést bármikor bonthatod; ekkor a tárolt hozzáférési tokent töröljük.",
+    "oauthPrivacyLink": "Adatkezelési tájékoztató",
     "usageCapableOne": "{list} rendelkezik a szükséges eszközjoggal.",
     "usageCapableMany": "{list} rendelkeznek a szükséges eszközjoggal.",
     "usageCapableCount": "{count} aktív munkatárs rendelkezik a szükséges eszközjoggal.",
