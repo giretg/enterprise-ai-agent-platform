@@ -37,7 +37,7 @@ export async function createSelfServiceTenant(input: z.infer<typeof createSelfSe
     return ok({ tenantId: result.tenant.id, displayName: result.tenant.displayName })
   } catch (e) {
     if (e instanceof SelfServiceTenantError) return fail(e.message)
-    return fail(e instanceof Error ? e.message : 'Failed to create company')
+    return fail('self_service:unavailable')
   }
 }
 
