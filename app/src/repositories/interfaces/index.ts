@@ -1062,7 +1062,7 @@ export type WikiErasureWrite = {
   /** Sír-jelnél az útvonal is cserélődhet (oldal-mód: az útvonal maga is személyes adat lehet). */
   tombstonePaths?: Record<string, string>
   /** Kitakarás: a revízió szövege cserélődik, új `contentHash`-sel. */
-  redactRevisions: Array<{ id: string; title: string; summary: string; body: string; frontmatter: Prisma.InputJsonValue; contentHash: string; path?: string | null }>
+  redactRevisions: Array<{ id: string; title: string; summary: string; body: string; category: string | null; sourceRefs: Prisma.InputJsonValue; frontmatter: Prisma.InputJsonValue; contentHash: string; path?: string | null }>
   /** Az aktuális oldalak új verziója egy szintetikus change-setben (op = note). */
   pageWrites: Array<{
     pageId: string
@@ -1079,12 +1079,13 @@ export type WikiErasureWrite = {
     pageSummary?: Prisma.InputJsonValue
     logEntry?: Prisma.InputJsonValue
     validation?: Prisma.InputJsonValue
+    reject?: boolean
   }>
   logEntries: Array<{ id: string; title: string; note: string | null; pagePaths: string[] }>
   documents: { redact: Array<{ id: string; filename: string; extractedText: string | null }>; delete: string[] }
   /** Kifejezés-módban a keresési index szövegeinek kitakarása (PG regex, kis-nagybetű független). */
   chunkPattern: string | null
-  gatewayOperations: Array<{ id: string; argsJson: Prisma.InputJsonValue }>
+  gatewayOperations: Array<{ id: string; argsJson: Prisma.InputJsonValue; reject?: boolean }>
   erasedHashes: string[]
 }
 
@@ -1153,7 +1154,8 @@ export interface WikiHistoryRepository {
     chunks: number
     gatewayOperations: Array<{ id: string; argsJson: Prisma.JsonValue }>
   }>
-  listPageChangeSets(wikiId: string, pageIds: string[]): Promise<WikiChangeSet[]>
+  listPageChangeSets(wikiId: string, pageIds: string[], paths: string[]): Promise<WikiChangeSet[]>
+  listSourceDocuments(connectorId: string, documentIds: string[]): Promise<Array<{ id: string; filename: string; hasSourceFile: boolean }>>
   listLogEntriesForPaths(wikiId: string, paths: string[]): Promise<WikiLogEntry[]>
   listPendingGatewayOperations(connectorId: string): Promise<Array<{ id: string; argsJson: Prisma.JsonValue }>>
   executeErasure(input: WikiErasureWrite): Promise<

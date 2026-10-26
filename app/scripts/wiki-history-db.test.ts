@@ -376,6 +376,88 @@ async function main() {
     assert.match((await page('entities/e.md')).body, /anonim/)
   })
 
+  await check('GDPR: revízió-metaadat kitakarása és későbbi megőrzési takarítás', async () => {
+    const marker = 'SensitiveMarker'
+    await write([entity('entities/metadata.md', marker, doc.id, {
+      category: marker, frontmatter: { sources: [{ documentId: doc.id, filename: marker }] },
+    })], 'Metadata')
+    const before = await page('entities/metadata.md')
+    const originalRev = await history.findRevision(shared.id, before.id, before.version)
+    const done = await wikiHistory.executeErasure(adminActor, shared.id, {
+      scope: { kind: 'text', phrase: marker, mode: 'redact' }, reason: 'GDPR metadata', confirmName: 'Közös tudástár',
+    })
+    assert.equal(done.ok, true)
+    const revisions = await prisma.wikiPageRevision.findMany({ where: { pageId: before.id } })
+    assert.ok(!JSON.stringify(revisions).includes(marker), 'a revízió metaadata személyes adatot tartalmaz')
+    const cs = await wikis.findChangeSet(originalRev!.changeSetId!)
+    assert.equal(cs!.pagesPrunedAt, null, 'a kitakarás nem jelölheti kiürítettnek a teljes szöveget')
+    await prisma.wikiChangeSet.update({ where: { id: cs!.id }, data: { appliedAt: new Date(Date.now() - 100 * 86_400_000) } })
+    await history.sweepRetention({ wikiId, fullBefore: new Date(Date.now() - 90 * 86_400_000), deleteBefore: null, keepLatest: 5, limit: 1000, now: new Date() })
+    const pruned = await wikis.findChangeSet(cs!.id)
+    assert.ok(pruned!.pagesPrunedAt)
+    assert.ok(!JSON.stringify(pruned!.pages).includes('body'))
+  })
+
+  await check('GDPR: csak kategóriában / forrásban szereplő kifejezést is megtalál', async () => {
+    const marker = 'SourceOnlyMarker'
+    await write([entity('entities/source-only.md', 'Anonim', doc.id, {
+      frontmatter: { sources: [{ documentId: doc.id, filename: marker }] },
+    })], 'Forrás metaadat')
+    const preview = await wikiHistory.previewErasure(adminActor, shared.id, { kind: 'text', phrase: marker, mode: 'redact' })
+    assert.equal(preview.counts.page, 1)
+    assert.equal(preview.counts.revision, 1)
+  })
+
+  await check('D8: függő visszaállítás nem írhat felül későbbi archiválást', async () => {
+    const path = 'entities/pending-revert.md'
+    await write([entity(path, 'Első', doc.id)], 'Első')
+    await write([entity(path, 'Második', doc.id, { baseVersion: (await page(path)).contentHash })], 'Második')
+    const revert = await wiki.requestRevert(caller, { wikiId, target: { kind: 'page', path, version: 1 } })
+    assert.equal(revert.ok, 'approval')
+    if (revert.ok !== 'approval') throw new Error(JSON.stringify(revert))
+    await write([{ path, action: 'archive', baseVersion: (await page(path)).contentHash }], 'Archiválás')
+    const applied = await wiki.applyApproved(caller, revert.request.changeSetId)
+    assert.equal(applied.ok, false, 'a függő visszaállítás ütközzön az archiválással')
+    assert.equal((await page(path)).status, 'archived')
+  })
+
+  await check('GDPR oldal: függő másolat, gateway, napló és nyers forrás is törlődik', async () => {
+    const marker = 'PrivatePagePayload'
+    const raw = await prisma.document.create({ data: { tenantId: tenant.id, connectorId: shared.id, uploadedById: admin.id, filename: 'private.md', extractedText: marker, status: 'processed' } })
+    await prisma.documentSourceFile.create({ data: { documentId: raw.id, data: Buffer.from(marker) } })
+    const path = 'entities/pending-erasure.md'
+    await write([entity(path, marker, raw.id)], marker)
+    const pending = await wikis.createChangeSet({
+      wikiId, connectorId: shared.id, agentId: agent.id, pages: [entity(path, marker, raw.id)] as never,
+      logEntry: { op: 'note', title: marker, note: marker }, validation: { note: marker }, approverScope: {},
+    })
+    const definition = await prisma.agentDefinitionVersion.findFirstOrThrow({ where: { agentId: agent.id } })
+    const gateway = await prisma.gatewayOperation.create({ data: {
+      tenantId: tenant.id, agentDefinitionVersionId: definition.id, principalUserId: admin.id, toolName: 'kb_wiki_write',
+      argsJson: { changeSetId: pending.id, pages: [{ path, body: marker }] },
+      idempotencyKey: `k-${randomUUID()}`, status: 'awaiting_approval', connectorId: shared.id,
+    } })
+    const preview = await wikiHistory.previewErasure(adminActor, shared.id, { kind: 'pages', paths: [path] })
+    assert.equal(preview.counts.document, 1)
+    assert.equal(preview.counts.sourceFile, 1)
+    const done = await wikiHistory.executeErasure(adminActor, shared.id, {
+      scope: { kind: 'pages', paths: [path] }, reason: 'GDPR oldal', confirmName: 'Közös tudástár',
+    })
+    assert.equal(done.ok, true)
+    const after = await wikis.findChangeSet(pending.id)
+    assert.equal(after!.status, 'rejected')
+    assert.ok(!JSON.stringify(after).includes(marker))
+    const op = await prisma.gatewayOperation.findUniqueOrThrow({ where: { id: gateway.id } })
+    assert.ok(!JSON.stringify(op.argsJson).includes(marker))
+    assert.equal(op.status, 'rejected')
+    assert.equal(await prisma.document.count({ where: { id: raw.id } }), 0)
+    assert.equal(await prisma.documentSourceFile.count({ where: { documentId: raw.id } }), 0)
+    const allCs = await prisma.wikiChangeSet.findMany({ where: { wikiId } })
+    assert.ok(!JSON.stringify(allCs).includes(marker), 'egy change-set másolata megmaradt')
+    const logs = await prisma.wikiLogEntry.findMany({ where: { wikiId } })
+    assert.ok(!JSON.stringify(logs).includes(marker), 'a naplóban tartalom maradt')
+  })
+
   await check('GDPR oldal-mód: minden verzió sír-jel (contentHash marad), az oldal archivált és üres', async () => {
     const b = await page('entities/b.md')
     const hashes = (await prisma.wikiPageRevision.findMany({ where: { pageId: b.id } })).map((rev) => rev.contentHash)

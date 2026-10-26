@@ -136,6 +136,8 @@ export type WikiPageInput = {
   /** `restore` csak belső (visszaállítás, #978): az MCP-séma nem engedi. */
   action: 'upsert' | 'patch' | 'archive' | 'move' | 'restore'
   restore?: WikiRestoreTarget
+  /** Belső visszaállítás: a státuszváltást / azonos tartalomra újraírást is észleli. */
+  expectedPageVersion?: number
   title?: string
   type?: WikiPageTypeName
   summary?: string
@@ -1026,7 +1028,7 @@ export class WikiService {
         ok: true,
         revertsId: null,
         seq: null,
-        pages: [{ path: page.path, action: 'restore', baseVersion: page.contentHash, restore: restoreTarget(revision, page) }],
+        pages: [{ path: page.path, action: 'restore', baseVersion: page.contentHash, expectedPageVersion: page.version, restore: restoreTarget(revision, page) }],
         log: { op: 'revert', title: `Restored ${page.path} to version ${target.version}`, note: null },
       }
     }
@@ -1053,6 +1055,7 @@ export class WikiService {
         pages.push({
           path: page.path,
           action: 'restore',
+          expectedPageVersion: page.version,
           baseVersion: page.contentHash,
           restore: { ...restoreTarget(revision, page), path: page.path, status: 'archived' },
         })
@@ -1066,7 +1069,7 @@ export class WikiService {
         conflicts.push({ path: page.path, reason: 'previous_version_pruned' })
         continue
       }
-      pages.push({ path: page.path, action: 'restore', baseVersion: page.contentHash, restore: restoreTarget(previous, page) })
+      pages.push({ path: page.path, action: 'restore', baseVersion: page.contentHash, expectedPageVersion: page.version, restore: restoreTarget(previous, page) })
     }
     if (conflicts.length > 0) {
       return {
@@ -1373,7 +1376,7 @@ export class WikiService {
           continue
         }
         // D8: csak a várt állapoton fut — ha azóta más is írta, ütközés (semmi nem íródik).
-        if (page.baseVersion !== existing.contentHash) {
+        if (page.baseVersion !== existing.contentHash || page.expectedPageVersion !== existing.version) {
           conflicts.push(conflictPayload(existing, 'the page changed after the version you restore'))
           continue
         }

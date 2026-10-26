@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import {
@@ -38,6 +38,22 @@ export function WikiRevertButton({
   const [preview, setPreview] = useState<Preview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<number | null>(null)
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const previewOpen = preview !== null
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const trigger = triggerRef.current
+    if (!previewOpen || !dialog) return
+    dialog.showModal()
+    cancelRef.current?.focus()
+    return () => {
+      dialog.close()
+      trigger?.focus()
+    }
+  }, [previewOpen])
 
   const open = () =>
     start(async () => {
@@ -83,6 +99,7 @@ export function WikiRevertButton({
   return (
     <span className="inline-flex flex-col">
       <button
+        ref={triggerRef}
         type="button"
         onClick={open}
         disabled={pending}
@@ -93,14 +110,11 @@ export function WikiRevertButton({
       </button>
       {error && !preview ? <span className="mt-1 text-xs text-coral-deep">{error}</span> : null}
       {preview ? (
-        <div
-          role="dialog"
-          aria-modal="true"
+        <dialog
+          ref={dialogRef}
           aria-label={t('revert.dialogTitle')}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') setPreview(null)
-          }}
+          className="m-auto max-h-[90vh] max-w-[calc(100%-2rem)] overflow-auto border-0 bg-transparent p-0 backdrop:bg-ink/40"
+          onCancel={() => setPreview(null)}
         >
           <div className="w-full max-w-lg space-y-3 rounded-2xl bg-card p-5 shadow-xl" data-testid="wiki-revert-dialog">
             <h3 className="font-display text-lg font-semibold">{t('revert.dialogTitle')}</h3>
@@ -140,7 +154,7 @@ export function WikiRevertButton({
                   {t('revert.preview')}
                 </a>
               ) : null}
-              <button type="button" onClick={() => setPreview(null)} className="rounded-md border border-line px-3 py-1.5 text-sm">
+              <button ref={cancelRef} type="button" onClick={() => setPreview(null)} className="rounded-md border border-line px-3 py-1.5 text-sm">
                 {tw('common.cancel')}
               </button>
               <button
@@ -154,7 +168,7 @@ export function WikiRevertButton({
               </button>
             </div>
           </div>
-        </div>
+        </dialog>
       ) : null}
     </span>
   )

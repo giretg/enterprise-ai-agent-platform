@@ -685,6 +685,8 @@ export class WikiHistoryService {
           title: state.title,
           summary: state.summary,
           body: state.body,
+          category: state.category,
+          sourceRefs: state.sources as unknown as Prisma.InputJsonValue,
           frontmatter: state.frontmatter as Prisma.InputJsonValue,
           contentHash: wikiPageContentHash(state),
           ...(rev.path && rev.path.toLowerCase().includes(phrase.toLowerCase()) ? { path: pathMap.get(rev.path) ?? erasedPath(rev.pageId) } : {}),
@@ -742,10 +744,13 @@ export class WikiHistoryService {
       if (pages.length === 0 || pages.length > 50) throw new WikiConsoleError('invalid_args')
       write.scope = { kind: 'pages', pageIds: pages.map((page) => page.id) }
       const oldPaths = new Map<string, string>()
+      const sourceIds = new Set<string>()
       for (const page of pages) {
+        for (const source of readWikiSources(page.sourceRefs)) sourceIds.add(source.documentId)
         const newPath = erasedPath(page.id)
         const revisions = await this.deps.history.listRevisions(connector.id, page.id)
         for (const rev of revisions) {
+          for (const source of readWikiSources(rev.sourceRefs)) sourceIds.add(source.documentId)
           if (rev.path) oldPaths.set(rev.path, newPath)
           if (rev.erasedAt) continue
           write.tombstoneRevisionIds.push(rev.id)
@@ -771,30 +776,43 @@ export class WikiHistoryService {
         counts.page++
         locations.push({ where: 'page', label: page.path })
       }
+      for (const doc of await this.deps.history.listSourceDocuments(connector.id, [...sourceIds])) {
+        write.documents.delete.push(doc.id)
+        counts.document++
+        if (doc.hasSourceFile) counts.sourceFile++
+        locations.push({ where: 'document', label: doc.filename })
+      }
       const pageIds = new Set(pages.map((page) => page.id))
-      for (const row of await this.deps.history.listPageChangeSets(wikiId, [...pageIds])) {
+      const changeSets = await this.deps.history.listPageChangeSets(wikiId, [...pageIds], [...oldPaths.keys()])
+      const changeSetIds = new Set(changeSets.map((row) => row.id))
+      for (const row of changeSets) {
         write.changeSets.push({
           id: row.id,
           pages: stripPagesJson(row.pages, oldPaths) as Prisma.InputJsonValue,
           pageSummary: readPageSummary(row.pageSummary).map((item) =>
             pageIds.has(item.pageId) ? { ...item, path: oldPaths.get(item.path) ?? item.path, title: WIKI_ERASURE_MARK, fromPath: null } : item,
           ) as unknown as Prisma.InputJsonValue,
+          logEntry: { op: (row.logEntry as { op?: string } | null)?.op ?? 'note', title: WIKI_ERASURE_MARK },
+          validation: {},
+          reject: row.status === 'pending',
         })
         counts.changeSet++
       }
       for (const entry of await this.deps.history.listLogEntriesForPaths(wikiId, [...oldPaths.keys()])) {
         write.logEntries.push({
           id: entry.id,
-          title: entry.title,
-          note: entry.note,
+          title: WIKI_ERASURE_MARK,
+          note: null,
           pagePaths: entry.pagePaths.map((path) => oldPaths.get(path) ?? path),
         })
         counts.log++
       }
       for (const op of await this.deps.history.listPendingGatewayOperations(connector.id)) {
         const replaced = replacePaths(op.argsJson, oldPaths)
-        if (JSON.stringify(replaced) !== JSON.stringify(op.argsJson)) {
-          write.gatewayOperations.push({ id: op.id, argsJson: replaced as Prisma.InputJsonValue })
+        const args = op.argsJson as { changeSetId?: string } | null
+        if ((args?.changeSetId && changeSetIds.has(args.changeSetId)) || JSON.stringify(replaced) !== JSON.stringify(op.argsJson)) {
+          // A régi javaslat nem alkalmazható újra, és az argumentuma sem őrizhet másolatot.
+          write.gatewayOperations.push({ id: op.id, argsJson: {}, reject: true })
           counts.gatewayOperation++
         }
       }

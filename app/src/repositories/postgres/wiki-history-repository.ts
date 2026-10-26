@@ -7,6 +7,7 @@ import type {
   WikiRetentionCounts,
   WikiStateRow,
 } from '../interfaces'
+import { revisionData } from './wiki-repository'
 
 /** A wiki-írást lezáró gateway-sorok, amelyek még döntésre / futásra várnak. */
 const OPEN_GATEWAY_STATUSES = ['requested', 'awaiting_approval', 'approved', 'executing'] as const
@@ -277,12 +278,14 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
       prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT id FROM wiki_pages WHERE wiki_id = ${wikiId}::uuid AND connector_id = ${connectorId}::uuid
           AND (${like}(path)) > 0 OR ${like}(title)) > 0 OR ${like}(summary)) > 0 OR ${like}(body)) > 0
-               OR ${like}(frontmatter::text)) > 0 OR ${like}(COALESCE(category, ''))) > 0)`),
+               OR ${like}(frontmatter::text)) > 0 OR ${like}(COALESCE(category, ''))) > 0
+               OR ${like}(source_refs::text)) > 0)`),
       prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT r.id FROM wiki_page_revisions r JOIN wiki_pages p ON p.id = r.page_id
         WHERE p.wiki_id = ${wikiId}::uuid AND p.connector_id = ${connectorId}::uuid AND r.erased_at IS NULL
           AND (${like}(r.title)) > 0 OR ${like}(r.summary)) > 0 OR ${like}(r.body)) > 0
-               OR ${like}(r.frontmatter::text)) > 0 OR ${like}(COALESCE(r.path, ''))) > 0)`),
+               OR ${like}(r.frontmatter::text)) > 0 OR ${like}(COALESCE(r.path, ''))) > 0
+               OR ${like}(COALESCE(r.category, ''))) > 0 OR ${like}(r.source_refs::text)) > 0)`),
       prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT id FROM wiki_change_sets WHERE wiki_id = ${wikiId}::uuid AND connector_id = ${connectorId}::uuid
           AND (${like}(pages::text)) > 0 OR ${like}(COALESCE(log_entry::text, ''))) > 0
@@ -325,9 +328,26 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
     }
   }
 
-  async listPageChangeSets(wikiId: string, pageIds: string[]): Promise<WikiChangeSet[]> {
+  async listPageChangeSets(wikiId: string, pageIds: string[], paths: string[]): Promise<WikiChangeSet[]> {
     if (pageIds.length === 0) return []
-    return prisma.wikiChangeSet.findMany({ where: { wikiId, revisions: { some: { pageId: { in: pageIds } } } } })
+    const ids = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT cs.id FROM wiki_change_sets cs WHERE cs.wiki_id = ${wikiId}::uuid AND (
+        EXISTS (SELECT 1 FROM wiki_page_revisions r WHERE r.change_set_id = cs.id AND r.page_id IN (${Prisma.join(pageIds.map((id) => Prisma.sql`${id}::uuid`))}))
+        OR EXISTS (
+          SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(cs.pages) = 'array' THEN cs.pages ELSE '[]'::jsonb END) p
+          WHERE p->>'path' IN (${Prisma.join(paths)}) OR p->>'newPath' IN (${Prisma.join(paths)})
+            OR p->'restore'->>'path' IN (${Prisma.join(paths)})
+        )
+      )`)
+    return prisma.wikiChangeSet.findMany({ where: { wikiId, id: { in: ids.map((row) => row.id) } } })
+  }
+
+  async listSourceDocuments(connectorId: string, documentIds: string[]) {
+    const rows = await prisma.document.findMany({
+      where: { connectorId, id: { in: documentIds } },
+      select: { id: true, filename: true, sourceFile: { select: { documentId: true } } },
+    })
+    return rows.map(({ sourceFile, ...doc }) => ({ ...doc, hasSourceFile: !!sourceFile }))
   }
 
   listLogEntriesForPaths(wikiId: string, paths: string[]) {
@@ -428,24 +448,7 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
                 })
               }
             }
-            await tx.wikiPageRevision.create({
-              data: {
-                pageId: page.id,
-                changeSetId,
-                version: page.version,
-                title: page.title,
-                summary: page.summary,
-                body: page.body,
-                frontmatter: page.frontmatter ?? {},
-                contentHash: page.contentHash,
-                path: page.path,
-                status: page.status,
-                type: page.type,
-                category: page.category,
-                sourceRefs: page.sourceRefs ?? [],
-                createdByUserId: input.log.actorUserId,
-              },
-            })
+            await tx.wikiPageRevision.create({ data: revisionData(page, changeSetId, input.log) })
             written.push(page)
           }
           const summary: WikiChangeSetPageSummary[] = input.pageSummary.map((row, i) => ({
@@ -498,6 +501,8 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
               title: row.title,
               summary: row.summary,
               body: row.body,
+              category: row.category,
+              sourceRefs: row.sourceRefs,
               frontmatter: row.frontmatter,
               contentHash: row.contentHash,
               erasureId: erasure.id,
@@ -512,7 +517,8 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
           await tx.wikiChangeSet.updateMany({
             where: { id: row.id, wikiId: input.wikiId },
             data: {
-              ...(row.pages !== undefined ? { pages: row.pages, pagesPrunedAt: input.appliedAt } : {}),
+              ...(row.pages !== undefined ? { pages: row.pages } : {}),
+              ...(row.reject ? { status: 'rejected' } : {}),
               ...(row.pageSummary !== undefined ? { pageSummary: row.pageSummary } : {}),
               ...(row.logEntry !== undefined ? { logEntry: row.logEntry } : {}),
               ...(row.validation !== undefined ? { validation: row.validation } : {}),
@@ -557,7 +563,7 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
         for (const row of input.gatewayOperations) {
           await tx.gatewayOperation.updateMany({
             where: { id: row.id, connectorId: input.connectorId },
-            data: { argsJson: row.argsJson },
+            data: { argsJson: row.argsJson, ...(row.reject ? { status: 'rejected' } : {}) },
           })
         }
         counts.gatewayOperations = input.gatewayOperations.length

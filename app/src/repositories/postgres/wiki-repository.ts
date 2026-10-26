@@ -39,7 +39,7 @@ function pageData(page: WikiApplyPageOp['page']) {
 }
 
 /** #978: a revízió a lap teljes állapotát őrzi (útvonal, állapot, források, szerző). */
-function revisionData(
+export function revisionData(
   page: WikiPage,
   changeSetId: string | null,
   author: { actorAgentId?: string | null; actorUserId?: string | null },
