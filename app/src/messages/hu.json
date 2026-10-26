@@ -280,8 +280,194 @@
       "tabsAria": "A tudásbázis részei",
       "authorAgent": "AI-munkatárs",
       "authorHuman": "ember",
+      "history": {
+        "unknownAuthor": "ismeretlen szerző",
+        "agent": "AI-munkatárs",
+        "erasedNote": "Ezt a verziót adatvédelmi okból töröltük, ezért nem nyitható meg és nem állítható vissza.",
+        "versionNotFound": "Ez a verzió nem található. Lehet, hogy a megőrzési szabály miatt már törlődött.",
+        "unchangedLines": "… {count} változatlan sor …",
+        "noTextChange": "A szöveg nem változott.",
+        "fields": {
+          "title": "Cím",
+          "summary": "Összefoglaló",
+          "path": "Útvonal",
+          "status": "Állapot",
+          "category": "Kategória",
+          "sources": "Források"
+        },
+        "actions": {
+          "created": "Új",
+          "updated": "Módosítva",
+          "archived": "Archiválva",
+          "moved": "Áthelyezve",
+          "restored": "Visszaállítva"
+        },
+        "timeline": {
+          "title": "Előzmények ({count} verzió)",
+          "help": "Az oldal minden mentett verziója. Bármelyiket megnyithatod, összevetheted egy másikkal, és — ha jogod van — visszaállíthatod. A visszaállítás új verzióként kerül az előzménybe, a régiek megmaradnak.",
+          "current": "aktuális",
+          "archived": "archivált",
+          "erased": "adatvédelmi okból törölve",
+          "legacy": "Az előzmények bevezetése előtti verzió: az akkori útvonal és archiválás nem biztosan pontos.",
+          "open": "Megnyitás",
+          "openCurrent": "Megnyitás olvasásra",
+          "compareWithPrevious": "Mi változott az előzőhöz képest?"
+        },
+        "compare": {
+          "from": "Ettől",
+          "to": "Eddig",
+          "submit": "Két verzió összevetése",
+          "title": "{from}. és {to}. verzió összevetése"
+        },
+        "oldVersion": {
+          "banner": "Ez egy korábbi verzió ({version}., {when}).",
+          "openCurrent": "Aktuális megnyitása",
+          "compareWithCurrent": "Összevetés az aktuálissal",
+          "restore": "Visszaállítás erre"
+        },
+        "changes": {
+          "title": "Változások",
+          "unavailable": "A változások most nem tölthetők be. Próbáld újra kicsit később.",
+          "intro": "Minden jóváhagyott vagy közvetlenül élesedett módosítás sorszámmal, a legújabb elöl. Egy módosítást megnyithatsz, visszavonhatsz, vagy elnevezheted az utána érvényes állapotot.",
+          "author": "Ki módosította",
+          "anyAuthor": "Bárki",
+          "from": "Ettől a naptól",
+          "to": "Eddig a napig",
+          "filter": "Szűrés",
+          "empty": "Még nincs módosítás ezen a wikin (vagy a szűrésnek egy sem felel meg).",
+          "untitled": "Módosítás",
+          "reverted": "visszavonva (#{seq})",
+          "reverts": "visszavonja: #{seq}",
+          "stateAfter": "Így nézett ki utána",
+          "older": "Régebbi módosítások"
+        },
+        "timeTravel": {
+          "title": "Időutazás",
+          "intro": "Nézd meg, mit tudott a wiki egy korábbi napon. Ilyenkor a wiki csak olvasható.",
+          "date": "Állapot ekkor",
+          "tag": "Vagy egy elnevezett állapot",
+          "show": "Megnézem",
+          "banner": "Így nézett ki a wiki {when} után (#{seq}).",
+          "beforeFirst": "Ekkor a wikin még nem volt oldal.",
+          "backToNow": "Vissza a mostanihoz",
+          "readOnly": "Ez egy korábbi állapot, csak olvasható.",
+          "thinned": "Néhány oldal ebből az időszakból csak napi felbontásban maradt meg."
+        },
+        "tags": {
+          "title": "Elnevezett állapotok",
+          "view": "Megnézem",
+          "export": "Exportálás ebben az állapotban",
+          "nameState": "Állapot elnevezése…",
+          "name": "Név",
+          "namePlaceholder": "pl. Q3 audit előtti állapot",
+          "note": "Megjegyzés (nem kötelező)",
+          "help": "Az elnevezett állapot oldalai akkor is megmaradnak, ha a megőrzési szabály egyébként már törölné őket.",
+          "nameTaken": "Ilyen nevű állapot már van, vagy a név hiányzik.",
+          "delete": "„{name}” elnevezés törlése",
+          "deleteConfirm": "Törlöd a(z) „{name}” elnevezést? A wiki tartalma nem változik, csak a név és a védelem szűnik meg."
+        },
+        "changeSet": {
+          "notFound": "Ez a módosítás nem található.",
+          "eyebrow": "#{seq} módosítás",
+          "openPage": "Oldal megnyitása",
+          "prunedBefore": "Az előző verzió a megőrzési szabály miatt már nincs meg, ezért a legközelebbi korábbihoz hasonlítunk.",
+          "archived": "Az oldal archiválva lett: a tartalma nem változott, de már nem látszik a wikiben.",
+          "back": "← Vissza: {name} — Változások"
+        },
+        "revert": {
+          "pageButton": "Visszaállítás erre",
+          "changeButton": "Visszavonás",
+          "dialogTitle": "Visszaállítás",
+          "pageBody": "A(z) {path} oldal a(z) {version}. verzió tartalmára áll vissza.",
+          "changeBody": "{count} oldal változik vissza a #{seq} módosítás előtti állapotra.",
+          "newVersionNote": "A visszaállítás új módosításként kerül az előzménybe, semmi nem vész el — később ez is visszavonható.",
+          "conflictTitle": "Ezt a módosítást nem lehet egyben visszavonni:",
+          "conflictHelp": "Semmi nem változott. Az érintett oldalakat egyenként, a saját előzményükből állíthatod vissza.",
+          "preview": "Előnézet",
+          "confirm": "Visszaállítás",
+          "working": "Visszaállítás…",
+          "done": "Kész — új módosítás: #{seq}.",
+          "errors": {
+            "conflict": "Az oldal azóta megváltozott, ezért semmi nem íródott. Nézd át az ütköző oldalakat.",
+            "version_erased": "Ezt a verziót adatvédelmi okból töröltük, nem lehet rá visszaállni.",
+            "previous_version_pruned": "Az előző verzió a megőrzési szabály miatt már nincs meg.",
+            "changeset_not_revertible": "Ezt a módosítást már visszavonták.",
+            "already_current": "Ez már az aktuális verzió.",
+            "generic": "A visszaállítás nem sikerült. Próbáld újra."
+          },
+          "reasons": {
+            "changed_since": "azóta más is módosította",
+            "version_erased": "az előző verziót adatvédelmi okból töröltük",
+            "previous_version_pruned": "az előző verzió már nincs meg",
+            "page_missing": "az oldal már nem létezik"
+          }
+        },
+        "retention": {
+          "title": "Régi verziók megőrzése",
+          "fullLabel": "Minden verzió megmarad ennyi ideig:",
+          "fullHelp": "Ennyi ideig minden mentett verzió megvan, így bármelyikre vissza lehet állni.",
+          "deleteLabel": "Utána naponta egy verzió marad, és ennyi idő után a régi verziók törlődnek:",
+          "deleteHelp": "A régebbi verziókból oldalanként és naponta csak a nap utolsó verziója marad meg, majd ennyi idő után azok is törlődnek. A „Soha” mindent megtart.",
+          "never": "Soha",
+          "alwaysKept": "Az aktuális oldal, oldalanként a legutóbbi {count} verzió és az elnevezett állapotok mindig megmaradnak.",
+          "deleteTooShort": "A törlés ideje nem lehet rövidebb annál, ameddig minden verzió megmarad.",
+          "saved": "Elmentve. A takarítás naponta egyszer fut.",
+          "days": "{count} nap",
+          "years": "{count} év"
+        },
+        "erasure": {
+          "title": "Adatvédelmi törlés",
+          "intro": "Egy személyes adat végleges törlése az aktuális oldalakból, minden régi verzióból és minden másolatból (jóváhagyásra váró módosítások, napló, nyers források, keresési index). Csak a szervezet adminisztrátora indíthatja, és naplózzuk — a törölt tartalom nélkül.",
+          "introPrivate": "Egy személyes adat végleges törlése a privát tudásbázisodból: az aktuális oldalakból, minden régi verzióból és minden másolatból. A törlést naplózzuk, a törölt tartalom nélkül.",
+          "exportsNote": "A korábban letöltött ZIP-exportok a platformon kívül vannak, azokat ez a törlés nem éri el.",
+          "step1": "Mit törlünk?",
+          "kinds": {
+            "text": "Egy kifejezés minden előfordulását",
+            "pages": "Kijelölt oldal(ak) teljes előzményét",
+            "revision": "Egy oldal egy régi verzióját"
+          },
+          "kindsHelp": {
+            "text": "Pl. egy név vagy azonosító — mindenhol megkeressük, ahol szerepel.",
+            "pages": "Az oldal minden verziója törlődik, és az oldal archiválva, üresen marad meg.",
+            "revision": "Csak az a verzió törlődik; az aktuális verziót így nem lehet törölni."
+          },
+          "phrase": "A keresett kifejezés (legalább 3 karakter)",
+          "mode": "Mód",
+          "modeHelp": "Kitakarás: a kifejezés helyére „[törölve]” kerül, a szöveg többi része megmarad. Teljes törlés: az érintett régi verziók tartalma teljesen törlődik, az érintett nyers források is.",
+          "modes": {
+            "redact": "Kitakarás",
+            "erase": "Teljes törlés"
+          },
+          "paths": "Oldalak útvonala (soronként vagy vesszővel elválasztva)",
+          "revisionPath": "Oldal útvonala",
+          "revisionVersion": "Verzió",
+          "revisionHelp": "A verziószámot az oldal Előzmények listájában találod.",
+          "previewButton": "Előnézet",
+          "previewTitle": "{count} találat — ezek törlődnek:",
+          "locations": {
+            "page": "Aktuális oldal",
+            "revision": "Régi verzió",
+            "changeSet": "Módosítás tartalma",
+            "log": "Napló-bejegyzés",
+            "document": "Nyers forrás",
+            "sourceFile": "Eredeti fájl",
+            "chunk": "Keresési index",
+            "gatewayOperation": "Jóváhagyásra váró kérés"
+          },
+          "irreversible": "Ez végleges, nem vonható vissza.",
+          "reason": "Indoklás (kötelező)",
+          "reasonPlaceholder": "pl. GDPR-kérelem, ügyszám: 2026/123",
+          "reasonHelp": "Ide ne írj személyes adatot — ez a szöveg a naplóba kerül.",
+          "execute": "Végleges törlés",
+          "working": "Törlés…",
+          "done": "A törlés megtörtént, és naplóztuk.",
+          "conflict": "Közben valaki módosította az érintett oldalt. Kérj új előnézetet, és próbáld újra.",
+          "nothingFound": "Nincs találat — nincs mit törölni."
+        }
+      },
       "tabs": {
         "wiki": "Wiki",
+        "changes": "Változások",
         "inbox": "Tálca",
         "log": "Napló",
         "access": "Kik férnek hozzá",
@@ -373,9 +559,6 @@
         "sourcesHelp": "Az eredeti dokumentumok, amelyekből az oldal készült. Kattintásra megnyílik a forrás — PDF-nél a hivatkozott oldalra ugrik.",
         "pageN": "{n}. oldal",
         "sourceMissing": "a forrás már nem elérhető",
-        "history": "Előzmények ({count} változat)",
-        "current": "jelenlegi",
-        "restoreLater": "Korábbi változat visszaállítása később érkezik; addig az előzmények csak megtekinthetők.",
         "notFound": "Ez az oldal nem található. Lehet, hogy áthelyezték vagy még jóváhagyásra vár.",
         "missingLink": "{path} — még nincs ilyen oldal"
       },

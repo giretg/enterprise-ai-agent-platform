@@ -11,7 +11,14 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import type { Connector, MemoryWriteMode, WikiAccess, WikiPage } from '@prisma/client'
-import type { AgentRepository, AuditRepository, ConnectorRepository, DocumentRepository, WikiRepository } from '@/repositories/interfaces'
+import type {
+  AgentRepository,
+  AuditRepository,
+  ConnectorRepository,
+  DocumentRepository,
+  WikiHistoryRepository,
+  WikiRepository,
+} from '@/repositories/interfaces'
 import type { WikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { hasMinimumRole } from '@/auth/types'
 import type { UserRole } from '@prisma/client'
@@ -89,6 +96,8 @@ export type WikiConsoleDeps = {
   wikiAccess: Pick<WikiAccessService, 'createPrivateKnowledgeBase' | 'linkKnowledgeBase' | 'setWikiAccess' | 'purgePrivateKnowledgeBase'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingestIntoKnowledgeBase'>
   audit: Pick<AuditRepository, 'append'>
+  /** #978: címke szerinti export. */
+  history?: Pick<WikiHistoryRepository, 'listTags' | 'stateAt'>
   now?: () => Date
 }
 
@@ -136,6 +145,11 @@ export class WikiConsoleService {
     return this.deps.now?.() ?? new Date()
   }
 
+  /** #978: a wiki-előzmények ugyanezzel a kapuval dolgoznak (privátnál admin is `not_found`). */
+  authorize(actor: WikiConsoleActor, connectorId: string, need: 'view' | 'contribute' | 'manage') {
+    return this.load(actor, connectorId, need)
+  }
+
   /** A connector csak akkor „létezik” a hívónak, ha legalább metaadatot láthat. */
   private async load(actor: WikiConsoleActor, connectorId: string, need: 'view' | 'contribute' | 'manage') {
     const connector = await this.deps.connectors.findById(connectorId, actor.tenantId)
@@ -148,7 +162,7 @@ export class WikiConsoleService {
     return { connector, access }
   }
 
-  private async displayName(connector: Connector): Promise<string> {
+  async displayName(connector: Connector): Promise<string> {
     const kind = wikiKbKind(connector)
     if (kind === 'private') return privateKnowledgeBaseDisplayName(connector) ?? 'Private knowledge base'
     if (kind === 'catalog') return 'Company knowledge base'
@@ -499,15 +513,40 @@ export class WikiConsoleService {
   // -------------------------------------------------------------------------
   // Export + végleges törlés
 
-  async exportZip(actor: WikiConsoleActor, connectorId: string): Promise<{ filename: string; bytes: Uint8Array }> {
+  async exportZip(
+    actor: WikiConsoleActor,
+    connectorId: string,
+    options: { tag?: string } = {},
+  ): Promise<{ filename: string; bytes: Uint8Array }> {
     const { connector } = await this.load(actor, connectorId, 'manage')
     const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
-    const [pages, documents] = await Promise.all([
-      this.deps.wikis.listPages(connector.id, { status: ['published', 'archived'] }),
-      this.deps.console.listSourceDocuments(connector.id),
-    ])
+    // #978 §5.5: „Exportálás ebben az állapotban” — egy címke szerinti állapot.
+    let tagged: { name: string; seq: number } | null = null
+    let pages: Array<Pick<WikiPage, 'path' | 'type' | 'title' | 'summary' | 'category' | 'frontmatter' | 'body' | 'sourceRefs' | 'status'>>
+    if (options.tag) {
+      if (!wikiId || !this.deps.history) throw new WikiConsoleError('not_found')
+      const tag = (await this.deps.history.listTags(wikiId)).find((row) => row.name === options.tag)
+      if (!tag) throw new WikiConsoleError('not_found')
+      tagged = { name: tag.name, seq: tag.seq }
+      pages = (await this.deps.history.stateAt(wikiId, connector.id, tag.seq))
+        .filter((row) => !row.erasedAt && row.path && row.status !== 'pending_approval')
+        .map((row) => ({
+          path: row.path!,
+          type: row.type ?? 'entity',
+          title: row.title,
+          summary: row.summary,
+          category: row.category,
+          frontmatter: row.frontmatter,
+          body: row.body,
+          sourceRefs: row.sourceRefs ?? [],
+          status: row.status === 'archived' ? 'archived' : 'published',
+        }))
+    } else {
+      pages = await this.deps.wikis.listPages(connector.id, { status: ['published', 'archived'] })
+    }
+    const documents = await this.deps.console.listSourceDocuments(connector.id)
     const name = await this.displayName(connector)
-    const root = safeFilePart(name)
+    const root = safeFilePart(tagged ? `${name} - ${tagged.name}` : name)
     const encoder = new TextEncoder()
     const entries: ZipWriteEntry[] = []
     const add = (path: string, text: string) => entries.push({ path: `${root}/${path}`, bytes: encoder.encode(text) })
@@ -539,6 +578,7 @@ export class WikiConsoleService {
       connectorId: connector.id,
       pageCount: pages.length,
       sourceCount: documents.length,
+      ...(tagged ? { seq: tagged.seq } : {}),
     })
     return { filename: `${root}.zip`, bytes: buildStoredZip(entries) }
   }

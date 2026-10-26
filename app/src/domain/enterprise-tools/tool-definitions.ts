@@ -65,6 +65,10 @@ export const KB_GET_DOCUMENT_TOOL = 'kb_get_document'
 export const KB_INGEST_TOOL = 'kb_ingest'
 /** #943: agent-wiki change-set (write-kind `wiki`, a mód a cél-kapcsolaton él). */
 export const KB_WIKI_WRITE_TOOL = 'kb_wiki_write'
+/** #978 §5.4: mi változott a wikin az agent legutóbbi átnézése óta (összefoglaló, diff nélkül). */
+export const KB_WIKI_CHANGES_TOOL = 'kb_wiki_changes'
+/** #978 §5.2: oldal / change-set visszaállítása — D2: MINDIG jóváhagyással. */
+export const KB_WIKI_REVERT_TOOL = 'kb_wiki_revert'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
@@ -73,6 +77,8 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_GET_DOCUMENT_TOOL,
   KB_INGEST_TOOL,
   KB_WIKI_WRITE_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_REVERT_TOOL,
 ] as const
 
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
@@ -116,6 +122,7 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   KB_LIST_INDEX_TOOL,
   KB_GET_PAGE_TOOL,
   KB_GET_DOCUMENT_TOOL,
+  KB_WIKI_CHANGES_TOOL,
   MCP_LIST_TOOLS_TOOL,
 ] as const
 
@@ -602,6 +609,11 @@ export const kbGetPageInputSchema = z
     wikiId: optionalWikiId,
     path: z.string().min(1).max(400),
     artifactId: z.string().uuid().optional(),
+    /** #978 §5.3: a wiki korábbi állapota — change-szám (pl. "97") vagy ISO-dátum ("2026-10-01"). */
+    asOf: z
+      .union([z.string().trim().min(1).max(40), z.number().int().min(0)])
+      .optional()
+      .describe('Agent wiki only: read the page as it was at a change number ("97") or date ("2026-10-01"). Read-only; never use its version for writing.'),
   })
   .passthrough()
 
@@ -763,12 +775,69 @@ export const kbWikiWriteOperationArgsSchema = z
   })
   .strict()
 
+const seqNumber = z.preprocess(
+  (value) => (typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : value),
+  z.number().int().min(1),
+)
+
+/** MCP-n hirdetett alak (transzformáció nélkül); az elemzés a `…InputSchema`-val megy. */
+export const kbWikiChangesObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    since: z
+      .union([z.string().max(20), z.number().int().min(0)])
+      .optional()
+      .describe('Change number to list after, or "last_seen" (default): changes since you last looked.'),
+    limit: z.number().int().min(1).max(50).optional(),
+    markSeen: z.boolean().optional().describe('Default true: remember that you have seen these changes.'),
+  })
+  .passthrough()
+
+export const kbWikiChangesInputSchema = kbWikiChangesObject.extend({
+  since: z
+    .preprocess(
+      (value) => (typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : value),
+      z.union([z.literal('last_seen'), z.number().int().min(0)]),
+    )
+    .optional(),
+})
+
+/** Egy oldal egy korábbi verzióra, vagy egy teljes change-set (sorszám) visszavonása. */
+export const kbWikiRevertObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    changeSeq: z
+      .union([z.number().int().min(1), z.string().max(20)])
+      .optional()
+      .describe('Revert a whole change (its number from kb_wiki_changes).'),
+    path: z.string().min(1).max(200).optional().describe('Restore one page (together with version).'),
+    version: z
+      .union([z.number().int().min(1), z.string().max(20)])
+      .optional()
+      .describe('The page version to restore (from kb_get_page asOf).'),
+    note: z.string().max(2000).optional().describe('Why — shown to the approver.'),
+  })
+  .passthrough()
+
+export const kbWikiRevertInputSchema = kbWikiRevertObject
+  .extend({ changeSeq: seqNumber.optional(), version: seqNumber.optional() })
+  .refine((value) => (value.changeSeq !== undefined) !== (value.path !== undefined && value.version !== undefined), {
+    path: ['changeSeq'],
+    message: 'Pass either changeSeq, or path and version.',
+  })
+
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
   if (toolName === KB_GET_DOCUMENT_TOOL) return kbGetDocumentInputSchema
   if (toolName === KB_INGEST_TOOL) return kbIngestInputSchema
   if (toolName === KB_WIKI_WRITE_TOOL) return kbWikiWriteInputSchema
+  if (toolName === KB_WIKI_CHANGES_TOOL) return kbWikiChangesInputSchema
+  if (toolName === KB_WIKI_REVERT_TOOL) return kbWikiRevertInputSchema
   return kbSearchInputSchema
 }
 

@@ -18,9 +18,13 @@ import type {
   ConnectorRepository,
   DocumentRepository,
   WikiApplyPageOp,
+  WikiChangeSetPageSummary,
   WikiChunkRow,
+  WikiHistoryRepository,
+  WikiPageChangeAction,
   WikiRepository,
 } from '@/repositories/interfaces'
+import { diffLines } from '@/lib/text-line-diff'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { resolveKbLanguage } from '@/lib/kb-language'
 import { chunkWikiPage } from '@/lib/kb-v3'
@@ -74,7 +78,31 @@ export type WikiCaller = {
   userId: string
   agentId: string
   snapshot: { connectors: WikiSnapshotConnector[] }
+  /**
+   * #978: a Control Plane-ről indított írás (visszaállítás, GDPR) — szerző a
+   * felhasználó, agent-azonosító nem kerül az oldalra / revízióra.
+   */
+  human?: boolean
 }
+
+/** #978: egy visszaállítás cél-állapota (egy korábbi revízióból). */
+export type WikiRestoreTarget = {
+  path: string
+  status: 'published' | 'archived'
+  type: WikiPageTypeName
+  title: string
+  summary: string
+  category: string | null
+  frontmatter: Record<string, unknown>
+  body: string
+  sources: WikiSourceRef[]
+}
+
+export type WikiLogOpName = 'ingest' | 'query' | 'lint' | 'note' | 'revert'
+
+export type WikiRevertTarget =
+  | { kind: 'changeset'; seq: number }
+  | { kind: 'page'; path: string; version: number }
 
 export type WikiFailure = { ok: false; code: string; details?: Record<string, unknown> }
 export type WikiOutcome<T = unknown> = { ok: true; result: T } | WikiFailure
@@ -105,7 +133,11 @@ export type WikiWriteOutcome =
 
 export type WikiPageInput = {
   path: string
-  action: 'upsert' | 'patch' | 'archive' | 'move'
+  /** `restore` csak belső (visszaállítás, #978): az MCP-séma nem engedi. */
+  action: 'upsert' | 'patch' | 'archive' | 'move' | 'restore'
+  restore?: WikiRestoreTarget
+  /** Belső visszaállítás: a státuszváltást / azonos tartalomra újraírást is észleli. */
+  expectedPageVersion?: number
   title?: string
   type?: WikiPageTypeName
   summary?: string
@@ -137,6 +169,22 @@ export type WikiServiceDeps = {
   agents: Pick<AgentRepository, 'findById'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingest' | 'getDocument'>
   audit: Pick<AuditRepository, 'append'>
+  /** #978: előzmények (visszaállítás, változáslista, időutazás); hiányában ezek `tool_not_configured`. */
+  history?: Pick<
+    WikiHistoryRepository,
+    | 'findChangeSetBySeq'
+    | 'revisionsForChangeSet'
+    | 'previousRevision'
+    | 'findRevision'
+    | 'findPageById'
+    | 'listChangeSets'
+    | 'latestSeq'
+    | 'seqAt'
+    | 'stateAt'
+    | 'getCursor'
+    | 'advanceCursor'
+    | 'appliedAtForSeq'
+  >
   /** A jegyzet bélyegzéséhez (név vagy e-mail); hiányában csak az azonosító. */
   findUserLabel?: (userId: string) => Promise<string | null>
   now?: () => Date
@@ -283,6 +331,7 @@ export class WikiService {
       ) continue
       const wiki = await this.ensureWiki(connector)
       const counts = summary.wikis.find((row) => row.connectorId === scope.connectorId)
+      const changes = await this.unseenFor(caller, wiki.id)
       rows.push({
         wikiId: wiki.id,
         connectorId: scope.connectorId,
@@ -295,6 +344,8 @@ export class WikiService {
         batches: summary.batches
           .filter(batch => batch.connectorId === scope.connectorId)
           .map(batch => ({ batchId: batch.batchId, pending: batch.pending, inProgress: batch.inProgress, processed: batch.processed, skipped: batch.skipped })),
+        // #978 §5.4: csak ha van új módosítás az agent legutóbbi átnézése óta.
+        ...(changes ? { changes } : {}),
       })
     }
     return rows
@@ -531,12 +582,17 @@ export class WikiService {
     connectorId: string
     path: string
     explicitWiki: boolean
+    /** #978 §5.3: sorszám vagy ISO-dátum — a wiki akkori állapota. */
+    asOf?: string | number
   }): Promise<Record<string, unknown> | null> {
-    const wiki = input.explicitWiki
+    const wiki = input.explicitWiki || input.asOf !== undefined
       ? await this.deps.wikis.findById((await this.wikiIdForConnector(input.tenantId, input.connectorId)) ?? '')
       : await this.deps.wikis.findByConnectorId(input.connectorId)
     if (!wiki) return null
     const path = input.path.trim().replace(/^\/+/, '')
+    if (input.asOf !== undefined && String(input.asOf).trim() !== '') {
+      return this.readPageAsOf(wiki.id, input.connectorId, path, input.asOf)
+    }
     if (path === WIKI_SCHEMA_PATH || path.toLowerCase() === 'wiki.md') {
       return { found: true, kind: 'wiki_schema', wikiId: wiki.id, path: WIKI_SCHEMA_PATH, text: wiki.schemaMd }
     }
@@ -573,6 +629,65 @@ export class WikiService {
           ? { kind: 'human', userId: page.createdByUserId }
           : null,
       text: renderWikiPageMarkdown(state),
+    }
+  }
+
+  private async readPageAsOf(wikiId: string, connectorId: string, path: string, asOf: string | number) {
+    const history = this.deps.history
+    if (!history) return { found: false, wikiId, path, error: 'history_not_available' }
+    const resolved = await this.resolveAsOf(wikiId, asOf)
+    if (!resolved) {
+      return { found: false, wikiId, path, error: 'invalid_as_of', hint: 'asOf is a change number (e.g. 97) or an ISO date (2026-10-01).' }
+    }
+    const asOfInfo = { seq: resolved.seq, at: resolved.at?.toISOString() ?? null }
+    if (path === WIKI_SCHEMA_PATH || path.toLowerCase() === 'wiki.md') {
+      const wiki = await this.deps.wikis.findById(wikiId)
+      return { found: true, kind: 'wiki_schema', wikiId, path: WIKI_SCHEMA_PATH, asOf: asOfInfo, note: 'WIKI.md has no history; this is the current version.', text: wiki?.schemaMd ?? '' }
+    }
+    if (path === WIKI_LOG_PATH) {
+      const entries = (await this.deps.wikis.listLog(wikiId, 1000)).filter((entry) => !resolved.at || entry.createdAt <= resolved.at)
+      return { found: true, kind: 'wiki_log', wikiId, path, asOf: asOfInfo, text: renderWikiLog(resolved.seq === 0 ? [] : entries) }
+    }
+    const state = resolved.seq === 0 ? [] : await history.stateAt(wikiId, connectorId, resolved.seq)
+    const live = state.filter((row) => row.status !== 'archived' && row.status !== 'pending_approval' && !row.erasedAt)
+    if (path === WIKI_INDEX_PATH) {
+      const pages = live.map((row) => ({
+        path: row.path ?? '',
+        title: row.title,
+        summary: row.summary,
+        category: row.category,
+        type: (row.type ?? 'entity') as WikiPageTypeName,
+      }))
+      return { found: true, kind: 'wiki_index', wikiId, path, asOf: asOfInfo, pageCount: pages.length, text: renderWikiIndex(pages) }
+    }
+    const row = state.find((candidate) => candidate.path === path)
+    if (!row || row.status === 'archived') return { found: false, wikiId, path, asOf: asOfInfo }
+    if (row.erasedAt) return { found: false, wikiId, path, asOf: asOfInfo, erased: true, note: 'This version was erased for data-protection reasons.' }
+    const pageState: WikiPageState = {
+      path,
+      type: (row.type ?? 'entity') as WikiPageTypeName,
+      title: row.title,
+      summary: row.summary,
+      category: row.category,
+      frontmatter: stripManagedFrontmatter(row.frontmatter),
+      body: row.body,
+      sources: readWikiSources(row.sourceRefs),
+    }
+    return {
+      found: true,
+      kind: 'wiki_page',
+      wikiId,
+      path,
+      asOf: asOfInfo,
+      type: pageState.type,
+      title: pageState.title,
+      summary: pageState.summary,
+      category: pageState.category,
+      version: row.version,
+      versionDate: row.createdAt.toISOString(),
+      sources: pageState.sources,
+      note: 'Earlier state (read-only). Do not pass this as baseVersion; read the current page before writing.',
+      text: renderWikiPageMarkdown(pageState),
     }
   }
 
@@ -777,15 +892,16 @@ export class WikiService {
       planned: plan.planned,
       changeSet: { id: changeSetId },
       log: {
-        op: (stored.op as 'ingest') ?? 'ingest',
+        op: (stored.op as WikiLogOpName) ?? 'ingest',
         title: stored.title ?? `Updated ${plan.planned.length} pages`,
         note: stored.note ?? null,
       },
       inbox: null,
+      revertsId: changeSet.revertsId,
     })
     if (!result.ok) {
-      if (result.code === 'conflict') {
-        await this.reject(changeSetId, { tenantId: caller.tenantId, actorUserId: null, reason: 'conflict' })
+      if (result.code === 'conflict' || result.code === 'changeset_not_revertible') {
+        await this.reject(changeSetId, { tenantId: caller.tenantId, actorUserId: null, reason: result.code })
       }
       return result
     }
@@ -884,6 +1000,312 @@ export class WikiService {
   }
 
   // -------------------------------------------------------------------------
+  // #978 Visszaállítás (D2, D5, D8)
+
+  /**
+   * A visszaállítás műveletei a korábbi revíziókból. Change-set: oldalanként az
+   * inverz (létrehozott → archiválás, többi → az előző revízió teljes állapota).
+   * Bármely érintett oldalt azóta más is írta → `conflict`, oldalanként felsorolva (D8).
+   */
+  async planRevert(
+    connector: Pick<Connector, 'id'>,
+    wikiId: string,
+    target: WikiRevertTarget,
+  ): Promise<
+    | { ok: true; pages: WikiPageInput[]; revertsId: string | null; log: { op: 'revert'; title: string; note: string | null }; seq: number | null }
+    | WikiFailure
+  > {
+    const history = this.deps.history
+    if (!history) return { ok: false, code: 'tool_not_configured' }
+    if (target.kind === 'page') {
+      const page = await this.deps.wikis.findPage(connector.id, target.path)
+      if (!page || page.wikiId !== wikiId) return { ok: false, code: 'not_found' }
+      if (page.version === target.version) return { ok: false, code: 'already_current' }
+      const revision = await history.findRevision(connector.id, page.id, target.version)
+      if (!revision) return { ok: false, code: 'version_not_found' }
+      if (revision.erasedAt) return { ok: false, code: 'version_erased' }
+      return {
+        ok: true,
+        revertsId: null,
+        seq: null,
+        pages: [{ path: page.path, action: 'restore', baseVersion: page.contentHash, expectedPageVersion: page.version, restore: restoreTarget(revision, page) }],
+        log: { op: 'revert', title: `Restored ${page.path} to version ${target.version}`, note: null },
+      }
+    }
+    const changeSet = await history.findChangeSetBySeq(wikiId, target.seq)
+    if (!changeSet || changeSet.connectorId !== connector.id) return { ok: false, code: 'not_found' }
+    if (changeSet.status !== 'applied') return { ok: false, code: 'changeset_not_revertible', details: { status: changeSet.status } }
+    const revisions = await history.revisionsForChangeSet(changeSet.id)
+    if (revisions.length === 0) return { ok: false, code: 'nothing_to_revert' }
+    const pages: WikiPageInput[] = []
+    const conflicts: Array<{ path: string; reason: string }> = []
+    for (const revision of revisions) {
+      const page = await history.findPageById(connector.id, revision.pageId)
+      if (!page) {
+        conflicts.push({ path: revision.path ?? revision.title, reason: 'page_missing' })
+        continue
+      }
+      if (page.version !== revision.version) {
+        conflicts.push({ path: page.path, reason: 'changed_since' })
+        continue
+      }
+      const previous = await history.previousRevision(connector.id, page.id, revision.version)
+      if (!previous) {
+        // Ez a change-set hozta létre: visszavonáskor archiválódik.
+        pages.push({
+          path: page.path,
+          action: 'restore',
+          expectedPageVersion: page.version,
+          baseVersion: page.contentHash,
+          restore: { ...restoreTarget(revision, page), path: page.path, status: 'archived' },
+        })
+        continue
+      }
+      if (previous.erasedAt) {
+        conflicts.push({ path: page.path, reason: 'version_erased' })
+        continue
+      }
+      if (previous.version !== revision.version - 1) {
+        conflicts.push({ path: page.path, reason: 'previous_version_pruned' })
+        continue
+      }
+      pages.push({ path: page.path, action: 'restore', baseVersion: page.contentHash, expectedPageVersion: page.version, restore: restoreTarget(previous, page) })
+    }
+    if (conflicts.length > 0) {
+      return {
+        ok: false,
+        code: 'conflict',
+        details: {
+          conflicts,
+          hint: 'Nothing was reverted. Some pages changed after this change; restore them one by one to an earlier version instead.',
+        },
+      }
+    }
+    const title = (changeSet.logEntry as { title?: string } | null)?.title
+    return {
+      ok: true,
+      revertsId: changeSet.id,
+      seq: changeSet.seq,
+      pages,
+      log: { op: 'revert', title: `Reverted #${changeSet.seq}${title ? `: ${title}` : ''}`.slice(0, 200), note: null },
+    }
+  }
+
+  /**
+   * `kb_wiki_revert` (agent): D2 — MINDIG jóváhagyásra vár, a `wikiWriteMode`
+   * közvetlen módjától függetlenül. Csak írási jogú wikin.
+   */
+  async requestRevert(
+    caller: WikiCaller,
+    input: { wikiId?: string; target: WikiRevertTarget; note?: string },
+  ): Promise<WikiWriteOutcome> {
+    const resolved = await this.resolve(caller, input.wikiId, 'write')
+    if ('ok' in resolved) return resolved
+    const { connector, wikiId, scope } = resolved
+    const planned = await this.planRevert(connector, wikiId, input.target)
+    if (!planned.ok) return planned
+    const plan = await this.plan({ connectorId: connector.id, agentId: caller.agentId, pages: planned.pages, sourceDocumentIds: [] })
+    if (!plan.ok) return plan
+    const approverScope = await this.approverScopeFor(connector)
+    const log = { ...planned.log, note: input.note?.trim() || null }
+    const pending = await this.deps.wikis.createChangeSet({
+      wikiId,
+      connectorId: connector.id,
+      agentId: caller.agentId,
+      userId: caller.userId,
+      status: 'pending',
+      pages: planned.pages as unknown as Prisma.InputJsonValue,
+      validation: { issues: plan.issues } as unknown as Prisma.InputJsonValue,
+      logEntry: log as unknown as Prisma.InputJsonValue,
+      sourceDocumentIds: [],
+      approverScope: approverScope as unknown as Prisma.InputJsonValue,
+      revertsId: planned.revertsId,
+    })
+    await this.audit(connector, caller, 'kb.wiki.changeset.revert_requested', pending.id, {
+      wikiId,
+      changeSetId: pending.id,
+      ...(planned.revertsId ? { revertsId: planned.revertsId, seq: planned.seq } : {}),
+      pageCount: planned.pages.length,
+      kind: input.target.kind,
+    })
+    const shared = scope.visibility !== 'private_to_user'
+    const pageList = planned.pages.map((page) => ({ path: page.path, action: 'restore' }))
+    return {
+      ok: 'approval',
+      request: {
+        changeSetId: pending.id,
+        wikiId,
+        connectorId: connector.id,
+        pageCount: planned.pages.length,
+        ...(shared ? { pages: pageList } : {}),
+        applied: null,
+        reason: 'approval_mode',
+      },
+      result: {
+        wikiId,
+        changeSetId: pending.id,
+        pendingPages: pageList,
+        note: 'Reverting always needs approval: nothing changes until the wiki approver accepts it.',
+      },
+    }
+  }
+
+  /**
+   * Konzolról (jóváhagyó / admin / privátnál a tulajdonos — a jogot a hívó
+   * ellenőrizte): azonnal alkalmazódik, új change-setként (D5).
+   */
+  async revertAsHuman(input: {
+    tenantId: string
+    userId: string
+    connector: Connector
+    wikiId: string
+    target: WikiRevertTarget
+  }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
+    const planned = await this.planRevert(input.connector, input.wikiId, input.target)
+    if (!planned.ok) return planned
+    const caller: WikiCaller = {
+      tenantId: input.tenantId,
+      userId: input.userId,
+      agentId: input.userId,
+      snapshot: { connectors: [] },
+      human: true,
+    }
+    const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: planned.pages, sourceDocumentIds: [] })
+    if (!plan.ok) return plan
+    const approverScope = await this.approverScopeFor(input.connector)
+    return this.apply({
+      caller,
+      connector: input.connector,
+      wikiId: input.wikiId,
+      planned: plan.planned,
+      changeSet: {
+        create: {
+          wikiId: input.wikiId,
+          connectorId: input.connector.id,
+          agentId: null,
+          userId: input.userId,
+          pages: planned.pages as unknown as Prisma.InputJsonValue,
+          validation: { issues: plan.issues } as unknown as Prisma.InputJsonValue,
+          logEntry: planned.log as unknown as Prisma.InputJsonValue,
+          sourceDocumentIds: [],
+          approverScope: approverScope as unknown as Prisma.InputJsonValue,
+          revertsId: planned.revertsId,
+        },
+      },
+      log: planned.log,
+      inbox: null,
+      revertsId: planned.revertsId,
+    })
+  }
+
+  // -------------------------------------------------------------------------
+  // #978 §5.4 Agent-változáslista (D4: összefoglaló, diff nélkül)
+
+  async changes(
+    caller: WikiCaller,
+    input: { wikiId?: string; since?: number | 'last_seen'; limit?: number; markSeen?: boolean },
+  ): Promise<WikiOutcome> {
+    const history = this.deps.history
+    if (!history) return { ok: false, code: 'tool_not_configured' }
+    const target = await this.resolve(caller, input.wikiId, 'read')
+    if ('ok' in target) return target
+    const { wikiId } = target
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 50)
+    const latestSeq = await history.latestSeq(wikiId)
+    const cursor = await history.getCursor(wikiId, caller.agentId, caller.userId)
+    const since = typeof input.since === 'number' ? Math.max(0, Math.floor(input.since)) : cursor
+    const rows =
+      since === null
+        ? (await history.listChangeSets(wikiId, { limit: 10, order: 'desc' })).reverse()
+        : await history.listChangeSets(wikiId, { afterSeq: since, limit: limit + 1, order: 'asc' })
+    const truncated = since !== null && rows.length > limit
+    const changes = truncated ? rows.slice(0, limit) : rows
+    const agentNames = await this.agentNames(caller.tenantId, changes.map((row) => row.agentId))
+    const userLabels = new Map<string, string | null>()
+    for (const userId of new Set(changes.filter((row) => !row.agentId && row.userId).map((row) => row.userId!))) {
+      userLabels.set(userId, (await this.deps.findUserLabel?.(userId)) ?? null)
+    }
+    const revertedSeqs = new Map<string, number | null>()
+    for (const row of changes) {
+      if (row.revertsId && !revertedSeqs.has(row.revertsId)) {
+        revertedSeqs.set(row.revertsId, (await this.deps.wikis.findChangeSet(row.revertsId))?.seq ?? null)
+      }
+    }
+    const maxSeq = changes.reduce((max, row) => Math.max(max, row.seq ?? 0), since ?? 0)
+    if (input.markSeen !== false && changes.length > 0) {
+      await history.advanceCursor(wikiId, caller.agentId, caller.userId, maxSeq)
+    }
+    return {
+      ok: true,
+      result: {
+        wikiId,
+        latestSeq,
+        sinceSeq: since,
+        truncated,
+        changes: changes.map((row) => {
+          const log = (row.logEntry ?? {}) as { op?: string; title?: string; note?: string | null }
+          return {
+            seq: row.seq,
+            appliedAt: row.appliedAt?.toISOString() ?? null,
+            author: row.agentId
+              ? { kind: 'agent', name: agentNames.get(row.agentId) ?? null }
+              : { kind: 'user', name: row.userId ? userLabels.get(row.userId) ?? null : null },
+            op: log.op ?? null,
+            title: log.title ?? null,
+            ...(log.note ? { note: log.note } : {}),
+            ...(row.revertsId ? { reverts: revertedSeqs.get(row.revertsId) ?? null } : {}),
+            ...(row.status === 'reverted' ? { reverted: true } : {}),
+            pages: readPageSummary(row.pageSummary).slice(0, 50).map((page) => ({
+              path: page.path,
+              action: page.action,
+              title: page.title,
+              linesAdded: page.linesAdded,
+              linesRemoved: page.linesRemoved,
+              ...(page.fromPath ? { fromPath: page.fromPath } : {}),
+            })),
+          }
+        }),
+        nextStep:
+          changes.length === 0
+            ? 'No new changes since you last looked.'
+            : truncated
+              ? 'More changes are waiting: call kb_wiki_changes again. Read a page with kb_get_page when you need the details.'
+              : 'Read a page with kb_get_page when you need the details (asOf shows an earlier state).',
+      },
+    }
+  }
+
+  /** Briefing-jelzés (§5.4): hány alkalmazott change-set van az agent cursora után. */
+  private async unseenFor(caller: WikiCaller, wikiId: string): Promise<{ latestSeq: number; unseen: number } | null> {
+    const history = this.deps.history
+    if (!history) return null
+    const latestSeq = await history.latestSeq(wikiId)
+    if (latestSeq === 0) return null
+    const cursor = await history.getCursor(wikiId, caller.agentId, caller.userId)
+    const unseen = cursor === null ? Math.min(latestSeq, 10) : Math.max(latestSeq - cursor, 0)
+    return unseen > 0 ? { latestSeq, unseen } : null
+  }
+
+  /**
+   * #978 §5.3: `asOf` (sorszám vagy ISO-dátum) → sorszám; a jövő / ismeretlen
+   * a legutóbbi állapotot adja. `null` = érvénytelen bemenet.
+   */
+  async resolveAsOf(wikiId: string, asOf: string | number): Promise<{ seq: number; at: Date | null } | null> {
+    const history = this.deps.history
+    if (!history) return null
+    const latest = await history.latestSeq(wikiId)
+    if (typeof asOf === 'number' || /^\d+$/.test(String(asOf).trim())) {
+      const seq = Math.min(Math.max(Number(asOf), 0), latest)
+      return { seq, at: seq > 0 ? await history.appliedAtForSeq(wikiId, seq) : null }
+    }
+    const text = String(asOf).trim()
+    // Csak dátum → a nap vége (UTC), hogy „október 1-jén” az aznapi változásokat is mutassa.
+    const at = new Date(/^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T23:59:59.999Z` : text)
+    if (Number.isNaN(at.getTime())) return null
+    return { seq: await history.seqAt(wikiId, at), at }
+  }
+
+  // -------------------------------------------------------------------------
   // Tervezés + validáció (determinisztikus, írás előtt)
 
   private async plan(input: {
@@ -905,7 +1327,8 @@ export class WikiService {
 
     for (const page of input.pages) {
       const path = page.path.trim()
-      const finalPath = page.action === 'move' ? page.newPath?.trim() ?? '' : path
+      const finalPath =
+        page.action === 'move' ? page.newPath?.trim() ?? '' : page.action === 'restore' ? page.restore?.path ?? path : path
       if (!isValidWikiPath(path) || isReservedWikiPath(path)) {
         error(path, isReservedWikiPath(path) ? 'reserved_path' : 'invalid_path', isReservedWikiPath(path)
           ? 'index.md, log.md and WIKI.md are generated or human-edited; do not write them.'
@@ -942,6 +1365,50 @@ export class WikiService {
         if (!page.type && !page.frontmatter?.type) error(path, 'missing_field', 'type is required.')
         planned.push({ input: page, existing, state, status: 'published', othersPage: false })
         pathsAfterWrite.add(path)
+        continue
+      }
+
+      if (page.action === 'restore') {
+        // #978: belső visszaállítás egy korábbi revízió teljes állapotára.
+        const target = page.restore
+        if (!existing || !target) {
+          error(path, 'page_not_found', `No page at ${path}.`)
+          continue
+        }
+        // D8: csak a várt állapoton fut — ha azóta más is írta, ütközés (semmi nem íródik).
+        if (page.baseVersion !== existing.contentHash || page.expectedPageVersion !== existing.version) {
+          conflicts.push(conflictPayload(existing, 'the page changed after the version you restore'))
+          continue
+        }
+        if (target.path !== existing.path) {
+          if (!isValidWikiPath(target.path) || isReservedWikiPath(target.path)) {
+            error(path, 'invalid_path', 'The restored path is not a valid wiki path.')
+            continue
+          }
+          const taken = await this.deps.wikis.findPage(input.connectorId, target.path)
+          if (taken && taken.id !== existing.id) {
+            error(path, 'path_taken', `A page already exists at ${target.path}.`)
+            continue
+          }
+        }
+        pathsAfterWrite.delete(existing.path)
+        if (target.status === 'published') pathsAfterWrite.add(target.path)
+        planned.push({
+          input: page,
+          existing,
+          state: {
+            path: target.path,
+            type: target.type,
+            title: target.title,
+            summary: target.summary,
+            category: target.category,
+            frontmatter: stripManagedFrontmatter(target.frontmatter),
+            body: target.body,
+            sources: target.sources,
+          },
+          status: target.status,
+          othersPage: false,
+        })
         continue
       }
 
@@ -1038,7 +1505,11 @@ export class WikiService {
     const validation = validateWikiPages({
       pages: planned.map((page): WikiValidationPage => ({
         path: page.input.path,
-        action: page.status === 'archived' && page.input.action !== 'patch' ? 'archive' : page.input.action,
+        // Visszaállításnál a korábban elfogadott tartalmat nem validáljuk újra, csak a path-t.
+        action:
+          page.input.action === 'restore' || (page.status === 'archived' && page.input.action !== 'patch')
+            ? 'archive'
+            : page.input.action,
         state: page.state,
       })),
       knownSourceIds,
@@ -1077,15 +1548,24 @@ export class WikiService {
     wikiId: string
     planned: PlannedPage[]
     changeSet: Parameters<WikiRepository['applyChangeSet']>[0]['changeSet']
-    log: { op: 'ingest' | 'query' | 'lint' | 'note'; title: string; note: string | null }
+    log: { op: WikiLogOpName; title: string; note: string | null }
     inbox: Parameters<WikiRepository['applyChangeSet']>[0]['inbox']
-  }): Promise<WikiOutcome<WikiAppliedSummary>> {
+    /** #978 D5: a visszavont change-set (audithoz; a repó a change-set sorából is tudja). */
+    revertsId?: string | null
+  }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
     const { caller, connector } = input
+    const agentId = caller.human ? null : caller.agentId
     const ops: WikiApplyPageOp[] = input.planned.map((page) => {
       const write = toPageWrite(page)
       const chunks = page.status === 'archived' ? [] : pageChunks(page.state)
       if (!page.existing) {
-        return { kind: 'create', page: write, createdByAgentId: caller.agentId, chunks }
+        return {
+          kind: 'create',
+          page: write,
+          createdByAgentId: agentId,
+          createdByUserId: caller.human ? caller.userId : null,
+          chunks,
+        }
       }
       return {
         kind: 'update',
@@ -1093,7 +1573,7 @@ export class WikiService {
         expectedVersion: page.existing.version,
         previousPath: page.existing.path,
         page: write,
-        updatedByAgentId: caller.agentId,
+        updatedByAgentId: agentId,
         chunks,
       }
     })
@@ -1105,14 +1585,16 @@ export class WikiService {
       log: {
         ...input.log,
         pagePaths: input.planned.map((page) => page.state.path),
-        actorAgentId: caller.agentId,
+        actorAgentId: agentId,
         actorUserId: caller.userId,
       },
       inbox: input.inbox,
+      pageSummary: input.planned.map(summarizePlannedPage),
       appliedAt: this.now(),
     })
     if (!result.ok) {
       if (result.reason === 'changeset_not_pending') return { ok: false, code: 'changeset_not_pending' }
+      if (result.reason === 'changeset_not_revertible') return { ok: false, code: 'changeset_not_revertible' }
       const existing = result.path ? await this.deps.wikis.findPage(connector.id, result.path) : null
       return {
         ok: false,
@@ -1127,14 +1609,29 @@ export class WikiService {
     await this.audit(connector, caller, 'kb.wiki.changeset.applied', result.changeSetId, {
       wikiId: input.wikiId,
       changeSetId: result.changeSetId,
+      seq: result.seq,
       pageCount: result.pages.length,
     })
+    if (input.revertsId) {
+      await this.audit(connector, caller, 'kb.wiki.changeset.reverted', input.revertsId, {
+        wikiId: input.wikiId,
+        changeSetId: input.revertsId,
+        revertedById: result.changeSetId,
+        seq: result.seq,
+      })
+    }
     for (const [i, page] of result.pages.entries()) {
       const planned = input.planned[i]
       await this.audit(
         connector,
         caller,
-        !planned.existing ? 'kb.wiki.page.created' : page.status === 'archived' ? 'kb.wiki.page.archived' : 'kb.wiki.page.updated',
+        planned.input.action === 'restore'
+          ? 'kb.wiki.page.restored'
+          : !planned.existing
+            ? 'kb.wiki.page.created'
+            : page.status === 'archived'
+              ? 'kb.wiki.page.archived'
+              : 'kb.wiki.page.updated',
         page.id,
         { wikiId: input.wikiId, pageId: page.id, changeSetId: result.changeSetId, action: planned.input.action, path: page.path },
         'wiki_page',
@@ -1151,6 +1648,7 @@ export class WikiService {
       ok: true,
       result: {
         changeSetId: result.changeSetId,
+        seq: result.seq,
         pages: result.pages.map((page, i) => ({
           path: page.path,
           action: input.planned[i].input.action,
@@ -1180,8 +1678,8 @@ export class WikiService {
   ) {
     await this.deps.audit.append(
       redactKbAuditForVisibility(connector, {
-        actorType: 'agent',
-        actorId: caller.agentId,
+        actorType: caller.human ? 'human' : 'agent',
+        actorId: caller.human ? caller.userId : caller.agentId,
         agentVersion: null,
         action,
         targetType,
@@ -1190,7 +1688,12 @@ export class WikiService {
         inputRef: null,
         outputRef: connector.id,
         policyDecision: 'allowed',
-        metadata: { ...metadata, agentId: caller.agentId, userId: caller.userId, connectorId: connector.id },
+        metadata: {
+          ...metadata,
+          ...(caller.human ? {} : { agentId: caller.agentId }),
+          userId: caller.userId,
+          connectorId: connector.id,
+        },
         tenantId: caller.tenantId,
       }),
     )
@@ -1259,7 +1762,30 @@ function toPageWrite(page: PlannedPage) {
   }
 }
 
-function pageChunks(state: WikiPageState): WikiChunkRow[] {
+/** #978 §6: az alkalmazáskor rögzített oldal-összefoglaló (diff nélkül). */
+function summarizePlannedPage(page: PlannedPage): Omit<WikiChangeSetPageSummary, 'pageId' | 'version'> {
+  const before = page.existing
+  const action: WikiPageChangeAction = !before
+    ? 'created'
+    : page.status === 'archived' && before.status !== 'archived'
+      ? 'archived'
+      : page.status === 'published' && before.status === 'archived'
+        ? 'restored'
+        : page.state.path !== before.path
+          ? 'moved'
+          : 'updated'
+  const rows = action === 'archived' ? [] : diffLines(before?.body ?? '', page.state.body)
+  return {
+    path: page.state.path,
+    ...(before && before.path !== page.state.path ? { fromPath: before.path } : {}),
+    action,
+    title: page.state.title,
+    linesAdded: rows.filter((row) => row.kind === 'add').length,
+    linesRemoved: rows.filter((row) => row.kind === 'del').length,
+  }
+}
+
+export function pageChunks(state: WikiPageState): WikiChunkRow[] {
   return chunkWikiPage({
     path: state.path,
     title: state.title,
@@ -1277,6 +1803,43 @@ function pageChunks(state: WikiPageState): WikiChunkRow[] {
     sourceRef: (chunk.sourceRef ?? null) as Prisma.InputJsonValue | null,
     contentHash: chunk.contentHash,
   }))
+}
+
+function restoreTarget(
+  revision: {
+    path: string | null
+    status: string | null
+    type: string | null
+    category: string | null
+    title: string
+    summary: string
+    frontmatter: unknown
+    body: string
+    sourceRefs: unknown
+  },
+  page: WikiPage,
+): WikiRestoreTarget {
+  // A bevezetés előtti (backfill) revízióknál hiányzó mezők az oldal mostani értékét kapják.
+  const legacy = revision.type === null
+  return {
+    path: revision.path ?? page.path,
+    status: revision.status === 'archived' ? 'archived' : 'published',
+    type: (revision.type ?? page.type) as WikiPageTypeName,
+    title: revision.title,
+    summary: revision.summary,
+    category: legacy ? page.category : revision.category,
+    frontmatter: stripManagedFrontmatter(revision.frontmatter),
+    body: revision.body,
+    sources: readWikiSources(revision.sourceRefs ?? page.sourceRefs),
+  }
+}
+
+export function readPageSummary(value: unknown): WikiChangeSetPageSummary[] {
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (row): row is WikiChangeSetPageSummary =>
+      !!row && typeof row === 'object' && typeof (row as { path?: unknown }).path === 'string',
+  )
 }
 
 function parseApproverScope(value: unknown): WikiApproverScope | null {

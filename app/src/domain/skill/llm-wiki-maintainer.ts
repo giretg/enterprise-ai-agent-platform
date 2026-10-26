@@ -30,6 +30,8 @@ Query: read index.md → relevant pages → original sources as needed. Cite bot
 
 Inbox across sessions: kb_list_index inbox:true wikiId returns items and batch totals. Take one item at a time using kb_get_document documentId claimForWiki:true. Respect already_claimed; select another item. Complete the source workflow and finalize before claiming the next. Claims expire after two hours; after expiry reclaim before writing. When context/time is low, finish the current source if possible, persist partial writes with final:false, and stop. Report processed/pending/inProgress/skipped by batch, unfinished documentId and next action. On “continue”, list again and claim available work; never rely on memory of the previous session or reprocess a processed item.
 
+History: when the briefing shows new changes, call kb_wiki_changes once at the start (a summary per change, no text) and read only the pages you need. kb_get_page asOf (change number or date) shows an earlier state, read-only. To undo a wrong change use kb_wiki_revert (changeSeq, or path + version) only when the user asks or the error is clear; it always waits for approval.
+
 Contradictions: retain both claims with their dates and citations, mark ⚠️ contradiction explicitly, and use the newer source_date for current state only when it supersedes the earlier claim. Historical measurements stay in chronological order. Health wikis separate facts from interpretation and copy values, units, reference ranges and page citations exactly.
 
 Good: read one lab report, write its dated source page and append its cited measurements to existing labs pages, finalize it, then take the next report.

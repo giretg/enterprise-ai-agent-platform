@@ -251,3 +251,203 @@ export async function getWikiChangeSetReviewAction(input: { changeSetId: string 
     return failFrom(e, 'Failed to load change')
   }
 }
+
+// ---------------------------------------------------------------------------
+// #978 Wiki-előzmények
+
+const version = z.coerce.number().int().min(1).max(1_000_000)
+const revertTarget = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('changeset'), seq: version }),
+  z.object({ kind: z.literal('page'), path: z.string().min(1).max(300), version }),
+])
+
+function revalidateWiki(connectorId: string) {
+  revalidatePath(`/control-plane/knowledge/${connectorId}`)
+  revalidatePath(`/control-plane/knowledge/${connectorId}/changes`, 'layout')
+}
+
+export async function getWikiPageHistoryAction(input: { connectorId: string; path: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, path: z.string().min(1).max(300) }).parse(input)
+    return ok(await services.wikiHistory.getPageHistory(await actor(), parsed.connectorId, parsed.path))
+  } catch (e) {
+    return failFrom(e, 'Failed to load history')
+  }
+}
+
+export async function getWikiRevisionAction(input: { connectorId: string; path: string; version: number | string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, path: z.string().min(1).max(300), version }).parse(input)
+    return ok(await services.wikiHistory.getRevision(await actor(), parsed.connectorId, parsed.path, parsed.version))
+  } catch (e) {
+    return failFrom(e, 'Failed to load version')
+  }
+}
+
+export async function diffWikiRevisionsAction(input: { connectorId: string; path: string; from: number | string; to: number | string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, path: z.string().min(1).max(300), from: version, to: version }).parse(input)
+    return ok(await services.wikiHistory.diffRevisions(await actor(), parsed.connectorId, parsed.path, parsed.from, parsed.to))
+  } catch (e) {
+    return failFrom(e, 'Failed to compare versions')
+  }
+}
+
+export async function listWikiChangesAction(input: {
+  connectorId: string
+  author?: string
+  from?: string
+  to?: string
+  beforeSeq?: number | string
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        author: z.string().max(60).optional(),
+        from: z.string().max(10).optional(),
+        to: z.string().max(10).optional(),
+        beforeSeq: version.optional(),
+      })
+      .parse(input)
+    const { connectorId, ...filter } = parsed
+    return ok(await services.wikiHistory.listChanges(await actor(), connectorId, filter))
+  } catch (e) {
+    return failFrom(e, 'Failed to load changes')
+  }
+}
+
+export async function getWikiChangeSetAction(input: { connectorId: string; seq: number | string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, seq: version }).parse(input)
+    return ok(await services.wikiHistory.getChangeSet(await actor(), parsed.connectorId, parsed.seq))
+  } catch (e) {
+    return failFrom(e, 'Failed to load change')
+  }
+}
+
+export async function previewWikiRevertAction(input: { connectorId: string; target: unknown }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, target: revertTarget }).parse(input)
+    return ok(await services.wikiHistory.previewRevert(await actor(), parsed.connectorId, parsed.target))
+  } catch (e) {
+    return failFrom(e, 'Failed to prepare revert')
+  }
+}
+
+export async function revertWikiAction(input: { connectorId: string; target: unknown }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, target: revertTarget }).parse(input)
+    const result = await services.wikiHistory.revert(await actor(), parsed.connectorId, parsed.target)
+    if (result.ok) revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to revert')
+  }
+}
+
+export async function getWikiStateAtAction(input: { connectorId: string; asOf: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, asOf: z.string().trim().min(1).max(40) }).parse(input)
+    return ok(await services.wikiHistory.getStateAt(await actor(), parsed.connectorId, parsed.asOf))
+  } catch (e) {
+    return failFrom(e, 'Failed to load earlier state')
+  }
+}
+
+export async function getWikiPageAtAction(input: { connectorId: string; path: string; asOf: string }) {
+  try {
+    const parsed = z
+      .object({ connectorId: uuid, path: z.string().min(1).max(300), asOf: z.string().trim().min(1).max(40) })
+      .parse(input)
+    return ok(await services.wikiHistory.getPageAt(await actor(), parsed.connectorId, parsed.path, parsed.asOf))
+  } catch (e) {
+    return failFrom(e, 'Failed to load earlier page')
+  }
+}
+
+export async function createWikiTagAction(input: { connectorId: string; seq: number | string; name: string; note?: string }) {
+  try {
+    const parsed = z
+      .object({ connectorId: uuid, seq: version, name: z.string().trim().min(1).max(120), note: z.string().max(500).optional() })
+      .parse(input)
+    const result = await services.wikiHistory.createTag(await actor(), parsed.connectorId, parsed)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to name this state')
+  }
+}
+
+export async function deleteWikiTagAction(input: { connectorId: string; tagId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, tagId: uuid }).parse(input)
+    const result = await services.wikiHistory.deleteTag(await actor(), parsed.connectorId, parsed.tagId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to delete the name')
+  }
+}
+
+export async function getWikiRetentionAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiHistory.getRetention(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load retention')
+  }
+}
+
+export async function updateWikiRetentionAction(input: {
+  connectorId: string
+  retentionFullDays: number
+  retentionDeleteDays: number | null
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        retentionFullDays: z.number().int(),
+        retentionDeleteDays: z.number().int().nullable(),
+      })
+      .parse(input)
+    const result = await services.wikiHistory.updateRetention(await actor(), parsed.connectorId, parsed)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save retention')
+  }
+}
+
+const erasureScope = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('pages'), paths: z.array(z.string().min(1).max(300)).min(1).max(50) }),
+  z.object({ kind: z.literal('revision'), path: z.string().min(1).max(300), version }),
+  z.object({ kind: z.literal('text'), phrase: z.string().trim().min(3).max(200), mode: z.enum(['redact', 'erase']) }),
+])
+
+export async function previewWikiErasureAction(input: { connectorId: string; scope: unknown }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, scope: erasureScope }).parse(input)
+    return ok(await services.wikiHistory.previewErasure(await actor(), parsed.connectorId, parsed.scope))
+  } catch (e) {
+    return failFrom(e, 'Failed to preview erasure')
+  }
+}
+
+export async function executeWikiErasureAction(input: { connectorId: string; scope: unknown; reason: string; confirmName: string }) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        scope: erasureScope,
+        reason: z.string().trim().min(3).max(500),
+        confirmName: z.string().max(200),
+      })
+      .parse(input)
+    const result = await services.wikiHistory.executeErasure(await actor(), parsed.connectorId, parsed)
+    if (result.ok) revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to erase')
+  }
+}

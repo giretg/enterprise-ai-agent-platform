@@ -12,6 +12,8 @@ import {
   KB_GET_PAGE_TOOL,
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_REVERT_TOOL,
   KB_WIKI_WRITE_TOOL,
   type EnterpriseKbTool,
 } from '../tool-definitions'
@@ -62,7 +64,7 @@ function wikiCaller(ctx: KbToolContext): WikiCaller | null {
 
 /** A wiki-útvonalak (beküldés, írás, tálca), amelyek nem egyetlen kiválasztott KB-kötésen futnak. */
 export function isWikiToolCall(toolName: string, args: Record<string, unknown>): boolean {
-  if (toolName === KB_WIKI_WRITE_TOOL) return true
+  if (toolName === KB_WIKI_WRITE_TOOL || toolName === KB_WIKI_CHANGES_TOOL || toolName === KB_WIKI_REVERT_TOOL) return true
   if (toolName === KB_INGEST_TOOL) return args.processingMode === 'wiki'
   if (toolName === KB_LIST_INDEX_TOOL) return args.inbox === true
   return false
@@ -88,6 +90,25 @@ export async function executeWikiTool(
   }
   if (toolName === KB_WIKI_WRITE_TOOL) {
     return wiki.write(caller, args as unknown as WikiWriteInput)
+  }
+  if (toolName === KB_WIKI_CHANGES_TOOL) {
+    return wiki.changes(caller, {
+      wikiId,
+      since: typeof args.since === 'number' ? args.since : 'last_seen',
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+      markSeen: args.markSeen !== false,
+    })
+  }
+  if (toolName === KB_WIKI_REVERT_TOOL) {
+    const target =
+      typeof args.changeSeq === 'number'
+        ? ({ kind: 'changeset', seq: args.changeSeq } as const)
+        : ({ kind: 'page', path: String(args.path), version: Number(args.version) } as const)
+    return wiki.requestRevert(caller, {
+      wikiId,
+      target,
+      note: typeof args.note === 'string' ? args.note : undefined,
+    })
   }
   if (toolName === KB_LIST_INDEX_TOOL && args.inbox === true) {
     return wiki.listInbox(caller, {
@@ -183,6 +204,7 @@ export async function executeKnowledgeBaseTool(
         connectorId: ctx.connectorId,
         path: String(args.path),
         explicitWiki: typeof args.wikiId === 'string',
+        asOf: typeof args.asOf === 'string' || typeof args.asOf === 'number' ? args.asOf : undefined,
       })
       if (page) return page
     }

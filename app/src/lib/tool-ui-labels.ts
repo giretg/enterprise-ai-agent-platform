@@ -39,6 +39,16 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description:
       'Az AI-munkatárs a feldolgozott forrásokból wiki-oldalakat ír és frissít. Csak írási joggal; jóváhagyás módban a wiki gazdája fogadja el.',
   },
+  kb_wiki_changes: {
+    label: 'Wiki változásai',
+    description:
+      'Megmutatja, mi változott a wikin, mióta az AI-munkatárs utoljára megnézte: ki, mikor, mely oldalakat módosította (a szöveg nélkül).',
+  },
+  kb_wiki_revert: {
+    label: 'Wiki visszaállítása',
+    description:
+      'Egy oldalt egy korábbi verziójára, vagy egy teljes módosítást az előtte lévő állapotra állít vissza. Mindig a wiki jóváhagyója fogadja el.',
+  },
 
   'platform.projects.list': {
     label: 'Projektek',

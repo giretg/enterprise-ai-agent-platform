@@ -34,7 +34,9 @@ const GMAIL_WRITE_TOOLS = new Set([
   'gmail_modify_labels',
   'gmail_trash',
 ])
-const WIKI_WRITE_TOOLS = new Set(['kb_wiki_write'])
+const WIKI_WRITE_TOOLS = new Set(['kb_wiki_write', 'kb_wiki_revert'])
+/** #978 D2: a visszaállítás a wiki közvetlen írási módjától függetlenül mindig jóváhagyásra vár. */
+const ALWAYS_APPROVAL_TOOLS = new Set(['kb_wiki_revert'])
 const DRIVE_WRITE_TOOLS = new Set([
   'google_drive_create_folder',
   'google_drive_upload_file',
@@ -65,7 +67,7 @@ export function skipsWriteApproval(
   wikiTarget?: { wikiWriteMode?: unknown } | null,
 ): boolean {
   const kind = writeKindForTool(toolName)
-  if (!kind) return false
+  if (!kind || ALWAYS_APPROVAL_TOOLS.has(toolName)) return false
   if (kind === 'wiki') return wikiTarget?.wikiWriteMode === 'direct'
   return modes?.[kind] === 'direct'
 }
