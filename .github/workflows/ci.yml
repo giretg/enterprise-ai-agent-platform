@@ -214,6 +214,9 @@ jobs:
       - name: Handoff decision concurrency
         run: npm run test:handoff-repository
 
+      - name: Self-service suspension concurrency
+        run: npm run test:self-service-suspension-race
+
       # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
       - name: Mini app repository (Postgres)
         run: npm run test:mini-app-db

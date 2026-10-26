@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client'
+import type { Prisma, UserRole, UserStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { SelfServiceTenantStore } from '@/domain/tenant/self-service-store'
 import { appendAuditInTransaction } from './audit-repository'
@@ -13,8 +13,13 @@ export const selfServiceTenantStore: SelfServiceTenantStore = {
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${SELF_SERVICE_LOCK_KEY})`
         return run({
-          findUser: (userId) =>
-            tx.user.findUnique({ where: { id: userId }, select: { id: true, status: true, role: true } }),
+          findUser: async (userId) => {
+            // A felfüggesztés és az aktiválás ugyanazt a sort írja: a döntésig zároljuk.
+            const rows = await tx.$queryRaw<{ id: string; status: UserStatus; role: UserRole | null }[]>`
+              SELECT id, status, role FROM users WHERE id = ${userId}::uuid FOR UPDATE
+            `
+            return rows[0] ?? null
+          },
           countSelfServiceTenants: (userId) =>
             tx.tenant.count({
               where: { createdById: userId, selfService: true, status: { not: 'archived' } },
