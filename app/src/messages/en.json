@@ -280,8 +280,194 @@
       "tabsAria": "Knowledge base sections",
       "authorAgent": "AI teammate",
       "authorHuman": "person",
+      "history": {
+        "unknownAuthor": "unknown author",
+        "agent": "AI teammate",
+        "erasedNote": "This version was erased for data-protection reasons, so it cannot be opened or restored.",
+        "versionNotFound": "This version was not found. It may have been removed by the retention rule.",
+        "unchangedLines": "… {count, plural, one {# unchanged line} other {# unchanged lines}} …",
+        "noTextChange": "The text did not change.",
+        "fields": {
+          "title": "Title",
+          "summary": "Summary",
+          "path": "Path",
+          "status": "Status",
+          "category": "Category",
+          "sources": "Sources"
+        },
+        "actions": {
+          "created": "New",
+          "updated": "Changed",
+          "archived": "Archived",
+          "moved": "Moved",
+          "restored": "Restored"
+        },
+        "timeline": {
+          "title": "History ({count, plural, one {# version} other {# versions}})",
+          "help": "Every saved version of this page. Open any of them, compare two, and — if you are allowed — restore one. A restore becomes a new version; the old ones are kept.",
+          "current": "current",
+          "archived": "archived",
+          "erased": "erased for data protection",
+          "legacy": "Version from before history was introduced: its path and archive state may not be exact.",
+          "open": "Open",
+          "openCurrent": "Open for reading",
+          "compareWithPrevious": "What changed since the previous one?"
+        },
+        "compare": {
+          "from": "From",
+          "to": "To",
+          "submit": "Compare two versions",
+          "title": "Version {from} compared with version {to}"
+        },
+        "oldVersion": {
+          "banner": "This is an earlier version (version {version}, {when}).",
+          "openCurrent": "Open the current one",
+          "compareWithCurrent": "Compare with the current one",
+          "restore": "Restore this version"
+        },
+        "changes": {
+          "title": "Changes",
+          "unavailable": "Changes cannot be loaded right now. Please try again shortly.",
+          "intro": "Every approved or directly applied change with its number, newest first. Open a change, undo it, or name the state right after it.",
+          "author": "Changed by",
+          "anyAuthor": "Anyone",
+          "from": "From day",
+          "to": "To day",
+          "filter": "Filter",
+          "empty": "No changes in this wiki yet (or none match the filter).",
+          "untitled": "Change",
+          "reverted": "undone (#{seq})",
+          "reverts": "undoes #{seq}",
+          "stateAfter": "How it looked afterwards",
+          "older": "Older changes"
+        },
+        "timeTravel": {
+          "title": "Time travel",
+          "intro": "See what the wiki knew on an earlier day. The wiki is read-only in this view.",
+          "date": "State on",
+          "tag": "Or a named state",
+          "show": "Show",
+          "banner": "This is how the wiki looked after {when} (#{seq}).",
+          "beforeFirst": "The wiki had no pages yet at that time.",
+          "backToNow": "Back to now",
+          "readOnly": "This is an earlier state and is read-only.",
+          "thinned": "Some pages from this period were kept at daily resolution only."
+        },
+        "tags": {
+          "title": "Named states",
+          "view": "Show",
+          "export": "Export this state",
+          "nameState": "Name this state…",
+          "name": "Name",
+          "namePlaceholder": "e.g. Before the Q3 audit",
+          "note": "Note (optional)",
+          "help": "The pages of a named state are kept even when the retention rule would otherwise remove them.",
+          "nameTaken": "A state with this name already exists, or the name is missing.",
+          "delete": "Delete the name “{name}”",
+          "deleteConfirm": "Delete the name “{name}”? The wiki content does not change; only the name and its protection go away."
+        },
+        "changeSet": {
+          "notFound": "This change was not found.",
+          "eyebrow": "Change #{seq}",
+          "openPage": "Open page",
+          "prunedBefore": "The previous version was removed by the retention rule, so we compare with the closest earlier one.",
+          "archived": "The page was archived: its content did not change, but it is no longer shown in the wiki.",
+          "back": "← Back: {name} — Changes"
+        },
+        "revert": {
+          "pageButton": "Restore this version",
+          "changeButton": "Undo",
+          "dialogTitle": "Restore",
+          "pageBody": "The page {path} goes back to the content of version {version}.",
+          "changeBody": "{count, plural, one {# page goes} other {# pages go}} back to the state before change #{seq}.",
+          "newVersionNote": "The restore is recorded as a new change, nothing is lost — you can undo it later too.",
+          "conflictTitle": "This change cannot be undone in one step:",
+          "conflictHelp": "Nothing changed. Restore the affected pages one by one from their own history.",
+          "preview": "Preview",
+          "confirm": "Restore",
+          "working": "Restoring…",
+          "done": "Done — new change: #{seq}.",
+          "errors": {
+            "conflict": "The page changed in the meantime, so nothing was written. Review the conflicting pages.",
+            "version_erased": "This version was erased for data protection and cannot be restored.",
+            "previous_version_pruned": "The previous version was removed by the retention rule.",
+            "changeset_not_revertible": "This change has already been undone.",
+            "already_current": "This is already the current version.",
+            "generic": "The restore did not work. Please try again."
+          },
+          "reasons": {
+            "changed_since": "someone changed it since",
+            "version_erased": "the previous version was erased for data protection",
+            "previous_version_pruned": "the previous version no longer exists",
+            "page_missing": "the page no longer exists"
+          }
+        },
+        "retention": {
+          "title": "Keeping old versions",
+          "fullLabel": "Every version is kept for:",
+          "fullHelp": "For this long every saved version is available, so you can restore any of them.",
+          "deleteLabel": "After that one version per day is kept, and old versions are deleted after:",
+          "deleteHelp": "From older versions only the last one of each day is kept per page, and after this time those are deleted too. “Never” keeps everything.",
+          "never": "Never",
+          "alwaysKept": "The current page, the latest {count} versions of each page and named states are always kept.",
+          "deleteTooShort": "The deletion time cannot be shorter than the time every version is kept.",
+          "saved": "Saved. The clean-up runs once a day.",
+          "days": "{count, plural, one {# day} other {# days}}",
+          "years": "{count, plural, one {# year} other {# years}}"
+        },
+        "erasure": {
+          "title": "Data-protection erasure",
+          "intro": "Permanently erase personal data from the current pages, every old version and every copy (pending changes, log, raw sources, search index). Only the organization admin can start it, and it is logged — without the erased content.",
+          "introPrivate": "Permanently erase personal data from your private knowledge base: the current pages, every old version and every copy. The erasure is logged, without the erased content.",
+          "exportsNote": "ZIP exports downloaded earlier are outside the platform; this erasure cannot reach them.",
+          "step1": "What should be erased?",
+          "kinds": {
+            "text": "Every occurrence of a phrase",
+            "pages": "The whole history of selected page(s)",
+            "revision": "One old version of a page"
+          },
+          "kindsHelp": {
+            "text": "E.g. a name or an ID — we look for it everywhere.",
+            "pages": "Every version of the page is erased; the page stays archived and empty.",
+            "revision": "Only that version is erased; the current version cannot be erased this way."
+          },
+          "phrase": "The phrase to look for (at least 3 characters)",
+          "mode": "Mode",
+          "modeHelp": "Redact: the phrase is replaced with “[törölve]”, the rest of the text stays. Full erasure: the content of the affected old versions is erased completely, and so are the affected raw sources.",
+          "modes": {
+            "redact": "Redact",
+            "erase": "Full erasure"
+          },
+          "paths": "Page paths (one per line or comma-separated)",
+          "revisionPath": "Page path",
+          "revisionVersion": "Version",
+          "revisionHelp": "You find the version number in the page History list.",
+          "previewButton": "Preview",
+          "previewTitle": "{count, plural, one {# match} other {# matches}} — these will be erased:",
+          "locations": {
+            "page": "Current page",
+            "revision": "Old version",
+            "changeSet": "Change content",
+            "log": "Log entry",
+            "document": "Raw source",
+            "sourceFile": "Original file",
+            "chunk": "Search index",
+            "gatewayOperation": "Request awaiting approval"
+          },
+          "irreversible": "This is permanent and cannot be undone.",
+          "reason": "Reason (required)",
+          "reasonPlaceholder": "e.g. GDPR request, case 2026/123",
+          "reasonHelp": "Do not write personal data here — this text goes into the log.",
+          "execute": "Erase permanently",
+          "working": "Erasing…",
+          "done": "The erasure is done and logged.",
+          "conflict": "Someone changed an affected page in the meantime. Request a new preview and try again.",
+          "nothingFound": "No matches — nothing to erase."
+        }
+      },
       "tabs": {
         "wiki": "Wiki",
+        "changes": "Changes",
         "inbox": "Inbox",
         "log": "Log",
         "access": "Who has access",
@@ -373,9 +559,6 @@
         "sourcesHelp": "The original documents this page was written from. Click to open the source — for PDFs it jumps to the cited page.",
         "pageN": "page {n}",
         "sourceMissing": "source no longer available",
-        "history": "History ({count} versions)",
-        "current": "current",
-        "restoreLater": "Restoring an earlier version is coming later; until then the history is view-only.",
         "notFound": "This page was not found. It may have been moved or is still waiting for approval.",
         "missingLink": "{path} — no such page yet"
       },

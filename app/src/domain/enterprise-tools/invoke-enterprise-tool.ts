@@ -57,9 +57,12 @@ import {
   isEnterpriseTool,
   isEnterpriseWriteTool,
   KB_GET_DOCUMENT_TOOL,
+  KB_GET_PAGE_TOOL,
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_WIKI_WRITE_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_REVERT_TOOL,
   MCP_CALL_TOOL,
   MCP_LIST_TOOLS_TOOL,
   mcpCallInputSchema,
@@ -1210,7 +1213,13 @@ async function invokeKbTool(
   if (deps.executeWikiTool && (isWikiToolCall(toolName, parsedArgs) || wikiOverview)) {
     return invokeWikiTool(deps, { ...input, args: parsedArgs, userConnectors })
   }
-  if (toolName === KB_WIKI_WRITE_TOOL || parsedArgs.processingMode === 'wiki' || parsedArgs.inbox === true) {
+  if (
+    toolName === KB_WIKI_WRITE_TOOL ||
+    toolName === KB_WIKI_CHANGES_TOOL ||
+    toolName === KB_WIKI_REVERT_TOOL ||
+    parsedArgs.processingMode === 'wiki' ||
+    parsedArgs.inbox === true
+  ) {
     return deny('tool_not_configured')
   }
 
@@ -1316,6 +1325,9 @@ async function auditKbOk(
 /** `kb_wiki_write` a snapshotban: saját képessége vagy a `kb_ingest` (a wiki-jog a kötésen dől el, D2). */
 const WIKI_TOOL_CAPABILITIES: Record<string, readonly string[]> = {
   [KB_WIKI_WRITE_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  // #978: az előzmény-eszközök a meglévő wiki-képességre épülnek (a jog a kötésen dől el).
+  [KB_WIKI_REVERT_TOOL]: [KB_WIKI_REVERT_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  [KB_WIKI_CHANGES_TOOL]: [KB_WIKI_CHANGES_TOOL, KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
   [KB_INGEST_TOOL]: [KB_INGEST_TOOL],
   [KB_LIST_INDEX_TOOL]: [KB_LIST_INDEX_TOOL],
 }

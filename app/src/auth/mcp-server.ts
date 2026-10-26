@@ -82,6 +82,8 @@ import {
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
   KB_WIKI_WRITE_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_REVERT_TOOL,
   SANDBOX_RUN_TOOL,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
@@ -108,6 +110,8 @@ import {
   kbListIndexInputSchema,
   kbSearchInputSchema,
   kbWikiWriteObject,
+  kbWikiChangesObject,
+  kbWikiRevertObject,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   type EnterpriseToolMcpResult,
@@ -1841,7 +1845,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base page',
           description:
-            'Read one page by path. Agent wiki: pass wikiId and path "WIKI.md" (rules), "index.md", "log.md" or a page path; the answer has baseVersion for kb_wiki_write. OKF wiki: path "index.md" and artifactId from kb_list_index. Do not open every page.',
+            'Read one page by path. Agent wiki: pass wikiId and path "WIKI.md" (rules), "index.md", "log.md" or a page path; the answer has baseVersion for kb_wiki_write. asOf (change number or ISO date) returns the page or index.md as it was then, read-only — a moved page is found under its old path. OKF wiki: path "index.md" and artifactId from kb_list_index. Do not open every page.',
           inputSchema: kbGetPageInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
@@ -1875,6 +1879,27 @@ async function createMcpResourceHandler(
           inputSchema: kbWikiWriteObject,
         },
         async (args) => enterpriseToolResult(principal, KB_WIKI_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CHANGES_TOOL,
+        {
+          title: 'List agent wiki changes',
+          description:
+            'What changed in an agent wiki since you last looked: per change its number (seq), time, author, log title and note, and per page path, action (created|updated|archived|moved|restored), title and line counts (+added/−removed). No page text — read details with kb_get_page. Call it once at the start of wiki work when the briefing shows unseen changes. since defaults to "last_seen"; markSeen (default true) remembers what you have seen. Pass wikiId when several wikis are bound.',
+          inputSchema: kbWikiChangesObject,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CHANGES_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_REVERT_TOOL,
+        {
+          title: 'Revert agent wiki change',
+          description:
+            'Propose a revert in an agent wiki you have write access to: changeSeq reverts a whole change (number from kb_wiki_changes) to the state before it; or path + version restores one page to an earlier version (see kb_get_page asOf). Always needs approval, even in direct write mode: returns awaiting_approval and an approvalUrl — show the link, do not poll. conflict = a page changed after that change; restore those pages one by one instead. Use it only when the user asks or a change is clearly wrong; say why in note.',
+          inputSchema: kbWikiRevertObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_REVERT_TOOL, args, deps),
       )
       server.registerTool(
         SANDBOX_RUN_TOOL,

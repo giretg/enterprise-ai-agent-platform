@@ -323,6 +323,7 @@
     "test:wiki-foundation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-foundation.test.ts",
     "test:kb-wiki": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-wiki.test.ts",
     "test:kb-wiki-db": "tsx scripts/kb-wiki-db.test.ts",
+    "test:wiki-history-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/wiki-history-db.test.ts",
     "test:wiki-private-purge-db": "tsx scripts/wiki-private-purge-db.test.ts",
     "test:kb-wiki-e2e": "tsx --require ./scripts/_server-only-shim.cjs scripts/kb-wiki-e2e.test.ts",
     "fixtures:health-wiki": "tsx scripts/fixtures/health-wiki/write.ts",

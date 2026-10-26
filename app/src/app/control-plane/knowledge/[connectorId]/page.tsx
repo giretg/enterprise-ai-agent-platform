@@ -5,7 +5,10 @@ import {
   getWikiAgentAccessAction,
   getWikiOverviewAction,
   getWikiPageAction,
+  getWikiPageAtAction,
+  getWikiRetentionAction,
   getWikiSettingsAction,
+  getWikiStateAtAction,
   getWikiSourceAction,
   listWikiInboxAction,
 } from '@/app/actions/knowledge-wiki'
@@ -15,12 +18,21 @@ import { WikiMarkdown } from '@/components/knowledge/wiki/wiki-markdown'
 import { WikiAgentAccessEditor } from '@/components/knowledge/wiki/wiki-agent-access-editor'
 import { WikiOwnerActions } from '@/components/knowledge/wiki/wiki-owner-actions'
 import { WikiSettingsPanel } from '@/components/knowledge/wiki/wiki-settings-panel'
+import { WikiRetentionPanel } from '@/components/knowledge/wiki/wiki-retention-panel'
+import { WikiErasurePanel } from '@/components/knowledge/wiki/wiki-erasure-panel'
+import {
+  ChangesTab,
+  PageHistoryPanel,
+  RevisionDiffView,
+  RevisionView,
+  TimeTravelBanner,
+} from '@/components/knowledge/wiki/wiki-history-views'
 import { formatWhen, wikiHref } from '@/components/knowledge/wiki/wiki-format'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 
 export const dynamic = 'force-dynamic'
 
-const TABS = ['wiki', 'inbox', 'log', 'access', 'settings'] as const
+const TABS = ['wiki', 'changes', 'inbox', 'log', 'access', 'settings'] as const
 type Tab = (typeof TABS)[number]
 
 export default async function KnowledgeBaseWikiPage({
@@ -28,7 +40,7 @@ export default async function KnowledgeBaseWikiPage({
   searchParams,
 }: {
   params: Promise<{ connectorId: string }>
-  searchParams: Promise<{ tab?: string; page?: string; source?: string; p?: string }>
+  searchParams: Promise<WikiQuery>
 }) {
   const { connectorId } = await params
   const query = await searchParams
@@ -91,6 +103,7 @@ export default async function KnowledgeBaseWikiPage({
       {tab === 'wiki' ? (
         <WikiTab connectorId={connectorId} wiki={wiki} query={query} t={t} locale={locale} />
       ) : null}
+      {tab === 'changes' ? <ChangesTab connectorId={connectorId} query={query} locale={locale} /> : null}
       {tab === 'inbox' ? <InboxTab connectorId={connectorId} /> : null}
       {tab === 'log' ? (
         <Card title={t('log.title')}>
@@ -129,6 +142,20 @@ export default async function KnowledgeBaseWikiPage({
   )
 }
 
+type WikiQuery = {
+  tab?: string
+  page?: string
+  source?: string
+  p?: string
+  /** #978: korábbi verzió, két verzió összevetése, időutazás, „Változások” szűrők. */
+  rev?: string
+  from?: string
+  to?: string
+  asOf?: string
+  author?: string
+  before?: string
+}
+
 type Overview = Extract<Awaited<ReturnType<typeof getWikiOverviewAction>>, { success: true }>['data']
 type T = Awaited<ReturnType<typeof getTranslations<'ControlPlane.wiki'>>>
 
@@ -141,10 +168,13 @@ async function WikiTab({
 }: {
   connectorId: string
   wiki: Overview
-  query: { page?: string; source?: string; p?: string }
+  query: WikiQuery
   t: T
   locale: string
 }) {
+  if (query.asOf) {
+    return <TimeTravelTab connectorId={connectorId} query={query} asOf={query.asOf} t={t} locale={locale} />
+  }
   const toc = (
     <Card className="lg:sticky lg:top-4">
       <div className="mb-2 flex items-center">
@@ -190,6 +220,10 @@ async function WikiTab({
     ) : (
       <Card><p className="text-sm text-ink-soft">{t('source.notFound')}</p></Card>
     )
+  } else if (query.page && query.rev) {
+    main = <RevisionView connectorId={connectorId} path={query.page} version={query.rev} locale={locale} />
+  } else if (query.page && query.from && query.to) {
+    main = <RevisionDiffView connectorId={connectorId} path={query.page} from={query.from} to={query.to} locale={locale} />
   } else if (query.page) {
     const res = await getWikiPageAction({ connectorId, path: query.page })
     main = res.success ? (
@@ -238,20 +272,7 @@ async function WikiTab({
               </ul>
             </div>
           ) : null}
-          {res.data.revisions.length > 1 ? (
-            <details className="mt-4 border-t border-line/70 pt-3">
-              <summary className="cursor-pointer text-sm text-ink-soft">{t('page.history', { count: res.data.revisions.length })}</summary>
-              <ul className="mt-2 space-y-1 text-xs text-ink-soft">
-                {res.data.revisions.map((rev) => (
-                  <li key={rev.version}>
-                    v{rev.version} · {formatWhen(rev.createdAt, locale)} · {rev.title}
-                    {rev.current ? ` (${t('page.current')})` : ''}
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-2 text-xs text-ink-faint">{t('page.restoreLater')}</p>
-            </details>
-          ) : null}
+          <PageHistoryPanel connectorId={connectorId} path={res.data.path} locale={locale} />
         </article>
       </Card>
     ) : (
@@ -276,6 +297,104 @@ async function WikiTab({
     <div className="grid gap-4 lg:grid-cols-[18rem_1fr]">
       <div>{toc}</div>
       <div className="min-w-0">{main}</div>
+    </div>
+  )
+}
+
+/** #978 §5.3: a wiki egy korábbi állapota — csak olvasható nézet, sávval. */
+async function TimeTravelTab({
+  connectorId,
+  query,
+  asOf,
+  t,
+  locale,
+}: {
+  connectorId: string
+  query: WikiQuery
+  asOf: string
+  t: T
+  locale: string
+}) {
+  const stateRes = await getWikiStateAtAction({ connectorId, asOf })
+  if (!stateRes.success) {
+    return (
+      <Card>
+        <p className="text-sm text-ink-soft">{t('errors.invalid_args')}</p>
+      </Card>
+    )
+  }
+  const state = stateRes.data
+  const pageRes = query.page ? await getWikiPageAtAction({ connectorId, path: query.page, asOf }) : null
+  return (
+    <div className="space-y-4">
+      <TimeTravelBanner connectorId={connectorId} seq={state.seq} at={state.at} thinned={state.thinned} locale={locale} />
+      <div className="grid gap-4 lg:grid-cols-[18rem_1fr]">
+        <Card className="lg:sticky lg:top-4">
+          <h2 className="mb-2 font-display text-lg font-semibold">{t('toc.title')}</h2>
+          {state.pageCount === 0 ? (
+            <p className="text-sm text-ink-soft">{t('toc.empty')}</p>
+          ) : (
+            <div className="space-y-3" data-testid="wiki-toc-as-of">
+              {state.categories.map((group) => (
+                <div key={group.category}>
+                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+                    {group.category === 'Uncategorized' ? t('toc.uncategorized') : group.category}
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {group.pages.map((page) => (
+                      <li key={page.path}>
+                        <Link
+                          href={wikiHref(connectorId, { asOf, page: page.path })}
+                          className={`block truncate rounded px-1.5 py-0.5 text-sm hover:bg-coral/5 ${
+                            query.page === page.path ? 'bg-coral/10 font-medium text-coral-deep' : 'text-ink'
+                          }`}
+                          title={page.summary}
+                        >
+                          {page.title}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+        <div className="min-w-0">
+          {pageRes ? (
+            pageRes.success ? (
+              <Card>
+                <article data-testid="wiki-page-as-of">
+                  <p className="text-xs text-ink-faint">
+                    {pageRes.data.path} · v{pageRes.data.version} · {formatWhen(pageRes.data.createdAt, locale)}
+                  </p>
+                  <h2 className="mt-1 font-display text-2xl font-semibold">{pageRes.data.title}</h2>
+                  {pageRes.data.summary ? <p className="mt-1 text-ink-soft">{pageRes.data.summary}</p> : null}
+                  <div className="mt-4">
+                    <WikiMarkdown
+                      connectorId={connectorId}
+                      body={pageRes.data.body}
+                      knownPaths={pageRes.data.knownPaths}
+                      linkQuery={{ asOf }}
+                    />
+                  </div>
+                </article>
+              </Card>
+            ) : (
+              <Card>
+                <p className="text-sm text-ink-soft">{t('page.notFound')}</p>
+              </Card>
+            )
+          ) : (
+            <Card>
+              <h2 className="font-display text-lg font-semibold">{t('overview.title')}</h2>
+              <p className="mt-2 text-sm text-ink-soft">
+                {state.pageCount === 0 ? t('overview.empty') : t('overview.body', { pages: state.pageCount })}
+              </p>
+            </Card>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -372,12 +491,14 @@ function wikiErrorMessage(
 }
 
 async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {
-  const res = await getWikiSettingsAction({ connectorId })
+  const [res, retention] = await Promise.all([getWikiSettingsAction({ connectorId }), getWikiRetentionAction({ connectorId })])
   if (!res.success) notFound()
   return (
     <div className="space-y-4">
       <WikiSettingsPanel connectorId={connectorId} settings={res.data} />
+      {retention.success ? <WikiRetentionPanel connectorId={connectorId} retention={retention.data} /> : null}
       <WikiOwnerActions connectorId={connectorId} name={name} isPrivate={isPrivate} />
+      <WikiErasurePanel connectorId={connectorId} name={name} isPrivate={isPrivate} />
     </div>
   )
 }

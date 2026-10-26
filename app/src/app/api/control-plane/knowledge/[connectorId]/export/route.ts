@@ -5,14 +5,17 @@ import { WikiConsoleError } from '@/domain/knowledge-base/wiki-console-service'
 export const runtime = 'nodejs'
 
 /** #946: a wiki letöltése ZIP-ben (Obsidian-kompatibilis markdown + nyers források szövege). */
-export async function GET(_request: Request, context: { params: Promise<{ connectorId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ connectorId: string }> }) {
   try {
     const ctx = await requireTenantRole('viewer')
     const { connectorId } = await context.params
     if (!/^[0-9a-f-]{36}$/i.test(connectorId)) return new Response('Nem található.', { status: 404 })
+    // #978 §5.5: `?tag=` — egy elnevezett állapot exportja.
+    const tag = new URL(request.url).searchParams.get('tag')?.trim().slice(0, 120) || undefined
     const { filename, bytes } = await services.wikiConsole.exportZip(
       { userId: ctx.user.id, tenantId: ctx.activeTenantId, role: ctx.activeTenantRole, assumed: ctx.assumed },
       connectorId,
+      { tag },
     )
     return new Response(Buffer.from(bytes), {
       status: 200,

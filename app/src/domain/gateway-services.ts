@@ -52,6 +52,7 @@ import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-ser
 import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiService } from '@/domain/knowledge-base/wiki-service'
 import { WikiConsoleService } from '@/domain/knowledge-base/wiki-console-service'
+import { WikiHistoryService } from '@/domain/knowledge-base/wiki-history-service'
 import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
@@ -200,21 +201,35 @@ const wikiService = new WikiService({
   agents: repositories.agents,
   knowledgeBase: knowledgeBaseService,
   audit: repositories.audit,
+  history: repositories.wikiHistory,
   async findUserLabel(userId) {
     const user = await repositories.users.findById(userId)
     return user ? user.name || user.email : null
   },
 })
 
+const wikiConsoleRepository = new PostgresWikiConsoleRepository()
 const wikiConsoleService = new WikiConsoleService({
   documents: repositories.documents,
   connectors: repositories.connectors,
   agents: repositories.agents,
   wikis: repositories.wikis,
-  console: new PostgresWikiConsoleRepository(),
+  console: wikiConsoleRepository,
   wiki: wikiService,
   wikiAccess: wikiAccessService,
   knowledgeBase: knowledgeBaseService,
+  audit: repositories.audit,
+  history: repositories.wikiHistory,
+})
+
+// #978 Wiki-előzmények (konzol + napi megőrzés).
+const wikiHistoryService = new WikiHistoryService({
+  history: repositories.wikiHistory,
+  wikis: repositories.wikis,
+  connectors: repositories.connectors,
+  console: wikiConsoleRepository,
+  wikiConsole: wikiConsoleService,
+  wiki: wikiService,
   audit: repositories.audit,
 })
 
@@ -644,6 +659,7 @@ export const services = {
   wikiAccess: wikiAccessService,
   wiki: wikiService,
   wikiConsole: wikiConsoleService,
+  wikiHistory: wikiHistoryService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

@@ -10,6 +10,7 @@ import type {
   WikiApplyChangeSetInput,
   WikiApplyChangeSetResult,
   WikiApplyPageOp,
+  WikiChangeSetPageSummary,
   WikiInboxSummary,
   WikiRepository,
 } from '../interfaces'
@@ -34,6 +35,31 @@ function pageData(page: WikiApplyPageOp['page']) {
     outLinks: page.outLinks ?? [],
     status: page.status ?? 'published',
     contentHash: page.contentHash,
+  }
+}
+
+/** #978: a revízió a lap teljes állapotát őrzi (útvonal, állapot, források, szerző). */
+function revisionData(
+  page: WikiPage,
+  changeSetId: string | null,
+  author: { actorAgentId?: string | null; actorUserId?: string | null },
+): Prisma.WikiPageRevisionUncheckedCreateInput {
+  return {
+    pageId: page.id,
+    changeSetId,
+    version: page.version,
+    title: page.title,
+    summary: page.summary,
+    body: page.body,
+    frontmatter: page.frontmatter ?? {},
+    contentHash: page.contentHash,
+    path: page.path,
+    status: page.status,
+    type: page.type,
+    category: page.category,
+    sourceRefs: page.sourceRefs ?? [],
+    createdByAgentId: author.actorAgentId ?? null,
+    createdByUserId: author.actorUserId ?? null,
   }
 }
 
@@ -130,16 +156,7 @@ export class PostgresWikiRepository implements WikiRepository {
         },
       })
       await tx.wikiPageRevision.create({
-        data: {
-          pageId: page.id,
-          changeSetId: input.changeSetId ?? null,
-          version: page.version,
-          title: page.title,
-          summary: page.summary,
-          body: page.body,
-          frontmatter: page.frontmatter ?? {},
-          contentHash: page.contentHash,
-        },
+        data: revisionData(page, input.changeSetId ?? null, { actorAgentId: input.createdByAgentId, actorUserId: input.createdByUserId }),
       })
       return page
     })
@@ -173,16 +190,7 @@ export class PostgresWikiRepository implements WikiRepository {
       if (updated.count === 0) return null
       const page = await tx.wikiPage.findUniqueOrThrow({ where: { id: pageId } })
       await tx.wikiPageRevision.create({
-        data: {
-          pageId: page.id,
-          changeSetId: changeSetId ?? null,
-          version: page.version,
-          title: page.title,
-          summary: page.summary,
-          body: page.body,
-          frontmatter: page.frontmatter ?? {},
-          contentHash: page.contentHash,
-        },
+        data: revisionData(page, changeSetId ?? null, { actorAgentId: updatedByAgentId }),
       })
       return page
     })
@@ -206,6 +214,7 @@ export class PostgresWikiRepository implements WikiRepository {
         sourceDocumentIds: input.sourceDocumentIds ?? [],
         inboxItemId: input.inboxItemId ?? null,
         approverScope: input.approverScope,
+        revertsId: input.revertsId ?? null,
       },
     })
   }
@@ -449,14 +458,25 @@ export class PostgresWikiRepository implements WikiRepository {
         // Egy wikin az írások sorban futnak: a konténer-artifact egyszer jön létre,
         // és két change-set chunk-cseréje nem keveredik.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.connectorId}))`
+        // #978 D6: a sorszám az alkalmazáskor születik; a sor-zár miatt két párhuzamos
+        // alkalmazás nem kaphatja ugyanazt (a rollback a számot is visszaadja).
+        const [allocated] = await tx.$queryRaw<Array<{ seq: number }>>`
+          UPDATE agent_wikis SET next_seq = next_seq + 1
+          WHERE id = ${input.wikiId}::uuid AND connector_id = ${input.connectorId}::uuid
+          RETURNING next_seq - 1 AS seq
+        `
+        if (!allocated) throw new ApplyAborted({ ok: false, reason: 'changeset_not_pending' })
+        const seq = Number(allocated.seq)
         let changeSetId: string
+        let revertsId: string | null
         if ('id' in input.changeSet) {
           const moved = await tx.wikiChangeSet.updateMany({
             where: { id: input.changeSet.id, connectorId: input.connectorId, status: 'pending' },
-            data: { status: 'applied', appliedAt: input.appliedAt },
+            data: { status: 'applied', appliedAt: input.appliedAt, seq },
           })
           if (moved.count === 0) throw new ApplyAborted({ ok: false, reason: 'changeset_not_pending' })
           changeSetId = input.changeSet.id
+          revertsId = (await tx.wikiChangeSet.findUnique({ where: { id: changeSetId }, select: { revertsId: true } }))?.revertsId ?? null
         } else {
           const created = input.changeSet.create
           const row = await tx.wikiChangeSet.create({
@@ -473,10 +493,21 @@ export class PostgresWikiRepository implements WikiRepository {
               sourceDocumentIds: created.sourceDocumentIds ?? [],
               inboxItemId: created.inboxItemId ?? null,
               approverScope: created.approverScope,
+              revertsId: created.revertsId ?? null,
+              seq,
             },
             select: { id: true },
           })
           changeSetId = row.id
+          revertsId = created.revertsId ?? null
+        }
+        // #978 D5: a visszavont change-set `reverted`, és hivatkozik a visszaállítóra.
+        if (revertsId) {
+          const marked = await tx.wikiChangeSet.updateMany({
+            where: { id: revertsId, wikiId: input.wikiId, status: 'applied' },
+            data: { status: 'reverted', revertedById: changeSetId },
+          })
+          if (marked.count === 0) throw new ApplyAborted({ ok: false, reason: 'changeset_not_revertible' })
         }
 
         const container =
@@ -497,7 +528,7 @@ export class PostgresWikiRepository implements WikiRepository {
             select: { id: true },
           }))
 
-        const pages = []
+        const pages: WikiPage[] = []
         for (const op of input.ops) {
           let page
           if (op.kind === 'create') {
@@ -540,19 +571,19 @@ export class PostgresWikiRepository implements WikiRepository {
               })),
             })
           }
-          await tx.wikiPageRevision.create({
-            data: {
-              pageId: page.id,
-              changeSetId,
-              version: page.version,
-              title: page.title,
-              summary: page.summary,
-              body: page.body,
-              frontmatter: page.frontmatter ?? {},
-              contentHash: page.contentHash,
-            },
-          })
+          await tx.wikiPageRevision.create({ data: revisionData(page, changeSetId, input.log) })
           pages.push(page)
+        }
+        if (input.pageSummary) {
+          const summary: WikiChangeSetPageSummary[] = input.pageSummary.map((row, i) => ({
+            ...row,
+            pageId: pages[i].id,
+            version: pages[i].version,
+          }))
+          await tx.wikiChangeSet.update({
+            where: { id: changeSetId },
+            data: { pageSummary: summary as unknown as Prisma.InputJsonValue },
+          })
         }
 
         await tx.wikiLogEntry.create({
@@ -589,7 +620,7 @@ export class PostgresWikiRepository implements WikiRepository {
                 },
           })
         }
-        return { ok: true as const, changeSetId, pages }
+        return { ok: true as const, changeSetId, seq, pages }
       })
     } catch (error) {
       if (error instanceof ApplyAborted) return error.result

@@ -11,13 +11,17 @@ export function WikiMarkdown({
   connectorId,
   body,
   knownPaths,
+  linkQuery,
 }: {
   connectorId: string
   body: string
-  knownPaths: string[]
+  /** Hiányában (pl. korábbi verzió) nem jelöljük a nem létező oldalakat. */
+  knownPaths?: string[]
+  /** #978: időutazásban a linkek is az adott állapotra mutatnak. */
+  linkQuery?: Record<string, string>
 }) {
   const t = useTranslations('ControlPlane.wiki')
-  const known = new Set(knownPaths)
+  const known = knownPaths ? new Set(knownPaths) : null
   return (
     <div className="wiki-markdown space-y-3 text-sm leading-relaxed text-ink [&_a]:text-coral-deep [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:border-line [&_blockquote]:pl-3 [&_code]:rounded [&_code]:bg-ink/5 [&_code]:px-1 [&_h1]:font-display [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:mt-4 [&_h2]:font-display [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-line/70 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line/70 [&_th]:bg-paper [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_ul]:list-disc">
       <ReactMarkdown
@@ -26,10 +30,10 @@ export function WikiMarkdown({
           a({ href, children }) {
             if (href?.startsWith('#wiki:')) {
               const path = decodeURIComponent(href.slice('#wiki:'.length))
-              const exists = known.has(path)
+              const exists = !known || known.has(path)
               return (
                 <Link
-                  href={wikiHref(connectorId, { page: path })}
+                  href={wikiHref(connectorId, { ...linkQuery, page: path })}
                   className={exists ? undefined : 'opacity-60'}
                   title={exists ? path : t('page.missingLink', { path })}
                 >

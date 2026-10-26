@@ -726,6 +726,87 @@ async function main() {
       for (const leak of leaks) assert.ok(!json.includes(leak), `audit-szivárgás: ${leak}`)
     })
 
+    await check('9. #978 előzmények az MCP-n: változáslista, asOf, visszaállítás mindig jóváhagyással, címke, megőrzés, kitakarás', async () => {
+      const mcp = session('history', owner)
+      // A régi (#947) képesség-lista elég: a kb_wiki_changes / kb_wiki_revert a meglévő wiki-jogra épül.
+      const first = await mcp.ok('kb_wiki_changes', { definitionId, wikiId })
+      assert.ok(first.latestSeq >= 29, JSON.stringify(first).slice(0, 300))
+      assert.equal(first.changes.length, 10, 'cursor nélkül az utolsó 10')
+      assert.ok(first.changes.every((row: any) => row.seq && Array.isArray(row.pages) && row.author.kind === 'agent'))
+      assert.ok(!JSON.stringify(first).includes('| dátum |'), 'D4: oldal-szöveg nélkül')
+      const second = await mcp.ok('kb_wiki_changes', { definitionId, wikiId })
+      assert.deepEqual(second.changes, [])
+      const briefing = await services.wiki.listWikis({ tenantId: tenant.id, userId: owner.id, agentId: agent.id, snapshot: (await prisma.agentDefinitionVersion.findUniqueOrThrow({ where: { id: definitionId } })).snapshot as never })
+      assert.equal(briefing.find((row: any) => row.wikiId === wikiId)?.changes, undefined)
+
+      // Időutazás: a 10. alkalmazás utáni index kevesebb oldalt mutat, mint a mostani.
+      const early = await mcp.ok('kb_get_page', { definitionId, wikiId, path: 'index.md', asOf: '10' })
+      const now = await mcp.ok('kb_get_page', { definitionId, wikiId, path: 'index.md' })
+      assert.equal(early.asOf.seq, 10)
+      assert.ok(early.pageCount < now.pageCount, `${early.pageCount} < ${now.pageCount}`)
+
+      // Visszaállítás: közvetlen írási mód mellett is jóváhagyásra vár (D2, AC4).
+      const latest = first.latestSeq
+      const lastChange = await prisma.wikiChangeSet.findFirstOrThrow({ where: { wikiId, seq: latest } })
+      const timelineBefore = await prisma.wikiPage.findFirstOrThrow({ where: { connectorId, path: 'timeline.md' } })
+      const revert = await mcp.call('kb_wiki_revert', { definitionId, wikiId, changeSeq: String(latest), note: 'teszt' })
+      assert.equal(revert.isError, false, JSON.stringify(revert.json))
+      assert.equal(revert.json.status, 'awaiting_approval', JSON.stringify(revert.json))
+      const operation = await prisma.gatewayOperation.findUniqueOrThrow({ where: { id: revert.json.operationId } })
+      assert.equal(operation.toolName, 'kb_wiki_write')
+      assert.equal((await prisma.wikiPage.findFirstOrThrow({ where: { connectorId, path: 'timeline.md' } })).contentHash, timelineBefore.contentHash)
+      const approved = await services.gatewayOperations.approve({
+        tenantId: tenant.id,
+        operationId: operation.id,
+        actor: { tenantId: tenant.id, userId: owner.id, role: owner.role, assumed: false },
+      })
+      assert.equal(approved.ok, true, JSON.stringify(approved))
+      assert.equal((await prisma.wikiChangeSet.findUniqueOrThrow({ where: { id: lastChange.id } })).status, 'reverted')
+      const after = await mcp.ok('kb_wiki_changes', { definitionId, wikiId })
+      assert.equal(after.changes.length, 1)
+      assert.equal(after.changes[0].reverts, latest)
+
+      // Konzol: idővonal, címke, megőrzés, kitakarás (tulajdonos; admin nem látja).
+      const history = await services.wikiHistory.getPageHistory(actor(owner), connectorId, 'timeline.md')
+      assert.ok(history.revisions.length >= 2)
+      await assert.rejects(services.wikiHistory.getPageHistory(actor(admin), connectorId, 'timeline.md'), (error: unknown) => error instanceof WikiConsoleError && error.code === 'not_found')
+      await services.wikiHistory.createTag(actor(owner), connectorId, { seq: 10, name: 'Korai állapot' })
+      await services.wikiHistory.updateRetention(actor(owner), connectorId, { retentionFullDays: 30, retentionDeleteDays: 90 })
+      const swept = await services.wikiHistory.sweepRetention()
+      assert.ok(swept.wikis >= 1)
+      assert.ok(history.revisions.length > 0)
+      // GDPR: egy egyedi kifejezés a wikiben → teljes törlés; a nyers PDF-ek érintetlenek.
+      const SECRET = 'Titkos Kód 4711'
+      await mcp.ok('kb_wiki_write', {
+        definitionId,
+        wikiId,
+        pages: JSON.stringify([{
+          path: 'notes/titok.md', action: 'upsert', type: 'concept', title: 'Titok', summary: 'Egy titok',
+          frontmatter: { sources: [{ documentId: documentIds[0] }] }, body: `Megjegyzés: ${SECRET}.`,
+        }]),
+        logEntry: { op: 'note', title: `Jegyzet: ${SECRET}` },
+      })
+      const rawFiles = await prisma.documentSourceFile.count({ where: { documentId: { in: documentIds } } })
+      const preview = await services.wikiHistory.previewErasure(actor(owner), connectorId, { kind: 'text', phrase: SECRET, mode: 'erase' })
+      assert.ok(preview.counts.page === 1 && preview.counts.revision === 1 && preview.counts.log === 1, JSON.stringify(preview.counts))
+      const erased = await services.wikiHistory.executeErasure(actor(owner), connectorId, {
+        scope: { kind: 'text', phrase: SECRET, mode: 'erase' }, reason: 'teszt kérelem', confirmName: 'Egészség-napló',
+      })
+      assert.equal(erased.ok, true)
+      const titok = await prisma.wikiPage.findFirstOrThrow({ where: { connectorId, path: 'notes/titok.md' } })
+      assert.ok(!titok.body.includes(SECRET) && titok.body.includes('[törölve]'))
+      const revisions = await prisma.wikiPageRevision.findMany({ where: { pageId: titok.id }, orderBy: { version: 'asc' } })
+      assert.ok(revisions[0].erasedAt && revisions[0].body === '')
+      const leftovers = JSON.stringify(await prisma.wikiLogEntry.findMany({ where: { wikiId } }))
+      assert.ok(!leftovers.includes(SECRET))
+      assert.equal(await prisma.documentSourceFile.count({ where: { documentId: { in: documentIds } } }), rawFiles)
+      const auditJson = JSON.stringify(
+        await prisma.auditLog.findMany({ where: { tenantId: tenant.id, action: 'kb.wiki.erasure.executed' } }),
+        (_key, value) => (typeof value === 'bigint' ? String(value) : value),
+      )
+      assert.ok(auditJson.length > 2 && !auditJson.includes(SECRET) && !auditJson.includes('teszt kérelem'), 'privát KB: indoklás és kifejezés sem kerül az auditba')
+    })
+
     await check('7. végleges törlés: semmilyen tartalom nem marad (DB + nyers PDF-bájtok)', async () => {
       const wikiRow = await prisma.agentWiki.findFirstOrThrow({ where: { connectorId } })
       const pageIds = (await prisma.wikiPage.findMany({ where: { connectorId }, select: { id: true } })).map((row) => row.id)
@@ -744,6 +825,10 @@ async function main() {
         changeSets: await prisma.wikiChangeSet.count({ where: { connectorId } }),
         log: await prisma.wikiLogEntry.count({ where: { wikiId: wikiRow.id } }),
         agentLinks: await prisma.agentConnector.count({ where: { connectorId } }),
+        // #978: címkék, agent-cursorok és törlési naplók is a wikivel együtt mennek.
+        tags: await prisma.wikiTag.count({ where: { wikiId: wikiRow.id } }),
+        cursors: await prisma.wikiReadCursor.count({ where: { wikiId: wikiRow.id } }),
+        erasures: await prisma.wikiErasure.count({ where: { wikiId: wikiRow.id } }),
       }
       for (const [table, count] of Object.entries(remaining)) assert.equal(count, 0, `${table} maradt: ${count}`)
       const leftovers = await prisma.document.findMany({ where: { tenantId: tenant.id }, select: { contentHash: true } })
@@ -761,6 +846,7 @@ async function main() {
   } finally {
     // Takarítás (az audit-lánc append-only, az marad).
     await prisma.handoff.deleteMany({ where: { tenantId: tenant.id } })
+    await prisma.gatewayOperation.deleteMany({ where: { tenantId: tenant.id } })
     await prisma.document.deleteMany({ where: { tenantId: tenant.id } })
     await prisma.connector.deleteMany({ where: { tenantId: tenant.id } })
     await prisma.resourceGrant.deleteMany({ where: { tenantId: tenant.id } })
