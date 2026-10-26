@@ -1754,8 +1754,7 @@
       "launching": "Munkába állítás…",
       "liveTitle": "{name} munkába állt!",
       "liveBody": "Írj neki a saját AI-kliensedben (pl. Claude, ChatGPT, Codex), vagy adj neki feladatot.",
-      "chatNow": "Írj neki most",
-      "giveTicket": "Adj neki ticketet"
+      "chatNow": "Írj neki most"
     },
     "openAgent": "Munkatárs adatlapja →",
     "card": {

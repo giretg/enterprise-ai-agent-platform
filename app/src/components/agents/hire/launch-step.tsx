@@ -16,7 +16,7 @@ type AgentStatus = 'draft' | 'active' | 'suspended' | 'retired'
 /**
  * „Próbaüzem és munkába állítás” (#957 WP-6): javasolt próbakérdések, majd
  * egy gomb = élesítés + aktiválás (ugyanazok a műveletek, mint az adatlap
- * Élesítés kapcsolója). Siker után: „Írj neki most” / „Adj neki ticketet”.
+ * Élesítés kapcsolója). Siker után: „Írj neki most”.
  */
 export function LaunchStep({
   agentId,
@@ -127,12 +127,6 @@ export function LaunchStep({
               className="rounded-full bg-coral px-4 py-2 text-sm font-semibold text-white"
             >
               {t('launch.chatNow')}
-            </Link>
-            <Link
-              href={CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS.ticket}
-              className="rounded-full border border-line px-4 py-2 text-sm font-semibold text-ink"
-            >
-              {t('launch.giveTicket')}
             </Link>
           </div>
         </div>

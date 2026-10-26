@@ -297,7 +297,7 @@ function main() {
     assert.match(launch, /activateAgent/)
     assert.match(launch, /resumeAgent/)
     assert.match(launch, /CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS\.chat/)
-    assert.match(launch, /CREATE_AGENT_WIZARD_AFTER_LAUNCH_HREFS\.ticket/)
+    assert.doesNotMatch(launch, /giveTicket|AFTER_LAUNCH_HREFS\.ticket/)
     assert.match(wizard, /goLive/)
     assert.match(wizard, /\n\s+wizard\n/)
     assert.doesNotMatch(wizard, /draftAgentFromDescription/)
