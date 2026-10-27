@@ -13,14 +13,20 @@ export class PostgresClientInstallRepository implements ClientInstallStore {
       hermesVersion: input.hermesVersion,
     }
     return prisma.$transaction(async (tx) => {
+      // A verzióváltás és a sessionök cseréje telepítésenként egyetlen műveletként látszódjon.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(774, hashtext(${`${tenantId}|${userId}|${installId}`}))`
       const key = { tenantId_userId_installId: { tenantId, userId, installId } }
-      const previous = await tx.clientInstall.findUnique({ where: key, select: { lastHeartbeatAt: true } })
+      const previous = await tx.clientInstall.findUnique({ where: key, select: { lastHeartbeatAt: true, guardVersion: true } })
       const install = await tx.clientInstall.upsert({
         where: key,
         create: { tenantId, userId, installId, ...state },
         update: state,
         select: { id: true },
       })
+      // A már futó, régi Guard sessionje nem örökölheti az új Guard verzióját.
+      if (previous && previous.guardVersion !== input.guardVersion) {
+        await tx.clientInstallSession.deleteMany({ where: { clientInstallId: install.id } })
+      }
       for (const sessionId of sessions) {
         await tx.clientInstallSession.upsert({
           where: { clientInstallId_sessionId_agentId: { clientInstallId: install.id, sessionId, agentId } },
@@ -41,11 +47,12 @@ export class PostgresClientInstallRepository implements ClientInstallStore {
       select: {
         lastHeartbeatAt: true,
         managedDirHash: true,
+        guardVersion: true,
         sessions: input.sessionId
           ? { where: { sessionId: input.sessionId, agentId: input.agentId }, select: { lastSeenAt: true } }
           : false,
       },
     })
-    return row && { lastHeartbeatAt: row.lastHeartbeatAt, managedDirHash: row.managedDirHash, sessionLastSeenAt: row.sessions?.[0]?.lastSeenAt ?? null }
+    return row && { lastHeartbeatAt: row.lastHeartbeatAt, managedDirHash: row.managedDirHash, guardVersion: row.guardVersion, sessionLastSeenAt: row.sessions?.[0]?.lastSeenAt ?? null }
   }
 }

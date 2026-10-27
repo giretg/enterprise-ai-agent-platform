@@ -68,7 +68,7 @@ export const AUXILIARY_TASKS = [
 /**
  * Ismert modell-szolgáltatói kulcsok és base-URL env-ek. A managed `.env` üresre pineli őket,
  * ezért kulcs nélkül a `/model --provider openrouter` már a kliensépítésnél elhasal.
- * Ha a folyamatban mégis van kulcs, a Guard 0.3.1 HTTP-kapu + aux wrap a végrehajtásnál zár.
+ * Ha a folyamatban mégis van kulcs, a Guard HTTP-kapu + aux wrap a végrehajtásnál zár.
  * Csak a Hermes folyamat env-jét írja felül, a gép többi programjáét nem.
  */
 export const PINNED_EMPTY_ENV_KEYS = [

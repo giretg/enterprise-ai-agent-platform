@@ -5,6 +5,8 @@
 import assert from 'node:assert/strict'
 import {
   CLIENT_OPEN_MESSAGE,
+  CLIENT_GUARD_OUTDATED_MESSAGE,
+  compatibleGuardVersion,
   clientPolicyTimingFromEnv,
   createManagedGate,
   heartbeatBodySchema,
@@ -35,15 +37,17 @@ async function check(name: string, fn: () => Promise<void>) {
 
 /** A Postgres-repo kulcs-szemantikáját követi: (tenant, user, installId) install; (install, session, agent) session. */
 function memoryStore(): ClientInstallStore {
-  const installs = new Map<string, { at: Date; managedDirHash: string; sessions: Map<string, Date> }>()
+  const installs = new Map<string, { at: Date; managedDirHash: string; guardVersion: string; sessions: Map<string, Date> }>()
   const k = (i: { tenantId: string; userId: string; installId: string }) => `${i.tenantId}|${i.userId}|${i.installId}`
   return {
     async recordHeartbeat(i) {
       const prev = installs.get(k(i))
       const previousHeartbeatAt = prev?.at ?? null
-      const row = prev ?? { at: i.now, managedDirHash: i.managedDirHash, sessions: new Map() }
+      const row = prev ?? { at: i.now, managedDirHash: i.managedDirHash, guardVersion: i.guardVersion, sessions: new Map() }
       row.at = i.now
       row.managedDirHash = i.managedDirHash
+      if (prev && row.guardVersion !== i.guardVersion) row.sessions.clear()
+      row.guardVersion = i.guardVersion
       for (const s of i.sessions) row.sessions.set(`${s}|${i.agentId}`, i.now)
       for (const [key, seen] of row.sessions) if (seen < i.sessionsOlderThan) row.sessions.delete(key)
       installs.set(k(i), row)
@@ -52,13 +56,13 @@ function memoryStore(): ClientInstallStore {
     async findInstall(i) {
       const row = installs.get(k(i))
       if (!row) return null
-      return { lastHeartbeatAt: row.at, managedDirHash: row.managedDirHash, sessionLastSeenAt: i.sessionId ? (row.sessions.get(`${i.sessionId}|${i.agentId}`) ?? null) : null }
+      return { lastHeartbeatAt: row.at, managedDirHash: row.managedDirHash, guardVersion: row.guardVersion, sessionLastSeenAt: i.sessionId ? (row.sessions.get(`${i.sessionId}|${i.agentId}`) ?? null) : null }
     },
   }
 }
 
-const body = (sessions: string[] = ['sess-1']) =>
-  heartbeatBodySchema.parse({ configHash: 'cfg', managedDirHash: 'dir', policyVersion: 'pv1', guardVersion: '0.1', hermesVersion: '1.0', sessions })
+const body = (sessions: string[] = ['sess-1'], guardVersion = '0.3.2') =>
+  heartbeatBodySchema.parse({ configHash: 'cfg', managedDirHash: 'dir', policyVersion: 'pv1', guardVersion, hermesVersion: '1.0', sessions })
 
 function setup(opts: {
   expectedManagedDirHash?: string
@@ -74,8 +78,8 @@ function setup(opts: {
     lookupExpectedManagedDirHash: opts.lookupExpectedManagedDirHash,
     now: () => clock,
   }
-  const beat = (o: { tenantId?: string; userId?: string; installId?: string; agentId?: string; sessions?: string[] } = {}) =>
-    recordHeartbeat(deps, { tenantId: TENANT, userId: USER, installId: 'inst', agentId: AGENT, ...o, body: body(o.sessions) })
+  const beat = (o: { tenantId?: string; userId?: string; installId?: string; agentId?: string; sessions?: string[]; guardVersion?: string } = {}) =>
+    recordHeartbeat(deps, { tenantId: TENANT, userId: USER, installId: 'inst', agentId: AGENT, ...o, body: body(o.sessions, o.guardVersion) })
   const gate = createManagedGate(deps)
   const ask = (o: { tenantId?: string; userId?: string; installId?: string; agentId?: string; sessionId?: string | null } = {}) =>
     gate({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, installId: 'inst', policyVersion: 'pv1', sessionId: 'sess-1', turnId: null, stream: false, ...o })
@@ -90,6 +94,29 @@ async function main() {
     await t.beat()
     assert.equal(await t.ask(), null)
     assert.equal(t.audits.length, 0)
+  })
+
+  await check('régi Guard friss heartbeat és session mellett is Open; frissítés után Managed', async () => {
+    const t = setup()
+    await t.beat({ guardVersion: '0.3.1' })
+    assert.equal((await t.ask())?.reason, 'client_open:guard_outdated')
+    assert.equal((await t.ask())?.block, CLIENT_GUARD_OUTDATED_MESSAGE)
+    assert.equal((t.audits[0].metadata as { kind: string }).kind, 'guard_outdated')
+    await t.beat({ guardVersion: '0.3.2' })
+    assert.equal(await t.ask(), null)
+    assert.equal(compatibleGuardVersion('0.4.0'), true)
+    assert.equal(compatibleGuardVersion('0.3.2-beta'), false)
+    assert.equal(compatibleGuardVersion('x'), false)
+  })
+
+  await check('verzióváltás érvényteleníti a másik Guard korábbi sessionjeit', async () => {
+    const t = setup()
+    await t.beat({ sessions: ['old'], guardVersion: '0.3.1' })
+    await t.beat({ sessions: ['new'], guardVersion: '0.3.2' })
+    assert.equal((await t.ask({ sessionId: 'old' }))?.reason, 'client_open:session_unregistered')
+    assert.equal(await t.ask({ sessionId: 'new' }), null)
+    await t.beat({ sessions: ['old'], guardVersion: '0.3.1' })
+    assert.equal((await t.ask({ sessionId: 'new' }))?.reason, 'client_open:guard_outdated')
   })
 
   await check('nincs heartbeat (safe-mode) → Open, érthető üzenet + eltérés-jel', async () => {

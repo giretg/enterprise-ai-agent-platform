@@ -44,6 +44,9 @@ assert.equal(capped.capabilities.code_execution, 'denied')
 assert.equal(capped.capabilities.local_files, 'read_only')
 assert.equal(capped.reasons.code_execution.source, 'agent_ceiling')
 assert.equal(capped.capabilities.browser, 'free') // plafon nélküli képesség érintetlen
+assert.deepEqual(capped.agentCeilings.local_files, 'read_only')
+assert.deepEqual(capped.agentCeilings.code_execution, 'denied')
+assert.deepEqual(resolve(row('tenant')).agentCeilings, {})
 // agent-plafon sosem szűkül tágabb értékre (a szigorúbb user-érték marad)
 assert.equal(
   resolve(row('tenant', { preset: 'bound' }), null, row('agent', { preset: 'free' })).capabilities.code_execution,
@@ -95,9 +98,17 @@ const agentLooser = resolve(
 assert.equal(decideToolRule(agentLooser.toolRules, 'mcp__gmail__send'), 'deny')
 assert.equal(agentLooser.toolRules.find((r) => r.pattern === 'mcp__gmail__send')?.source, 'tenant')
 assert.equal(
-  resolve(row('tenant', { toolOverrides: { 'mcp__gmail__send': 'allow' } }), null, row('agent', { toolOverrides: { 'mcp__gmail__send': 'deny' } })).toolRules[0]?.source,
-  'agent',
+  decideToolRule(resolve(row('tenant', { toolOverrides: { 'mcp__gmail__send': 'allow' } }), null,
+    row('agent', { toolOverrides: { 'mcp__gmail__send': 'deny' } })).toolRules, 'mcp__gmail__send'),
+  'deny',
 )
+
+// Agent-eszközszabály plafon: saját allow nem adhat új jogot; approve csak szigoríthat.
+const agentToolCeiling = resolve(row('tenant', { preset: 'bound' }), null, row('agent', {
+  toolOverrides: { terminal: 'allow', read_file: 'approve' },
+}))
+assert.equal(decideToolRule(agentToolCeiling.toolRules, 'terminal'), null)
+assert.equal(decideToolRule(agentToolCeiling.toolRules, 'read_file'), 'approve')
 
 // policyVersion: bármely bemeneti sor változására változik, változatlan bemenetre nem
 const base = [row('tenant', { preset: 'standard' }), row('user'), row('agent')] as const
@@ -119,6 +130,7 @@ getPolicySnapshot(store, { tenantId: T, userId: U, agentId: A }, () => new Date(
   assert.equal(snap.capabilities.code_execution, 'sandbox_only')
   assert.equal(snap.capabilities.browser, 'free')
   assert.equal(snap.issuedAt, '2026-10-01T00:00:00.000Z')
+  assert.deepEqual(snap.agentCeilings.code_execution, 'sandbox_only')
   return getPolicySnapshot(store, { tenantId: T, userId: U, agentId: null }).then((noAgent) => {
     assert.equal(noAgent.capabilities.code_execution, 'local_free') // agent-sor nélkül nincs plafon
     console.log('client-policy-resolve.test.ts: OK')

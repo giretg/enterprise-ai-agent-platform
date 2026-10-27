@@ -9,7 +9,7 @@ import os
 import re
 from urllib.parse import urlsplit
 
-GUARD_VERSION = "0.3.1"
+GUARD_VERSION = "0.3.2"
 NOTICE = "Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek."
 ASK = "Ha erre szükséged van, kérd a rendszergazdát."
 OFFLINE_TTL_SECONDS = 3600
@@ -121,6 +121,7 @@ class Decision:
 def bound_snapshot():
     return {
         "capabilities": dict(BOUND),
+        "agentCeilings": {},
         "toolRules": [],
         "reasons": {key: {"source": "offline"} for key in BOUND},
         "policyVersion": "offline-bound",
@@ -130,6 +131,7 @@ def bound_snapshot():
 def snapshot_of(capabilities, tool_rules=(), version="test", source="user_preset"):
     return {
         "capabilities": dict(capabilities),
+        "agentCeilings": {},
         "toolRules": list(tool_rules),
         "reasons": {key: {"source": source} for key in capabilities},
         "policyVersion": version,
@@ -371,7 +373,16 @@ def decide(snapshot, tool_name, args=None, attachments_dir=None):
         level = BOUND.get(capability)
     source = ((snapshot.get("reasons") or {}).get(capability) or {}).get("source") or "tenant_default"
 
-    rule = matching_rule((snapshot or {}).get("toolRules"), tool_name)
+    rules = (snapshot or {}).get("toolRules") or []
+    rule = matching_rule([r for r in rules if isinstance(r, dict) and r.get("source") != "agent"], tool_name)
+    agent_rule = matching_rule([r for r in rules if isinstance(r, dict) and r.get("source") == "agent"], tool_name)
+    if agent_rule == "deny":
+        return Decision("block", f"A(z) „{tool_name}” műveletet az asszisztens szabálya tiltja. {ASK}", capability, level)
+    if agent_rule == "approve" and rule != "deny":
+        base_action = rule or _capability_action(kind, level, tool_name,
+                                                 args if isinstance(args, dict) else None, attachments_dir)
+        if base_action in ("allow", "approve"):
+            rule = "approve"
     if rule == "deny":
         return Decision(
             "block",
@@ -379,6 +390,23 @@ def decide(snapshot, tool_name, args=None, attachments_dir=None):
             capability,
             level,
         )
+    if rule in ("allow", "approve"):
+        ceilings = snapshot.get("agentCeilings")
+        # Régi snapshot nem bizonyítja, hogy az agent-plafon teljesül: a kivétel fail-closed.
+        if not isinstance(ceilings, dict):
+            return _block(kind, level, tool_name, "agent_ceiling", capability)
+        agent_level = ceilings.get(capability)
+        if agent_level is not None:
+            ceiling_action = _capability_action(kind, agent_level, tool_name,
+                                                args if isinstance(args, dict) else None, attachments_dir)
+            if ceiling_action == "block":
+                return _block(kind, agent_level, tool_name, "agent_ceiling", capability)
+            if ceiling_action == "approve":
+                return _approve(tool_name, capability, agent_level, "Az asszisztens szabálya jóváhagyást kér.")
+        approval_ceiling = ceilings.get("human_approval")
+        if rule == "allow" and (approval_ceiling == "always" or
+                                 (approval_ceiling == "risky" and _is_risky(kind))):
+            return _approve(tool_name, capability, level, "Az asszisztens szabálya jóváhagyást kér.")
     if rule == "approve":
         return _approve(tool_name, capability, level, "A céges szabály jóváhagyáshoz köti.")
     if rule == "allow":
