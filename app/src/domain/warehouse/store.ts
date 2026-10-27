@@ -517,6 +517,13 @@ export async function fetchExistingByKey(
 
 export type ColumnSpec = { name: string; type: WarehouseFieldType | 'link' }
 
+function rowTuple(params: unknown[], values: unknown[], columns: Array<{ cast: string }>): string {
+  return `(${values.map((value, i) => {
+    params.push(value)
+    return `$${params.length}::${columns[i]!.cast}`
+  }).join(', ')})`
+}
+
 export async function insertDataRows(
   sql: SqlExecutor,
   schema: string,
@@ -539,12 +546,7 @@ export async function insertDataRows(
     const params: unknown[] = []
     const tuples = chunk.map((row) => {
       const values: unknown[] = [row.id, row.bk, importId, importId, row.sourceRow, ...columns.map((c) => row.values[c.name] ?? null)]
-      return `(${values
-        .map((v, idx) => {
-          params.push(v)
-          return `$${params.length}::${all[idx]!.cast}`
-        })
-        .join(', ')})`
+      return rowTuple(params, values, all)
     })
     await sql.exec(`INSERT INTO ${qt(schema, table)} (${all.map((c) => qi(c.name)).join(', ')}) VALUES ${tuples.join(', ')}`, params)
   }
@@ -571,12 +573,7 @@ export async function updateDataRows(
     const params: unknown[] = []
     const tuples = chunk.map((row) => {
       const values: unknown[] = [row.id, row.sourceRow, ...columns.map((c) => row.values[c.name] ?? null)]
-      return `(${values
-        .map((v, idx) => {
-          params.push(v)
-          return `$${params.length}::${all[idx]!.cast}`
-        })
-        .join(', ')})`
+      return rowTuple(params, values, all)
     })
     await sql.exec(
       `UPDATE ${qt(schema, table)} AS t SET ${setList} FROM (VALUES ${tuples.join(', ')}) AS v(${all.map((c) => qi(c.name)).join(', ')}) WHERE t._id = v._id`,

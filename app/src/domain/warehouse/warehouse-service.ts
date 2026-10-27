@@ -533,9 +533,11 @@ export class WarehouseService {
     const plan = record.plan!
     const { prepared } = await this.loadPrepared(schema, record)
     const sheet = sheetFromProfile(record.profile, plan.sheet)
+    let outcome: { replayed: boolean; result: unknown }
     try {
-      const outcome = await this.deps.db.run(
+      outcome = await this.deps.db.run(
         async (sql) => {
+          // ponytail: tenantonként soros import/visszavonás; nagy terhelésnél függőséghez kötött adatkészlet-lock kell.
           await sql.exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${schema}:load`])
           const locked = await store.getImport(sql, schema, record.id, true)
           if (!locked) throw new WarehouseError('import_not_found')
@@ -613,17 +615,6 @@ export class WarehouseService {
         },
         { timeoutMs: 300_000, statementTimeoutMs: 120_000 },
       )
-      if (!outcome.replayed) {
-        const r = outcome.result as Record<string, unknown>
-        await this.audit(actor, 'warehouse.import.published', record.id, {
-          datasetKey: plan.dataset.key,
-          inserted: r.inserted,
-          updated: r.updated,
-          openExceptions: r.openExceptions,
-          approved,
-        })
-      }
-      return { status: 'published' as const, import: (await this.getImportOrThrow(schema, record.id))!, result: outcome.result, replayed: outcome.replayed }
     } catch (error) {
       const code = error instanceof WarehouseError ? error.code : 'load_failed'
       if (code === 'preview_stale') {
@@ -637,6 +628,17 @@ export class WarehouseService {
       if (error instanceof WarehouseError) throw error
       throw new WarehouseError('load_failed')
     }
+    if (!outcome.replayed) {
+      const r = outcome.result as Record<string, unknown>
+      await this.audit(actor, 'warehouse.import.published', record.id, {
+        datasetKey: plan.dataset.key,
+        inserted: r.inserted,
+        updated: r.updated,
+        openExceptions: r.openExceptions,
+        approved,
+      })
+    }
+    return { status: 'published' as const, import: (await this.getImportOrThrow(schema, record.id))!, result: outcome.result, replayed: outcome.replayed }
   }
 
   /** AC9: előre definiált javítási mód — a dataset UTOLSÓ importja visszavonható. */
@@ -680,6 +682,12 @@ export class WarehouseService {
         )
         await sql.exec(
           `UPDATE ${qt(schema, '_exceptions')} SET status = 'void', resolved_at = now(), resolution = jsonb_build_object('rolledBack', true) WHERE import_id = $1::uuid AND status = 'pending'`,
+          [record.id],
+        )
+        // Az import által félretett korábbi kivételek ismét döntésre várnak.
+        await sql.exec(
+          `UPDATE ${qt(schema, '_exceptions')} SET status = 'pending', resolution = NULL, resolved_at = NULL
+           WHERE status = 'superseded' AND resolution->>'supersededBy' = $1`,
           [record.id],
         )
         await store.updateImport(sql, schema, record.id, { state: 'rolled_back' }, { rolledBack: true })

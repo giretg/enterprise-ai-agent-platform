@@ -1,6 +1,7 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { WarehouseError } from '@/domain/warehouse/warehouse-service'
 import { warehouseService } from '@/lib/warehouse'
+import { warehouseMessage } from '@/lib/warehouse-labels'
 
 export const runtime = 'nodejs'
 
@@ -27,7 +28,7 @@ export async function GET(_request: Request, context: { params: Promise<{ datase
     meta.addRow(['Adatkészlet', dataset])
     meta.addRow(['Frissesség', res.provenance.freshness ?? '—'])
     for (const source of res.provenance.sources) meta.addRow(['Forrásfájl', source.fileName, source.publishedAt ?? ''])
-    for (const warning of res.warnings) meta.addRow(['Figyelmeztetés', warning.code, warning.dataset])
+    for (const warning of res.warnings) meta.addRow(['Figyelmeztetés', warehouseMessage(warning.code), warning.dataset])
     if (res.hasMore) meta.addRow(['Csonkolva', 'Az export legfeljebb 100 000 sort tartalmaz.'])
     const body = Buffer.from(await workbook.xlsx.writeBuffer())
     return new Response(body, {

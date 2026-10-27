@@ -58,6 +58,7 @@ async function main() {
   const other = await prisma.tenant.create({ data: { slug: `wh-other-${suffix}`, displayName: 'Other' } })
   const user = await prisma.user.create({ data: { externalAuthId: suffix, email: `${suffix}@example.invalid`, name: 'WH test' } })
   const audits: AuditAppendInput[] = []
+  let failPublishAudit = false
   const baseDb = prismaWarehouseDatabase(prisma)
   let failOn: RegExp | null = null
   // Hiba-befecskendezés a betöltés közepén (AC6/AC7).
@@ -79,7 +80,10 @@ async function main() {
     db,
     registry: new PostgresWarehouseRegistry(prisma),
     provisioner: new PgSchemaProvisioner(baseDb),
-    audit: { append: async (entry) => void audits.push(entry) },
+    audit: { append: async (entry) => {
+      if (failPublishAudit && entry.action === 'warehouse.import.published') throw new Error('injected audit outage')
+      audits.push(entry)
+    } },
     reviewUrl: (id) => `/control-plane/warehouse${id ? `?import=${id}` : ''}`,
   })
   const admin: WarehouseActor = { tenantId: tenant.id, userId: user.id, role: 'admin', channel: 'ui' }
@@ -252,6 +256,35 @@ async function main() {
     assert.ok(audits.some((a) => a.action === 'warehouse.import.published'))
     assert.ok(audits.every((a) => !JSON.stringify(a.metadata).includes('Kovács')), 'audit must not carry business data')
     console.log('  OK  R10 mérés + audit üzleti adat nélkül')
+
+    // A tranzakció utáni audithiba nem írhatja felül a sikeres betöltést.
+    const append = await service.prepareImport(ai, { fileName: 'audit.xlsx', content: await customersXlsx() })
+    await service.submitPlan(ai, append.import.id, { ...customersPlan, dataset: { key: 'audit_append', title: 'Audit próba' }, mode: 'append', businessKey: [] }, 'ai')
+    const ap = await service.preview(ai, append.import.id)
+    failPublishAudit = true
+    await assert.rejects(service.commit(admin, { importId: append.import.id, previewHash: ap.import.previewHash!, approve: true }), /injected audit outage/)
+    failPublishAudit = false
+    assert.equal((await service.getImport(viewer, append.import.id)).import.state, 'published')
+    await expectCode(service.preview(ai, append.import.id), 'import_invalid_state')
+    assert.equal((await service.commit(admin, { importId: append.import.id, previewHash: ap.import.previewHash!, approve: true })).replayed, true)
+    assert.deepEqual((await service.query(viewer, { dataset: 'audit_append', aggregates: 'count:*' })).rows, [[4]])
+    console.log('  OK  Audithiba után az append import sikeres marad, az ismétlés nem duplikál')
+
+    // A visszavonás visszahozza az előző import döntésre váró kivételeit.
+    const originalExceptions = await service.listExceptions(viewer, { datasetKey: 'rendelesek' })
+    assert.ok(originalExceptions.length > 0)
+    const retry = await service.prepareImport(ai, { fileName: 'rollback-exceptions.xlsx', content: await ordersXlsx({ extraRow: true }) })
+    await service.submitPlan(ai, retry.import.id, ordersPlan, 'ai')
+    const rp = await service.preview(ai, retry.import.id)
+    await service.commit(ai, { importId: retry.import.id, previewHash: rp.import.previewHash! })
+    const superseded = await service.listExceptions(viewer, { datasetKey: 'rendelesek', status: 'superseded' })
+    assert.ok(originalExceptions.every((e) => superseded.some((x) => x.id === e.id)))
+    await service.rollback(admin, retry.import.id)
+    const reopened = await service.listExceptions(viewer, { datasetKey: 'rendelesek' })
+    assert.deepEqual(reopened.map((e) => e.id).sort(), originalExceptions.map((e) => e.id).sort())
+    assert.ok((await service.query(viewer, { dataset: 'rendelesek' })).warnings.some((w) => w.code === 'open_exceptions'))
+    console.log('  OK  Visszavonás után a korábbi megoldatlan kapcsolatok újra látszanak')
+
   } finally {
     for (const t of [tenant, other]) {
       await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${warehouseSchemaName(t.id)}" CASCADE`)

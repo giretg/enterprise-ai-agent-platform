@@ -190,8 +190,8 @@ export function checkPlan(
     for (const link of plan.links) {
       const current = byName.get(link.as)
       if (!current) newFields.push(link.as)
-      else if (current.role !== 'link' || current.linkDataset !== link.toDataset) {
-        errors.push({ code: 'type_change_not_allowed', path: `links.${link.as}`, detail: 'existing non-link column' })
+      else if (current.role !== 'link' || current.linkDataset !== link.toDataset || current.linkBy !== link.by || current.linkField !== link.toField) {
+        errors.push({ code: 'link_change_not_allowed', path: `links.${link.as}`, detail: link.as })
       }
     }
   }

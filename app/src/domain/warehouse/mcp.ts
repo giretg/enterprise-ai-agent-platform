@@ -155,7 +155,7 @@ export function toCsv(columns: string[], rows: unknown[][]): string {
     if (value === null || value === undefined) return ''
     let text = typeof value === 'object' ? JSON.stringify(value) : String(value)
     // CSV-injekció ellen (táblázatkezelőben képletként futna).
-    if (/^[=+\-@\t\r]/.test(text) && !/^-?\d/.test(text)) text = `'${text}`
+    if (/^[=+\-@\t\r]/.test(text) && typeof value !== 'number') text = `'${text}`
     return /[",\n\r;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
   }
   return [columns.map(cell).join(','), ...rows.map((row) => row.map(cell).join(','))].join('\n')

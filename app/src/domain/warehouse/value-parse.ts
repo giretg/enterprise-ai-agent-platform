@@ -136,7 +136,7 @@ export function convertCell(value: RawCell, type: WarehouseFieldType): ConvertRe
   if (isEmptyCell(value)) return { ok: true, value: null }
   switch (type) {
     case 'text':
-      return { ok: true, value: cellText(value).slice(0, 4_000) }
+      return { ok: true, value: cellText(value) }
     case 'integer':
     case 'decimal': {
       let n: number | null = null

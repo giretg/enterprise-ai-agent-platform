@@ -196,7 +196,7 @@ export function compileQuery(schema: string, spec: QuerySpec, catalog: Map<strin
     }
   } else {
     const wanted = spec.fields.length ? spec.fields : ['_id', ...base.fields.map((f) => f.name)]
-    for (const f of wanted.slice(0, 60)) {
+    for (const f of wanted) {
       const col = resolve(f)
       selects.push(`${col.expr} AS ${qi(`c${columns.length}`)}`)
       columns.push(col.name)

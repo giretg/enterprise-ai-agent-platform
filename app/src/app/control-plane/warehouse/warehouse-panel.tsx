@@ -16,6 +16,7 @@ import {
 import type { ImportPreview } from '@/domain/warehouse/warehouse-service'
 import type { PlanCheck } from '@/domain/warehouse/plan'
 import { Badge, Card } from '@/components/ui/shell'
+import { warehouseFieldTypeLabel, warehouseMessage } from '@/lib/warehouse-labels'
 
 type PageData = Extract<Awaited<ReturnType<typeof loadWarehousePageAction>>, { success: true }>['data']
 type ReadyData = Extract<PageData, { ready: true }>
@@ -238,7 +239,7 @@ function ImportDetail({ data, pending, act }: { data: ReadyData; pending: boolea
         {record.state === 'awaiting_plan' && check && 'errors' in check && check.errors?.length ? (
           <div className="rounded-lg bg-red-50 p-3 text-red-800">
             <p className="font-medium">A betöltési terv még nem jó:</p>
-            <ul className="ml-5 list-disc">{check.errors.map((e, i) => <li key={i}>{e.code}{e.detail ? ` — ${e.detail}` : ''}</li>)}</ul>
+            <ul className="ml-5 list-disc">{check.errors.map((e, i) => <li key={i}>{warehouseMessage(e.code)}</li>)}</ul>
           </div>
         ) : null}
         {record.state === 'awaiting_plan' && !check?.errors?.length ? (
@@ -251,7 +252,7 @@ function ImportDetail({ data, pending, act }: { data: ReadyData; pending: boolea
               <thead className="text-ink-soft"><tr><th className="pr-4 font-medium">Excel-oszlop</th><th className="pr-4 font-medium">Mező</th><th className="pr-4 font-medium">Típus</th><th className="font-medium">Jelentés (javaslat)</th></tr></thead>
               <tbody>
                 {record.plan.fields.map((f) => (
-                  <tr key={f.target} className="border-t border-ink/10 align-top"><td className="pr-4">{f.source}</td><td className="pr-4"><code>{f.target}</code></td><td className="pr-4">{f.type}{f.currency ? ` (${f.currency})` : ''}</td><td>{f.label}{f.meaning ? ` — ${f.meaning}` : ''}</td></tr>
+                  <tr key={f.target} className="border-t border-ink/10 align-top"><td className="pr-4">{f.source}</td><td className="pr-4"><code>{f.target}</code></td><td className="pr-4">{warehouseFieldTypeLabel(f.type)}{f.currency ? ` (${f.currency})` : ''}</td><td>{f.label}{f.meaning ? ` — ${f.meaning}` : ''}</td></tr>
                 ))}
                 {record.plan.links.map((l) => (
                   <tr key={l.as} className="border-t border-ink/10"><td className="pr-4">{l.field}</td><td className="pr-4"><code>{l.as}</code></td><td className="pr-4">kapcsolat</td><td>→ {l.toDataset}.{l.toField} ({l.by === 'key' ? 'azonosító' : 'név'} szerint)</td></tr>
@@ -319,8 +320,8 @@ function ExceptionsCard({ data, pending, act }: { data: ReadyData; pending: bool
         {data.exceptions.slice(0, 100).map((e) => (
           <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
             <div>
-              <p className="font-medium">{EXCEPTION_LABEL[e.kind] ?? e.kind}: „{e.value ?? '—'}”</p>
-              <p className="text-ink-soft">{e.datasetKey}{e.sourceRow ? ` · ${e.sourceRow}. sor` : ''}{e.detail ? ` · ${e.detail}` : ''}</p>
+              <p className="font-medium">{EXCEPTION_LABEL[e.kind] ?? 'Ellenőrzendő adat'}: „{e.value ?? '—'}”</p>
+              <p className="text-ink-soft">{data.datasets.find((d) => d.key === e.datasetKey)?.title ?? 'Adatkészlet'}{e.sourceRow ? ` · ${e.sourceRow}. sor` : ''}{e.kind === 'invalid_value' && e.detail ? ` · ${warehouseMessage(e.detail)}` : ''}</p>
             </div>
             {data.permissions.schema ? (
               <div className="flex flex-wrap gap-2">
@@ -374,7 +375,7 @@ function DatasetsCard({ data, pending, act }: { data: ReadyData; pending: boolea
                     {d.fields.map((f) => (
                       <tr key={f.name} className="border-t border-ink/10 align-top">
                         <td className="pr-4"><code>{f.name}</code>{d.businessKey.includes(f.name) ? ' 🔑' : ''}</td>
-                        <td className="pr-4">{f.role === 'link' ? `kapcsolat → ${f.linkDataset}` : f.type}{f.currency ? ` (${f.currency}${f.amountBasis ? `, ${f.amountBasis === 'net' ? 'nettó' : f.amountBasis === 'gross' ? 'bruttó' : '?'}` : ''})` : ''}</td>
+                        <td className="pr-4">{f.role === 'link' ? `kapcsolat → ${f.linkDataset}` : warehouseFieldTypeLabel(f.type)}{f.currency ? ` (${f.currency}${f.amountBasis ? `, ${f.amountBasis === 'net' ? 'nettó' : f.amountBasis === 'gross' ? 'bruttó' : '?'}` : ''})` : ''}</td>
                         <td>{f.label}{f.meaning ? ` — ${f.meaning}` : ''}{f.status !== 'confirmed' ? <span className="text-ink-faint"> (javaslat)</span> : null}</td>
                       </tr>
                     ))}

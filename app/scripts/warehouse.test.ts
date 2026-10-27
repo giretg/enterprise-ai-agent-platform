@@ -46,6 +46,13 @@ async function main() {
     assert.equal(parseHuNumber('1,2,3'), null)
   })
 
+  await check('Szöveges értékek nem csonkulnak, az eltérő azonosítók megmaradnak', () => {
+    for (const suffix of ['A', 'B']) {
+      const value = 'x'.repeat(4_000) + suffix
+      assert.deepEqual(convertCell(value, 'text'), { ok: true, value })
+    }
+  })
+
   await check('R6: magyar dátumok', () => {
     assert.equal(parseHuDate('2026.10.22.'), '2026-10-22')
     assert.equal(parseHuDate('2026. 10. 22.'), '2026-10-22')
@@ -160,6 +167,21 @@ async function main() {
     assert.ok(checkPlan(wrong.plan, profile.sheets[0]!, new Map([['ugyfelek', customersCatalog]])).errors.some((e) => e.code === 'source_column_not_found'))
   })
 
+  await check('Meglévő kapcsolat célmezője és egyezési módja nem változtatható', async () => {
+    const profile = profileWorkbook(await readWorkbookGrid(await ordersXlsx()))
+    const parsed = parseImportPlan(ordersPlan)
+    assert.ok(parsed.ok)
+    const link = { ...customersCatalog.fields[0]!, name: 'ugyfel_ref', type: 'link' as const, role: 'link' as const, linkDataset: 'ugyfelek', linkBy: 'name' as const, linkField: 'nev' }
+    const orders: CatalogDataset = { ...customersCatalog, key: 'rendelesek', mode: 'upsert', businessKey: ['szam'], fields: [link] }
+    const customers: CatalogDataset = { ...customersCatalog, mode: 'upsert', businessKey: ['nev'], fields: [...customersCatalog.fields, { ...customersCatalog.fields[0]!, name: 'varos' }] }
+    const catalog = new Map([['rendelesek', orders], ['ugyfelek', customers]])
+    assert.equal(checkPlan(parsed.plan, profile.sheets[0]!, catalog).ok, true)
+    for (const change of [{ toField: 'varos' }, { by: 'key' as const }]) {
+      const plan = { ...parsed.plan, links: parsed.plan.links.map((l) => ({ ...l, ...change })) }
+      assert.ok(checkPlan(plan, profile.sheets[0]!, catalog).errors.some((e) => e.code === 'link_change_not_allowed'))
+    }
+  })
+
   await check('R1/AC2: pontos név → kapcsolat; cégforma-eltérés → csak javaslat; több jelölt → függő', () => {
     const index = buildLinkIndex(
       [
@@ -195,6 +217,23 @@ async function main() {
     assert.deepEqual(strict.issues.map((i) => [i.kind, i.field, i.detail]), [['invalid_value', 'netto', 'not_an_integer']])
   })
 
+  await check('Utolsó ismétlődő sor nyer, az első helyen levő rekordnál is', () => {
+    const parsed = parseImportPlan({ schema: 'warehouse.import_plan/v1', sheet: 'Adatok', dataset: { key: 'adatok', title: 'Adatok' }, mode: 'upsert', businessKey: ['id'], duplicates: 'last_wins', fields: [
+      { source: 'Azonosító', target: 'id', type: 'text', label: 'Azonosító' },
+      { source: 'Érték', target: 'ertek', type: 'integer', label: 'Érték' },
+    ] })
+    assert.ok(parsed.ok)
+    const prepared = prepareRows({ name: 'Adatok', state: 'visible', merges: [], formulaCells: {}, errorCells: 0, truncatedRows: false, truncatedColumns: false, rows: [
+      { rowNumber: 1, cells: ['Azonosító', 'Érték'] },
+      { rowNumber: 2, cells: ['A', 1] },
+      { rowNumber: 3, cells: ['B', 2] },
+      { rowNumber: 4, cells: ['A', 3] },
+      { rowNumber: 5, cells: ['A', 4] },
+    ] }, parsed.plan)!
+    assert.deepEqual(prepared.rows.map((r) => r.values), [{ id: 'A', ertek: 4 }, { id: 'B', ertek: 2 }])
+    assert.equal(prepared.issues.length, 2)
+  })
+
   await check('R3/AC8: lekérdezés-fordító — csak katalógus-mező, paraméteres érték, séma a tenantból', () => {
     const schema = warehouseSchemaName(TENANT)
     assert.equal(schema, 'wh_11111111111141118111111111111111')
@@ -221,6 +260,13 @@ async function main() {
     assert.throws(() => compileQuery(schema, buildQuerySpec({ dataset: 'masik' }), catalog), QueryError)
     assert.throws(() => qi('a"b'), UnsafeIdentifierError)
     assert.throws(() => warehouseSchemaName('../../etc'), UnsafeIdentifierError)
+  })
+
+  await check('Széles adatkészlet lekérdezése és exportja minden mezőt megőriz', () => {
+    const fields = Array.from({ length: 150 }, (_, i) => ({ ...customersCatalog.fields[0]!, name: `field${i}` }))
+    const wide = { ...customersCatalog, fields }
+    const compiled = compileQuery(warehouseSchemaName(TENANT), buildQuerySpec({ dataset: wide.key }), new Map([[wide.key, wide]]))
+    assert.deepEqual(compiled.columns, ['_id', ...fields.map((f) => f.name)])
   })
 
   await check('§8: külön jogosultság — olvasás / import / szerkezet / üzemeltetés', () => {
@@ -297,6 +343,7 @@ async function main() {
       assert.ok(!json.includes('"array"'), `${tool} advertises an array`)
     }
     assert.equal(toCsv(['a', 'b'], [['=HYPERLINK("x")', -5], ['x,y', null]]), `a,b\n"'=HYPERLINK(""x"")",-5\n"x,y",`)
+    assert.equal(toCsv(['value'], [['-1+2'], ['-5'], ['+1+2'], ['@SUM(A1)'], ['\t=1+2'], [-5], [1.5]]), "value\n'-1+2\n'-5\n'+1+2\n'@SUM(A1)\n'\t=1+2\n-5\n1.5")
   })
 
   if (failures > 0) {

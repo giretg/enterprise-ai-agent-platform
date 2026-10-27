@@ -4,7 +4,6 @@
  * ismétlődést kezeli, és a kapcsolatokat pontos azonosító / normalizált név
  * alapján köti. Bizonytalan egyezés SOSEM lesz kapcsolat, csak kivétel (AC2).
  */
-import { createHash } from 'node:crypto'
 import type { SheetGrid } from './excel-reader'
 import type { ImportPlan, PlanLink } from './plan'
 import { resolveSourceColumn } from './plan'
@@ -18,7 +17,6 @@ export type PreparedRow = {
   values: Record<string, RowValue>
   /** Üzleti kulcs (JSON); hozzáfűző módban null. */
   bk: string | null
-  rowHash: string
 }
 
 export type RowIssue = {
@@ -31,22 +29,14 @@ export type RowIssue = {
 
 export type PreparedImport = { rows: PreparedRow[]; issues: RowIssue[]; sourceRows: number }
 
-export function rowHash(values: Record<string, RowValue>, fields: string[]): string {
-  return createHash('sha256')
-    .update(JSON.stringify(fields.map((f) => values[f] ?? null)))
-    .digest('hex')
-    .slice(0, 32)
-}
-
 export function prepareRows(grid: SheetGrid, plan: ImportPlan): PreparedImport | null {
   const layout = detectLayout(grid, plan.headerRow ? { headerRow: plan.headerRow, headerRowCount: plan.headerRowCount } : undefined)
   const profile = profileSheet(grid)
   if (!layout || !profile) return null
   const sheetColumns = { columns: layout.columns.map((header, index) => ({ header, index, letter: profile.columns[index]?.letter ?? '' })) }
   const mapping = plan.fields.map((field) => ({ field, col: resolveSourceColumn(sheetColumns, field.source) }))
-  const dataFields = plan.fields.map((f) => f.target)
   const issues: RowIssue[] = []
-  const byKey = new Map<string, PreparedRow>()
+  const byKey = new Map<string, number>()
   const rows: PreparedRow[] = []
   for (const source of layout.dataRows) {
     const values: Record<string, RowValue> = {}
@@ -68,18 +58,17 @@ export function prepareRows(grid: SheetGrid, plan: ImportPlan): PreparedImport |
     }
     if (invalid) continue
     const bk = plan.mode === 'upsert' ? JSON.stringify(plan.businessKey.map((k) => normalizeKeyPart(values[k] ?? null))) : null
-    const row: PreparedRow = { sourceRow: source.rowNumber, values, bk, rowHash: rowHash(values, dataFields) }
+    const row: PreparedRow = { sourceRow: source.rowNumber, values, bk }
     if (bk !== null) {
       const previous = byKey.get(bk)
-      if (previous) {
-        issues.push({ sourceRow: source.rowNumber, kind: 'duplicate_key', field: plan.businessKey.join(','), value: bk.slice(0, 200), detail: `first at row ${previous.sourceRow}` })
+      if (previous !== undefined) {
+        issues.push({ sourceRow: source.rowNumber, kind: 'duplicate_key', field: plan.businessKey.join(','), value: bk.slice(0, 200), detail: `first at row ${rows[previous]!.sourceRow}` })
         if (plan.duplicates === 'last_wins') {
-          rows[rows.indexOf(previous)] = row
-          byKey.set(bk, row)
+          rows[previous] = row
         }
         continue
       }
-      byKey.set(bk, row)
+      byKey.set(bk, rows.length)
     }
     rows.push(row)
   }
