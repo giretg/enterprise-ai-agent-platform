@@ -249,7 +249,6 @@ function MiniAppRow({ row, linkTtl }: { row: AgentMiniAppRow; linkTtl: MiniAppLi
       {preview ? (
         <iframe
           src={preview}
-          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
           referrerPolicy="no-referrer"
           title={`${row.name} előnézet`}
           className="h-[520px] w-full rounded-xl border border-line bg-white"

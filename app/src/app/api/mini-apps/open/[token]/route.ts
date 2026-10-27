@@ -1,5 +1,6 @@
 import { miniAppFrameCsp, renderMiniAppFrame } from '@/domain/mini-app/frame'
 import { writeAudit } from '@/lib/audit/types'
+import { miniAppContentUrl, miniAppOrigin } from '@/lib/mini-app-origin'
 import {
   miniAppGoneResponse,
   miniAppHtmlResponse,
@@ -35,8 +36,7 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   })
   const html = renderMiniAppFrame({
     ...resolved.bar,
-    // Relatív: a tartalom mindig a keretoldallal azonos originről jön.
-    contentUrl: `/api/mini-apps/content/${encodeURIComponent(token)}`,
+    contentUrl: miniAppContentUrl(token),
   })
-  return miniAppHtmlResponse(html, 200, miniAppFrameCsp())
+  return miniAppHtmlResponse(html, 200, miniAppFrameCsp(miniAppOrigin()))
 }

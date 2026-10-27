@@ -35,12 +35,20 @@ export function miniAppContentCsp(): string {
  * beágyazza (változó, előre nem ismert origin) — ezért a `frame-ancestors`
  * nyitott; a keretoldalon nincs kattintható művelet, ami clickjackinggel
  * visszaélhető lenne (a „Megnyitás a platformon" bejelentkezést kér).
+ *
+ * A keretoldalt a Control Plane / MCP-kliens is beágyazza. Ha a beágyazó
+ * `sandbox` allow-same-origin nélkül fut, a keret originje opaque, és
+ * `frame-src 'self'` a tartalom URL-jét nem engedi. A mini app origin
+ * host-source kell, ugyanúgy, ahogy a tartalom CSP-je `'self'` helyett
+ * `frame-ancestors *`-ot küld. A Control Plane ezért a külső iframe-et
+ * nem sandboxolja: a tartalom-iframe + CSP `sandbox` izolál.
  */
-export function miniAppFrameCsp(): string {
+export function miniAppFrameCsp(frameSrcOrigin: string): string {
+  const origin = new URL(frameSrcOrigin).origin
   return [
     "default-src 'none'",
     "style-src 'unsafe-inline'",
-    "frame-src 'self'",
+    `frame-src ${origin}`,
     "base-uri 'none'",
     "form-action 'none'",
     'frame-ancestors *',
