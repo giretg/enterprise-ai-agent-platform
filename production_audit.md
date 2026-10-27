@@ -7,6 +7,615 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-27 — Wiki-előzmények (#978 / PR #980, merge `898c0377`): verzió-történet + visszaállítás + időutazás + megőrzés + GDPR-törlés
+
+**Scope-választás (kockázati alapon):** `git fetch` után `origin/main` `898c0377`-re állt (a 10-26-i kör
+bázisa `b4df87b9` volt). Azóta **két új, nem auditált** merge: #975 (fix: „Adj neki ticketet" gomb törlése
+a varázslóból — triviális UI) és **#980 Wiki-előzmények** (`898c0377`, +5439 sor, 40 fájl). Egyértelműen
+a **#980** a legmagasabb kockázat: a 10-23-i (#942 wiki-alapok) és 10-25-i (#943/#946 wiki-író út) körök
+kötelező következő ellenőrzésként jelölték, hogy *amint a wiki perzisztens verzió-történetet, időutazást
+és GDPR-törlést kap, a privát-KB tartalom/oldalcím szivároghat az előzmény-/log-/audit-felületeken*. A
+#980 ezt élesítette: teljesen új **verzió-történet** (`wiki_page_revisions` bővítés + `wiki_tags` +
+`wiki_erasures` + `wiki_read_cursors`, 0037 migráció), **visszaállítás** (konzol-azonnali + agent-
+jóváhagyásos), **időutazás** (`asOf` olvasás change-számra/dátumra — **agent-elérhető** `kb_get_page`-en),
+**megőrzés-sweep** (napi ritkítás/törlés) és **auditált GDPR-törlés** (oldal / verzió / kifejezés-kitakarás,
+minden másolaton: revízió, change-set, napló, nyers forrás, index-chunk, függő gateway-kártya). A GDPR-
+törlés + verzió-történet a klasszikus helye a *resurrection* (törölt tartalom visszaállítása), a privát-KB
+*cross-user/-tenant olvasás* és a *takarító-adatvesztés* hibáknak → legmagasabb unknown-unknown kockázat.
+A visszatérő 🟡 DNS-rebinding TOCTOU residualt **tudatosan megint nem** választottam (felügyelet nélküli
+futásban a fetch-szintű IP-pin blast-radiusa szolgáltatáskiesés-kockázat — l. carry-forward; a #980-at nem
+érinti, nincs egress). Minden trace `origin/main` HEAD-ről, a main `.env` érintése nélkül.
+
+### Coverage (teljes bizalmi-határ + adatfolyam-trace a LIVE felületen)
+`wiki-history-service.ts` (idővonal/verzió/diff, `listChanges`/`getChangeSet`, `previewRevert`/`revert`,
+`getStateAt`/`getPageAt` időutazás, címkék, `getRetention`/`updateRetention`/`sweepRetention`,
+`previewErasure`/`executeErasure`/`planErasure`, `deepRedact`/`stripPagesJson`/`replacePaths`),
+`wiki-history-repository.ts` (`stateAt` raw-SQL, `sweepRetention` advisory-lock + védett-CTE,
+`findTextMatches`, `executeErasure` tranzakció), `wiki-service.ts` (`planRevert`/`revertAsHuman`/
+`requestRevert`, `resolveAsOf`, `readPageAsOf`, `restoreTarget`), `wiki-console-service.ts` `authorize`/
+`accessFor` (a megosztott kapu — privátnál admin is `not_found`), `actions/knowledge-wiki.ts` (18 server
+action, session-aktor), `handlers/knowledge-base.ts` + `tool-definitions.ts` (MCP-kitettség: `kb_wiki_changes`,
+`kb_wiki_revert`, `kb_get_page asOf`), `ai-audit-retention/route.ts` (sweep cron-wiring), 0037 migráció
+(oszlopok + indexek + backfill). A kötelező scoped security scan (Claude Security `scan-changes`)
+**ütemezett munkamenetben továbbra sem futtatható** (3. lépés költség-megerősítése nem fogad el wake-up
+nyugtázást) — a mélyaudit kézi end-to-end adversariális trace + a szerzői AC1–AC10 DB-tesztsuite átnézése.
+
+### Biztonsági megállapítás — NINCS bizonyított finding; a felület helytáll (origin/main)
+Tételesen, adversariális trace-szel verifikálva:
+- **Tenant/privát-KB/szerep-izoláció (minden olvasó + író úton).** Minden konzol-út a
+  `WikiConsoleService.authorize`-on megy: `connectors.findById(id, tenantId)` **+** explicit
+  `connector.tenantId !== actor.tenantId → not_found` (kettős ellenőrzés, cross-tenant kizárva), `type`-
+  kapu. Privát KB: csak `ownerUserId === userId` kap view/contribute/manage; a nem-tulajdonos admin csak
+  `metaOnly` → `access.view=false` → **`not_found`** (az előzmény/időutazás/GDPR is, D13). Megosztott KB:
+  view/contribute = operator, manage = admin. A `getRetention`/`updateRetention`/`previewErasure`/
+  `executeErasure` `manage`-kapuzott (megosztott=admin, privát=tulaj). AC10 ezt DB-n igazolja.
+- **Aktor nem hamisítható.** Minden server action `requireTenantRole('viewer')`-ből veszi az
+  `userId/tenantId/role`-t (session), sosem kliens-argumentumból; Zod-validáció az inputon.
+- **GDPR non-resurrection (a headline-garancia).** (a) **Időutazás**: `getPageAt`/`getStateAt`/`readPageAsOf`
+  a tombstone-olt revízió tartalmát üresre cseréli (`erasedAt ? '' : body`), és a fizikai sor amúgy is
+  ki van ürítve (`executeErasure` title/summary/body='' , sourceRefs=DbNull). (b) **Visszaállítás**:
+  `planRevert` **mind a cél-**, **mind az előző revízió** `erasedAt`-jére `version_erased`/`conflict`-ot ad
+  — törölt verzióra nem lehet visszaállni; a `restoreTarget` kizárólag a (kiürített) revízió-sorból épít,
+  sosem a change-set JSON-ból. A „GDPR oldal-mód" teszt a revert→`version_erased`-et expliciten állítja.
+- **GDPR-törlés teljessége.** `planErasure`+`findTextMatches` minden másolatot felsorol: aktuális oldal
+  (új, redaktált verzió szintetikus change-settel), régi revíziók (tombstone vagy redakció), change-set
+  `pages`/`pageSummary`/`logEntry`/`validation`, napló-sorok, nyers `documents`+`document_source_files`
+  (az eredeti fájl törlődik), `knowledge_chunks` (regexp-redakció), **nyitott gateway-kártyák** (args-
+  redakció + reject). AC9 DB-n UNION-lekérdezéssel igazolja: a név **sehol** nem marad (page/revision/
+  changeSet/log/chunk/document/gateway) **és az auditban sem** (`redactKbAuditForVisibility` + csak
+  `matchHash`/`erasedHashes` kerül a metaadatba, a kifejezés sosem). `confirmName` + `reason` kapu.
+- **Megőrzés-sweep adatvédelem.** `sweepRetention` védett-CTE: aktuális verzió, oldalanként a legutóbbi
+  `keepLatest=5`, **címkézett** állapotok, **függő change-set baseVersion-je** (content_hash), és a
+  **sír-jelek** (`erased_at`) sosem törlődnek; napi ritkítás 1-et tart/nap, a `deleteBefore` utáni teljes
+  törlés `keepLatest`/aktuális/címke-védett. AC8 ezt DB-n igazolja.
+
+### Reliability / correctness — átvizsgálva, nincs adatvesztés/hibás-működés finding
+- **Race-safe sorszám + izoláció.** `executeErasure`, `applyChangeSet` és `sweepRetention` **ugyanazon**
+  `pg_advisory_xact_lock(hashtext(connectorId))` alatt fut, a `seq` atomi `UPDATE agent_wikis SET
+  next_seq=next_seq+1 … RETURNING next_seq-1` — párhuzamos írás+törlés közt nincs dupla sorszám (AC7 6-utas
+  párhuzammal igazolja). A `resolve`-szerű CAS a page-updatere `updateMany where version=expectedVersion →
+  count 0 → ErasureAborted` (konfliktus esetén a tranzakció tiszta visszagörgetés).
+- **Időutazás-bound.** `resolveAsOf` a seq-et `[0, latest]`-re clampeli; dátum a nap végére (UTC) oldódik.
+- **Olvasók nem szivárogtatnak törölt tartalmat.** `diffRevisions`/`getChangeSet` a fizikailag kiürített
+  revízió-sorból dolgozik (a `getChangeSet` külön `erasedAt`-kapuval is), a `getRevision` `erasedAt ? ''`-t ad.
+- **`findTextMatches` raw-SQL** paraméterezett (`position(${needle} in lower(col))`), nincs injekció; a
+  precedencia helyes (az OR-lánc zárójelezett). NULL-oszlopon a `position` NULL → nem illeszkedik, nem hibázik.
+- **Migráció.** 0037 additív (nullable/default oszlopok), indexek a forró utakra (`wiki_change_sets(wiki_id,
+  seq)` unique, `wiki_page_revisions(page_id, created_at)` + `(change_set_id)`); backfill egyszeri.
+
+### Bizonyított finding — NINCS. Kódmódosítás nem indokolt.
+A felület fail-closed, tenant/privát-KB/szerep-gated, GDPR-resurrection-mentes (idő-utazás üres + revert
+`version_erased`), race-sorosított, és a szerzői AC1–AC10 DB-suite (plusz D8 / „GDPR oldal-mód" / privát-
+audit-tartalommentesség) átfogóan fedi. Ide kockázat-csökkentő indok nélkül nyúlni **kockázatot adna**.
+Nincs fix-PR és nincs `/code-review` (az a *létrehozott változtatásra* való). Nettó kód-változás: **0**.
+(Precedens: 10-21, 10-23, 10-25, 10-26.) A ledger-bejegyzés a `fix/drive-search-free-text-query` munka-ág
+working-tree-jében gyűlik a korábbi (10-17…10-26) bejegyzésekkel együtt, commit nélkül — a batch-elt
+`docs(audit):` commit a user döntése.
+
+### Vizsgált, de elvetett (nem finding) megfigyelések
+- **`getPageAt`/`readPageAsOf` nem szűri a `pending_approval` státuszt** (szemben a `getStateAt`-tel és az
+  indexszel). **Nem elérhető**: revízió-sor sosem kap `pending_approval` státuszt (revízió csak *alkalmazott*
+  change-setből vagy `executeErasure`-ből jön → `published`/`archived`); a `getStateAt`-beli szűrő tisztán
+  defenzív. Azonos connector/tenant, amelyre a hívónak amúgy is `view`-ja van → nincs határ-átlépés.
+- **GDPR-törlés nem érinti a meglévő audit-sorokat** (megosztott KB auditjába korábban bekerülhetett
+  tartalom). A #980 erasure-je az **új** audit-sort redaktálja; a *régi* audit-tartalom kitakarása platform-
+  szintű, külön kérdés (privát KB-nál `redactKbAuditForVisibility` már eddig is tartalommentes). Nem #980-
+  finding; a következő körök audit-retenció témájába illik.
+
+### Ellenőrzések
+- Statikus end-to-end adversariális trace a teljes bizalmi-határon (fent tételesen), a szerzői AC1–AC10
+  DB-tesztsuite (`app/scripts/wiki-history-db.test.ts`, 524 sor) átnézésével — a GDPR-leak (AC9), a privát-
+  KB admin-izoláció (AC10), a párhuzamos sorszám (AC7), a megőrzés-védelem (AC8) és a revert-konfliktus (AC3/
+  D8) mind lefedve. A DB-tesztek valódi Postgrest igényelnek (CI migrations job) — ütemezett, felügyelet
+  nélküli futásban **nem futtattam** (prod `directUrl` védelme, Neon-pool; nincs eldobható branch-provision).
+- Kódmódosítás nem történt → nincs külön build/tsc/eslint ezen körben.
+
+### Residual risk / következő audithoz
+- **🟡 Egress DNS-rebinding by-name TOCTOU (platform-szintű, MEGERŐSÍTVE — carry-forward 10-20…10-26):**
+  változatlanul nyitva; a legmagasabb prioritású, **EMBERI FELÜGYELETTEL** futtatandó dedikált kör jelöltje
+  (fetch-szintű IP-pin, blast-radius = minden kimenő connector). A wiki-előzményeket nem érinti.
+- **ℹ️ GDPR-törlés ↔ beágyazás/embeddings (nem finding):** a `knowledge_chunks.text`/`title` regexp-
+  redaktált, de ha a KB vektor-beágyazásokat is tárol, azok derivált reprezentációként a kitakarás után is
+  kódolhatják a törölt szöveget. GDPR-értelmezési kérdés (derivált adat); ha szükséges, a chunk-redakció
+  mellé re-embedding az upgrade-út. Külön kör / terméki döntés.
+- **ℹ️ Régi audit-sorok GDPR-kitakarása (nem finding, platform-szintű):** l. fent; a napi audit-retenció és
+  a wiki-erasure összehangolása jövőbeli téma.
+- **Következő audit további jelöltjei (10-27-ig merge-elt, még nem auditált, magas kockázat):** #964 skill-
+  platform-share (superadmin platform/cross-tenant skill-megosztás — tenant-határ), #937 connector-template-
+  endpoint-scope (SSRF/scope review-fix *teljessége*), #940 handoff-atomitás, #967 Mini-App MCP CSP/share-
+  idempotencia *residual* (10-25 óta nyitva), valamint a 10-26 óta nyitott #973/#974 metaadat-utak.
+
+## 2026-10-26 — Customer-Promise ledger (#936/#672, merge `435d84c7`): új agent-írható MCP perzisztencia + állapotgép
+
+**Scope-választás (kockázati alapon):** `git fetch` után a checkout (`fix/drive-search-free-text-query`
+@`60a1227b`) el volt maradva `origin/main` (@`b4df87b9`) mögött. A 10-25-i kör (HEAD `30de09ed`) óta
+**négy még nem auditált PR** merge-elt: #974 (mcp-tool-errors-actionable, error-polish), #936 (promise-
+ledger / #672), #937 (connector-template-endpoint-scope — *már review-branch*), #973 (skill-triggers-
+versions-placement, metaadat+migráció). A legnagyobb **új, agent-írható, külső-adatot hordozó**
+felület egyértelműen a **#936 Customer-Promise ledger** (+1007 sor, 32 fájl): egy teljesen új
+perzisztencia-tábla (`customer_promises`, 0036) + **állapotgép** (`open/claimed → fulfilled/cancelled/
+missed`), amelyet **öt új MCP-eszköz** ad az agenteknek (`platform.promise.register/get/list/complete/
+cancel`), ügyfél-PII-t (név/e-mail/ref) tárolva. Új agent-írható állapotgépek a klasszikus helye a
+cross-tenant szivárgásnak, az átmenet-authz hibáknak és a race conditionöknek → a legmagasabb
+unknown-unknown kockázat. (#937 már biztonsági review-fix; #974/#973 kisebb/metaadat.) A visszatérő
+🟡 DNS-rebinding TOCTOU residualt **tudatosan megint nem** választottam fő scope-nak (felügyelet
+nélküli futásban a fetch-szintű IP-pin blast-radiusa szolgáltatáskiesés-kockázat — l. carry-forward).
+**Minden trace `origin/main` HEAD-ről**, a main `.env` érintése nélkül; a stub-teszteket eldobható
+worktree-n futtattam (DB-mentes, prod `directUrl` érintetlen).
+
+### Coverage (teljes bizalmi-határ + adatfolyam-trace a LIVE felületen)
+`customer-promise-service.ts` (register-validáció, `get`/`list`/`resolve`/`countUrgentForUser`, PII-mentes
+`record` audit-helper), `customer-promise/mcp.ts` (séma + `invokeCustomerPromise` aktor-levezetés +
+owner/agent-kapu), `customer-promise-repository.ts` (`insertUnderLimit` `FOR UPDATE`-sorosítás + 50-limit,
+CAS-`resolve`, tenant-scoped `findById`/`list`), 0036 migráció (FK + indexek), `mcp-server.ts` (tool-
+regisztráció, `bindAgentHeader` definitionId-injektálás, `get_definition` briefing-integráció),
+`project-work/mcp.ts` `authorizeProjectWorkCall` (a megosztott gate: tenant-scoped `loadDefinition` +
+`findAgentGrant` + `canOperateAgent`/`canReadPublishedAgent` + pin-check), `actions/customer-promise.ts`
+(UI server action, `allowTenantScope` approver-kapu), `gateway-services.ts` wiring. A kötelező scoped
+security scan (Claude Security `scan-changes`) **ütemezett munkamenetben továbbra sem futtatható**
+(3. lépés költség-megerősítése nem fogad el wake-up nyugtázást) — a mélyaudit kézi end-to-end
+adversariális trace + a szerzői tesztsuite futtatása `origin/main`-en.
+
+### Biztonsági megállapítás — NINCS bizonyított finding; a felület helytáll (origin/main)
+Tételesen, adversariális trace-szel verifikálva:
+- **Tenant/owner/agent izoláció.** Minden repo-metódus `tenantId`-scoped (`findById`/`list`/`resolve`
+  `where {tenantId,…}`). Az MCP-aktor **teljesen szerver-oldali**: `ownerUserId = principal.userId`,
+  `agentId = definition.agentId` (sosem args). `get`/`complete`/`cancel`: `svc.get` megköveteli
+  `row.ownerUserId === principal.userId`-t (`manageAll` undefined MCP-n), majd `row.agentId !==
+  definition.agentId → not_found`. → agent csak **a saját tulajdonú**, **ugyanazon agenten** lévő
+  promise-ot éri el. Hamisított `promiseId` más owner/agent/tenant alól `not_found`/`not_allowed`.
+- **Grant-kapu (gate).** `authorizeProjectWorkCall`: `definitionId` a hívó **tenantjára** feloldva;
+  `findAgentGrant` + `canOperateAgent` (register/get/complete/cancel) / `canReadPublishedAgent` (list).
+  A HTTP-teszt igazolja: `view`-grant → list OK, de register/get/complete/cancel → `agent_access_denied`;
+  **nincs grant** → list is `agent_access_denied`; stale definition-pin → `agent_stale`.
+- **Bound-kliens binding.** `bindAgentHeader` a `definitionId`-t a bound agentből injektálja (vagy a
+  megadottat a bound agenthez validálja), `canViewAgent`-kapuval; a gate utána **újra** `findAgentGrant`-et
+  ellenőriz → a header-kötés nem kerüli meg a grant-ellenőrzést.
+- **Audit PII-redakció.** A `record` **csak** `id/agentId/dueAt/status`-t ír a `metadata`-ba; a
+  cím/commitment/customerName/customerEmail/resolvedNote **nem** kerül auditba (a tág admin/superadmin-
+  olvasható naplóba). A szerzői stub-teszt explicit assert-eli, hogy `private@example.com`/`Call private
+  customer`/`Done` **sosem** jelenik meg az audit-sorban. A PII a tenant-scoped táblában marad (CRM-szerű).
+- **UI eszkaláció-kapu.** `listCustomerPromisesAction`/`resolveCustomerPromiseAction`: az `allowTenantScope`
+  (= tenant-wide hozzáférés más user promise-aihoz) **`hasMinimumRole(…, 'approver')`-hez kötött**, és a
+  resolve szerver-oldalon újra kikényszeríti (a UI `canResolve` csak megjelenítés).
+
+### Reliability / correctness — átvizsgálva, nincs adatvesztés/hibás-működés finding
+- **Race-safe átmenet (CAS).** `resolve` `updateMany where {id,tenantId, status in [open,claimed]}` →
+  `count 0` esetén `already_resolved` (két párhuzamos complete közül egy nyer; nincs dupla). Tranzakcióban.
+- **Limit-sorosítás.** `insertUnderLimit` `SELECT … FROM agents … FOR UPDATE` alatt számol+szúr be →
+  a per-agent 50 aktív-limit párhuzamos ownerök közt sem kerülhető meg. A lejárt (`dueAt < now`) nyitott
+  sorok **szándékosan nem** foglalnak helyet (semmit nem zár le automatikusan) — bounded + dokumentált.
+- **Validáció.** `dueAt` ISO+offset, `now < dueAt <= now+366 nap`; `timezone` valós `Intl`-zóna; e-mail-
+  regex; hossz-plafonok. Az MCP-séma szigorúbb (`channel` enum) — konzisztens. `missed` enum létezik, de
+  semmi nem állítja (dead, nem rés). Pagination a service-ben `limit ≤ 51`-re clampelve (hasMore-detektálás).
+- **Briefing-rezíliencia.** `get_definition` promise-lekérdezése `.catch(() => [])` — egy hiányzó tábla /
+  lekérdezés-hiba **nem** töri el a briefinget (HTTP-teszttel igazolva: `relation … does not exist` →
+  üres lista, nem error).
+
+### Bizonyított finding — NINCS. Kódmódosítás nem indokolt.
+Fail-closed, tenant/owner/agent-gated, CAS-biztos, PII-redaktált auditú, átfogóan tesztelt felületbe
+kockázat-csökkentő indok nélkül nyúlni **kockázatot adna**. Nincs fix-PR és nincs `/code-review` (az a
+*létrehozott változtatásra* való). Nettó kód-változás: **0**. (Precedens: 10-21, 10-23, 10-25.)
+
+### Ellenőrzések
+- `scripts/customer-promise.test.ts` (eldobható `origin/main` worktree, linkelt `node_modules`, **DB nélkül**)
+  — **zöld**: validáció, tenant/owner-izoláció, 50-limit + overdue-mentesség, lifecycle/`already_resolved`,
+  overdue-flag, urgent-badge, pagination, PII-mentes audit.
+- `scripts/mcp-http.test.ts` — **zöld**; a „promise HTTP tools enforce grants, ownership, tenant and
+  argument boundaries" eset a gate-et HTTP-szinten fedi (view-vs-operate, no-grant, stale-pin, invalid-args,
+  briefing-rezíliencia). A teljes mcp-http suite is zöld.
+- Prod `directUrl`-t nem érintettem; a worktree-t a futtatás után eltávolítottam.
+
+### Residual risk / következő audithoz
+- **🟡 Egress DNS-rebinding by-name TOCTOU (platform-szintű, MEGERŐSÍTVE — carry-forward 10-20…10-25):**
+  változatlanul nyitva; a legmagasabb prioritású, **EMBERI FELÜGYELETTEL** futtatandó dedikált kör
+  jelöltje (fetch-szintű IP-pin, blast-radius = minden kimenő connector). A promise-ledgert nem érinti
+  (nincs egress).
+- **ℹ️ Promise-limit elhasználódás (nem finding):** a lejárt, le nem zárt promise-ok a `list active`-ban
+  és a briefingben korlátlanul gyűlhetnek (`missed`-re semmi nem vált). Terméki/UX-kérdés, nem korrektségi
+  hiba; egy jövőbeli auto-`missed`-sweep tisztítaná a briefinget. A limit-számlálót nem érinti.
+- **ℹ️ Register nem-idempotens:** nincs idempotencyKey; egy retry két promise-sort hoz létre. Belső DB-sor
+  (nem visszavonhatatlan külső hatás, szemben a 10-01 körrel) → nem finding; ha a duplikáció gond lesz,
+  per-hívás efemer kulcs az upgrade-út.
+- **Következő audit további jelöltjei (10-26-ig merge-elt, még nem auditált):** #937 connector-template-
+  endpoint-scope (biztonsági review-fix **teljességét** igazolni — SSRF/scope), #973 skill-triggers-
+  versions-placement (séma-migráció + skill-metaadat), #974 mcp-tool-errors-actionable (hibaüzenet-
+  információszivárgás), valamint a 10-25 óta nyitott #964 skill-platform-share és #940 handoff-atomitás.
+
+## 2026-10-25 — LLM Wiki író-út (#943/#946) + Mini-App MCP (#967, merge `f9d5df68`/`30de09ed`): az élesedő agent-író és app-kiszolgáló felületek
+
+**Scope-választás (kockázati alapon):** `git fetch` után a checkout (`fix/drive-search-free-text-query`
+@`60a1227b`) **28 commit / 9 merge** maradt el `origin/main` (@`30de09ed`) mögött. A 10-23-i kör
+(#948 Wiki Foundation) óta merge-elt, **még nem auditált** munka: #943 (2/6 wiki-író MCP-eszközök),
+#946 (5/6 Control Plane wiki-konzol), #947 (6/6 e2e), #967 (Mini-App MCP), #964 (skill-platform-share),
+#940 (handoff-atomitás). Két felület emelkedik ki:
+
+1. **LLM Wiki író-út (#943/#946)** — a 10-23-i ledger **kötelező következő ellenőrzésként** jelölte:
+   „amint a wiki-írás (`kb_wiki_write` + change-set apply) élesedik, a privát-KB oldalcím/tartalom
+   audit-ba/log-ba szivároghat, ha nem a `redactKbAuditForVisibility`-n megy át." A 2/6+5/6+6/6 pont ezt
+   élesítette → konkrét, előre rögzített szivárgás-hipotézis élő kóddal.
+2. **Mini-App MCP (#967, +3400 sor, 23 fájl)** — teljesen új felület: az agent **tetszőleges HTML-t**
+   hoz létre, amit a platform **token-alapú publikus route-on** és iframe-ben szolgál ki, szervezeti/
+   agent-megosztással. Stored-XSS (session-lopás) + cross-tenant láthatóság + publikus-route authz =
+   a legnagyobb új, külső-felületű kockázat.
+
+A visszatérő 🟡 DNS-rebinding TOCTOU residualt (carry-forward 10-20/10-21/10-23) **tudatosan megint nem
+választottam fő scope-nak**: l. lent — megerősítettem a rés valódiságát, de a fetch-szintű IP-pin javítás
+blast-radiusa (minden kimenő connector) felügyelet nélküli futásban szolgáltatáskiesés-kockázatot adna
+(az audit kifejezetten kerülendőként sorolja). **Minden trace `origin/main` HEAD-ről** (stale-branch
+tanulság), a main `.env` érintése nélkül.
+
+### Coverage (teljes bizalmi-határ + adatfolyam-trace a LIVE felületeken)
+
+**Wiki író-út:** `wiki-service.ts` (1292 sor: `write`/`plan`/`apply`/`applyApproved`/`canDecide`/
+`approverScopeFor`/`audit`), `wiki-console-service.ts` (922 sor: `load`-kapu + mind a 18 konzol-metódus
+authz-a), `knowledge-wiki.ts` server action (253 sor, vékony), `wiki-repository.ts` `applyChangeSet`
+tranzakció, `kb-private-redaction.ts`. **Mini-App:** `mini-app-service.ts` (544: `readable`/`owned`/
+`gate`/`create`/`update`/`share`/`unshare`/`recomputeVisibility`/`archive`/purge), `mcp.ts` (498:
+aktor-levezetés + `checkShareTarget`), `link-token.ts` (HMAC), `frame.ts` (CSP/sandbox), `mini-app-serve.ts`
+(route-feloldás + wrong-origin), `mini-app-origin.ts`, `human-access.ts`, a két publikus token-route
+(`content/[token]`, `open/[token]`) és a `control-plane/.../download` route. A kötelező scoped security
+scan (Claude Security `scan-changes`) **ütemezett munkamenetben továbbra sem futtatható** (3. lépés
+költség-megerősítése nem fogad el wake-up nyugtázást) — a mélyaudit kézi end-to-end trace + a szerzői
+regressziós tesztek viselkedés-fedezetének igazolása.
+
+### Biztonsági megállapítás — NINCS bizonyított finding; mindkét felület helytáll (origin/main)
+
+Tételesen, adversariális trace-szel verifikálva:
+- **Wiki privát-KB audit-redakció (a 10-23 hipotézis — KEZELVE).** A `this.audit` helper **minden**
+  wiki-lifecycle-sort (`inbox.submitted/claimed`, `changeset.submitted/approved/applied`, `page.*`)
+  a `redactKbAuditForVisibility`-n vezet át; a külön `before/after` payload-os append (changeset.applied)
+  is. A redakció **allowlist + rekurzív**: nested objektumba leszállva `title`/`summary`/`body`/`path`/
+  `finalPath`/`sources` **kiesik** (nincs a `SAFE_STRING_KEY=/(id|ids|hash|hashes)$/`-ben, nem rövid enum),
+  `status`/`action` enumként marad; a `pages:[{path,action}]` tömb objektumokkal → `undefined`. Privát
+  KB-nál `inputRef/outputRef` csak UUID/hash. → az előre jelzett oldalcím/tartalom-szivárgás **nem áll fenn**.
+- **Wiki change-set apply integritás.** `applyChangeSet` per-wiki `pg_advisory_xact_lock(hashtext(connectorId))`
+  alatt sorosít; change-set egyszer-használat (`updateMany where status:'pending'` → count 0 abort);
+  oldal-update **optimista verzió** (`where {id, connectorId, version: expectedVersion}` → count 0 =
+  conflict, lost-update ellen); create ütközés a `connectorId_path` unique-ra fut (abort, nincs korrupció);
+  minden verzió `wikiPageRevision`-be. A konténer-artifact idempotens (`findFirst ?? create`). Nincs
+  részleges állapot.
+- **Wiki konzol authz (cross-user privát).** Központi `load(need)`: privát KB-nál `accessFor` csak a
+  **tulajdonosnak** ad `view/contribute/manage`-t; nem-tulajdonos admin max `metaOnly` → `load` **not_found**
+  bármely `need`-re. Mind a 13 connector-művelet a `load`-on megy. `getChangeSetReview` (full diff/title/body)
+  **csak** a change-set rögzített `approverScope`-ja szerint (`canDecide` → privátnál owner, admin sem).
+  `purgePrivate` csak privátra + `manage`. A server action mindenki `requireTenantRole('viewer')` után a
+  service dönt.
+- **Mini-App tartalom-izoláció (stored-XSS ellen).** A `content/[token]` route a `sandbox allow-scripts`
+  CSP-vel szolgál ki — **`allow-same-origin` NÉLKÜL** → a dokumentum **opaque originbe** kerül akkor is,
+  ha `MINI_APP_ORIGIN` nincs beállítva (fejlesztés); így az agent JS a platform-cookie-t/`localStorage`-t
+  nem éri el. Plusz `connect-src 'none'` (nincs exfil), `default-src 'none'`, `base-uri/form-action 'none'`.
+  A keret-iframe maga is `sandbox="allow-scripts"`. A külön origin (D7) defense-in-depth, nem az egyetlen
+  védelem.
+- **Mini-App token / publikus route.** `link-token`: HMAC-SHA256, `timingSafeEqual`, 2048-hossz-plafon,
+  fix struktúra-validáció, `exp` + `contentHash` pin (verzióhoz kötött). A route **cookie-t nem olvas**
+  (szándékos: megosztható link), a hozzáférést az aláírt, lejáró token adja; archivált/inaktív app → 410.
+  A `download` route **bejelentkezett** + `miniAppHumanAccess` + tenant-scoped `findById(tenantId,…)`,
+  `attachment` + `sandbox` CSP.
+- **Mini-App megosztás / tenant-izoláció.** `share` `owned()`-gated (csak tulajdonos); `activateShares`
+  `{tenantId: actor.tenantId}`-scoped; a célpont-láthatóságot `checkShareTarget` a **hívó tenantjára**
+  szűkítve dönti (`loadDefinitionByAgent({tenantId: principal.tenantId})` + `canViewAgent`). Egy idegen-tenant
+  agentId-re tévesen aktivált share is **inert**, mert a `readable` tenant-kapuja (`app.tenantId ===
+  actor.tenantId`) kizárja. Az MCP-aktor **teljesen szerver-oldali** (`principal` + authorizált `definition`),
+  nem kliens-inputból.
+
+### Bizonyított finding — NINCS. Kódmódosítás nem indokolt.
+Két, fail-closed, következetesen tenant/owner-gated, élő regressziós tesztekkel fedett felületbe
+kockázat-csökkentő indok nélkül nyúlni **kockázatot adna**. Nincs fix-PR és nincs `/code-review` (az a
+*létrehozott változtatásra* való). Nettó kód-változás: **0**. (Precedens: 10-21, 10-23.)
+
+### Ellenőrzések
+- **Teszt-fedezet igazolása (a trace korroborálása):** a szerzői `scripts/mini-app.test.ts` pontosan a
+  trace-elt viselkedést fedi: cross-tenant/nem-megosztott → `mini_app_not_found`; share→látható→unshare→
+  rejtett; non-owner `update` → `mini_app_not_owner`; `canViewAgent:false` → `share_target_not_visible`;
+  link-token aláírás/lejárat/forge; lint hard-fail (`iframe_tag`/`form_tag`). A wiki-oldalon
+  `scripts/wiki-foundation.test.ts` + `wiki-console.test.ts` + `kb-wiki-e2e.test.ts` (782 sor) a
+  láthatóságot/redakciót/apply-t fedi.
+- A teszteket **nem futtattam** külön worktree + linkelt `node_modules` nélkül (prod `directUrl`-t
+  szándékosan nem érintem); a viselkedést a kódon trace-eltem és a teszt-esetek állításaival vetettem össze.
+
+### Residual risk / következő audithoz
+- **🟡 Egress DNS-rebinding by-name TOCTOU (platform-szintű, MEGERŐSÍTVE — carry-forward 10-20/10-21/10-23):**
+  `guardEgressUrl` (`domain/net/egress-guard.ts`) feloldja és a privát/reserved tartományok ellen
+  ellenőrzi az IP-ket, majd **eldobja** és `{ok:true, host, url}`-t ad vissza; a hívó (`web_fetch`,
+  MCP-connector `guardedMcpFetch`, sandbox-connection-tester) a **hostnévvel** csatlakozik → a connect-kori
+  újra-feloldás és az ellenőrzés közt rebind-ablak. **Allowlist-kapuzott** (superadmin/tenant-admin által
+  felvett hostok), de egy általad kontrollált, allowlistázott host DNS-ét ellenőrzés után `169.254.169.254`-re
+  rebindelve a **GCP metadata** (SA-token) elérhető → eszkaláció. **Javítási terv (felügyelt kör):** a
+  feloldott, validált publikus IP pinelése a kapcsolatba (`https.Agent`/undici `lookup` a pin-elt IP-vel,
+  `servername`=eredeti host), redirect-láncon újra-ellenőrzés, IPv6/happy-eyeballs kezelés + integrációs
+  teszt valós DNS/TLS ellen. **Nem kódoltam:** nagy blast-radius (minden kimenő connector), stub-teszttel
+  nem igazolható, felügyelet nélkül szolgáltatáskiesés-kockázat. **A legmagasabb prioritású, dedikált,
+  EMBERI FELÜGYELETTEL futtatandó kör jelöltje.**
+- **ℹ️ Mini-App álnév-feloldás (§5.4) deferred, kódban `ponytail:`-lel jelölve:** a `content/[token]`
+  route a HTML-t úgy adja ki, ahogy az agent beküldte — ha korábban tokenizált PII-t tartalmaz, az nyersen
+  mehet ki a megosztott linken. Nem regresszió (nyitott feature), de a mini-app megosztás élesítése előtt
+  tisztázandó a privacy-gateway interakció.
+- **ℹ️ `MINI_APP_ORIGIN` élesítési követelmény:** a tartalom-izolációt a CSP `sandbox` (opaque origin)
+  már a külön origin nélkül is megadja, de a külön origin a defense-in-depth réteg — élesben beállítandó
+  (memóriában is jelölve).
+- **🟡 Retenciós sweep hiba-izoláció (carry 10-23):** a `sweepOrphanedPrivateKnowledgeBases` per-connector
+  try/catch nélkül; önhelyreállító, olcsó jövőbeli hardening.
+- **Következő audit egyéb jelöltjei (10-25-ig merge-elt, még nem auditált):** #964 skill-platform-share
+  (cross-tenant skill-megosztás authz), #940 handoff-atomitás (`make handoff decisions atomic` —
+  race-condition-fix teljességét igazolni), #949 scanned-PDF KB-oldal (nagy-input / OCR feldolgozás),
+  valamint a #841 IAM token-redeem eszkaláció-fix (10-23 óta nyitott jelölt).
+
+## 2026-10-23 — LLM Wiki Foundation (#942 / PR #948, merge `89f3dc9b`): privát tudásbázis-láthatóság + wiki-jog + audit-redakció
+
+**Scope-választás (kockázati alapon):** `git fetch` után a checkout (`fix/drive-search-free-text-query`
+@`60a1227b`) **44 merge-dzsel** maradt el `origin/main` (@`89f3dc9b`) mögött. A 10-21-i kör óta
+merge-elt, még **nem auditált** munka: #948 (LLM Wiki, 10-22), #927 (token-szinkron), #841 (IAM
+token-redeem eszkaláció-fix), #625 (migrate-on-build). A legnagyobb **új, adat-hordozó, hozzáférés-
+vezérelt** felület egyértelműen a **#948 LLM Wiki Foundation** (+3701 sor, 28 fájl): egy teljesen új
+**access-control réteg tenant-adat felett** (`wiki-access.ts`, `wiki-access-service.ts`,
+`wiki-repository.ts`), **privát-KB redakció** (`kb-private-redaction.ts`), új Prisma-séma (202 sor) +
+0031 migráció, MCP-eszközökön kiadva. Cross-tenant izoláció + privát-tartalom szivárgás + authz-megkerülés
++ adattörlő purge-út = a legnagyobb nem-auditált kockázat. (A visszatérő 🟡 DNS-rebinding TOCTOU
+residualt tudatosan nem választottam: ismert minta, kockázatos fix felügyelet nélküli futásban; az új,
+„unknown-unknown"-okat hordozó felület magasabb prioritású.) **Külön worktree-n `origin/main` HEAD-ről**
+(a stale-branch tanulság a 10-21-i körből), a main `.env` érintése nélkül.
+
+**Coverage (teljes bizalmi-határ + adatfolyam-trace a LIVE felületen):** `wiki-access.ts` (tiszta
+policy: `effectiveWikiAccess`/`isKnowledgeBaseVisibleTo`/`scopeSnapshotConnectorsToUser`/
+`resolveWikiApprover`/`canDecideWikiChange`/`canManageKnowledgeBaseLink`), `authorize-tool-call.ts`
+(KB read-gate: snapshot-szűkítés hívóra + élő connector `isKnowledgeBaseVisibleTo` re-check, mindkettő
+`not_found`), `auth/mcp-server.ts` (mind az 5 agent-eszköz `scopeSnapshotToUser`; publikált `contentHash`
+a szűretlen snapshoton = stabil), `agent-definition/index.ts` (`knowledgeBaseSnapshotFields` — privát
+csak `visibility`+`ownerUserId`-vel kerül be; alapérték kimarad), `knowledge-base-service.ts` (ingest
+`connectorId`+`actor:'agent'`, visibility+tenant+aktív re-check), `kb-private-redaction.ts` (allowlist),
+`wiki-access-service.ts` (create/link/setAccess/purge/sweep, minden audit-sor redaktálva),
+`wiki-repository.ts` (nyers inbox-SQL, claim-race, `PostgresPrivateKnowledgeBaseStore.purge`/
+`listOrphaned`), `actions/platform.ts` (getAgentGovernance szűrés, updateAgentConnectorBinding→service,
+publish scope), `ai-audit-retention/route.ts` (sweep-cron kötés), `connector-repository.ts`/
+`agent-repository.ts` (séma-select + guard), 0031 migráció. A kötelező scoped security scan (Claude
+Security `scan-changes`) **ütemezett munkamenetben továbbra sem futtatható** (3. lépés költség-
+megerősítése nem fogad el wake-up nyugtázást) — a mélyaudit kézi end-to-end trace + a szerzői
+tesztsuite futtatása.
+
+### Biztonsági megállapítás — NINCS bizonyított finding; a felület helytáll (origin/main)
+
+Tételesen, több esetben **adversariális trace-szel** verifikálva (nem feltételezve):
+- **Cross-user privát-KB izoláció.** `kb_get_document({documentId})` A privát dokumentumára B
+  felhasználóként: connectorId nélkül a `pickBinding` csak a B-re **szűkített** snapshotból választ
+  (A privátja kiesett) → B saját/közös connectora; a service `document.connectorId !== input.connectorId`
+  → `not_found`. Explicit connectorId=A-privát → a scoped snapshotban nincs → `not_found`. **Kétszeresen
+  kapuzott** (snapshot-scope + élő `isKnowledgeBaseVisibleTo` re-check).
+- **Snapshot-szivárgás.** A publikált snapshotba a privát kötés `visibility:'private_to_user'`+`ownerUserId`
+  mezővel kerül (`knowledgeBaseSnapshotFields`); a `scopeSnapshotToUser` mind az 5 MCP-eszközben kiszűri a
+  nem-tulajdonosnak. A `findConnectorsForAgent` `include:{connector:true}` → a governance-szűrő és a
+  snapshot-építő **valódi** `visibility`/`ownerUserId`-t lát (nem no-op). A `contentHash` a szűretlen
+  snapshoton → vázlat/közzétett összevetés nem törik.
+- **Audit-redakció (privát KB).** `inputRef`/`outputRef` → csak UUID/hash (fájlnév→null); metadata
+  **allowlist** (id/ids/hash végű kulcs + enum-kulcsok ≤64 char); path/cím/fájlnév/`purpose`/
+  `collectFocus`-érték **kiesik** (csak `collectFocusChanged` boolean marad). **Minden** életciklus-
+  audit-út redaktál (create/link/setAccess/access-changed/purge). Admin/superadmin a privát tartalmat
+  az audit-on sem látja.
+- **Purge / 30-napos sweep (adatvesztés-kapu).** `purge` Serializable tranzakcióban, a listázás↔törlés
+  közti visszaállt tagságra **újra-ellenőrzéssel megszakad** (fail-safe); az `UPDATE owner_missing_since`
+  és a SELECT óra-logikája konzisztens (tag hiánya → KB-nkénti óra; felfüggesztett → `membership.updated_at`);
+  connectoronként atomi (nincs részleges törlés). A dokumentumok FK-ja explicit `deleteMany`-vel megy (a
+  wiki-táblák amúgy is CASCADE). 0031: épkézláb defaultok (legacy→`shared`/`read`), DB-szintű CHECK
+  (`private ⇒ KB + owner_user_id`).
+- **Nem-élő (foundation-only, nincs elérhető hívó):** `kb_wiki_write` (0 nem-teszt referencia a kódban),
+  inbox/claim/submit, `resolveWikiTarget` — a tényleges wiki-írás 2/6 (#943). A wiki-tartalom-író audit-
+  redakciós rés tehát **ebben a PR-ban még nem élő**; a 2/6 auditjának kötelező ellenőrzése.
+
+### Bizonyított finding — NINCS. Kódmódosítás nem indokolt.
+Fail-closed, allowlistes, DB-CHECK-kel és 28 zöld egységteszttel fedett access-control rétegbe
+kockázat-csökkentő indok nélkül nyúlni **kockázatot adna**. (Precedens: 09-16, 09-26, 10-20 — 0-finding
+coverage-körök.) Nincs fix-PR és nincs `/code-review` (az a *létrehozott változtatásra* való). Nettó
+kód-változás: **0**.
+
+### Ellenőrzések
+- `npm run test:wiki-foundation` (stub DB, a worktree-be linkelt `node_modules`-szal) — **28/28 zöld**;
+  a tesztnevek pontosan az általam trace-elt viselkedést fedik (cross-user privát-láthatóság, közvetlen
+  connectorId→not_found, élő-vs-snapshot re-check, audit-redakció path/cím/fájlnév-kiesés, purge-authz,
+  30-napos sweep, láthatóság-immutabilitás, kb_ingest agent-actor).
+- `test:wiki-private-purge-db` **nem futott** (valódi Postgres kell; a sweep/purge logikát a stub-
+  foundation teszt fedi, a prod directUrl-t szándékosan nem érintem).
+- Kézi adversariális read-gate trace (fenti cross-user eset) — a kódon verifikálva.
+
+### Residual risk / következő audithoz
+- **🟡 Retenciós sweep hiba-izoláció nélkül:** `sweepOrphanedPrivateKnowledgeBases` a napi
+  `ai-audit-retention` POST-ban **az audit-sweep UTÁN** fut; egyetlen purge dobása az egész választ
+  500-ra viszi (az audit-rész már commitolt), a maradék árva csak másnap törlődik. Önhelyreállító, nincs
+  részleges állapot (connectoronkénti tranzakció) → nem finding; per-connector try/catch olcsó jövőbeli
+  hardening.
+- **ℹ️ Privát-KB audit `contentHash` korreláció:** a redakció **szándékosan** megtartja a sha256
+  `contentHash`-t (auditálhatóság). Admin known-plaintext-tel megerősíthetné, hogy egy konkrét ismert
+  fájlt ingestáltak-e. Tervezési döntés (a path/cím/fájlnév már kiesik), nem rés; a 2/6-nál érdemes a
+  szándékosságát rögzíteni.
+- **🟡 2/6 (#943) wiki-író út auditja KÖTELEZŐ:** a `createPage`/`updatePage`/`appendLog`/`createChangeSet`
+  cím/body/path-ot tárol, és ezek **ma nincsenek** redaktálva (a redakció csak a lifecycle-audit-sorokra
+  fut). Amint a wiki-írás (`kb_wiki_write` + change-set apply) élesedik, a privát-KB oldalcím/tartalom
+  audit-ba/log-ba szivároghat, ha nem a `redactKbAuditForVisibility`-n megy át. Ez a #943 kör **első**
+  ellenőrzendő pontja.
+- **🟡 DNS-rebinding by-name TOCTOU (platform-szintű, carry-forward 10-20/10-21):** továbbra is nyitva;
+  a wikit nem érinti (nincs egress). Dedikált kör jelöltje.
+- **Következő audit további jelöltjei (10-23-ig merge-elt, még nem auditált):** #841 IAM token-redeem
+  eszkaláció-fix (tagság-emelés/global-role-leminősítés — biztonsági felület, érdemes a fix teljességét
+  igazolni), #927 token-szinkron-regresszió (a memóriában 10-19 100% 401; most 10-20-i fix), valamint a
+  fenti gateway-költségkeret (10-21 residual).
+
+## 2026-10-21 — Model Gateway (Hermes managed-client céges-modell út): token-kibocsátás + proxy + tartalomszűrő
+
+**Scope-választás (kockázati alapon):** a 10-20-i bejegyzés „következő audit" listája ezt jelölte
+top-jelöltnek (Hermes gateway-token lejárat/csere #890/#896/#907, `maxTokens` író-ág #903,
+tartalomszűrő #871–#875/#782), és a memória **élő incidenst** jelez (10-18/10-19 token-csere 100%
+401-regresszió). A Model Gateway a **legnagyobb új, külső-felületű auth-határ**: egy internetről
+elérhető Hermes-kliens 10 perces, user+agent-kötött HS256-JWT-vel hívja a **céges modell egyetlen
+kapuját**, amely a céges OpenRouter-kulccsal költ, és amelyen a **PAN-blokk / álnevezés** (adat-
+szivárgás elleni kontroll) fut. Friss + sokat churnölt (#769/#781 proxy, #858/#860 indító-token,
+#890/#896/#903/#907 token-lánc, #773/#782 szűrő, #747 teljes szűrő) + pénzügyi + privacy felület.
+
+### ⚠️ Folyamat-lelet (fontos a következő körökre): a munkamunka-branch elavult volt
+A session a `fix/drive-search-free-text-query` (@`60a1227b`) checkouton indult, amely **19 merge-dzsel
+el volt maradva** `origin/main` (@`e53af17f`) mögött. Az első olvasási kör a **régi** tartalomszűrőt
+(`entityType`-alapú `Candidate`, hardkódolt `['email','person']` tokenizálás, „tokenize→block"
+fail-safe) látta, és ebből egy látszólagos findingot vezetett le (alap `bound` preset telefonszámot/
+bankszámlát blokkol). **`origin/main`-en ez NEM áll fenn** — a szűrőt időközben átírták
+(`filterMessages`, `SlotMemo`, `NOT_TOKENIZABLE={pan,secret_key}`, `content_filter.mode`
+enforce/observe/off). **Tanulság: minden audit `git fetch` után `origin/main`-hez mérve történjen,
+ne a checkout feature-branchhez.** A teljes újraellenőrzést külön worktree-n `origin/main`-ről végeztem.
+
+**Coverage (teljes bizalmi-határ + adatfolyam-trace `origin/main` HEAD-en):** `gateway-token.ts`
+(HS256 `verifyJwt`/`issueGatewayToken`/`verifyGatewayToken`), `model-gateway-jwt-key.ts` (kulcs-
+betöltés), `proxy.ts` (`handleChatCompletion`, provider-hívás, stream-peek, tartalék-lánc,
+`requirePrivate`/`local_only` kikényszerítés), `content-filter.ts` (`filterMessages`, surrogate-
+session, horgok, dry-run), `response-restorer.ts`, `fallback-chain.ts`, `client-install.ts`
+(managed/open kapu), `resolve-effective-policy.ts` (effektív policy), `capabilities.ts` (presetek),
+`privacy-category-policy.ts`, `sensitivity-match-spans.ts` (PAN/IBAN/TAJ/… felismerés). A kötelező
+scoped scan (Claude Security `scan-changes`) **ütemezett munkamenetben továbbra sem futtatható**
+(a 3. lépés költség-megerősítése nem fogad el wake-up nyugtázást) — a mélyaudit kézi end-to-end
+trace + futtatott reprodukciók.
+
+### Biztonsági megállapítás — NINCS bizonyított finding; a felület helytáll (origin/main)
+
+Tételesen verifikálva, több esetben **futtatott reprodukcióval** (memória-vault + hamis provider):
+- **Token/auth:** `alg` fix HS256 (fejléc nem választhat algoritmust), `safeSecretEquals` időzítés-
+  biztos aláírás-összevetés, 10 perc TTL, és `verifyGatewayToken` **minden hívásnál** újraellenőrzi
+  (user aktív, tenant aktív, tagság, agent látható) → visszavont user/agent a következő híváson elvész.
+  Kulcs < 32 bájt / hiány → fail-closed (503, nincs fallback). Indító-token (#858) hozzáférés-
+  ellenőrzött (a user által látható legrégebbi agent).
+- **Tartalomszűrő (enforce):** reprodukcióval igazolva, hogy `bound` presetben telefon→`[[PHONE_1]]`,
+  bankszámla→`[[ACCOUNT_1]]`, TAJ→`[[TAJ_1]]`, adószám→`[[ADOSZAM_1]]`, IBAN→`[[IBAN_1]]`
+  **visszafordítható álnevet** kap (nyers érték sosem megy ki; az open-namespace surrogate a nem-
+  default típusokra is működik), PAN és titkos kulcs **blokk**. A válaszban a surrogate visszaáll.
+- **Tartalomszűrő (observe/off):** `standard`=observe **szándékosan** nem blokkol/tokenizál (figyelő
+  mód), de `client_policy.content_observed` auditot ír `wouldBlock` listával — a nyers egress tehát
+  **naplózott**, nem néma. `free`=off. (A „standard raw egress" nem leak, hanem a #747 főkapcsoló
+  `figyel` módja.)
+- **`local_only` kikényszerítés:** a proxy a `requirePrivate` jelzésre a láncot céges (saját
+  üzemeltetésű) providerre szűri, és ha nincs ilyen, **blokkol** — reprodukcióval + meglévő teszttel.
+- **Policy-feloldás fail-closed:** ismeretlen szint → a legszigorúbb (`content_filter` esetén `block`);
+  agent-plafon csak szigoríthat (strictness-min); tool-szabály azonos mintán a legszigorúbb nyer.
+- **Managed/Open kapu:** friss heartbeat + regisztrált session + egyező managedDir-hash kell a céges
+  modellhez; bármi hiányzik → Open (szintetikus üzenet + eltérés-audit).
+- **Tartalék-lánc:** hiba-osztályozás az ms-utótagot kiszűri; keret/blokk/auth/tartalom-hiba **nem**
+  vált tartalékra; első token után már nincs váltás. SSRF nincs (provider-registry env-alapú, nem
+  user-vezérelt). Modell-route csak egy van (`/v1/chat/completions`) → nincs szűrőt megkerülő 2. út.
+- **Teszt-lefedettség:** a `model-gateway-content-filter.test.ts` már pontosan tartalmazza a „nincs
+  nyers egress a `bound` preset alatt" regressziós tesztet (minden kategória) + a `local_only`
+  kényszerítést — tehát a féltett refaktor-regresszió ellen **van** élő guardrail. Nincs teszt-rés.
+
+### Bizonyított finding — NINCS. Kódmódosítás nem indokolt.
+Egy jól megírt, fail-closed, átfogóan tesztelt privacy/auth-kontrollba kockázat-csökkentő indok nélkül
+beavatkozni **kockázatot adna, nem csökkentene**. A felállított `fix/gateway-tokenize-phone-account`
+worktree-t (a stale-branch alapján tervezett javítással) eldobtam, miután `origin/main`-en a viselkedés
+helyesnek bizonyult.
+
+### Residual risk / következő audithoz
+- **🟡 Gateway-költségkeret hiánya (megerősítendő):** a `handleChatCompletion`-ben **nincs** per-tenant/
+  per-user modell-költségkeret-ellenőrzés; a `gate` horog csak Managed/Open. Egy érvényes 10-perces
+  tokennel (managed módban) a kliens **korlátlanul** költhet a céges OpenRouter-kulcson. A platform saját
+  dispatchjének van kerete (`dispatch-budget-tenant-scope`), de nem világos, hogy a Hermes-gateway
+  egress-útra is érvényesül-e. **Következő kör:** tisztázni a spec szerint, és ha szándékosan deferred
+  (V1-7), rögzíteni; ha nem, a kaput kiterjeszteni keret-ellenőrzésre. (Nem kódoltam: spec-döntés + a
+  gate bővítése érdemi feature.)
+- **🟡 DNS-rebinding by-name TOCTOU (platform-szintű, carry-forward a 10-20-i körből):** az egress-guard
+  a feloldás-utáni IP re-check UTÁN host-névvel csatlakozik → rebind-ablak. Minden egress-hívót
+  (web_fetch, MCP-connector, sandbox-teszt) érint; külön, dedikált kör + óvatos regressziós fedezet kell
+  (feloldott IP pinelése a kapcsolatba). A gateway provider-registry env-alapú, így ez a gateway-t
+  közvetlenül nem érinti.
+- **ℹ️ A #747 „teljes tartalomszűrés" aktív** (`feat/747-content-filter-full` worktree, PR #911 nyitott):
+  person-név katalógus + főkapcsoló. A phone/account/taj/adoszam szabad-szöveges tokenizálás a merge-elt
+  `origin/main`-en MÁR él — a korábbi „csak email/person" V1-rés lezárult.
+- A **következő audit** érdemes, még nem auditált, magas kockázatú jelöltjei: `external_services`/
+  `attachments_only` kliens-oldali kikényszerítés (#873/#877) — figyelni, hogy a szerver csak publikálja
+  a capabilityt, a tényleges korlát a Hermes-kliensen van; valamint a fenti gateway-keret kérdés.
+
+## 2026-10-20 — Kimenő MCP-connector (#395 / PR #909, merge `10db7cc1`): külső MCP-szerver mint agent-eszközforrás
+
+**Scope-választás (kockázati alapon):** a ledger utolsó bejegyzése 10-01 volt, azóta
+19 nap merge-elt munka auditálatlan. `git log --since 10-01 --first-parent main` +
+memória után a legmagasabb **új, külső-felületű** kockázat egyértelműen a **#909 MCP-connector**
+(merge 10-17, +3212 sor, 41 fájl): a platform **MCP-kliensként** kapcsolódik egy admin által
+megadott **külső MCP-szerverhez**, felderíti annak eszközeit, és agenteknek adja ki azokat.
+Ez egyszerre **szerveroldali kimenő-hálózati (SSRF-osztályú)**, **külső-adat-beömlés
+(prompt-injekció/trust)**, **tenant-izolációs** és **jóváhagyás-kapu** felület — friss +
+komplex + kétirányú bizalmi határ = a legnagyobb nem-auditált kockázat.
+
+**Coverage (teljes bizalmi-határ + adatfolyam-trace, kézi end-to-end):** `mcp-client.ts`
+(egress-őrzött fetch, redirect-tiltás, méret/idő-plafon, OAuth-felderítés), `egress-guard.ts`
+(SSRF + feloldás-utáni IP re-check + deny-by-default allowlist), `mcp-tools.ts` (besorolás,
+trust-envelope, méret-vágás, fail-closed jóváhagyás), `handlers/mcp.ts` (kapu + retry-politika),
+`invoke-enterprise-tool.ts` MCP-ág (`mcp_list_tools`/`mcp_call`, authz, write/danger-jóváhagyás),
+`gateway-operation-service.ts` jóváhagyás-utáni végrehajtás, `actions/mcp-connectors.ts`
+(admin CRUD, szerep-kapuk), `platform-settings-service.ts` (allowlist-setter), `auth/mcp-server.ts`
+(tool-regisztráció), input-sémák. **A kötelező scoped security scan (Claude Security
+`scan-changes`) ebben a kontextusban NEM futtatható** — a skill 3. lépésének költség-megerősítése
+kifejezetten **nem fogad el ütemezett/wake-up sorból érkező nyugtázást**, és nem-interaktív
+munkamenetben leáll (semmit nem indít). Ezt rögzítem; a mélyaudit kézi end-to-end trace-szel történt.
+
+### Biztonsági megállapítás — NINCS bizonyított finding; a felület helytáll
+
+Tételesen verifikálva (nem feltételezve):
+- **SSRF/egress:** minden kimenő kérés `guardEgressUrl`-en megy (https-only, tiltott host-minták,
+  feloldás-utáni privát/reserved IP re-check, deny-by-default **pontos** host-allowlist);
+  `redirect: 'manual'` → 3xx-en `redirect_blocked` (a Bearer token sosem követ átirányítást);
+  válasz-méret 2 MB, hívás 30 s plafon. Az allowlistet **csak platform-`superadmin`** írhatja
+  (`setMcpHostAllowed`, wildcard + tiltott host elutasítva); tenant-admin csak már-allowlistázott
+  hostra mutathat. A hívásonkénti domain-újraellenőrzés miatt a visszavonás azonnal hat.
+- **Tenant-izoláció:** connector `findFirst({id, tenantId, type:'mcp'})`, aktív eszközlista
+  `{connectorId, tenantId}` szerint, grant per-user. Cross-tenant szivárgásra nincs út.
+- **Trust-envelope:** a külső eszközleírás és -eredmény `untrustedExternalText`/`untrustedExternalData`
+  jelöléssel, `EXTERNAL_NOTE`-tal, 2 000 / 40 000 karakteres vágással megy a modell felé (D6/D7).
+- **Jóváhagyás-kapu:** `write`/`danger` kockázat emberi jóváhagyásra; `danger` mindig; új/változott
+  eszköz `danger`+`approved:false` (fail-closed); a **jóváhagyás-utáni** végrehajtás **újra**
+  lefuttatja `checkMcpCallGate`-et (visszavont domain / de-approvolt eszköz nem fut).
+- **Szerep-kapuk:** create/approve `requireTenantRole('admin')`, list `operator`, allowlist-írás
+  `superadmin`. Mind helyes.
+
+### Bizonyított finding (reliability / correctness) — javítva (PR **#931**)
+
+**`mcpListTools` lapozó ciklusa nem-haladó szervernél a session-timeoutig pörög.** A `do…while`
+csak az **összesített** eszközszámot plafonozta (`MCP_MAX_TOOLS = 1000`), a **lapok számát** nem.
+Egy szerver, amely **üres lapot** ad vissza nem-null `nextCursor`-ral, vagy **ugyanazt a kurzort**
+ismétli, új eszköz híján sosem érte el a plafont → a 30 s-os `AbortController`-ig másodpercenként
+tucatnyi `tools/list` kérést zúdított a szerverre.
+- **Hatás:** egy admin „ellenőrzés / eszközök frissítése" művelet egy **hibás (vagy rosszindulatú,
+  allowlistázott)** külső szervernél ~30 s-ig lógott + fölösleges kérés-özön. **Súlyosság:** alacsony
+  (allowlist-kapuzott, időben már eddig is bounded; de valós buggos third-party szervernél is jelentkezik).
+
+### Javítás (root-cause, a megosztott lapozóban — minden hívó ezen megy át)
+- `mcp-client.ts` `mcpListTools`: ha egy lap **nem hoz új eszközt** (`batch.length === 0`), vagy a
+  visszakapott kurzor **nem mozdult** (`cursor === sent`), lezárjuk. A szabályos lapozást (nem üres
+  lap + mozgó kurzor) és a `MCP_MAX_TOOLS` plafont nem érinti. Egy `page.tools ?? []` null-guard is
+  bekerült (az üres-lap ellenőrzéshez amúgy is kell).
+
+### Ellenőrzések
+- `test:mcp-connector` (új eset): üres-lap + nem-null kurzor → **1** kérés után lezár; tartalommal
+  visszatérő, nem mozduló kurzor → **2** kérés után lezár. Teljes suite **zöld**.
+- `tsc`/`eslint` tiszta a módosított fájlokra.
+- Független **`/code-review`** (Matt Pocock, 2 párhuzamos axis): **Standards** — 0 hard violation,
+  0 érdemi smell (root-cause elhelyezés, helyi idiómákhoz illeszkedő nevek). **Spec** — helyes,
+  minimális, root-cause; a `MCP_MAX_TOOLS` plafon megmarad, a szabályos lapozás nem csonkul.
+  Egyetlen érdemi megjegyzés: egy **spec-szerinti üres KÖZBÜLSŐ lap** (nem-null kurzorral) a mostani
+  üres-lap kapun csonkolna — gyakorlatban nem fordul elő, a pörgés-stop fontosabb; a tradeoff most
+  a kódban `ponytail:` jelöléssel **néven nevezve** (upgrade-út: lap-plafon a break helyett).
+
+### PR
+- **#931** — `fix(mcp-connector): don't spin tools/list on a non-advancing cursor`
+  (branch `fix/mcp-list-tools-pagination-loop`, `origin/main`-ről, külön worktree; 2 commit).
+
+### Residual risk / következő audithoz
+- **🟡 DNS-rebinding by-name TOCTOU (megosztott, pre-existing minta):** a `guardedMcpFetch` a
+  `guardEgressUrl` IP-re-checkje UTÁN **host-névvel** csatlakozik (`fetchImpl(guard.url)`), így a
+  fetch connect-kori újra-feloldása és az ellenőrzés közt van egy rebind-ablak. Ez a **platform
+  egészére** jellemző (web_fetch, sandbox-connection-tester ugyanígy), **allowlist-kapuzott**
+  (superadmin által felvett hostok), ezért nem e PR findingja. **Upgrade-út:** feloldott IP
+  pinelése a kapcsolatba (`lookup` → `agent`/`dispatcher` a pin-elt IP-vel). Platform-szintű, külön
+  kör jelöltje — minden egress-hívót egyszerre javítana.
+- **🟡 üres KÖZBÜLSŐ lap csonkolás:** l. fent, néven nevezve a kódban; near-theoretical.
+- **🟡 `idempotencyKey` nem kötelezett írásnál:** a `mcpCallInputSchema` szerint opcionális, a
+  leírás „required for write/danger"; a jóváhagyás + `#618` write-confirm HMAC egyszer-használat
+  már gátol, de a kulcs tényleges kötelezése külön finomítás lehet (nem biztonsági rés).
+- A **következő audit** érdemes témái (10-01 óta merge-elt, még nem auditált, magas kockázatú):
+  Hermes-guard tartalomszűrő (#871–#875, #782), Hermes gateway-token lejárat/csere lánc
+  (#890/#896/#907 — a memóriában 401-regresszió-jelzés van), gateway `maxTokens` közvetlen-író ág
+  (#903), attachments-only external services (#873/#877).
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés
