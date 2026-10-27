@@ -24,6 +24,10 @@ export function miniAppOpenUrl(token: string): string {
   return `${miniAppOrigin()}/api/mini-apps/open/${token}`
 }
 
+export function miniAppContentUrl(token: string): string {
+  return `${miniAppOrigin()}/api/mini-apps/content/${encodeURIComponent(token)}`
+}
+
 export function mintMiniAppLinks(input: {
   tenantId: string
   appId: string
