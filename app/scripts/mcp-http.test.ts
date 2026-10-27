@@ -2,6 +2,7 @@
  * MCP HTTP handler — stub token verifier, no live Clerk (#538).
  * Futtatás: npm run test:mcp-http
  */
+import { WAREHOUSE_TOOLS } from '../src/domain/warehouse/mcp'
 import assert from 'node:assert/strict'
 import type {
   PlatformMembership,
@@ -892,6 +893,7 @@ async function main() {
       ...PROJECT_WORK_TOOLS.slice(0, -2),
       ...CUSTOMER_PROMISE_TOOLS,
       ...PROJECT_WORK_TOOLS.slice(-2),
+      ...WAREHOUSE_TOOLS,
       ...MINI_APP_TOOLS,
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
