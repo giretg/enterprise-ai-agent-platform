@@ -4,6 +4,9 @@
  * Futtatás: npm run test:mini-app
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import { lintMiniAppHtml, miniAppContentHash, guideConflicts } from '../src/domain/mini-app/html-lint'
 import { signMiniAppLink, verifyMiniAppLink } from '../src/domain/mini-app/link-token'
@@ -13,6 +16,7 @@ import { miniAppHumanAccess } from '../src/domain/mini-app/human-access'
 import {
   miniAppBarParts,
   miniAppContentCsp,
+  miniAppFrameCsp,
   renderMiniAppExpiredPage,
   renderMiniAppFrame,
   withStaticMiniAppBar,
@@ -467,6 +471,37 @@ async function main() {
     assert.equal(expired.includes('értékesítés'), false)
     const csp = miniAppContentCsp()
     for (const directive of ["connect-src 'none'", 'sandbox allow-scripts', "form-action 'none'", "default-src 'none'", 'frame-ancestors *']) assert.ok(csp.includes(directive), directive)
+  })
+
+  await check('keret CSP: frame-src a mini-app origin, nem self', () => {
+    // Opaque beágyazó (sandbox allow-same-origin nélkül) esetén a 'self' a unique
+    // origint jelenti, a tartalom URL-jét nem.
+    const csp = miniAppFrameCsp('https://ai.excellencepay.com')
+    assert.match(csp, /(?:^|; )frame-src https:\/\/ai\.excellencepay\.com(?:;|$)/)
+    assert.equal(/frame-src 'self'/.test(csp), false)
+    const fromUrl = miniAppFrameCsp('https://apps.example.com/ignored')
+    assert.match(fromUrl, /(?:^|; )frame-src https:\/\/apps\.example\.com(?:;|$)/)
+    assert.equal(fromUrl.includes('/ignored'), false)
+    const frame = renderMiniAppFrame({
+      name: 'R',
+      createdAt: new Date('2026-10-24T08:12:00Z'),
+      versionCreatedAt: new Date('2026-10-24T08:12:00Z'),
+      ownerAgentName: 'Réka',
+      version: 1,
+      currentVersion: 1,
+      contentUrl: 'https://ai.excellencepay.com/api/mini-apps/content/tok',
+    })
+    assert.match(frame, /<iframe src="https:\/\/ai\.excellencepay\.com\/api\/mini-apps\/content\/tok"/)
+  })
+
+  await check('Control Plane / panel / MCP viewer nem sandboxolja a keretoldal iframe-jét', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../src')
+    const page = readFileSync(join(root, 'app/control-plane/mini-apps/[appId]/page.tsx'), 'utf8')
+    const panel = readFileSync(join(root, 'components/agents/agent-mini-apps-panel.tsx'), 'utf8')
+    const viewer = readFileSync(join(root, 'domain/mini-app/viewer.ts'), 'utf8')
+    assert.equal(/<iframe[\s\S]*?src=\{links\.openUrl\}[\s\S]*?sandbox=/.test(page), false)
+    assert.equal(/<iframe[\s\S]*?src=\{preview\}[\s\S]*?sandbox=/.test(panel), false)
+    assert.equal(viewer.includes("setAttribute('sandbox'"), false)
   })
 
   await check('ember-hozzáférés: kezelő / látó / szervezeti / megosztott / idegen', async () => {

@@ -84,7 +84,8 @@ export const MINI_APP_VIEWER_HTML = `<!doctype html>
     main.className = '';
     main.innerHTML = '';
     var frame = document.createElement('iframe');
-    frame.setAttribute('sandbox', 'allow-scripts allow-popups');
+    // A keretoldal platform-HTML; a tartalom-iframe van sandboxolva. Külső
+    // sandbox allow-same-origin nélkül Chrome-ban eldönti a belső mini appot.
     frame.setAttribute('referrerpolicy', 'no-referrer');
     frame.title = 'Mini app';
     frame.src = state.openUrl;

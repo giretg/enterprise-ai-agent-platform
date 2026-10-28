@@ -82,9 +82,9 @@ export default async function MiniAppPermanentPage({ params }: { params: Promise
           Letöltés .html-ként
         </a>
       </div>
+      {/* Nincs külső sandbox: Chrome a nested tartalom-iframe-et különben blokkolja. Az izoláció a keret belső iframe-jén + CSP sandbox. */}
       <iframe
         src={links.openUrl}
-        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
         title={app.name}
         className="w-full flex-1 rounded-xl border border-line bg-white"

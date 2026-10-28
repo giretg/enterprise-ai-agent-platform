@@ -1,3 +1,4 @@
+import { DEFAULT_WAREHOUSE_AGENT_ACCESS, type WarehouseAgentAccess } from '@/lib/warehouse-settings'
 import { renderAgentWikiBriefing, type AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { dump as yamlDump } from 'js-yaml'
 import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
@@ -28,6 +29,26 @@ const AGENT_ID_HEADER = 'X-Excellence-Agent-Id'
 /** Hermes' published CIMD client: the Bot's `mcp login` must not fall back to DCR (our AS has no registration_endpoint). */
 const HERMES_OAUTH_CLIENT_ID = 'https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json'
 /** Platform tools a Hermes Bot needs besides the agent's own capabilities (#682 WP-1). */
+/** #984: az adattárház-eszközök a munkatárs beállított szintje szerint kerülnek a Bot listájára. */
+const HERMES_WAREHOUSE_READ_TOOLS = [
+  'warehouse.list_datasets',
+  'warehouse.describe_dataset',
+  'warehouse.get_import_status',
+  'warehouse.query_dataset',
+  'warehouse.export_dataset',
+]
+const HERMES_WAREHOUSE_IMPORT_TOOLS = [
+  'warehouse.prepare_import',
+  'warehouse.submit_import_plan',
+  'warehouse.preview_import',
+  'warehouse.commit_import',
+]
+
+export function hermesWarehouseTools(access: WarehouseAgentAccess): string[] {
+  if (access === 'off') return []
+  return access === 'read' ? HERMES_WAREHOUSE_READ_TOOLS : [...HERMES_WAREHOUSE_READ_TOOLS, ...HERMES_WAREHOUSE_IMPORT_TOOLS]
+}
+
 const HERMES_BASE_TOOLS = [
   'platform.whoami',
   'platform.agent.get_definition',
@@ -168,6 +189,8 @@ export function renderHermesBotConnector(input: {
   snapshot: HermesBotSnapshot
   mcpUrl: string
   tenantSlug: string
+  /** Hiányában az alapérték (a platform hívásnál úgyis ellenőrzi). */
+  warehouseAccess?: WarehouseAgentAccess
 }): HermesBotConnector {
   const profile = hermesProfileName(input.snapshot.name)
   const description = input.snapshot.description?.trim() || input.snapshot.name
@@ -175,6 +198,7 @@ export function renderHermesBotConnector(input: {
   const tools = [
     ...new Set([
       ...HERMES_BASE_TOOLS,
+      ...hermesWarehouseTools(input.warehouseAccess ?? DEFAULT_WAREHOUSE_AGENT_ACCESS),
       ...input.snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName),
     ]),
   ]
@@ -728,6 +752,7 @@ export function renderAgentCheckout(input: {
   wikis?: AgentWikiBriefing[]
   language?: TenantLanguage
   publishedContentHash?: string
+  warehouseAccess?: WarehouseAgentAccess
 }): CheckoutBundle {
   const warnings: string[] = []
   const snapshot = input.definition.snapshot
@@ -775,6 +800,7 @@ export function renderAgentCheckout(input: {
       snapshot,
       mcpUrl: input.mcpUrl,
       tenantSlug,
+      warehouseAccess: input.warehouseAccess,
     })
     const files: CheckoutFile[] = (Object.keys(connector.files) as Array<keyof HermesBotConnectorFiles>).map(
       (path) => ({ path, content: connector.files[path] }),

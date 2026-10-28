@@ -16,6 +16,7 @@ import { writeAudit } from '@/lib/audit/types'
 import { CUSTOMER_PROMISE_TOOLS } from '@/domain/customer-promise/mcp'
 import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '@/domain/mini-app/mcp'
+import { WAREHOUSE_TOOLS } from '@/domain/warehouse/mcp'
 
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
@@ -42,6 +43,7 @@ export const MCP_PLATFORM_TOOLS = [
   ...PROJECT_WORK_TOOLS,
   ...CUSTOMER_PROMISE_TOOLS,
   ...MINI_APP_TOOLS,
+  ...WAREHOUSE_TOOLS,
   MCP_GATEWAY_OPERATION_GET_TOOL,
 ] as const
 export const MCP_ALLOWED_TOOLS = [...MCP_PLATFORM_TOOLS, ...ENTERPRISE_TOOLS] as const

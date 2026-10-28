@@ -193,6 +193,23 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'mini_app.purged',
   'mini_app.validation_failed',
   'agent.mini_app_guide',
+
+  // #984 AI-adattárház — metaadat: importId, adatkészlet, darabszámok; üzleti adat soha.
+  'warehouse.activation_requested',
+  'warehouse.activated',
+  'warehouse.activation_failed',
+  'warehouse.import.received',
+  'warehouse.import.planned',
+  'warehouse.import.previewed',
+  'warehouse.import.awaiting_approval',
+  'warehouse.import.published',
+  'warehouse.import.failed',
+  'warehouse.import.rolled_back',
+  'warehouse.exception.resolved',
+  'warehouse.catalog.confirmed',
+  'warehouse.query',
+  'warehouse.export',
+  'warehouse.agent_access.changed',
   'agent.placement_overrides',
   'platform_setting.mini_app_link_ttl_changed',
 
