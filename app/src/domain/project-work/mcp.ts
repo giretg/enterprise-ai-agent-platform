@@ -302,7 +302,8 @@ export type ProjectWorkMcpDeps = DefinitionPinDeps & {
       summary: string
       links: string | null
       createdById: string
-    }): Promise<{ id: string }>
+      idempotencyKey?: string | null
+    }): Promise<{ handoff: { id: string; memoryId: string | null; projectKey: string }; created: boolean }>
     findById(id: string): Promise<{
       id: string
       tenantId: string
@@ -704,7 +705,8 @@ async function invokeHandoff(
     }
   }
 
-  const handoff = await deps.handoffs.insert({
+  const idempotencyKey = typeof parsed.idempotencyKey === 'string' ? parsed.idempotencyKey : null
+  const { handoff, created } = await deps.handoffs.insert({
     tenantId: principal.tenantId,
     fromAgentId: definition.agentId,
     fromDefinitionId: definition.definitionId,
@@ -715,7 +717,26 @@ async function invokeHandoff(
     summary: validated.summary,
     links: validated.links,
     createdById: principal.userId,
+    idempotencyKey,
   })
+
+  // #940: ismételt (retry) hívás ugyanazzal az idempotencyKey-vel — a sor már
+  // létezik. Nem injektálunk újabb open_task-ot a címzett memóriájába és nem írunk
+  // újabb `handoff.created` auditot; a korábbi döntés állapotát idempotensen
+  // visszaadjuk, hogy a kliens biztonságosan újrapróbálhasson.
+  if (!created) {
+    // A hívás sikeres (a kérés teljesült), ezért a generikus siker-auditot megírjuk,
+    // de a `handoff.created` állapotváltozás-auditot NEM — nem történt új átadás.
+    await auditOk(deps, principal, MCP_HANDOFF_TOOL, definition.definitionId, definition.agentId)
+    return textResult({
+      ok: true,
+      handoffId: handoff.id,
+      memoryId: handoff.memoryId,
+      projectKey: handoff.projectKey,
+      notified: handoff.memoryId ? 'agent_memory' : 'inbox',
+      idempotent: true,
+    })
+  }
 
   // The handoff is always delivered through the Handoff row (recipient briefing /
   // human inbox). As a convenience we ALSO inject an open_task straight into the

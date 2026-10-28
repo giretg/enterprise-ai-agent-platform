@@ -1,6 +1,11 @@
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { HandoffRecord, HandoffStore } from '@/domain/handoff/handoff-service'
 import type { HandoffStatus } from '@prisma/client'
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
+}
 
 function mapRow(row: {
   id: string
@@ -35,9 +40,23 @@ export class PostgresHandoffRepository implements HandoffStore {
     summary: string
     links: string | null
     createdById: string
-  }): Promise<HandoffRecord> {
-    const row = await prisma.handoff.create({ data: input })
-    return mapRow(row)
+    idempotencyKey?: string | null
+  }): Promise<{ handoff: HandoffRecord; created: boolean }> {
+    const idempotencyKey = input.idempotencyKey ?? null
+    try {
+      const row = await prisma.handoff.create({ data: { ...input, idempotencyKey } })
+      return { handoff: mapRow(row), created: true }
+    } catch (error) {
+      // #940: a (tenant, from_agent, idempotency_key) unique-ütközés egy párhuzamos
+      // vagy ismételt, azonos kulcsú hívást jelez — a meglévő átadást adjuk vissza,
+      // így a hívó nem duplikálja a mellékhatásokat (memória-injektálás, audit).
+      if (!idempotencyKey || !isUniqueViolation(error)) throw error
+      const existing = await prisma.handoff.findFirst({
+        where: { tenantId: input.tenantId, fromAgentId: input.fromAgentId, idempotencyKey },
+      })
+      if (!existing) throw error
+      return { handoff: mapRow(existing), created: false }
+    }
   }
 
   async findById(id: string): Promise<HandoffRecord | null> {

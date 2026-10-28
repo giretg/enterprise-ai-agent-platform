@@ -1373,6 +1373,11 @@ model Handoff {
   createdById      String        @map("created_by_id") @db.Uuid
   decidedById      String?       @map("decided_by_id") @db.Uuid
   decidedAt        DateTime?     @map("decided_at") @db.Timestamptz
+  // #940: a létrehozó MCP-kérés idempotencia-kulcsa. Ismételt (retry) hívás
+  // ugyanazzal a kulccsal nem hoz létre duplikált átadást. NULL a kulcs nélküli
+  // (pl. mini-app-megosztás) utakon — a Postgres a NULL-okat külön kezeli, így
+  // nem ütköznek.
+  idempotencyKey   String?       @map("idempotency_key")
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1382,6 +1387,7 @@ model Handoff {
   toUser    User?  @relation("HandoffToUser", fields: [toUserId], references: [id], onDelete: Cascade)
   createdBy User   @relation("HandoffCreatedBy", fields: [createdById], references: [id])
 
+  @@unique([tenantId, fromAgentId, idempotencyKey])
   @@index([tenantId, toAgentId, status])
   @@index([tenantId, toUserId, status])
   @@map("handoffs")

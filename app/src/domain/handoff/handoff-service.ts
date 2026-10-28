@@ -36,7 +36,14 @@ export interface HandoffStore {
     summary: string
     links: string | null
     createdById: string
-  }): Promise<HandoffRecord>
+    /**
+     * #940: a létrehozó hívás idempotencia-kulcsa. Ha adott, és ezzel a kulccsal
+     * (tenant + küldő agent) már létezik átadás, a tárolóréteg a meglévő sort adja
+     * vissza `created: false`-szal — a hívó ilyenkor nem ismétli meg a mellékhatásokat
+     * (memória-injektálás, audit). Kulcs nélkül mindig új sor jön létre.
+     */
+    idempotencyKey?: string | null
+  }): Promise<{ handoff: HandoffRecord; created: boolean }>
   findById(id: string): Promise<HandoffRecord | null>
   listOpenForAgent(tenantId: string, agentId: string, limit?: number): Promise<HandoffRecord[]>
   listOpenForUser(tenantId: string, userId: string): Promise<HandoffRecord[]>
