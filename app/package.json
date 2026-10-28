@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "dev:local-auth": "AUTH_DISABLED=true NEXT_DIST_DIR=.next-local-auth next dev --port 3001",
+    "dev:setup": "bash scripts/dev-env-setup.sh",
+    "screenshot": "tsx scripts/screenshot.ts",
+    "ci:local": "bash scripts/ci-local.sh",
     "build": "([ \"$PRISMA_MIGRATE_ON_BUILD\" != 1 ] || prisma migrate deploy) && prisma generate && WRITE_GATE_SECRET=${WRITE_GATE_SECRET:-local-dev-write-gate-secret} AGENT_API_KEY_LOOKUP_SECRET=${AGENT_API_KEY_LOOKUP_SECRET:-local-dev-write-gate-secret} next build",
     "start": "next start",
     "lint": "eslint",
@@ -17,6 +20,7 @@
     "db:push:test": "tsx scripts/db-with-test-env.ts push",
     "db:seed:test": "tsx scripts/db-with-test-env.ts seed",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:dev-login": "tsx scripts/seed-dev-login.ts",
     "db:seed:step-templates": "tsx scripts/seed-step-templates.ts",
     "db:cleanup-test-tickets": "tsx scripts/cleanup-test-tickets.ts",
     "db:cleanup-test-tenants": "tsx scripts/cleanup-test-tenants.ts",

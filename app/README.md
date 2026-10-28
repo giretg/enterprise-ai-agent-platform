@@ -19,7 +19,28 @@ The legacy chat/runtime/dispatcher stack is under `legacy/` at the repo root
   harness-passing path)
 - Lokális Drive I/O: `GOOGLE_DRIVE_API_STUB=true` (Core MVP kapu)
 
-## Gyors indítás
+## Gyors indítás — helyi Postgresszel, belépés nélkül (ajánlott fejlesztéshez)
+
+Egy parancs: Postgres indítása (gépen lévő Postgres 16 vagy Docker `postgres:16`),
+`.env.local` megírása (ha még nincs), `npm ci`, migráció, seed, és a dev-belépés
+jogosultsága (admin a `demo` tenantban + platform superadmin). Idempotens.
+
+```bash
+cd app
+npm run dev:setup -- --start     # előkészít + dev szerver a háttérben (http://localhost:3000)
+npm run screenshot -- /control-plane /control-plane/agents   # PNG: .data/screenshots/
+npm run ci:local                 # a GitHub CI app-jobjai helyben (stub-DB + valódi Postgres)
+```
+
+Ugyanez működik a Claude Code felhőkörnyezetében (claude.ai/code) is: a konténerben
+van Postgres 16 és Chromium, így Claude ott is el tudja indítani és meg tudja nézni az appot.
+Tartóssá a környezet beállításaiban (Setup script) tehető:
+`cd enterprise-ai-agent-platform/app && npm run dev:setup`.
+
+> A felhőkonténerben nincs közvetlen DNS, ezért a `test:http-api` és a
+> `test:enterprise-tools` néhány SSRF-esete (`ssrf_blocked`) ott elbukik — GitHub CI-ban zöld.
+
+## Gyors indítás — Neon adatbázissal
 
 ```bash
 cd app
@@ -91,6 +112,10 @@ Clerk nélkül a `DevAuthProvider` fut: automatikus belépés a `.env.local` `DE
 
 - `npm run dev` — ha van `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY`, Clerk beléptető.
 - `npm run dev:local-auth` — `AUTH_DISABLED=true`, port **3001**, Clerk UI nélkül. Productionban a flag nem él (`NODE_ENV === production` → 503). **A Core MVP harness ezen az úton nem megy át.**
+- Clerk-kulcsok nélkül is működik (a `proxy.ts` ilyenkor nem hívja a Clerk-middleware-t).
+- A dev-user csak akkor lát minden képernyőt, ha tagja egy tenantnak: `npm run db:seed:dev-login`
+  admin-tagságot ad neki a `demo` tenantban + platform superadmint (a `dev:setup` ezt
+  magától futtatja). Nem lokális DB-n (pl. Neon) csak `-- --yes` kapcsolóval fut.
 
 Jóváhagyási műveletekhez állítsd: `DEV_AUTH_ROLE=approver`
 
