@@ -53,6 +53,8 @@ import { parsePlacementOverrides } from '@/lib/agent-knowledge-placement'
 import { UpdatePlacementOverridesForm } from '@/components/agents/update-placement-overrides-form'
 import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
 import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
+import { getAgentWarehouseAccessAction } from '@/app/actions/warehouse'
+import { AgentWarehouseAccessCard } from '@/components/warehouse/warehouse-access-panels'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
 
@@ -106,6 +108,7 @@ export default async function AgentDetailPage({
     promisesRes,
     wikiLinksRes,
     miniAppsRes,
+    warehouseRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -122,6 +125,7 @@ export default async function AgentDetailPage({
     listCustomerPromisesAction(agentId, false, promisePage),
     listAgentWikiLinksAction({ agentId }),
     listAgentMiniAppsAction({ agentId }),
+    getAgentWarehouseAccessAction({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -263,6 +267,7 @@ export default async function AgentDetailPage({
             catalog={kbCatalog}
             canManage={canManage}
           />
+          {warehouseRes.success ? <AgentWarehouseAccessCard agentId={agent.id} data={warehouseRes.data} /> : null}
         </div>
       ),
     },
