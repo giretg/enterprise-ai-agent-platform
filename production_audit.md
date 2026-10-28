@@ -7,7 +7,78 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
-## 2026-10-27 — Wiki-előzmények (#978 / PR #980, merge `898c0377`): verzió-történet + visszaállítás + időutazás + megőrzés + GDPR-törlés
+## 2026-10-28 — Feladatátadás (handoff) idempotencia (#940 maradék → PR #989): a kötelező `idempotencyKey` érvényesítése a létrehozási úton
+
+**Scope-választás (kockázati alapon):** `git fetch` után `origin/main` `64b656ca`-n állt; a 10-27-i kör
+bázisa (`898c0377`) óta **egyetlen** új merge: **#983** (mini-app iframe-előnézet, `9ea93860`). A #983
+biztonság-releváns (eltávolítja a beágyazó külső iframe `sandbox` attribútumát a Control Plane / agent-panel /
+MCP-néző kereteiről), ezért előbb azt trace-eltem: a **helytáll**. Az agent-tartalom izolációját változatlanul
+a *belső* tartalom-iframe `sandbox="allow-scripts"` (opaque origin, `allow-same-origin` nélkül) **+** a
+`content/[token]` válasz CSP `sandbox allow-scripts` adja; a keretoldalon nincs agent-JS, így a külső sandbox
+elhagyása az izolációt nem gyengíti (a 10-25-i #967-kör már a teljes felületet lefedte, 0 finding). A `frame-src`
+most host-source (`miniAppFrameCsp(miniAppOrigin())`), ami helyes, mert opaque beágyazónál a `'self'` blokkolna.
+→ #983: **nincs finding**. Finding kényszerítése helyett a legmagasabb, még nem auditált **megbízhatósági**
+kockázatra váltottam, amit a **#940 saját záró jegyzete** (`code_review.md`, 2026-10-22) nyitott maradékként
+nevesített. A visszatérő 🟡 DNS-rebinding TOCTOU residualt (carry-forward 10-20…10-27) **tudatosan megint nem**
+választottam (fetch-szintű IP-pin, blast-radius = minden kimenő connector → felügyelet nélkül kiesés-kockázat).
+Minden trace `origin/main` HEAD-ről; a fix külön worktree-ben (`eaap-940-idem`, linkelt `node_modules`), a main
+`.env` érintése nélkül.
+
+### Coverage (teljes adatfolyam a `platform.handoff` létrehozási úton)
+`domain/project-work/mcp.ts` (`handoffInputSchema` — a `idempotencyKey` **kötelező**: `z.string().min(1).max(200)`;
+`invokeHandoff` teljes út: cél-feloldás, authz, `insert`, memória-injektálás, audit), `domain/handoff/handoff-service.ts`
+(`HandoffStore` interfész), `repositories/postgres/handoff-repository.ts` (`insert`/`decide`), `domain/mini-app/mcp.ts`
+(a megosztás→handoff második hívó), `app/actions/handoff.ts` (csak **döntés**, nem létrehozás — a létrehozás egyetlen
+belépési pontja az MCP `invokeHandoff`). A #940 (merge `122f6535`) a `decide`-ot már atomivá tette
+(`updateManyAndReturn where status in (open,accepted)`), de a **létrehozást** nem.
+
+### Bizonyított finding (🟠 magas, megbízhatóság / hibás üzleti működés) — JAVÍTVA
+- **A `platform.handoff` kötelező `idempotencyKey`-jét a létrehozási út figyelmen kívül hagyta.** `invokeHandoff`
+  a `parsed.idempotencyKey`-t sehol nem olvasta, és feltétel nélkül `deps.handoffs.insert(...)`-elt. Egy
+  **megismételt (retry)** vagy **párhuzamos**, azonos kulcsú hívás → **duplikált átadás-sor** + (ha a hívó
+  operálhatja a címzettet) **duplikált `open_task`** a címzett agent memóriájába + **duplikált `handoff.created`**
+  audit. Üzleti hatás: flaky kapcsolatnál (pont amiért az idempotencyKey létezik; l. a 10-01-i „5xx retry-duplikátum"
+  kör) ugyanaz a feladat 2-3×, a címzett többször végzi el, az audit több „sikeres" átadást mutat. A kulcs
+  advertizált és kötelező, a célja a dedup — csendben eldobva **hamis idempotencia-garancia**.
+
+### Javítás (a mini-app létrehozás már auditált idempotencia-mintáját követve, PR #989)
+- **0038 migráció:** `handoffs.idempotency_key` (nullable) + parciális unique index
+  `(tenant_id, from_agent_id, idempotency_key)`. A NULL-kulcsú utak (mini-app-megosztás) a Postgres
+  NULL-distinctness miatt nem ütköznek → korlátlanok maradnak. Index-név a Prisma-generátorral azonos
+  (`handoffs_tenant_id_from_agent_id_idempotency_key_key`, 52<63) → **nincs migráció-drift** (a visszatérő
+  prod-incidens kockázata kizárva; a Standards-review igazolta).
+- **Repository `insert`:** idempotens — ütközéskor (P2002) a meglévő átadást adja vissza; `{ handoff, created }`.
+  A dedup-határ maga a DB unique index (nem read-then-write), ezért **race-safe** (a Spec-review igazolta).
+- **`invokeHandoff`:** `created:false` esetén nem injektál memóriát és nem ír `handoff.created` auditot (csak a
+  generikus `auditOk`-ot); a választ `idempotent: true` jelzi. A mini-app hívó `{ handoff }`-ra igazítva.
+
+### Ellenőrzések
+- **Tesztek (regresszió):** `handoff.test.ts` — gyors, DB nélkül: ismételt hívás azonos kulccsal → **1 átadás,
+  1 memória-sor**, a második `idempotent:true`. `handoff-repository.test.ts` — valós Postgres (**CI** `test:handoff-repository`
+  job): ismételt **és 3-utas párhuzamos** azonos kulcsú létrehozás → **1 sor**; eltérő kulcs → külön sor.
+- **`tsc --noEmit`:** az összes érintett fájlra **tiszta** (a 10 globális `TS2688` a linkelt `node_modules`
+  @types-feloldási műterméke, nem a diff). **esbuild/eslint** a linkelt `node_modules` platform-/modul-hibája miatt
+  ebben a munkamenetben nem futtatható (precedens: 10-25) → a lint/tesztek a CI-ban futnak.
+- **Független `/code-review` (Matt Pocock, Standards + Spec, párhuzamos):** Standards **tiszta** (0 kemény
+  szabálysértés; 2 nem-blokkoló judgement call: elérhetetlen `: null` ág, `isUniqueViolation` repón belüli
+  ismétlés — pre-existing). Spec: **mind az 5 elvárt viselkedés teljesül, race-safe**; 2 alacsony súlyú maradék
+  (lent). A nem-atomitást a `cfd6219f` kommenttel explicitté tettem a kódban is.
+
+### Residual risk / következő audithoz
+- **ℹ️ Handoff létrehozás+injektálás+audit nem egyetlen tranzakció (#940 eleve nyitott maradéka):** ha egy hívás
+  a sor-létrehozás után, az injektálás előtt elhal, a retry (`!created`) nem injektál újra — de a **hiteles
+  kézbesítés maga az átadás-sor** (briefing/inbox), a memória-injektálás csak kényelmi réteg, így **átadás nem
+  vész el**. Teljes atomitás = külön, **felügyelt** kör (a hármast egy tranzakcióba vonni). Párhuzamos replaynél a
+  válasz `memoryId`/`notified` tájékoztató mezői elavultak lehetnek; **duplikált injektálás nem történik**.
+- **🟡 Egress DNS-rebinding by-name TOCTOU (platform-szintű, MEGERŐSÍTVE — carry-forward 10-20…10-27):**
+  változatlanul nyitva; a legmagasabb prioritású, **EMBERI FELÜGYELETTEL** futtatandó dedikált kör jelöltje.
+- **ℹ️ `platform.handoff` létrehozás ≠ Control Plane / natív chat / ticket:** a létrehozás ma csak MCP-n keresztül
+  megy (`invokeHandoff`); ha később UI-/ticket-út is kap létrehozást, arra is kell idempotencia-/dedup-kapu.
+- **Következő audit további jelöltjei (még nem auditált, magas kockázat):** #983 mini-app sandbox-delta (most
+  trace-elve, 0 finding — lezárható), #964 skill-platform-share (cross-tenant), #937 connector-template-endpoint-
+  scope (SSRF-fix teljessége), #841 IAM token-redeem eszkaláció-fix.
+
+
 
 **Scope-választás (kockázati alapon):** `git fetch` után `origin/main` `898c0377`-re állt (a 10-26-i kör
 bázisa `b4df87b9` volt). Azóta **két új, nem auditált** merge: #975 (fix: „Adj neki ticketet" gomb törlése
