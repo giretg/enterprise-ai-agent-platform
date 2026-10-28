@@ -7,6 +7,12 @@ import { canWarehouse } from '@/domain/warehouse/permissions'
 import { WarehouseError, type WarehouseActor } from '@/domain/warehouse/warehouse-service'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { warehouseService } from '@/lib/warehouse'
+import { readWarehouseSettings, warehouseAccessForAgent, withWarehouseSettings } from '@/lib/warehouse-settings'
+import { WAREHOUSE_MAX_FILE_BYTES } from '@/domain/warehouse/excel-reader'
+import { QUERY_MAX_LIMIT } from '@/domain/warehouse/query'
+import { writeAudit } from '@/lib/audit/types'
+import { prisma } from '@/lib/db'
+import { repositories } from '@/repositories/postgres'
 
 type Ctx = Awaited<ReturnType<typeof requireTenantRole>>
 
@@ -140,4 +146,112 @@ export async function resolveExceptionAction(input: { exceptionId: string; actio
 
 export async function confirmDatasetAction(input: { datasetKey: string }) {
   return run(async (ctx) => warehouseService().confirmDataset(actor(ctx), z.string().regex(/^[a-z][a-z0-9_]{1,40}$/).parse(input.datasetKey)))
+}
+
+const accessSchema = z.enum(['off', 'read', 'import'])
+
+/** Tárolás és korlátok — csak tájékoztató, a kapcsolati adatot soha nem adja ki. */
+function storageInfo() {
+  return {
+    dedicatedDatabase: Boolean(process.env.WAREHOUSE_DATABASE_URL?.trim()),
+    maxFileBytes: WAREHOUSE_MAX_FILE_BYTES,
+    queryMaxRows: QUERY_MAX_LIMIT,
+  }
+}
+
+/** #984: AI munkatársak hozzáférési szintje (alapérték + agentenkénti felülírás) és a tárolás adatai. */
+export async function getWarehouseAgentAccessAction() {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const [tenant, agents] = await Promise.all([
+      repositories.tenants.findById(ctx.activeTenantId),
+      repositories.agents.findMany({ tenantId: ctx.activeTenantId }),
+    ])
+    const settings = readWarehouseSettings(tenant?.settings)
+    return ok({
+      canEdit: canWarehouse(ctx.activeTenantRole, 'operate'),
+      defaultAgentAccess: settings.defaultAgentAccess,
+      storage: storageInfo(),
+      agents: agents
+        .filter((agent) => agent.status !== 'retired')
+        .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          status: agent.status,
+          access: warehouseAccessForAgent(settings, agent.id),
+          overridden: agent.id in settings.agentAccess,
+        })),
+    })
+  } catch {
+    return fail('A munkatársak adattárház-hozzáférése nem tölthető be.')
+  }
+}
+
+/** Egy munkatárs szintje az adattárházban (az agent oldalán). */
+export async function getAgentWarehouseAccessAction(input: { agentId: string }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const agentId = z.string().uuid().parse(input.agentId)
+    const [tenant, registry] = await Promise.all([
+      repositories.tenants.findById(ctx.activeTenantId),
+      warehouseService().status(actor(ctx)),
+    ])
+    const settings = readWarehouseSettings(tenant?.settings)
+    return ok({
+      canEdit: canWarehouse(ctx.activeTenantRole, 'operate'),
+      ready: registry?.status === 'ready',
+      access: warehouseAccessForAgent(settings, agentId),
+      overridden: agentId in settings.agentAccess,
+      defaultAgentAccess: settings.defaultAgentAccess,
+    })
+  } catch {
+    return fail('Az adattárház-hozzáférés nem tölthető be.')
+  }
+}
+
+/**
+ * Admin: alapérték (`agentId` nélkül) vagy egy munkatárs szintje. `level: null` →
+ * a munkatárs visszakapja az alapértéket.
+ */
+export async function setWarehouseAgentAccessAction(input: { agentId?: string; level: 'off' | 'read' | 'import' | null }) {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const agentId = input.agentId === undefined ? undefined : z.string().uuid().parse(input.agentId)
+    const level = input.level === null ? null : accessSchema.parse(input.level)
+    if (agentId === undefined && level === null) return fail('Az alapértéket nem lehet törölni.')
+    if (agentId !== undefined && !(await repositories.agents.findById(agentId, ctx.activeTenantId))) {
+      return fail('A munkatárs nem található.')
+    }
+    const { before, after } = await prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.findUnique({ where: { id: ctx.activeTenantId }, select: { settings: true } })
+      const previous = readWarehouseSettings(tenant?.settings)
+      const next = { defaultAgentAccess: previous.defaultAgentAccess, agentAccess: { ...previous.agentAccess } }
+      if (agentId === undefined) next.defaultAgentAccess = level!
+      else if (level === null) delete next.agentAccess[agentId]
+      else next.agentAccess[agentId] = level
+      await tx.tenant.update({ where: { id: ctx.activeTenantId }, data: { settings: withWarehouseSettings(tenant?.settings, next) } })
+      return { before: previous, after: next }
+    }, { timeout: 60_000 })
+    await writeAudit(repositories.audit, {
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'warehouse.agent_access.changed',
+      targetType: agentId ? 'agent' : 'tenant',
+      targetId: agentId ?? ctx.activeTenantId,
+      modelUsed: null,
+      inputRef: agentId ? (before.agentAccess[agentId] ?? null) : before.defaultAgentAccess,
+      outputRef: agentId ? (after.agentAccess[agentId] ?? null) : after.defaultAgentAccess,
+      policyDecision: 'updated',
+      metadata: { scope: agentId ? 'agent' : 'default' },
+      tenantId: ctx.activeTenantId,
+    })
+    revalidatePath('/control-plane/warehouse')
+    revalidatePath('/control-plane/settings')
+    if (agentId) revalidatePath(`/control-plane/agents/${agentId}`)
+    return ok({ defaultAgentAccess: after.defaultAgentAccess, agentAccess: after.agentAccess })
+  } catch {
+    return fail('A beállítás nem menthető. Csak admin módosíthatja.')
+  }
 }

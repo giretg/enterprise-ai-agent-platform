@@ -41,6 +41,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   // #967 mini appok
   // #984 AI-adattárház
   warehouse_not_ready: 'The company data warehouse is not activated yet — an admin can turn it on at activateUrl',
+  warehouse_agent_disabled: 'This agent has no access to the company data warehouse — an admin can enable it at settingsUrl',
+  warehouse_agent_read_only: 'This agent may only read the data warehouse, not load data — an admin can change it at settingsUrl',
   warehouse_permission_denied: 'Your role does not allow this data warehouse action (see needed)',
   import_not_found: 'Import not found — check importId with warehouse.get_import_status',
   import_invalid_state: 'The import is not in the right state for this step (see state and next)',

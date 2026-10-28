@@ -66,6 +66,7 @@ import { MiniAppService } from '@/domain/mini-app/mini-app-service'
 import { invokeMiniAppTool } from '@/domain/mini-app/mcp'
 import { invokeWarehouseTool } from '@/domain/warehouse/mcp'
 import { warehousePageUrl, warehouseService } from '@/lib/warehouse'
+import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { readMiniAppSettings } from '@/lib/mini-app-settings'
 import { miniAppPermanentUrl, mintMiniAppLinks } from '@/lib/mini-app-origin'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
@@ -721,7 +722,14 @@ export const services = {
   warehouse: {
     invoke: (input: Parameters<typeof invokeWarehouseTool>[1]) =>
       invokeWarehouseTool(
-        { ...sharedToolLookups, warehouse: warehouseService(), audit: repositories.audit, pageUrl: warehousePageUrl },
+        {
+          ...sharedToolLookups,
+          warehouse: warehouseService(),
+          audit: repositories.audit,
+          pageUrl: warehousePageUrl,
+          agentAccess: async ({ tenantId, agentId }) =>
+            warehouseAccessForAgent(readWarehouseSettings((await repositories.tenants.findById(tenantId))?.settings), agentId),
+        },
         input,
       ),
   },

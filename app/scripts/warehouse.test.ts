@@ -15,6 +15,8 @@ import { convertCell, nameWithoutLegalForm, parseHuDate, parseHuNumber } from '.
 import { canWarehouse } from '../src/domain/warehouse/permissions'
 import { customersXlsx, ordersXlsx, zipBombXlsx } from './warehouse-fixtures'
 import type { AgentDefinition } from '../src/domain/agent-definition'
+import type { WarehouseAgentAccess } from '../src/lib/warehouse-settings'
+import { readWarehouseSettings, warehouseAccessForAgent } from '../src/lib/warehouse-settings'
 import { invokeWarehouseTool, toCsv, WAREHOUSE_TOOLS, warehouseInputSchemas, type WarehouseMcpDeps } from '../src/domain/warehouse/mcp'
 import { WarehouseService, type WarehouseRegistry } from '../src/domain/warehouse/warehouse-service'
 import type { WarehouseDatabase } from '../src/domain/warehouse/sql'
@@ -325,7 +327,9 @@ async function main() {
       audit: { append: async (row) => void audit.push(row) },
       warehouse: new WarehouseService({ db, registry, provisioner: { kind: 'pg_schema', provision: async () => { throw new Error('x') }, verify: async () => ({ ok: true }) }, reviewUrl: () => '/x' }),
       pageUrl: (path) => `https://app.example${path}`,
+      agentAccess: async () => agentAccess,
     }
+    let agentAccess: WarehouseAgentAccess = 'import'
     const call = async (role: string, tool: string, args: Record<string, unknown>) => {
       const res = await invokeWarehouseTool(deps, { principal: { userId: AGENT, tenantId: TENANT, role, assumed: false }, toolName: tool, args })
       return JSON.parse(res.content[0]!.text) as Record<string, unknown>
@@ -338,12 +342,29 @@ async function main() {
     assert.equal(denied.code, 'warehouse_permission_denied')
     const badPlan = await call('operator', 'warehouse.submit_import_plan', { definitionId: DEF, importId: DEF, plan: 'nem json' })
     assert.equal(badPlan.code, 'invalid_plan')
+    // Agentenkénti szint: csak szűkít, az ember szerepétől függetlenül.
+    agentAccess = 'read'
+    const readOnlyImport = await call('admin', 'warehouse.prepare_import', { definitionId: DEF, fileName: 'a.xlsx', fileBase64: 'AA==' })
+    assert.equal(readOnlyImport.code, 'warehouse_agent_read_only')
+    assert.equal((await call('admin', 'warehouse.list_datasets', { definitionId: DEF })).ok, true)
+    agentAccess = 'off'
+    const off = await call('admin', 'warehouse.list_datasets', { definitionId: DEF })
+    assert.equal(off.code, 'warehouse_agent_disabled')
+    assert.ok(String(off.settingsUrl).includes('/control-plane/warehouse'))
+    agentAccess = 'import'
     for (const tool of WAREHOUSE_TOOLS) {
       const json = JSON.stringify(z.toJSONSchema(warehouseInputSchemas[tool]))
       assert.ok(!json.includes('"array"'), `${tool} advertises an array`)
     }
     assert.equal(toCsv(['a', 'b'], [['=HYPERLINK("x")', -5], ['x,y', null]]), `a,b\n"'=HYPERLINK(""x"")",-5\n"x,y",`)
     assert.equal(toCsv(['value'], [['-1+2'], ['-5'], ['+1+2'], ['@SUM(A1)'], ['\t=1+2'], [-5], [1.5]]), "value\n'-1+2\n'-5\n'+1+2\n'@SUM(A1)\n'\t=1+2\n-5\n1.5")
+  })
+
+  await check('agentenkénti hozzáférés: alapérték, felülírás, hibás érték eldobva', () => {
+    const settings = readWarehouseSettings({ warehouse: { defaultAgentAccess: 'read', agentAccess: { a1: 'off', a2: 'bogus' } } })
+    assert.equal(warehouseAccessForAgent(settings, 'a1'), 'off')
+    assert.equal(warehouseAccessForAgent(settings, 'a2'), 'read')
+    assert.equal(warehouseAccessForAgent(readWarehouseSettings(null), 'x'), 'import')
   })
 
   if (failures > 0) {

@@ -9,6 +9,7 @@ import type { AgentDefinition } from '@/domain/agent-definition'
 import { enterpriseToolErrorPayload, type ToolCallPrincipal } from '@/domain/enterprise-tools'
 import { writeAudit } from '@/lib/audit/types'
 import { authorizeProjectWorkCall, type ProjectWorkMcpDeps } from '@/domain/project-work/mcp'
+import type { WarehouseAgentAccess } from '@/lib/warehouse-settings'
 import { QUERY_MAX_LIMIT } from './query'
 import { IMPORT_PLAN_GUIDE, WarehouseError, type WarehouseActor, type WarehouseService } from './warehouse-service'
 
@@ -144,6 +145,8 @@ export type WarehouseMcpDeps = Pick<ProjectWorkMcpDeps, 'loadDefinition' | 'find
   warehouse: WarehouseService
   /** Abszolút Control Plane link. */
   pageUrl: (path: string) => string
+  /** Agentenkénti hozzáférés-szint (Control Plane → Adattárház → AI munkatársak). */
+  agentAccess: (input: { tenantId: string; agentId: string }) => Promise<WarehouseAgentAccess>
 }
 
 function textResult(payload: unknown, isError = false): WarehouseMcpResult {
@@ -201,6 +204,13 @@ export async function invokeWarehouseTool(
   )
   if (!authorized.ok) return authorized.result as WarehouseMcpResult
   const { definition, parsed } = authorized
+  const access = await deps.agentAccess({ tenantId: principal.tenantId, agentId: definition.agentId })
+  const readOnly = WAREHOUSE_READ_ONLY_TOOLS.has(toolName)
+  if (access === 'off' || (access === 'read' && !readOnly)) {
+    const code = access === 'off' ? 'warehouse_agent_disabled' : 'warehouse_agent_read_only'
+    await auditOutcome(deps, principal, toolName, definition, code)
+    return textResult(enterpriseToolErrorPayload(code, { settingsUrl: deps.pageUrl('/control-plane/warehouse#ai-munkatarsak') }), true)
+  }
   const actor: WarehouseActor = {
     tenantId: principal.tenantId,
     userId: principal.userId,

@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
-import { loadWarehousePageAction } from '@/app/actions/warehouse'
+import { getWarehouseAgentAccessAction, loadWarehousePageAction } from '@/app/actions/warehouse'
+import { WarehouseAgentAccessPanel, WarehouseStorageCard } from '@/components/warehouse/warehouse-access-panels'
 import { WarehousePanel } from './warehouse-panel'
 
 export const dynamic = 'force-dynamic'
@@ -14,7 +15,7 @@ export default async function WarehousePage({ searchParams }: { searchParams: Pr
     throw error
   }
   const { import: importId } = await searchParams
-  const result = await loadWarehousePageAction(importId)
+  const [result, access] = await Promise.all([loadWarehousePageAction(importId), getWarehouseAgentAccessAction()])
   return (
     <div className="space-y-6">
       <div>
@@ -31,6 +32,8 @@ export default async function WarehousePage({ searchParams }: { searchParams: Pr
           {result.error}
         </p>
       )}
+      {access.success ? <WarehouseAgentAccessPanel data={access.data} /> : null}
+      {access.success && access.data.canEdit ? <WarehouseStorageCard storage={access.data.storage} /> : null}
     </div>
   )
 }
