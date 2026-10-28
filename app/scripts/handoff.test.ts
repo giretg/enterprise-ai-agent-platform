@@ -246,6 +246,26 @@ async function main() {
     assert.equal(memRows.length, 1)
   })
 
+  await check('idempotencyKey: más tartalommal újrahasznált kulcs ütközést ad, nem nyeli el', async () => {
+    const { handoffs, invokeArgs } = deps()
+    const base = {
+      principal: { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false },
+      toolName: 'platform.handoff',
+    }
+    const first = parsePayload(await invokeProjectWork(invokeArgs, {
+      ...base,
+      args: { definitionId: KATI_DEF, toAgentId: GABOR, title: 'Első feladat', summary: 'A', idempotencyKey: 'handoff-1' },
+    }))
+    const reused = await invokeProjectWork(invokeArgs, {
+      ...base,
+      args: { definitionId: KATI_DEF, toAgentId: GABOR, title: 'Második feladat', summary: 'B', idempotencyKey: 'handoff-1' },
+    })
+    assert.equal(first.ok, true)
+    assert.equal(reused.isError, true)
+    assert.match(JSON.stringify(reused), /idempotency_key_conflict/)
+    assert.equal(handoffs.rows.size, 1)
+  })
+
   // Security regression: a caller with only `view` on the recipient agent must NOT
   // be able to force an open_task into that agent's trusted memory (memory poisoning
   // / privilege escalation — a direct memory write would require `operate`). The

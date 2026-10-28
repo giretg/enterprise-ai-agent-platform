@@ -303,7 +303,20 @@ export type ProjectWorkMcpDeps = DefinitionPinDeps & {
       links: string | null
       createdById: string
       idempotencyKey?: string | null
-    }): Promise<{ handoff: { id: string; memoryId: string | null; projectKey: string }; created: boolean }>
+    }): Promise<{
+      handoff: {
+        id: string
+        memoryId: string | null
+        projectKey: string
+        createdById: string
+        toAgentId: string | null
+        toUserId: string | null
+        title: string
+        summary: string
+        links: string | null
+      }
+      created: boolean
+    }>
     findById(id: string): Promise<{
       id: string
       tenantId: string
@@ -734,6 +747,21 @@ async function invokeHandoff(
   // (memoryId/notified) csak tájékoztatók: ha az eredeti injektálás még fut, elavultak
   // lehetnek, de duplikált injektálás nem történik.
   if (!created) {
+    // Csak ugyanaz a hívó, ugyanazzal a tartalommal kaphatja vissza a meglévő átadást.
+    // Egy újrahasznált kulcs (másik felhasználó vagy más feladat) különben csendben
+    // elnyelné az új átadást, és idegen átadás adatait adná vissza.
+    const sameRequest =
+      handoff.createdById === principal.userId &&
+      handoff.toAgentId === toAgentId &&
+      handoff.toUserId === toUserId &&
+      handoff.projectKey === projectKey &&
+      handoff.title === validated.title &&
+      handoff.summary === validated.summary &&
+      handoff.links === validated.links
+    if (!sameRequest) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'idempotency_key_conflict', definition.definitionId, definition.agentId)
+      return errorResult('idempotency_key_conflict')
+    }
     // A hívás sikeres (a kérés teljesült), ezért a generikus siker-auditot megírjuk,
     // de a `handoff.created` állapotváltozás-auditot NEM — nem történt új átadás.
     await auditOk(deps, principal, MCP_HANDOFF_TOOL, definition.definitionId, definition.agentId)
