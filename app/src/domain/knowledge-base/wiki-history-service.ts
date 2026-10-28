@@ -692,6 +692,7 @@ export class WikiHistoryService {
           ...(rev.path && rev.path.toLowerCase().includes(phrase.toLowerCase()) ? { path: pathMap.get(rev.path) ?? erasedPath(rev.pageId) } : {}),
         })
       }
+      const rejectedChangeSetIds = new Set<string>()
       for (const row of matches.changeSets) {
         counts.changeSet++
         locations.push({ where: 'changeSet', label: row.seq ? `#${row.seq}` : 'pending', snippet: snippetOf(JSON.stringify(row.pages), phrase) })
@@ -699,6 +700,7 @@ export class WikiHistoryService {
           // Teljes törlés: a sír-jeles verzió másolata ne maradjon a pages JSON-ban,
           // és a függő restore/upsert ne legyen újra alkalmazható (különben a kifejezés
           // nélküli személyes adat visszatérhetne a live wikibe).
+          if (row.status === 'pending') rejectedChangeSetIds.add(row.id)
           write.changeSets.push({
             id: row.id,
             pages: stripPhraseCopies(row.pages, pattern, pathMap) as Prisma.InputJsonValue,
@@ -739,15 +741,31 @@ export class WikiHistoryService {
         locations.push({ where: 'chunk', label: String(matches.chunks) })
         write.chunkPattern = escapeRegExp(phrase)
       }
+      const seenGateway = new Set<string>()
       for (const op of matches.gatewayOperations) {
         counts.gatewayOperation++
         locations.push({ where: 'gatewayOperation', label: op.id.slice(0, 8) })
+        seenGateway.add(op.id)
         // Teljes törlésnél a gateway-kártya se őrizhet / futtathat másolatot.
         write.gatewayOperations.push(
           scope.mode === 'erase'
             ? { id: op.id, argsJson: {}, reject: true }
             : { id: op.id, argsJson: deepRedact(op.argsJson, pattern) as Prisma.InputJsonValue },
         )
+      }
+      // A valós kb_wiki_revert kártya args-a rendszerint csak changeSetId-t + path-ot
+      // tartalmaz (nincs benne a keresett kifejezés) — a rejectelt CS-hez kötött
+      // nyitott kártyákat külön le kell zárni (mint oldal-módban).
+      if (scope.mode === 'erase' && rejectedChangeSetIds.size > 0) {
+        for (const op of await this.deps.history.listPendingGatewayOperations(connector.id)) {
+          if (seenGateway.has(op.id)) continue
+          const args = op.argsJson as { changeSetId?: string } | null
+          if (!args?.changeSetId || !rejectedChangeSetIds.has(args.changeSetId)) continue
+          write.gatewayOperations.push({ id: op.id, argsJson: {}, reject: true })
+          counts.gatewayOperation++
+          locations.push({ where: 'gatewayOperation', label: op.id.slice(0, 8) })
+          seenGateway.add(op.id)
+        }
       }
       return { counts, locations, write }
     }

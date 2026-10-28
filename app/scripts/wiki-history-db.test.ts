@@ -472,13 +472,20 @@ async function main() {
     const pendingId = revert.request.changeSetId
     assert.ok(JSON.stringify((await wikis.findChangeSet(pendingId))!.pages).includes(otherSecret))
     const definition = await prisma.agentDefinitionVersion.findFirstOrThrow({ where: { agentId: agent.id } })
+    // Valós enqueue: changeSetId + path/action — a kifejezés NINCS az args-ban.
     const gateway = await prisma.gatewayOperation.create({
       data: {
         tenantId: tenant.id,
         agentDefinitionVersionId: definition.id,
         principalUserId: admin.id,
-        toolName: 'kb_wiki_revert',
-        argsJson: { changeSetId: pendingId, path, version: v1.version, note: phrase },
+        toolName: 'kb_wiki_write',
+        argsJson: {
+          changeSetId: pendingId,
+          connectorId: shared.id,
+          wikiId,
+          pageCount: 1,
+          pages: [{ path, action: 'restore' }],
+        },
         idempotencyKey: `k-${randomUUID()}`,
         status: 'awaiting_approval',
         connectorId: shared.id,
@@ -496,7 +503,7 @@ async function main() {
     assert.ok(!JSON.stringify(after).includes(phrase))
     const op = await prisma.gatewayOperation.findUniqueOrThrow({ where: { id: gateway.id } })
     assert.equal(op.status, 'rejected')
-    assert.ok(!JSON.stringify(op.argsJson).includes(phrase))
+    assert.deepEqual(op.argsJson, {})
     const tombstone = await history.findRevision(shared.id, liveBefore.id, v1.version)
     assert.ok(tombstone?.erasedAt)
     assert.equal(tombstone?.body, '')
