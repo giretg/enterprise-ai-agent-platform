@@ -210,6 +210,7 @@ import {
   MCP_MINI_APP_UPDATE_TOOL,
   type MiniAppMcpResult,
 } from '@/domain/mini-app/mcp'
+import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { MINI_APP_VIEWER_HTML, miniAppViewerResourceMeta } from '@/domain/mini-app/viewer'
 import {
   isWarehouseTool,
@@ -1148,6 +1149,7 @@ async function checkoutToolResult(
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
+      warehouseAccess: warehouseAccessForAgent(readWarehouseSettings(tenant?.settings), loaded.agentId),
     }),
   )
 }

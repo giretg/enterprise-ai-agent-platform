@@ -17,7 +17,8 @@ import { customersXlsx, ordersXlsx, zipBombXlsx } from './warehouse-fixtures'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import type { WarehouseAgentAccess } from '../src/lib/warehouse-settings'
 import { readWarehouseSettings, warehouseAccessForAgent } from '../src/lib/warehouse-settings'
-import { invokeWarehouseTool, toCsv, WAREHOUSE_TOOLS, warehouseInputSchemas, type WarehouseMcpDeps } from '../src/domain/warehouse/mcp'
+import { hermesWarehouseTools } from '../src/lib/agent-checkout'
+import { invokeWarehouseTool, toCsv, WAREHOUSE_READ_ONLY_TOOLS, WAREHOUSE_TOOLS, warehouseInputSchemas, type WarehouseMcpDeps } from '../src/domain/warehouse/mcp'
 import { WarehouseService, type WarehouseRegistry } from '../src/domain/warehouse/warehouse-service'
 import type { WarehouseDatabase } from '../src/domain/warehouse/sql'
 import { z } from 'zod'
@@ -365,6 +366,13 @@ async function main() {
     assert.equal(warehouseAccessForAgent(settings, 'a1'), 'off')
     assert.equal(warehouseAccessForAgent(settings, 'a2'), 'read')
     assert.equal(warehouseAccessForAgent(readWarehouseSettings(null), 'x'), 'import')
+  })
+
+  await check('Hermes Bot eszközlistája a munkatárs adattárház-szintjét követi', () => {
+    assert.deepEqual(hermesWarehouseTools('off'), [])
+    assert.ok(hermesWarehouseTools('read').includes('warehouse.query_dataset'))
+    assert.ok(!hermesWarehouseTools('read').some((tool) => !WAREHOUSE_READ_ONLY_TOOLS.has(tool)))
+    assert.deepEqual([...hermesWarehouseTools('import')].sort(), [...WAREHOUSE_TOOLS].sort())
   })
 
   if (failures > 0) {
