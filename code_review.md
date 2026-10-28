@@ -9,6 +9,7 @@
 - Üzleti hatás: párhuzamos AI-feladatok és operátori munkák mellett a munkanapló nem veszít el sorokat, és egy ügyfél projektje nem fogyaszthatja el észrevétlenül a megosztott tárhelyet a konfigurált korláton túl. A válaszban megjelenő kvótahiba megfelel a tényleges, mentéskori állapotnak.
 - Ellenőrzés: új, migrált helyi PostgreSQL-regresszió két versengő fájlírásnál egyetlen sikert, hat párhuzamos appendnél az összes sor megmaradását ellenőrzi; `test:project-work`, `test:work-file-output`, TypeScript, célzott ESLint (0 hiba, 2 korábbi figyelmeztetés), `git diff --check` zöld. A regresszió az ephemeral Postgres CI-jobba is bekerült. A teljes termék éles terhelését és minden más komponens enterprise alkalmasságát ez a célzott review nem igazolja.
 - **Nyitott enterprise auditkockázat:** a munkafájl-változás és a sikeres audit-esemény külön tranzakció, ezért audit-hiba után módosult fájl maradhat naplóbejegyzés nélkül. Ez nem része a kvóta/append javításnak; a közös MCP, Control Plane és sandbox út atomikus auditálásának követelménye és regressziója [#986](https://github.com/giretg/enterprise-ai-agent-platform/issues/986).
+- PR: [#987](https://github.com/giretg/enterprise-ai-agent-platform/pull/987) (`codex`, `codex-automation`, `security`, `bug`).
 
 ## 2026-10-22 07:05 Europe/Budapest - MCP/Control Plane feladatátadás: párhuzamos döntések felülírták egymást
 
