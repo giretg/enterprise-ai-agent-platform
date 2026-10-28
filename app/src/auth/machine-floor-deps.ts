@@ -2,6 +2,7 @@ import { isPrivilegedAgentReader } from '@/domain/agent-definition'
 import type { MachineFloorDeps, VisibleHermesBot } from '@/domain/client-policy/machine-floor'
 import { services } from '@/domain/gateway-services'
 import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
+import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { repositories } from '@/repositories/postgres'
 import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
 import { PostgresMachineFloorRepository } from '@/repositories/postgres/machine-floor-repository'
@@ -26,6 +27,7 @@ export function machineFloorDeps(): MachineFloorDeps {
     listVisibleAgentIds,
     async listVisibleBots({ tenantId, userId }) {
       const bots: VisibleHermesBot[] = []
+      const warehouse = readWarehouseSettings((await repositories.tenants.findById(tenantId))?.settings)
       for (const agentId of await listVisibleAgentIds({ tenantId, userId })) {
         const definition = await services.agentDefinitions.loadAgentDefinition({ tenantId, agentId })
         if (!definition) continue
@@ -39,6 +41,7 @@ export function machineFloorDeps(): MachineFloorDeps {
             capabilities: definition.snapshot.capabilities,
             localRoots: definition.snapshot.localRoots,
           },
+          warehouseAccess: warehouseAccessForAgent(warehouse, definition.agentId),
         })
       }
       return bots

@@ -7,6 +7,9 @@ import { getTenantAgentSettings } from '@/app/actions/tenant-agent-settings'
 import { getTenantMcpIntro } from '@/app/actions/tenant-mcp-intro'
 import { getMiniAppSettingsAction } from '@/app/actions/mini-apps'
 import { MiniAppSettingsPanel } from './mini-app-settings-panel'
+import { getWarehouseAgentAccessAction } from '@/app/actions/warehouse'
+import { WarehouseAgentAccessPanel, WarehouseStorageCard } from '@/components/warehouse/warehouse-access-panels'
+import Link from 'next/link'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { GeminiKeyPanel } from './gemini-key-panel'
 import { OpenRouterKeyPanel } from './openrouter-key-panel'
@@ -16,7 +19,7 @@ import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 
 export default async function TenantSettingsPage() {
   await requireTenantRole('admin')
-  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings] = await Promise.all([
+  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings, warehouseAccess] = await Promise.all([
     getTenantLanguage(),
     getTenantMcpIntro(),
     getTenantModelPolicy(),
@@ -24,6 +27,7 @@ export default async function TenantSettingsPage() {
     getGeminiKeyStatus(),
     getTenantAgentSettings(),
     getMiniAppSettingsAction(),
+    getWarehouseAgentAccessAction(),
   ])
   const t = await getTranslations('ControlPlane.settings')
 
@@ -93,6 +97,23 @@ export default async function TenantSettingsPage() {
               <MiniAppSettingsPanel initial={miniAppSettings.data} canEdit />
             ) : (
               <p className="text-sm text-coral-deep">{miniAppSettings.error}</p>
+            ),
+          },
+          {
+            id: 'warehouse',
+            label: t('warehouse'),
+            content: warehouseAccess.success ? (
+              <div className="space-y-4">
+                <WarehouseAgentAccessPanel data={warehouseAccess.data} />
+                <WarehouseStorageCard storage={warehouseAccess.data.storage} />
+                <p className="text-sm">
+                  <Link className="text-coral-deep underline" href="/control-plane/warehouse">
+                    Adattárház megnyitása: bekapcsolás, Excel-feltöltés, jóváhagyások →
+                  </Link>
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-coral-deep">{warehouseAccess.error}</p>
             ),
           },
           {

@@ -93,6 +93,7 @@ jobs:
           npm run test:project-work
           npm run test:handoff
           npm run test:mini-app
+          npm run test:warehouse
           npm run test:work-file-output
           npm run test:mcp-skills
           npm run test:conversation-skill
@@ -217,6 +218,9 @@ jobs:
       # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
       - name: Mini app repository (Postgres)
         run: npm run test:mini-app-db
+
+      - name: AI-adattárház (#984) valódi Postgresen
+        run: npm run test:warehouse-db
 
       # #942: privát KB végleges törlés + 30 napos sweep + tálca-SQL valódi Postgresen.
       - name: Wiki private KB purge (Postgres)

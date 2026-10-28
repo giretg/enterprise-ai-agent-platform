@@ -210,7 +210,16 @@ import {
   MCP_MINI_APP_UPDATE_TOOL,
   type MiniAppMcpResult,
 } from '@/domain/mini-app/mcp'
+import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { MINI_APP_VIEWER_HTML, miniAppViewerResourceMeta } from '@/domain/mini-app/viewer'
+import {
+  isWarehouseTool,
+  WAREHOUSE_READ_ONLY_TOOLS,
+  WAREHOUSE_TOOLS,
+  WAREHOUSE_TOOL_DESCRIPTIONS,
+  warehouseInputSchemas,
+  type WarehouseMcpResult,
+} from '@/domain/warehouse/mcp'
 
 export type McpAgentListItem = McpCoworkerSummary
 
@@ -277,6 +286,12 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     origin?: string
   }) => Promise<EnterpriseToolMcpResult>
   /** #967 `platform.mini_app.*`; hiányában az eszköz `tool_not_configured`-ot ad. */
+  /** #984 `warehouse.*`; hiányában az eszköz `tool_not_configured`-ot ad. */
+  invokeWarehouse?: (input: {
+    principal: McpPrincipal
+    toolName: string
+    args: Record<string, unknown>
+  }) => Promise<WarehouseMcpResult>
   invokeMiniApp?: (input: {
     principal: McpPrincipal
     toolName: string
@@ -458,6 +473,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
         overdue: row.overdue,
       })),
     invokeMiniApp: (input) => services.miniApps.invoke(input),
+    invokeWarehouse: (input) => services.warehouse.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
       return Promise.all(
@@ -1133,6 +1149,7 @@ async function checkoutToolResult(
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
+      warehouseAccess: warehouseAccessForAgent(readWarehouseSettings(tenant?.settings), loaded.agentId),
     }),
   )
 }
@@ -1258,6 +1275,7 @@ function toolBindsToAgentHeader(toolName: string): boolean {
     isProjectWorkTool(toolName) ||
     isCustomerPromiseTool(toolName) ||
     isMiniAppTool(toolName) ||
+    isWarehouseTool(toolName) ||
     isEnterpriseTool(toolName)
   )
 }
@@ -1594,6 +1612,18 @@ async function createMcpResourceHandler(
         },
         async (args) => projectWorkToolResult(principal, MCP_HANDOFF_ACK_TOOL, args, deps),
       )
+      for (const toolName of WAREHOUSE_TOOLS) {
+        server.registerTool(
+          toolName,
+          {
+            title: toolName.replace('warehouse.', 'Adattárház: '),
+            description: WAREHOUSE_TOOL_DESCRIPTIONS[toolName],
+            inputSchema: warehouseInputSchemas[toolName],
+            ...(WAREHOUSE_READ_ONLY_TOOLS.has(toolName) ? { annotations: { readOnlyHint: true } } : {}),
+          },
+          async (args) => warehouseToolResult(principal, toolName, args as Record<string, unknown>, deps),
+        )
+      }
       for (const toolName of MINI_APP_TOOLS) {
         // #967 §3.8: a linket adó eszközök az MCP Apps nézőt is deklarálják (ahol a kliens támogatja).
         const opensViewer =
@@ -2056,6 +2086,9 @@ async function createMcpResourceHandler(
         if (isMiniAppTool(toolName)) {
           return miniAppToolResult(principal, toolName, args, deps)
         }
+        if (isWarehouseTool(toolName)) {
+          return warehouseToolResult(principal, toolName, args, deps)
+        }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
         }
@@ -2135,6 +2168,16 @@ async function projectWorkToolResult(
   origin?: string,
 ) {
   return deps.invokeProjectWork({ principal, toolName, args, origin })
+}
+
+async function warehouseToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+): Promise<CallToolResult> {
+  if (!deps.invokeWarehouse) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  return (await deps.invokeWarehouse({ principal, toolName, args })) as CallToolResult
 }
 
 async function miniAppToolResult(

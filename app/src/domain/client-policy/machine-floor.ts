@@ -7,6 +7,7 @@
  *
  * Nincs látható agent → minden kapuzott toolset tiltva (üres unió, fail-closed).
  */
+import type { WarehouseAgentAccess } from '@/lib/warehouse-settings'
 import { createHash, randomUUID } from 'node:crypto'
 import { CAPABILITY_KEYS, capabilityLevels, type CapabilityKey } from '@/domain/client-policy/capabilities'
 import { DEFAULT_TOOL_CATALOG, type ToolCatalogEntry } from '@/domain/client-policy/tool-catalog'
@@ -158,6 +159,7 @@ export type VisibleHermesBot = {
   agentId: string
   version: number
   snapshot: HermesBotSnapshot
+  warehouseAccess?: WarehouseAgentAccess
 }
 
 export type MachineFloorDeps = {
@@ -298,6 +300,7 @@ export async function issueMachineFloor(
         snapshot: bot.snapshot,
         mcpUrl: input.mcpUrl,
         tenantSlug: input.tenantSlug,
+        warehouseAccess: bot.warehouseAccess,
       })
       if (!isHermesProfileName(connector.profile) || seen.has(connector.profile)) continue
       seen.add(connector.profile)
