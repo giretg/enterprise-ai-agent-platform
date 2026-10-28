@@ -302,7 +302,21 @@ export type ProjectWorkMcpDeps = DefinitionPinDeps & {
       summary: string
       links: string | null
       createdById: string
-    }): Promise<{ id: string }>
+      idempotencyKey?: string | null
+    }): Promise<{
+      handoff: {
+        id: string
+        memoryId: string | null
+        projectKey: string
+        createdById: string
+        toAgentId: string | null
+        toUserId: string | null
+        title: string
+        summary: string
+        links: string | null
+      }
+      created: boolean
+    }>
     findById(id: string): Promise<{
       id: string
       tenantId: string
@@ -704,7 +718,8 @@ async function invokeHandoff(
     }
   }
 
-  const handoff = await deps.handoffs.insert({
+  const idempotencyKey = typeof parsed.idempotencyKey === 'string' ? parsed.idempotencyKey : null
+  const { handoff, created } = await deps.handoffs.insert({
     tenantId: principal.tenantId,
     fromAgentId: definition.agentId,
     fromDefinitionId: definition.definitionId,
@@ -715,7 +730,50 @@ async function invokeHandoff(
     summary: validated.summary,
     links: validated.links,
     createdById: principal.userId,
+    idempotencyKey,
   })
+
+  // #940: ismételt (retry) hívás ugyanazzal az idempotencyKey-vel — a sor már
+  // létezik. Nem injektálunk újabb open_task-ot a címzett memóriájába és nem írunk
+  // újabb `handoff.created` auditot; a korábbi döntés állapotát idempotensen
+  // visszaadjuk, hogy a kliens biztonságosan újrapróbálhasson.
+  //
+  // A dedup-határ maga az átadás-SOR, ami egyben a hiteles kézbesítés is (a címzett
+  // briefingje / inboxa ebből épül). A memória-injektálás alatta csak kényelmi réteg,
+  // és a létrehozás+injektálás+audit NEM egyetlen tranzakció (#940 nyitott maradéka):
+  // ha egy hívás a sor létrehozása után, az injektálás előtt elhal, a retry itt
+  // visszatér és nem injektál — az átadás így is látszik a soron/briefingen, csak a
+  // kényelmi memória-bejegyzés marad el. Párhuzamos duplikátumnál a lenti mezők
+  // (memoryId/notified) csak tájékoztatók: ha az eredeti injektálás még fut, elavultak
+  // lehetnek, de duplikált injektálás nem történik.
+  if (!created) {
+    // Csak ugyanaz a hívó, ugyanazzal a tartalommal kaphatja vissza a meglévő átadást.
+    // Egy újrahasznált kulcs (másik felhasználó vagy más feladat) különben csendben
+    // elnyelné az új átadást, és idegen átadás adatait adná vissza.
+    const sameRequest =
+      handoff.createdById === principal.userId &&
+      handoff.toAgentId === toAgentId &&
+      handoff.toUserId === toUserId &&
+      handoff.projectKey === projectKey &&
+      handoff.title === validated.title &&
+      handoff.summary === validated.summary &&
+      handoff.links === validated.links
+    if (!sameRequest) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'idempotency_key_conflict', definition.definitionId, definition.agentId)
+      return errorResult('idempotency_key_conflict')
+    }
+    // A hívás sikeres (a kérés teljesült), ezért a generikus siker-auditot megírjuk,
+    // de a `handoff.created` állapotváltozás-auditot NEM — nem történt új átadás.
+    await auditOk(deps, principal, MCP_HANDOFF_TOOL, definition.definitionId, definition.agentId)
+    return textResult({
+      ok: true,
+      handoffId: handoff.id,
+      memoryId: handoff.memoryId,
+      projectKey: handoff.projectKey,
+      notified: handoff.memoryId ? 'agent_memory' : 'inbox',
+      idempotent: true,
+    })
+  }
 
   // The handoff is always delivered through the Handoff row (recipient briefing /
   // human inbox). As a convenience we ALSO inject an open_task straight into the

@@ -210,7 +210,7 @@ function setup(opts: { maxBytes?: number } = {}) {
     handoffs: {
       insert: async (input) => {
         handoffs.push(input)
-        return { id: crypto.randomUUID() }
+        return { handoff: { ...input, id: crypto.randomUUID(), memoryId: null }, created: true }
       },
       findById: async () => null,
       attachMemory: async () => {},
