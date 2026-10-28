@@ -157,6 +157,7 @@
     "test:mcp-principal": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-principal.test.ts",
     "test:mcp-http": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-http.test.ts",
     "test:project-work": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/project-work.test.ts",
+    "test:project-work-file-db": "tsx scripts/project-work-file-db.test.ts",
     "test:drive-update-file": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/drive-update-file.test.ts",
     "test:work-file-output": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/work-file-output.test.ts",
     "test:mcp-tenant-context": "tsx scripts/mcp-tenant-context.test.ts",
@@ -377,6 +378,8 @@
     "test:handoff": "tsx scripts/handoff.test.ts",
     "test:mini-app": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mini-app.test.ts",
     "test:mini-app-db": "tsx scripts/mini-app-db.test.ts",
+    "test:warehouse": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/warehouse.test.ts",
+    "test:warehouse-db": "tsx scripts/warehouse-db.test.ts",
     "test:handoff-repository": "tsx scripts/handoff-repository.test.ts",
     "test:client-policy-admin": "tsx scripts/client-policy-admin.test.ts",
     "test:client-policy-admin-db": "tsx scripts/client-policy-admin-db.test.ts"

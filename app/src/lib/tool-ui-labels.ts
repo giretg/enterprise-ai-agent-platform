@@ -235,6 +235,44 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'A platform szabályai és a munkatárs saját mini app útmutatója (arculat, felépítés).',
   },
 
+  // AI-adattárház (#984) — MCP-eszközök
+  'warehouse.list_datasets': {
+    label: 'Adatkészletek listája',
+    description: 'A céges adattárház adatkészletei (pl. ügyfelek, rendelések): mit jelent egy sor, hány sor, mikor frissült.',
+  },
+  'warehouse.describe_dataset': {
+    label: 'Adatkészlet leírása',
+    description: 'Egy adatkészlet mezőinek üzleti jelentése, mértékegysége, kapcsolatai és betöltési előzményei.',
+  },
+  'warehouse.prepare_import': {
+    label: 'Excel betöltésének előkészítése',
+    description: 'Excel-fájl átvétele és átvizsgálása (munkalapok, fejléc, típusok); ismert szerkezetnél a mentett recept alapján.',
+  },
+  'warehouse.submit_import_plan': {
+    label: 'Betöltési terv beküldése',
+    description: 'Az AI javaslata: melyik oszlop hova kerül és mit jelent. A platform ellenőrzi, nem hajtja végre vakon.',
+  },
+  'warehouse.preview_import': {
+    label: 'Betöltés előnézete',
+    description: 'Mi változna: új, módosuló, hibás sorok és bizonytalan ügyfél-egyezések — adatmódosítás nélkül.',
+  },
+  'warehouse.commit_import': {
+    label: 'Betöltés véglegesítése',
+    description: 'Az előnézetben látott adatok betöltése. Új adatkészlethez vagy mezőhöz emberi jóváhagyás kell.',
+  },
+  'warehouse.get_import_status': {
+    label: 'Betöltés állapota',
+    description: 'Egy betöltés állapota, eredménye és a kézi döntésre váró tételek.',
+  },
+  'warehouse.query_dataset': {
+    label: 'Adatlekérdezés',
+    description: 'Szűrés, csoportosítás, összesítés az adattárházban — forrással és frissességgel együtt.',
+  },
+  'warehouse.export_dataset': {
+    label: 'Adatkészlet exportja',
+    description: 'Egy adatkészlet kimásolása CSV-ként.',
+  },
+
   // Sandbox verziókezelés
   'sandbox.commit': {
     label: 'Commit',
