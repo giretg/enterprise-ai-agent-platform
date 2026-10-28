@@ -458,6 +458,53 @@ async function main() {
     assert.ok(!JSON.stringify(logs).includes(marker), 'a naplóban tartalom maradt')
   })
 
+  await check('GDPR szöveg-erase: függő visszaállítás ne írja vissza a sír-jeles verzió többi személyes adatát', async () => {
+    const phrase = 'EraseNameX'
+    const otherSecret = 'SSN-998877'
+    const path = 'entities/text-erase-pending.md'
+    await write([entity(path, `Páciens: ${phrase}. Titok: ${otherSecret}.`, doc.id)], 'v1 erase-pending')
+    const v1 = await page(path)
+    await write([entity(path, 'Ártalmatlan későbbi szöveg.', doc.id, { baseVersion: v1.contentHash })], 'v2 erase-pending')
+    const liveBefore = await page(path)
+    const revert = await wiki.requestRevert(caller, { wikiId, target: { kind: 'page', path, version: v1.version } })
+    assert.equal(revert.ok, 'approval', JSON.stringify(revert))
+    if (revert.ok !== 'approval') throw new Error('expected approval')
+    const pendingId = revert.request.changeSetId
+    assert.ok(JSON.stringify((await wikis.findChangeSet(pendingId))!.pages).includes(otherSecret))
+    const definition = await prisma.agentDefinitionVersion.findFirstOrThrow({ where: { agentId: agent.id } })
+    const gateway = await prisma.gatewayOperation.create({
+      data: {
+        tenantId: tenant.id,
+        agentDefinitionVersionId: definition.id,
+        principalUserId: admin.id,
+        toolName: 'kb_wiki_revert',
+        argsJson: { changeSetId: pendingId, path, version: v1.version, note: phrase },
+        idempotencyKey: `k-${randomUUID()}`,
+        status: 'awaiting_approval',
+        connectorId: shared.id,
+      },
+    })
+    const done = await wikiHistory.executeErasure(adminActor, shared.id, {
+      scope: { kind: 'text', phrase, mode: 'erase' },
+      reason: 'GDPR szöveg erase',
+      confirmName: 'Közös tudástár',
+    })
+    assert.equal(done.ok, true, JSON.stringify(done))
+    const after = await wikis.findChangeSet(pendingId)
+    assert.equal(after!.status, 'rejected')
+    assert.ok(!JSON.stringify(after).includes(otherSecret), 'a függő restore pages megőrizte a sír-jeles tartalmat')
+    assert.ok(!JSON.stringify(after).includes(phrase))
+    const op = await prisma.gatewayOperation.findUniqueOrThrow({ where: { id: gateway.id } })
+    assert.equal(op.status, 'rejected')
+    assert.ok(!JSON.stringify(op.argsJson).includes(phrase))
+    const tombstone = await history.findRevision(shared.id, liveBefore.id, v1.version)
+    assert.ok(tombstone?.erasedAt)
+    assert.equal(tombstone?.body, '')
+    const applied = await wiki.applyApproved(caller, pendingId)
+    assert.equal(applied.ok, false)
+    assert.equal((await page(path)).body, liveBefore.body)
+  })
+
   await check('GDPR oldal-mód: minden verzió sír-jel (contentHash marad), az oldal archivált és üres', async () => {
     const b = await page('entities/b.md')
     const hashes = (await prisma.wikiPageRevision.findMany({ where: { pageId: b.id } })).map((rev) => rev.contentHash)

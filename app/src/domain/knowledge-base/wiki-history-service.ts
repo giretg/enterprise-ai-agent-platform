@@ -695,13 +695,27 @@ export class WikiHistoryService {
       for (const row of matches.changeSets) {
         counts.changeSet++
         locations.push({ where: 'changeSet', label: row.seq ? `#${row.seq}` : 'pending', snippet: snippetOf(JSON.stringify(row.pages), phrase) })
-        write.changeSets.push({
-          id: row.id,
-          pages: deepRedact(row.pages, pattern) as Prisma.InputJsonValue,
-          ...(row.pageSummary ? { pageSummary: deepRedact(row.pageSummary, pattern) as Prisma.InputJsonValue } : {}),
-          ...(row.logEntry ? { logEntry: deepRedact(row.logEntry, pattern) as Prisma.InputJsonValue } : {}),
-          ...(row.validation ? { validation: deepRedact(row.validation, pattern) as Prisma.InputJsonValue } : {}),
-        })
+        if (scope.mode === 'erase') {
+          // Teljes törlés: a sír-jeles verzió másolata ne maradjon a pages JSON-ban,
+          // és a függő restore/upsert ne legyen újra alkalmazható (különben a kifejezés
+          // nélküli személyes adat visszatérhetne a live wikibe).
+          write.changeSets.push({
+            id: row.id,
+            pages: stripPhraseCopies(row.pages, pattern, pathMap) as Prisma.InputJsonValue,
+            ...(row.pageSummary ? { pageSummary: deepRedact(row.pageSummary, pattern) as Prisma.InputJsonValue } : {}),
+            logEntry: { op: (row.logEntry as { op?: string } | null)?.op ?? 'note', title: WIKI_ERASURE_MARK },
+            validation: {},
+            reject: row.status === 'pending',
+          })
+        } else {
+          write.changeSets.push({
+            id: row.id,
+            pages: deepRedact(row.pages, pattern) as Prisma.InputJsonValue,
+            ...(row.pageSummary ? { pageSummary: deepRedact(row.pageSummary, pattern) as Prisma.InputJsonValue } : {}),
+            ...(row.logEntry ? { logEntry: deepRedact(row.logEntry, pattern) as Prisma.InputJsonValue } : {}),
+            ...(row.validation ? { validation: deepRedact(row.validation, pattern) as Prisma.InputJsonValue } : {}),
+          })
+        }
       }
       for (const entry of matches.logEntries) {
         counts.log++
@@ -728,7 +742,12 @@ export class WikiHistoryService {
       for (const op of matches.gatewayOperations) {
         counts.gatewayOperation++
         locations.push({ where: 'gatewayOperation', label: op.id.slice(0, 8) })
-        write.gatewayOperations.push({ id: op.id, argsJson: deepRedact(op.argsJson, pattern) as Prisma.InputJsonValue })
+        // Teljes törlésnél a gateway-kártya se őrizhet / futtathat másolatot.
+        write.gatewayOperations.push(
+          scope.mode === 'erase'
+            ? { id: op.id, argsJson: {}, reject: true }
+            : { id: op.id, argsJson: deepRedact(op.argsJson, pattern) as Prisma.InputJsonValue },
+        )
       }
       return { counts, locations, write }
     }
@@ -960,6 +979,34 @@ function stripPagesJson(value: unknown, paths: Map<string, string>): unknown {
       path: paths.get(path) ?? path,
       action: row.action,
       ...(newPath ? { newPath: paths.get(newPath) ?? newPath } : {}),
+      erased: true,
+    }
+  })
+}
+
+/**
+ * Szöveges teljes törlés: a kifejezést tartalmazó pages-elemből a teljes tartalom
+ * kiürül (nem csak a kifejezés cseréje) — így a sír-jeles verzió többi személyes
+ * adata sem marad restore/upsert másolatban.
+ */
+function stripPhraseCopies(value: unknown, pattern: RegExp, paths: Map<string, string>): unknown {
+  if (!Array.isArray(value)) return deepRedact(value, pattern)
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') return item
+    pattern.lastIndex = 0
+    if (!pattern.test(JSON.stringify(item))) return item
+    pattern.lastIndex = 0
+    const row = item as Record<string, unknown>
+    const path = typeof row.path === 'string' ? row.path : ''
+    const newPath = typeof row.newPath === 'string' ? row.newPath : ''
+    const scrub = (text: string) => {
+      pattern.lastIndex = 0
+      return text.replace(pattern, WIKI_ERASURE_MARK)
+    }
+    return {
+      path: paths.get(path) ?? (path ? scrub(path) : path),
+      action: row.action,
+      ...(newPath ? { newPath: paths.get(newPath) ?? scrub(newPath) } : {}),
       erased: true,
     }
   })
