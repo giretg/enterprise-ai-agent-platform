@@ -15,6 +15,7 @@ import type {
   ProjectMemoryRecord,
   ProjectMemoryStore,
   WorkFileRecord,
+  WorkFileSaveInput,
   WorkFileStore,
   WorkProjectRecord,
   WorkProjectStore,
@@ -108,6 +109,16 @@ class MemFiles implements WorkFileStore {
       (row) => row.tenantId === tenantId && row.projectKey === projectKey,
     )
     return { count: rows.length, bytes: rows.reduce((sum, row) => sum + row.byteSize, 0) }
+  }
+  async save(input: WorkFileSaveInput) {
+    const existing = await this.find(input.tenantId, input.projectKey, input.path)
+    const content = input.append ? `${existing?.content ?? ''}${input.content}` : input.content
+    const byteSize = Buffer.byteLength(content, 'utf8')
+    if (byteSize > input.maxFileBytes) return 'file_too_large' as const
+    const quota = await this.quota(input.tenantId, input.projectKey)
+    if (quota.count + (existing ? 0 : 1) > input.maxCount ||
+        quota.bytes - (existing?.byteSize ?? 0) + byteSize > input.maxProjectBytes) return 'quota_exceeded' as const
+    return this.upsert({ ...input, content, byteSize })
   }
 }
 
