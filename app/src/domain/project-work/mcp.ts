@@ -724,6 +724,15 @@ async function invokeHandoff(
   // létezik. Nem injektálunk újabb open_task-ot a címzett memóriájába és nem írunk
   // újabb `handoff.created` auditot; a korábbi döntés állapotát idempotensen
   // visszaadjuk, hogy a kliens biztonságosan újrapróbálhasson.
+  //
+  // A dedup-határ maga az átadás-SOR, ami egyben a hiteles kézbesítés is (a címzett
+  // briefingje / inboxa ebből épül). A memória-injektálás alatta csak kényelmi réteg,
+  // és a létrehozás+injektálás+audit NEM egyetlen tranzakció (#940 nyitott maradéka):
+  // ha egy hívás a sor létrehozása után, az injektálás előtt elhal, a retry itt
+  // visszatér és nem injektál — az átadás így is látszik a soron/briefingen, csak a
+  // kényelmi memória-bejegyzés marad el. Párhuzamos duplikátumnál a lenti mezők
+  // (memoryId/notified) csak tájékoztatók: ha az eredeti injektálás még fut, elavultak
+  // lehetnek, de duplikált injektálás nem történik.
   if (!created) {
     // A hívás sikeres (a kérés teljesült), ezért a generikus siker-auditot megírjuk,
     // de a `handoff.created` állapotváltozás-auditot NEM — nem történt új átadás.
