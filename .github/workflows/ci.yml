@@ -215,6 +215,9 @@ jobs:
       - name: Handoff decision concurrency
         run: npm run test:handoff-repository
 
+      - name: Project work files (concurrent quota and append)
+        run: npm run test:project-work-file-db
+
       # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
       - name: Mini app repository (Postgres)
         run: npm run test:mini-app-db
