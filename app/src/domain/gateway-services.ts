@@ -91,7 +91,6 @@ const resolveEgressAllowlist = (tenantId: string | null) =>
 const connectorGrantService = new ConnectorGrantService(
   repositories.connectorGrants,
   resolveEgressAllowlist,
-  () => platformSettingsService.getMcpAllowedHosts(),
 )
 
 const iamService = new IamService(
@@ -309,7 +308,6 @@ const mcpGateDeps = {
     const active = connector?.activeSpecVersion
     return active?.status === 'approved' ? parseMcpCapabilitySet(active.capabilitySet) : null
   },
-  resolveMcpAllowedHosts: () => platformSettingsService.getMcpAllowedHosts(),
 }
 
 function isStubDriveCredential(tokenRef: string): boolean {
