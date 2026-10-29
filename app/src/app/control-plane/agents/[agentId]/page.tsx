@@ -28,11 +28,15 @@ import {
   isAgentDetailSectionId,
   type AgentDetailSectionId,
 } from '@/lib/agent-detail-sections'
+import { canStartPlatformChat } from '@/lib/platform-chat-href'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { repositories } from '@/repositories/postgres'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
+import { StartPlatformChatLink } from '@/components/agents/start-platform-chat-link'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
@@ -110,6 +114,7 @@ export default async function AgentDetailPage({
     wikiLinksRes,
     miniAppsRes,
     warehouseRes,
+    tenant,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -127,6 +132,7 @@ export default async function AgentDetailPage({
     listAgentWikiLinksAction({ agentId }),
     listAgentMiniAppsAction({ agentId }),
     getAgentWarehouseAccessAction({ agentId }),
+    repositories.tenants.findById(ctx.activeTenantId),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -151,6 +157,12 @@ export default async function AgentDetailPage({
   const canDelete = isSuperadmin(ctx.platformRoles)
   const projects = projectsRes.success ? projectsRes.data.projects : []
   const projectsError = projectsRes.success ? null : projectsRes.error
+  const showStartChat = canStartPlatformChat({
+    tenantEnabled: readPlatformChatSettings(tenant?.settings).enabled,
+    platformChatEnabled: agent.platformChatEnabled,
+    status: agent.status,
+    currentDefinitionVersionId: agent.currentDefinitionVersionId,
+  })
   const t = await getTranslations('ControlPlane.agentDetail')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
   const sectionDesc = (id: AgentDetailSectionId) => {
@@ -401,6 +413,7 @@ export default async function AgentDetailPage({
           ) : null}
           <p className="mt-1 text-ink-soft">{agent.status}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
+            {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
             <AgentIdCopyButton agentId={agent.id} />
             {canManage && publishRes.success && publishRes.data.stale ? (
               <PublishStaleDraftButton

@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { pickPlatformChatAgentId } from '@/lib/platform-chat-href'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import {
   ChatApiError,
@@ -81,7 +82,16 @@ function MessageBubble({ message }: { message: Pick<ChatMessageView, 'role' | 'c
   )
 }
 
-export function PlatformChat({ isAdmin, keyMissingForAdmin }: { isAdmin: boolean; keyMissingForAdmin: boolean }) {
+export function PlatformChat({
+  isAdmin,
+  keyMissingForAdmin,
+  initialAgentId = null,
+}: {
+  isAdmin: boolean
+  keyMissingForAdmin: boolean
+  /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
+  initialAgentId?: string | null
+}) {
   const [client, setClient] = useState<WorkerClient | null>(null)
   const [fatal, setFatal] = useState<string | null>(null)
   const [agents, setAgents] = useState<ChatAgent[] | null>(null)
@@ -110,7 +120,7 @@ export function PlatformChat({ isAdmin, keyMissingForAdmin }: { isAdmin: boolean
         if (cancelled) return
         setClient(c)
         setAgents(list.agents)
-        setAgentId(list.agents[0]?.agentId ?? null)
+        setAgentId(pickPlatformChatAgentId(list.agents, initialAgentId))
       })
       .catch((e) => {
         if (cancelled) return
@@ -121,7 +131,7 @@ export function PlatformChat({ isAdmin, keyMissingForAdmin }: { isAdmin: boolean
       cancelled = true
       streamAbort.current?.abort()
     }
-  }, [])
+  }, [initialAgentId])
 
   const loadConversations = useCallback(
     async (c: WorkerClient, forAgent: string | null, q: string) => {

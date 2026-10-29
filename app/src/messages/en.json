@@ -979,7 +979,9 @@
         "retired": "retired"
       },
       "halfFinished": "Half-finished",
-      "halfFinishedHint": "Hiring was left unfinished — click to continue where you left off."
+      "halfFinishedHint": "Hiring was left unfinished — click to continue where you left off.",
+      "startChat": "Start conversation",
+      "startChatHint": "Chat with this teammate on the platform"
     },
     "dashboard": {
       "eyebrow": "Home",

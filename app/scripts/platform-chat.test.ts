@@ -28,7 +28,15 @@ import {
   readPlatformChatSettings,
   withPlatformChatSettings,
 } from '../src/lib/platform-chat-settings'
+import {
+  canStartPlatformChat,
+  parsePlatformChatAgentParam,
+  pickPlatformChatAgentId,
+  platformChatHref,
+} from '../src/lib/platform-chat-href'
 import type { GatewayCallContext, ModelCallEvent } from '../src/domain/model-gateway/proxy'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 const KEY = 'c'.repeat(40)
 const USER = '11111111-1111-4111-8111-111111111111'
@@ -282,6 +290,51 @@ async function main() {
     assert.equal(costOfUsage({ costUsd: 0.5, promptTokens: 1_000_000 }), 0.5)
     assert.equal(costOfUsage({ promptTokens: 500_000, completionTokens: 500_000 }, 2), 2)
     assert.equal(costOfUsage(null), 0)
+  })
+
+  await check('kártya: beszélgetés csak bekapcsolt tenant+agent+aktív közzétett munkatársnál', () => {
+    const base = {
+      tenantEnabled: true,
+      platformChatEnabled: true,
+      status: 'active',
+      currentDefinitionVersionId: 'def-1',
+    }
+    assert.equal(canStartPlatformChat(base), true)
+    assert.equal(canStartPlatformChat({ ...base, tenantEnabled: false }), false)
+    assert.equal(canStartPlatformChat({ ...base, platformChatEnabled: false }), false)
+    assert.equal(canStartPlatformChat({ ...base, status: 'draft' }), false)
+    assert.equal(canStartPlatformChat({ ...base, currentDefinitionVersionId: null }), false)
+  })
+
+  await check('chat URL: agent query param a kártyáról', () => {
+    assert.equal(platformChatHref(AGENT), `/control-plane/chat?agent=${AGENT}`)
+    assert.equal(parsePlatformChatAgentParam(AGENT), AGENT)
+    assert.equal(parsePlatformChatAgentParam('nope'), null)
+    assert.equal(pickPlatformChatAgentId([{ agentId: AGENT }, { agentId: OTHER_AGENT }], OTHER_AGENT), OTHER_AGENT)
+    assert.equal(pickPlatformChatAgentId([{ agentId: AGENT }], OTHER_AGENT), AGENT)
+  })
+
+  await check('UI: kártyán és adatlapon van indító gomb, a chat a query agentet választja', () => {
+    const root = resolve(import.meta.dirname, '..')
+    const read = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
+    const card = read('src/components/agents/agent-catalog-card.tsx')
+    const link = read('src/components/agents/start-platform-chat-link.tsx')
+    const chatPage = read('src/app/control-plane/chat/page.tsx')
+    const chatUi = read('src/components/platform-chat/platform-chat.tsx')
+    const detail = read('src/app/control-plane/agents/[agentId]/page.tsx')
+    const agentsPage = read('src/app/control-plane/agents/page.tsx')
+    const dashboard = read('src/app/control-plane/dashboard/page.tsx')
+    assert.match(card, /StartPlatformChatLink/)
+    assert.match(card, /canStartPlatformChat/)
+    assert.match(link, /platformChatHref/)
+    assert.match(link, /startChat/)
+    assert.match(detail, /StartPlatformChatLink/)
+    assert.match(agentsPage, /tenantChatEnabled/)
+    assert.match(dashboard, /tenantChatEnabled/)
+    assert.match(chatPage, /initialAgentId/)
+    assert.match(chatPage, /parsePlatformChatAgentParam/)
+    assert.match(chatUi, /initialAgentId/)
+    assert.match(chatUi, /pickPlatformChatAgentId/)
   })
 
   if (failures) {
