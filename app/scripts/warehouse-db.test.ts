@@ -285,6 +285,19 @@ async function main() {
     assert.ok((await service.query(viewer, { dataset: 'rendelesek' })).warnings.some((w) => w.code === 'open_exceptions'))
     console.log('  OK  Visszavonás után a korábbi megoldatlan kapcsolatok újra látszanak')
 
+    // Betöltésre váró feltöltés törölhető (a forrásfájllal együtt); betöltött nem.
+    const stray = await service.prepareImport(ai, { fileName: 'tevedes.xlsx', content: await ordersXlsx({ extraRow: true }) })
+    await expectCode(service.discardImport(viewer, stray.import.id), 'warehouse_permission_denied')
+    await expectCode(service.discardImport(outsider, stray.import.id), 'import_not_found')
+    await service.discardImport(ai, stray.import.id)
+    await expectCode(service.getImport(viewer, stray.import.id), 'import_not_found')
+    const leftover = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${schema}"._source_files WHERE import_id = $1::uuid`, stray.import.id)
+    assert.equal(leftover[0]?.n, 0)
+    await expectCode(service.discardImport(ai, customers.import.id), 'import_invalid_state')
+    await expectCode(service.discardImport(ai, retry.import.id), 'import_invalid_state')
+    assert.ok(audits.some((a) => a.action === 'warehouse.import.discarded' && a.targetId === stray.import.id))
+    console.log('  OK  Betöltésre váró feltöltés törölhető; betöltött/visszavont nem')
+
   } finally {
     for (const t of [tenant, other]) {
       await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${warehouseSchemaName(t.id)}" CASCADE`)

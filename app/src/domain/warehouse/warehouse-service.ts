@@ -18,7 +18,7 @@ import {
   WarehouseFileError,
   type SheetGrid,
 } from './excel-reader'
-import { canWarehouse, type WarehouseAction } from './permissions'
+import { canDiscardImport, canWarehouse, type WarehouseAction } from './permissions'
 import {
   canonicalPlanJson,
   checkPlan,
@@ -702,6 +702,28 @@ export class WarehouseService {
       { timeoutMs: 300_000, statementTimeoutMs: 120_000 },
     )
     await this.audit(actor, 'warehouse.import.rolled_back', importId, outcome)
+    return outcome
+  }
+
+  /**
+   * Még be nem töltött import törlése (a feltöltött fájllal együtt). Betöltött
+   * vagy visszavont import nem törölhető: annak sor-előzménye a visszavonás
+   * és az eredet-követés alapja.
+   */
+  async discardImport(actor: WarehouseActor, importId: string) {
+    this.require(actor, 'import')
+    const schema = await this.schemaFor(actor)
+    const outcome = await this.deps.db.run(async (sql) => {
+      await sql.exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${schema}:load`])
+      const record = await store.getImport(sql, schema, importId, true)
+      if (!record) throw new WarehouseError('import_not_found')
+      if (!canDiscardImport(record.state)) throw new WarehouseError('import_invalid_state', { state: record.state })
+      await sql.exec(`DELETE FROM ${qt(schema, '_exceptions')} WHERE import_id = $1::uuid`, [record.id])
+      await sql.exec(`DELETE FROM ${qt(schema, '_imports')} WHERE id = $1::uuid`, [record.id])
+      await store.recordDecision(sql, schema, 'import.discarded', { importId: record.id, fileName: record.fileName, state: record.state }, actor.userId)
+      return { importId: record.id, fileName: record.fileName, state: record.state }
+    })
+    await this.audit(actor, 'warehouse.import.discarded', importId, { state: outcome.state })
     return outcome
   }
 

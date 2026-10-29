@@ -19,3 +19,13 @@ export const WAREHOUSE_ACTION_MIN_ROLE: Record<WarehouseAction, UserRole> = {
 export function canWarehouse(role: string | null | undefined, action: WarehouseAction): boolean {
   return meetsMinRole((role ?? null) as UserRole | null, WAREHOUSE_ACTION_MIN_ROLE[action])
 }
+
+/**
+ * Törölhető-e az import: csak amíg semmi nem töltődött be belőle. A betöltött
+ * (vagy már visszavont) import sor-előzménye a visszavonás és az eredet alapja.
+ */
+const NOT_DISCARDABLE = new Set(['loading', 'published', 'rolled_back'])
+
+export function canDiscardImport(state: string): boolean {
+  return !NOT_DISCARDABLE.has(state)
+}
