@@ -3,6 +3,7 @@ import { productionGatewayTokenDeps } from '@/auth/gateway-token-deps'
 import { clientPolicyDeps } from '@/auth/client-policy-deps'
 import { heartbeatBodySchema, recordHeartbeat } from '@/domain/client-policy/client-install'
 import { verifyGatewayToken } from '@/domain/model-gateway-token/gateway-token'
+import { isReservedInstallId } from '@/domain/platform-chat/gateway'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,6 +14,8 @@ export async function POST(request: Request): Promise<Response> {
     const status = verified.code === 'key_missing' ? 503 : verified.code === 'forbidden' ? 403 : 401
     return NextResponse.json({ error: verified.code }, { status })
   }
+  // #1004: a platform-chat szerveroldali install-ja nem Guard — heartbeatet nem fogad.
+  if (isReservedInstallId(verified.claims.installId)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const body = heartbeatBodySchema.safeParse(await request.json().catch(() => null))
   if (!body.success) return NextResponse.json({ error: 'bad_request' }, { status: 400 })
 

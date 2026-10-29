@@ -128,7 +128,7 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'This MCP tool changes data, but the MCP connector is bound read-only on this agent — set it to write and publish',
   mcp_tool_not_approved:
     'This tool is not approved on the MCP connector — call mcp_list_tools for the approved tools; an admin must approve new ones',
-  mcp_domain_not_allowed: 'The platform administrator has not allowed this MCP server domain',
+  mcp_domain_not_allowed: 'This MCP call is not allowed to leave the connector’s own address',
   mcp_auth_failed: 'The MCP server rejected the credentials',
   mcp_server_error: 'The MCP server request failed',
   mcp_tool_error: 'The MCP tool returned an error',

@@ -18,15 +18,13 @@ import { GoogleApiOAuthControlPanel } from '@/app/control-plane/system/google-ap
 import { GoogleAdsDeveloperTokenPanel } from '@/app/control-plane/system/google-ads-developer-token-panel'
 import { GoogleDrivePickerControlPanel } from '@/app/control-plane/system/google-drive-picker-control-panel'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
-import { McpAllowedHostsPanel } from '@/app/control-plane/system/mcp-allowed-hosts-panel'
-import { getMcpAllowedHosts } from '@/app/actions/mcp-connectors'
 import { hasMinimumPlatformRole } from '@/lib/tenant-policy'
 
 export default async function PlatformSettingsPage() {
   const ctx = await getAuthContext()
   const canEdit = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'platform_operator')
   const canEditChain = hasMinimumPlatformRole(ctx?.platformRoles ?? [], 'superadmin')
-  const [gmail, drive, googleApi, googleAdsToken, picker, nav, fallbackChain, jwtKey, mcpHosts] = await Promise.all([
+  const [gmail, drive, googleApi, googleAdsToken, picker, nav, fallbackChain, jwtKey] = await Promise.all([
     getPlatformGoogleOAuth(),
     getPlatformGoogleDriveOAuthConfig(),
     getPlatformGoogleApiOAuth(),
@@ -35,7 +33,6 @@ export default async function PlatformSettingsPage() {
     getPlatformNavSoftware(),
     getGlobalFallbackChain(),
     getModelGatewayJwtKeyStatus(),
-    getMcpAllowedHosts(),
   ])
 
   const t = await getTranslations('ControlPlane.platformSettings')
@@ -101,15 +98,6 @@ export default async function PlatformSettingsPage() {
               <NavOnlineInvoiceControlPanel initial={nav.data} canEdit={canEdit} />
             ) : (
               <p className="text-sm text-coral-deep">{nav.error}</p>
-            ),
-          },
-          {
-            id: 'mcp-hosts',
-            label: t('mcpHosts'),
-            content: mcpHosts.success ? (
-              <McpAllowedHostsPanel initial={mcpHosts.data.hosts} canEdit={canEditChain} />
-            ) : (
-              <p className="text-sm text-coral-deep">{mcpHosts.error}</p>
             ),
           },
           {

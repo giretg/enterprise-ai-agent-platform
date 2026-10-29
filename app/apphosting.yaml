@@ -175,4 +175,14 @@ env:
     secret: MCP_REQUEST_STATE_KEY
     availability:
       - RUNTIME
+  # #1004 platform-chat: a worker (Cloud Run) címe és a vele közös chat-token titok.
+  # Worker deploy: ops/platform-chat/deploy.sh. A titkot a worker is olvassa (ugyanaz a secret).
+  - variable: PLATFORM_CHAT_WORKER_URL
+    value: "https://platform-chat-j7drz42rma-ez.a.run.app"
+    availability:
+      - RUNTIME
+  - variable: PLATFORM_CHAT_TOKEN_SECRET
+    secret: PLATFORM_CHAT_TOKEN_SECRET
+    availability:
+      - RUNTIME
 

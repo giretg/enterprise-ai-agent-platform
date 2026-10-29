@@ -36,7 +36,7 @@
 - Két fix eszköz a tenant-MCP-n: `mcp_list_tools` és `mcp_call` (D1).
 - Olvasó eszköz azonnal fut; író / veszélyes eszköz a meglévő jóváhagyási sorba kerül (`GatewayOperation`) (D3).
 - Az eszközlista verziózva befagy; a szerver változása eltérés-nézetet és újrajóváhagyást kér (D4).
-- Platform-admin által kezelt MCP-domain allowlist (D8).
+- A tenant-admin a connector létrehozásával engedélyezi a szervert; a hívás a connector hostjára van pinelve (D8). SSRF-őr marad (D10).
 - Teljes `audit_log`: connector, belső eszköznév, kimenetel, acting user.
 
 ### 1.2 Out of scope — v1
@@ -66,7 +66,7 @@ A külső MCP-szerver **adatforrás, nem bizalmi fél**: minden hívás ugyanazo
 | Felhasználónkénti grant | `connector-grant/connector-grant-service.ts` (generikus Authorization Code + PKCE S256, `config.oauth.authUrl/tokenUrl/clientId`), `ConnectorGrant`, `grant-token-vault.ts`, `resolveDelegatedToken`, `authorizationLinkFields` | A felderítés csak kitölti a `config.oauth`-t; a flow, a callback és a „hozzáférés megadása" link már működik. |
 | Titok | `connector/connector-secret-store.ts`, `Connector.secretAlias` | `service` módú token. |
 
-**Az egyetlen séma-változás:** `mcp` érték a `ConnectorType` enumba (+ a D8 allowlist, ha nem platform-settingsben tároljuk — lásd D8).
+**Az egyetlen séma-változás:** `mcp` érték a `ConnectorType` enumba.
 
 ## 3. Architektúra
 
@@ -107,7 +107,7 @@ kliens → /api/mcp/{tenant} tools/call mcp_call
   → definíció-pin, agent-hozzáférés (meglévő)
   → authorizeToolCall: agent–connector kötés, accessMode, grant (meglévő)
   → aktív capability-set + resolveMcpToolRisk (új)
-  → domain élő az allowlistben? (új, D8)
+  → hívás a connector hostjára pinelve? (D8)
   → token: service → secretAlias | user_delegated → resolveDelegatedToken (meglévő)
   → handlers/mcp.ts: SDK Client + guardEgressUrl-os fetch → tools/call (új)
   → eredmény: külső-adat jelölés + méretkorlát → audit_log (meglévő minta)
@@ -138,7 +138,7 @@ Háttérszinkron (és `list_changed` értesítés esetén azonnali lekérés) ú
 *Miért:* a jóváhagyás eszköznévre szól; automatikus átvétellel a szerver holnap betolhatna egy `delete_everything` eszközt.
 
 **D5 — Felhasználónkénti bejelentkezés már az első kiadásban.**
-`authMode = user_delegated` esetén minden felhasználó saját `ConnectorGrant`-tel hív. Létrehozáskor a platform a szerver `401 WWW-Authenticate` válaszából felderíti az authorization servert (RFC 9728 → RFC 8414), és kitölti a `config.oauth` mezőit (`authUrl`, `tokenUrl`, `scopes`, `resource`). A `clientId` két úton jön: az admin megadja (szállítónál regisztrált kliens), vagy — ha a szerver támogatja — a domain jóváhagyásakor egyszer, emberi megerősítéssel lefut a DCR, és az eredmény a domainhez tárolódik (D8).
+`authMode = user_delegated` esetén minden felhasználó saját `ConnectorGrant`-tel hív. Létrehozáskor a platform a szerver `401 WWW-Authenticate` válaszából felderíti az authorization servert (RFC 9728 → RFC 8414), és kitölti a `config.oauth` mezőit (`authUrl`, `tokenUrl`, `scopes`, `resource`). A `clientId` két úton jön: az admin megadja (szállítónál regisztrált kliens), vagy — ha a szerver támogatja — a connector létrehozásakor egyszer, emberi megerősítéssel lefut a DCR.
 A token-kérésben a `resource` paraméter a szerver kanonikus címe (MCP auth-spec követelmény), így a token csak erre a szerverre szól.
 Hiányzó grant esetén a hívás a meglévő `authorizationLinkFields` választ adja („Add meg a hozzáférést: …"), nem néma hibát. Lejárt / visszavont grant ugyanígy.
 **Acting user nélkül nem hívható, és nem esik vissza közös fiókra.**
@@ -151,17 +151,16 @@ Nincs „megbízható MCP-szerver" kapcsoló.
 **D7 — Az eszközleírás is külső szöveg.**
 A leírást a kliens modellje olvassa az `mcp_list_tools` válaszában — ez prompt-injektálási felület. Ezért ugyanazt a külső-adat jelölést kapja, mint az eredmény (D6), hosszkorláttal; az admin az import-képernyőn **a teljes leírást** látja jóváhagyás előtt, és a leírás változása a D4 szerint újrajóváhagyás-köteles.
 
-**D8 — Az MCP-domaint platform-admin engedélyezi, domainenként egyszer.**
-Tenant-admin csak engedélyezett hosztú szerverhez köthet connectort; az ellenőrzés a hívásnál is lefut, így a visszavonás azonnal leállítja a ráépülő connectorokat. Wildcard nincs.
-Tárolás: az első szeletben platform-szintű beállítás (`domain/platform-settings`, host-lista + opcionális DCR-eredmény hostonként), új tábla nélkül. Saját tábla és tenant-oldali „kérelmezés" gomb akkor, ha a kérések száma indokolja.
-*Miért:* egy új szerver új adatkimeneti cél; nincs gépi jel a megbízhatóságáról, de connectoronkénti platform-admin jóváhagyás visszahozná a napokat.
+**D8 — A tenant-admin dönt a MCP-szerverről; a hívás a connector saját hostjára van pinelve.**
+A connector létrehozása a tenant-admin engedélye — ugyanúgy, mint egy HTTP API kapcsolatnál. Platform-admin allowlist nincs. Futásidőben a kliens csak a connector `serverUrl` hostjára mehet; a felderített OAuth-végpontok a saját hostjukra pinelve, SSRF-őr mögött (D10). Visszavonás = a connector archiválása. Wildcard nincs.
+*Miért:* egy új szerver a cég saját adatkimeneti döntése. A platform-admin kapu szűk keresztmetszet volt, és a HTTP API-nál sem volt.
 
 **D9 — Sampling, elicitation, roots: fail-closed.**
 A kliens-capability-k között nem hirdetjük; ha a szerver mégis kéri, hibával elutasítjuk és auditáljuk.
 *Miért:* a sampling a mi modell-keretünket költené, és megkerülné a kapukat.
 
 **D10 — Kötelező egress-őr.**
-A connection-teszt, az OAuth-felderítés (a metadata-URL-ek is!), a token-csere és a futás minden HTTP-kérése a `guardEgressUrl`-on megy át, feloldás utáni privát-IP ellenőrzéssel, és csak az allowlistben szereplő hosztra (D8). Átirányítás nem követhető automatikusan más hosztra.
+A connection-teszt, az OAuth-felderítés (a metadata-URL-ek is!), a token-csere és a futás minden HTTP-kérése a `guardEgressUrl`-on megy át, feloldás utáni privát-IP ellenőrzéssel, a connector (illetve a felderített OAuth-végpont) saját hostjára pinelve (D8). Átirányítás nem követhető automatikusan más hosztra.
 *Miért:* a címet tenant-admin adja meg, a metadata-dokumentum pedig külső fél által írt URL-eket tartalmaz; enélkül vak SSRF. Ez a hiba a repóban már többször előfordult.
 
 **D11 — Mellékhatásos hívás nem ismétlődik automatikusan.**
@@ -201,7 +200,7 @@ enum ConnectorType {
 
 Közérthető nyelven, minden lépésnél rövid magyarázattal:
 
-1. **Szerver megadása.** Cím + „Kinek a nevében fusson?" (*Közös céges fiókkal* / *Mindenki a saját fiókjával*). Az „Ellenőrzés" gomb: *„A szerver 12 eszközt kínál."* Hibák emberi nyelven: *„A cím nem érhető el"*, *„A token nem érvényes"*, *„Ez a cím belső hálózatra mutat, ezért nem engedélyezett"*, *„Ezt a szolgáltatót még nem engedélyezte a platform-adminisztrátor"*.
+1. **Szerver megadása.** Cím + „Kinek a nevében fusson?" (*Közös céges fiókkal* / *Mindenki a saját fiókjával*). Az „Ellenőrzés" gomb: *„A szerver 12 eszközt kínál."* Hibák emberi nyelven: *„A cím nem érhető el"*, *„A token nem érvényes"*, *„Ez a cím belső hálózatra mutat, ezért nem engedélyezett"*.
    - Saját fiókos módban az ellenőrzéshez az admin a saját fiókjával egyszer belép.
 2. **Eszközök átnézése.** Táblázat: név, teljes leírás, paraméterek, javasolt kockázat. Az admin pipál és megerősít. Fejléc: *„A leírásokat a külső szolgáltató írta. Ezt fogja látni az AI munkatárs — olvasd át."*
 3. **Kipróbálás.** Egy olvasó eszköz valódi futtatása, a válasz megjelenítésével, mielőtt bármely agent hozzáférne.
@@ -221,7 +220,7 @@ Az 1–2. szelet együtt adja az első kiadást (mindkét auth-mód).
 | | WP-2 | Migráció: `ConnectorType.mcp`. `tools/list` → capability-set normalizáló + hash; import `ConnectorSpecSource`/`ConnectorSpecVersion`-be. |
 | | WP-3 | `mcp_list_tools` + `mcp_call` az `ENTERPRISE_TOOLS`-ba, `tool-definitions.ts` sémák, `authorizeToolCall` követelmény (`connectorType: 'mcp'`), `handlers/mcp.ts`, `tools/call` allowlist, Hermes katalógus, `tool-ui-labels`. |
 | | WP-4 | Kapu: `resolveMcpToolRisk`, írás-ág az `invokeEnterpriseTool`-ban, végrehajtó a `gateway-operation-service`-ben (`executeMcpTool`), jóváhagyó-kártya összefoglaló. |
-| | WP-5 | D8 allowlist (platform-settings) + ellenőrzés létrehozáskor és hívásonként. |
+| | WP-5 | D8: connector-host pin létrehozáskor és hívásonként; SSRF-őr (D10). |
 | | WP-6 | Admin-UI §6 1–4. lépés, `service` mód (token a secret store-ba), kipróbálás, üres állapot, hu/en szövegek. |
 | **2 — Saját fiókos MCP** | WP-7 | OAuth-felderítés (SDK `client/auth`, egress-őr mögött) → `config.oauth`; `clientId` admin-mezőből vagy domain-szintű DCR-ből; `resource` paraméter a `connector-grant-service` auth- és token-kérésében. |
 | | WP-8 | `user_delegated` út: `resolveDelegatedToken` bekötése, acting user nélküli elutasítás, grant-hiány / lejárt grant link-válasz, „Kapcsolt fiókok" megjelenés. |
@@ -237,7 +236,7 @@ Az 1–2. szelet együtt adja az első kiadást (mindkét auth-mód).
 - [ ] `danger` eszköz az agent írási módjától függetlenül jóváhagyás-köteles — regressziós teszt.
 - [ ] A szerver eszközlistájának változása jóváhagyás nélkül nem változtatja meg a hívható eszközöket — regressziós teszt.
 - [ ] Belső IP-re / metadata-végpontra mutató szerver-cím, OAuth-metadata URL vagy átirányítás elutasítva, DNS-rebinding után is — regressziós teszt.
-- [ ] Nem engedélyezett domainre connector nem hozható létre; domain visszavonása után a meglévő connector hívása elutasítva — regressziós teszt.
+- [ ] Belső/tiltott hostokra connector nem hozható létre; a hívás a connector saját hostján kívülre nem mehet — regressziós teszt.
 - [ ] `user_delegated` connector acting user nélkül nem hívható, és nem esik vissza közös fiókra — regressziós teszt.
 - [ ] Két felhasználó ugyanazon a `user_delegated` connectoron a saját grantjével hív; egyikük tokenje sem jelenik meg a másik hívásában — regressziós teszt.
 - [ ] Grant nélküli hívás „hozzáférés megadása" linket ad — regressziós teszt.
@@ -249,10 +248,10 @@ Az 1–2. szelet együtt adja az első kiadást (mindkét auth-mód).
 ## 9. Fennmaradó kockázatok
 
 1. **A besorolás emberi ítélet.** Egy `update_record` lehet ártalmatlan vagy visszafordíthatatlan; a javaslat és a lefelé-módosítás megerősítése segít, a valódi alj a jóváhagyási sor.
-2. **A domain-allowlist szűk keresztmetszet lehet.** Mérendő a kérés→döntés idő; ha napok, a D8 granularitását újra kell nézni.
+2. **A tenant-admin választása a cég adatkimeneti döntése.** A platform nem bírálja felül; a SSRF-őr (D10) a belső hálózatot továbbra is zárva tartja.
 3. **D1 ára:** a kliens modellje a belső sémát csak `mcp_list_tools` után látja. Ha ez sok hibás hívást okoz, mérjük és nyissuk újra.
 4. **Hívásonkénti kapcsolat** (`initialize` minden hívásnál) lassabb; ha a késleltetés zavaró, session-újrahasznosítás jöhet — a `Mcp-Session-Id` felhasználónként külön kezelendő.
-5. **DCR-kliensek életciklusa:** a domain-szintű regisztrált kliens lejárhat vagy visszavonódhat; ilyenkor az új grant-ok hibát adnak, amíg a platform-admin újra nem regisztrál.
+5. **DCR-kliensek életciklusa:** a domain-szintű regisztrált kliens lejárhat vagy visszavonódhat; ilyenkor az új grant-ok hibát adnak, amíg a tenant-admin újra nem hozza létre a kapcsolatot.
 
 ## 10. Kapcsolódás
 

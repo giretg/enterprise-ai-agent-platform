@@ -45,7 +45,12 @@ import {
   ConnectorConfigParseError,
   type ConnectorConfig,
 } from './connector-config'
-import { validateDraftConfig, withCatalogTrustedEgress, type ValidationResult } from './draft-validator'
+import {
+  declaredEgressHosts,
+  validateDraftConfig,
+  withCatalogTrustedEgress,
+  type ValidationResult,
+} from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
@@ -84,6 +89,16 @@ export interface ProvisioningDeps {
   drafts: ConnectorDraftRepository
   /** A tenant engedélyezett egress-célhostjai (deny-by-default egress-policy, §7.2/§14.2). */
   resolveEgressAllowlist: (tenantId: string | null) => Promise<string[]>
+  /**
+   * Bérlő egress-allowlistjének bővítése (aktiváláskor a konnektor deklarált címeire).
+   * Ha nincs bekötve, az aktiválás nem vesz fel címet automatikusan.
+   */
+  extendEgressAllowlist?: (
+    tenantId: string | null,
+    host: string,
+    actorId: string,
+    provenance?: { draftId?: string },
+  ) => Promise<{ ok: true; added: boolean; host: string } | { ok: false; reason: string }>
   /** Banki preset: allowlist-only egress + minden aktiválás dual-control (§7.3/§14). */
   resolveBankPreset: (tenantId: string | null) => Promise<boolean>
   /** Sandbox connection-test adapter (§8.4); ha nincs bekötve → a teszt nem sikeresnek minősül. */
@@ -490,6 +505,10 @@ export class ProvisioningService {
     const usesPlatformGoogleApiOAuth = isPlatformGoogleApiConnectorTemplateKey(
       readConnectorTemplateKey(draft.connector.config),
     )
+
+    if (!isGmail && !isGoogleDrive) {
+      draft = await this.allowDeclaredEgressHosts(draft, actor, user.userId)
+    }
 
     // Előfeltételek (§8.5, P5): egress-allowlist passed (write/scope warned maradhat) +
     // sikeres sandbox-teszt + approved review + (secretAlias VAGY apiKey).
@@ -1427,6 +1446,51 @@ export class ProvisioningService {
    * Katalógus-sablon: a hostok és a config már bízott, a kapukat a rendszer
    * zárja — a tenant adminnak csak be kell kapcsolnia.
    */
+  /**
+   * Aktiválás = jóváhagyás: a konnektor deklarált kimenő címei bekerülnek a bérlő
+   * allowlistjére, külön megerősítés nélkül. Banki preset alatt marad a kézi
+   * host-jóváhagyás. A bővítés után a validáció újrafut, hogy az aktiválási kapu
+   * már az új allowlisttel döntsön.
+   */
+  private async allowDeclaredEgressHosts(
+    draft: Awaited<ReturnType<ProvisioningService['loadDraftForTenant']>>,
+    actor: ProvisioningActor,
+    approverId: string,
+  ) {
+    if (!this.deps.extendEgressAllowlist) return draft
+    if (await this.deps.resolveBankPreset(actor.tenantId)) return draft
+
+    const config = parseStoredConfig(draft.connector.config)
+    const allowed = new Set(
+      (await this.deps.resolveEgressAllowlist(actor.tenantId)).map((h) => h.toLowerCase()),
+    )
+    const missing = declaredEgressHosts(config).filter((h) => !allowed.has(h.toLowerCase()))
+    if (missing.length === 0) return draft
+
+    for (const host of missing) {
+      const res = await this.deps.extendEgressAllowlist(actor.tenantId, host, approverId, {
+        draftId: draft.id,
+      })
+      if (!res.ok) {
+        throw new ProvisioningError(
+          'EGRESS_HOST_REJECTED',
+          `a(z) ${host} cím nem vehető fel a kimenő-cím listára (${res.reason})`,
+        )
+      }
+      if (res.added) {
+        await this.appendAudit(actor, 'connector.egress_allowlist.extend', draft.connectorId, {
+          draft_id: draft.id,
+          host: res.host,
+          source: 'activation',
+          policyDecision: 'allowed',
+        })
+      }
+    }
+
+    await this.validateConnectorDraft({ draftId: draft.id }, actor)
+    return this.loadDraftForTenant(draft.id, actor)
+  }
+
   private async ensureCatalogTemplateGates(draftId: string, actor: ProvisioningActor) {
     let draft = await this.loadDraftForTenant(draftId, actor)
     const validation = draft.validationResult as ValidationResult | null

@@ -103,6 +103,38 @@ enum CustomerPromiseStatus {
   missed
 }
 
+enum ScheduledTaskStatus {
+  active
+  paused
+  archived
+}
+
+enum ScheduledTaskRunStatus {
+  running
+  succeeded
+  failed
+  missed
+}
+
+enum ScheduledTaskKind {
+  personal
+  team
+  shared
+}
+
+enum ScheduledTaskAudience {
+  selected
+  agent_operators
+}
+
+enum ScheduledTaskMemberState {
+  invited
+  active
+  needs_reconsent
+  declined
+  left
+}
+
 enum HandoffStatus {
   open
   accepted
@@ -386,6 +418,8 @@ model User {
   workFilesWritten            WorkFile[]                  @relation("WorkFileLastWriter")
   projectMemoryItems          ProjectMemoryItem[]         @relation("ProjectMemoryWithUser")
   customerPromises            CustomerPromise[]
+  scheduledTasksOwned         ScheduledTask[]             @relation("ScheduledTaskOwner")
+  scheduledTaskMemberships    ScheduledTaskMember[]
   handoffsCreated             Handoff[]                   @relation("HandoffCreatedBy")
   handoffsReceived            Handoff[]                   @relation("HandoffToUser")
   reviewedContactInquiries    ContactInquiry[]            @relation("ContactInquiryReviewedBy")
@@ -466,9 +500,11 @@ model Tenant {
   workFiles                  WorkFile[]
   projectMemoryItems         ProjectMemoryItem[]
   customerPromises           CustomerPromise[]
+  scheduledTasks             ScheduledTask[]
   handoffs                   Handoff[]
   clientPolicies             ClientPolicy[]
   clientInstalls             ClientInstall[]
+  platformChatDailyUsage     PlatformChatDailyUsage[]
   clientMachineFloors        ClientMachineFloor[]
   aiInteractionEvents        AiInteractionEvent[]
   gatewaySurrogates          GatewaySurrogate[]
@@ -599,6 +635,8 @@ model Agent {
   miniAppGuide               String          @default("") @map("mini_app_guide")
   /// „Hová mit ments” tábla agentenkénti felülírása: { sor-kulcs: saját szabály }. Publikáláskor a snapshot.placementOverrides-ba fagy.
   placementOverrides         Json?           @map("placement_overrides")
+  /// Elérhető-e a beépített platform-chatben (#1004 D3); a tenant-kapcsoló is kell hozzá.
+  platformChatEnabled        Boolean         @default(true) @map("platform_chat_enabled")
   createdAt                  DateTime        @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime        @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?       @map("retired_at") @db.Timestamptz
@@ -612,6 +650,7 @@ model Agent {
   conversationSkillProposals ConversationSkillProposal[]
   projectMemoryItems         ProjectMemoryItem[]
   customerPromises           CustomerPromise[]
+  scheduledTasks             ScheduledTask[]
   handoffsSent               Handoff[]                   @relation("HandoffFromAgent")
   handoffsReceived           Handoff[]                   @relation("HandoffToAgent")
   miniApps                   MiniApp[]
@@ -1525,6 +1564,8 @@ model ClientInstall {
   policyVersion   String   @map("policy_version")
   guardVersion    String   @map("guard_version")
   hermesVersion   String   @map("hermes_version")
+  /// `hermes` = Guard heartbeat; `platform_chat` = szerveroldali platform-chat (#1004 WP-3), Guard-mezői üresek.
+  kind            String   @default("hermes")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1532,6 +1573,20 @@ model ClientInstall {
 
   @@unique([tenantId, userId, installId])
   @@map("client_installs")
+}
+
+/// Platform-chat napi modell-költés (#1004 D14): tenantonként és budapesti naponként, a gateway írja.
+model PlatformChatDailyUsage {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  day       DateTime @db.Date
+  costUsd   Decimal  @default(0) @map("cost_usd") @db.Decimal(12, 6)
+  calls     Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, day])
+  @@map("platform_chat_daily_usage")
 }
 
 /// A Guard által regisztrált Hermes-session; a Model Gateway csak ilyen sessionnek ad céges modellt.
@@ -1620,6 +1675,117 @@ model CustomerPromise {
   @@index([tenantId, ownerUserId, status, dueAt])
   @@index([tenantId, agentId, status, dueAt])
   @@map("customer_promises")
+}
+
+/// #640 ütemezett feladat: a platform a kanonikus példány, a harness a saját natív
+/// ütemezőjében egy vékony csonkot futtat, ami `platform.scheduled_task.run_start`-ot hív.
+model ScheduledTask {
+  id               String                @id @default(uuid()) @db.Uuid
+  tenantId         String                @map("tenant_id") @db.Uuid
+  agentId          String                @map("agent_id") @db.Uuid
+  /// Egyéni feladatnál akinek a nevében fut; csapat/megosztott feladatnál aki szerkesztheti.
+  ownerUserId      String                @map("owner_user_id") @db.Uuid
+  kind             ScheduledTaskKind     @default(personal)
+  createdById      String                @map("created_by") @db.Uuid
+  title            String
+  instruction      String                @db.Text
+  /// 5 mezős cron, a `timezone`-ban értve.
+  cron             String
+  timezone         String
+  graceMinutes     Int?                  @map("grace_minutes")
+  targets          String[]
+  audience         ScheduledTaskAudience @default(selected)
+  ownerSeesResults Boolean               @default(false) @map("owner_sees_results")
+  /// Minden szerkesztés +1; a tagok elfogadása (D15) ehhez a verzióhoz kötött.
+  version          Int                   @default(1)
+  scheduleHash     String                @map("schedule_hash")
+  status           ScheduledTaskStatus   @default(active)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant        Tenant                      @relation(fields: [tenantId], references: [id])
+  agent         Agent                       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  owner         User                        @relation("ScheduledTaskOwner", fields: [ownerUserId], references: [id])
+  installations ScheduledTaskInstallation[]
+  members       ScheduledTaskMember[]
+  runs          ScheduledTaskRun[]
+
+  @@index([tenantId, ownerUserId, status])
+  @@index([tenantId, agentId])
+  @@map("scheduled_tasks")
+}
+
+model ScheduledTaskInstallation {
+  id                    String    @id @default(uuid()) @db.Uuid
+  taskId                String    @map("task_id") @db.Uuid
+  /// Akinek a harness-ében telepítve van (csapat/megosztott feladatnál tagonként külön).
+  userId                String    @map("user_id") @db.Uuid
+  clientType            String    @map("client_type")
+  clientInstanceId      String    @map("client_instance_id")
+  externalId            String    @map("external_id")
+  /// A háromutas összevetés alapja: amit legutóbb ténylegesen telepítettünk.
+  installedScheduleHash String    @map("installed_schedule_hash")
+  installedStubHash     String    @map("installed_stub_hash")
+  installedVersion      Int       @map("installed_version")
+  locallyDisabled       Boolean   @default(false) @map("locally_disabled")
+  lastSeenAt            DateTime  @map("last_seen_at") @db.Timestamptz
+  lastSyncAt            DateTime? @map("last_sync_at") @db.Timestamptz
+  removedAt             DateTime? @map("removed_at") @db.Timestamptz
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, clientType, clientInstanceId, externalId])
+  @@index([taskId, removedAt])
+  @@index([userId, clientType, clientInstanceId])
+  @@map("scheduled_task_installations")
+}
+
+/// Csapat- és megosztott feladat tagjai (a tulajdonos is tag), illetve egyéni feladatnál
+/// a más által létrehozott feladat beleegyezése (K8).
+model ScheduledTaskMember {
+  id              String                   @id @default(uuid()) @db.Uuid
+  taskId          String                   @map("task_id") @db.Uuid
+  userId          String                   @map("user_id") @db.Uuid
+  state           ScheduledTaskMemberState @default(invited)
+  acceptedVersion Int?                     @map("accepted_version")
+  invitedById     String                   @map("invited_by") @db.Uuid
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime                 @updatedAt @map("updated_at") @db.Timestamptz
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User          @relation(fields: [userId], references: [id])
+
+  @@unique([taskId, userId])
+  @@index([userId, state])
+  @@map("scheduled_task_members")
+}
+
+model ScheduledTaskRun {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  taskId              String                 @map("task_id") @db.Uuid
+  /// Szerver-számolt ütemezési időpont.
+  slot                DateTime               @db.Timestamptz
+  installationId      String?                @map("installation_id") @db.Uuid
+  runnerUserId        String                 @map("runner_user_id") @db.Uuid
+  /// Megosztott feladatnál a futtató userId-ja, egyébként "".
+  claimKey            String                 @default("") @map("claim_key")
+  taskVersion         Int                    @map("task_version")
+  definitionVersionId String?                @map("definition_version_id") @db.Uuid
+  status              ScheduledTaskRunStatus
+  /// A futás indításakor elfogadott megosztás; korábbi privát eredményt nem tesz láthatóvá.
+  ownerSeesResults    Boolean                @default(false) @map("owner_sees_results")
+  catchUp             Boolean                @default(false) @map("catch_up")
+  summary             String?                @db.Text
+  startedAt           DateTime               @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt          DateTime?              @map("finished_at") @db.Timestamptz
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// D4: egy időpont = egy futás (megosztottnál tagonként egy).
+  @@unique([taskId, slot, claimKey])
+  @@index([runnerUserId, status, startedAt])
+  @@map("scheduled_task_runs")
 }
 
 /// Mini app láthatósága (#967 D11). `agents`: van aktív MiniAppShare; `organization` ettől függetlenül mindenkinek.

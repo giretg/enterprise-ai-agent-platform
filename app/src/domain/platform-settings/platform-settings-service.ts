@@ -27,8 +27,6 @@ import {
 
 export const PROVISIONING_EGRESS_ALLOWLIST_KEY = 'provisioning.egress_allowlist'
 export const MODEL_POLICY_KEY = 'model.policy'
-/** #395 D8: platform-admin által engedélyezett MCP-szerver hostok (wildcard nincs). */
-export const MCP_ALLOWED_HOSTS_KEY = 'mcp.allowed_hosts'
 const EGRESS_GLOBAL_BUCKET = '__global__'
 type EgressAllowlistStore = Record<string, string[]>
 
@@ -96,29 +94,6 @@ export class PlatformSettingsService {
     )
 
     return { ok: true, added: true, host: normalized, hosts: next }
-  }
-
-  async getMcpAllowedHosts(): Promise<string[]> {
-    const raw = await this.settings.get(MCP_ALLOWED_HOSTS_KEY)
-    return Array.isArray(raw)
-      ? raw.filter((h): h is string => typeof h === 'string').map((h) => h.toLowerCase())
-      : []
-  }
-
-  async setMcpHostAllowed(
-    host: string,
-    allowed: boolean,
-    actorId: string,
-  ): Promise<{ ok: false; reason: 'invalid_host' | 'forbidden_host' } | { ok: true; host: string; hosts: string[] }> {
-    const normalized = normalizeEgressHost(host)
-    if (!normalized || normalized.includes('*')) return { ok: false, reason: 'invalid_host' }
-    if (matchForbiddenHost(normalized)) return { ok: false, reason: 'forbidden_host' }
-    const current = await this.getMcpAllowedHosts()
-    const hosts = allowed
-      ? [...new Set([...current, normalized])].sort()
-      : current.filter((h) => h !== normalized)
-    await this.settings.set(MCP_ALLOWED_HOSTS_KEY, hosts as unknown as Prisma.InputJsonArray, actorId)
-    return { ok: true, host: normalized, hosts }
   }
 
   /** Tenant engedett modell-listája (#768) — `model.policy` kulcs alatt tenantId szerint. */

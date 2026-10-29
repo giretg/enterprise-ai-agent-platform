@@ -1,6 +1,7 @@
 'use client'
 
 import { useSyncExternalStore, type ReactNode } from 'react'
+import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
@@ -24,10 +25,13 @@ function readClientMounted() {
 export function ControlPlaneRoot({
   embedFromServer,
   navItems = [],
+  chatAvailable = false,
   children,
 }: {
   embedFromServer: boolean
   navItems?: NavEntry[]
+  /** #1004: a Chat gomb csak bekapcsolt tenantnál és elérhető munkatárssal látszik. */
+  chatAvailable?: boolean
   canCreateAgent?: boolean
   children: ReactNode
 }) {
@@ -47,7 +51,7 @@ export function ControlPlaneRoot({
     )
   }
   return (
-    <ControlPlaneShell key="shell" navItems={navItems}>
+    <ControlPlaneShell key="shell" navItems={navItems} chatAvailable={chatAvailable}>
       {children}
     </ControlPlaneShell>
   )
@@ -55,9 +59,11 @@ export function ControlPlaneRoot({
 
 export function ControlPlaneShell({
   navItems,
+  chatAvailable = false,
   children,
 }: {
   navItems: NavEntry[]
+  chatAvailable?: boolean
   children: React.ReactNode
 }) {
   const pathname = usePathname()
@@ -75,6 +81,19 @@ export function ControlPlaneShell({
       headerExtra={
         headerReady ? (
           <div className="flex items-center gap-1.5 sm:gap-2">
+            {chatAvailable ? (
+              <Link
+                href="/control-plane/chat"
+                title="Beszélgetés a munkatársakkal itt a platformon"
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                  pathname?.startsWith('/control-plane/chat')
+                    ? 'bg-coral text-white'
+                    : 'border border-line bg-panel text-ink hover:border-coral/50'
+                }`}
+              >
+                Chat
+              </Link>
+            ) : null}
             <LocaleSwitcher />
             <TenantSwitcher />
           </div>

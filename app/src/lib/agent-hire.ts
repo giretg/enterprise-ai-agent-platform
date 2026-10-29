@@ -33,14 +33,13 @@ export type HireTone = {
 export const DEFAULT_HIRE_TONE: HireTone = { address: 'informal', length: 'short', language: 'match' }
 
 export const MAX_HIRE_CARDS = 12
-const MAX_CARD_LENGTH = 300
 
-/** Kártyák tisztítása: üres és ismétlődő sorok ki, hossz- és darabkorlát. */
+/** Kártyák tisztítása: üres és ismétlődő sorok ki, darabkorlát. A szöveget nem vágjuk le. */
 export function normalizeHireCards(cards: readonly string[]): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const raw of cards) {
-    const card = raw.replace(/\s+/g, ' ').trim().slice(0, MAX_CARD_LENGTH)
+    const card = raw.replace(/\s+/g, ' ').trim()
     const key = card.toLowerCase()
     if (!card || seen.has(key)) continue
     seen.add(key)

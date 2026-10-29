@@ -8,8 +8,9 @@
 import { randomUUID } from 'node:crypto'
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
-import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
+import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { repositories } from '@/repositories/postgres'
 import {
   buildConnectorSecretRef,
@@ -20,6 +21,7 @@ import {
   discoverMcpOAuthMetadata,
   mcpListTools,
   McpClientError,
+  registerMcpOAuthClient,
   type McpRemoteTool,
 } from '@/domain/connector/mcp-client'
 import {
@@ -28,9 +30,7 @@ import {
   isWriteLikeToolName,
   MCP_SPEC_FORMAT,
   MCP_TOOL_RISKS,
-  mcpHostAllowed,
   mcpResultForModel,
-  mcpServerHost,
   mcpToolsHash,
   normalizeMcpTools,
   parseMcpCapabilitySet,
@@ -75,8 +75,6 @@ const trySchema = connectorIdSchema.extend({
 /** A capability-set `inputSchema`-ja `unknown` — JSON-ként tároljuk. */
 const asJson = (value: unknown) => value as Prisma.InputJsonValue
 
-const hostSchema = z.object({ host: z.string().trim().min(1).max(253), allowed: z.boolean() })
-
 /** Hibakód a kliens i18n-jének — a UI fordítja emberi nyelvre. */
 function mcpActionError(error: unknown): string {
   if (error instanceof McpClientError) {
@@ -90,6 +88,8 @@ function mcpActionError(error: unknown): string {
     if (error.code === 'unauthorized' && error.detail === 'oauth_discovery_failed') {
       return 'oauth_discovery_failed'
     }
+    if (error.code === 'unauthorized' && error.detail === 'dcr_not_supported') return 'dcr_not_supported'
+    if (error.code === 'unauthorized' && error.detail === 'dcr_failed') return 'dcr_failed'
     if (error.code === 'unauthorized') return 'unauthorized'
     if (error.code === 'too_large') return 'too_large'
     if (error.code === 'redirect_blocked') return 'redirect_blocked'
@@ -101,10 +101,11 @@ function mcpActionError(error: unknown): string {
   return 'unknown'
 }
 
-async function allowedHostsOrFail(serverUrl: string): Promise<{ hosts: string[]; host: string }> {
-  const hosts = await services.platformSettings.getMcpAllowedHosts()
-  if (!mcpHostAllowed(hosts, serverUrl)) throw new McpClientError('egress_blocked', 'mcp_domain_not_allowed')
-  return { hosts, host: new URL(serverUrl).hostname.toLowerCase() }
+/** A tenant-admin a connectorral engedélyezi a hostot; SSRF-tiltott címek kiesnek. */
+function pinnedHostOrFail(serverUrl: string): { hosts: string[]; host: string } {
+  const host = new URL(serverUrl).hostname.toLowerCase()
+  if (matchForbiddenHost(host)) throw new McpClientError('egress_blocked', 'internal_address')
+  return { hosts: [host], host }
 }
 
 type ConnectorRow = NonNullable<Awaited<ReturnType<typeof loadConnector>>>
@@ -144,7 +145,7 @@ async function adminAccessToken(connector: ConnectorRow, userId: string): Promis
 async function fetchRemoteTools(connector: ConnectorRow, userId: string): Promise<McpRemoteTool[]> {
   const config = parseMcpConnectorConfig(connector.config)
   if (!config) throw new Error('invalid_config')
-  const { host } = await allowedHostsOrFail(config.serverUrl)
+  const { host } = pinnedHostOrFail(config.serverUrl)
   const accessToken =
     connector.authMode === 'user_delegated'
       ? await adminAccessToken(connector, userId)
@@ -154,28 +155,52 @@ async function fetchRemoteTools(connector: ConnectorRow, userId: string): Promis
   return mcpListTools({ serverUrl: config.serverUrl, allowedHosts: [host], accessToken })
 }
 
+function mcpOAuthRedirectUri(): string {
+  return `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`
+}
+
+function assertHttpsPublicUrl(url: string): void {
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'https:' || matchForbiddenHost(parsed.hostname)) {
+    throw new Error('oauth_host_not_allowed')
+  }
+}
+
 /**
  * D5: az authorization server felderítése (RFC 9728 well-known vagy 401 WWW-Authenticate
- * → RFC 8414) az egress-őr mögött; a metadata minden hostja a D8 allowlisten (D10).
+ * → RFC 8414) az egress-őr mögött; client ID híján DCR (T3 Google-belépés).
  */
 async function discoverMcpOAuth(
   serverUrl: string,
-  allowedHosts: string[],
-  input: { clientId: string; scopes: string[] },
-): Promise<NonNullable<McpConnectorConfig['oauth']>> {
-  const discovered = await discoverMcpOAuthMetadata(serverUrl, allowedHosts)
-  for (const url of [discovered.authUrl, discovered.tokenUrl]) {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:' || !allowedHosts.includes(parsed.hostname.toLowerCase())) {
-      throw new Error('oauth_host_not_allowed')
-    }
+  input: { clientId?: string; scopes: string[]; clientName: string },
+): Promise<{ oauth: NonNullable<McpConnectorConfig['oauth']>; clientSecret?: string }> {
+  const discovered = await discoverMcpOAuthMetadata(serverUrl, [new URL(serverUrl).hostname.toLowerCase()])
+  for (const url of [discovered.authUrl, discovered.tokenUrl, discovered.registrationEndpoint]) {
+    if (url) assertHttpsPublicUrl(url)
+  }
+  let clientId = input.clientId?.trim() ?? ''
+  let clientSecret: string | undefined
+  if (!clientId) {
+    if (!discovered.registrationEndpoint) throw new McpClientError('unauthorized', 'dcr_not_supported')
+    const registered = await registerMcpOAuthClient({
+      authorizationServerUrl: discovered.authorizationServerUrl,
+      registrationEndpoint: discovered.registrationEndpoint,
+      redirectUri: mcpOAuthRedirectUri(),
+      clientName: input.clientName,
+      scopes: input.scopes.length > 0 ? input.scopes : discovered.scopes,
+    })
+    clientId = registered.clientId
+    clientSecret = registered.clientSecret
   }
   return {
-    authUrl: discovered.authUrl,
-    tokenUrl: discovered.tokenUrl,
-    scopes: input.scopes.length > 0 ? input.scopes : discovered.scopes,
-    clientId: input.clientId,
-    resource: serverUrl,
+    oauth: {
+      authUrl: discovered.authUrl,
+      tokenUrl: discovered.tokenUrl,
+      scopes: input.scopes.length > 0 ? input.scopes : discovered.scopes,
+      clientId,
+      resource: serverUrl,
+    },
+    ...(clientSecret ? { clientSecret } : {}),
   }
 }
 
@@ -194,21 +219,17 @@ function toolView(tool: McpToolEntry) {
 export async function listMcpConnectors() {
   try {
     const ctx = await requireTenantRole('operator')
-    const [rows, allowedHosts] = await Promise.all([
-      prisma.connector.findMany({
-        where: { tenantId: ctx.activeTenantId, type: 'mcp', lifecycleState: { not: 'archived' } },
-        include: {
-          activeSpecVersion: true,
-          specVersions: { where: { status: 'proposed' }, orderBy: { versionNo: 'desc' }, take: 1 },
-          grants: { where: { userId: ctx.user.id, status: 'active' }, select: { id: true } },
-          agentConnectors: { select: { agent: { select: { name: true } } } },
-        },
-        orderBy: { createdAt: 'desc' },
-      }),
-      services.platformSettings.getMcpAllowedHosts(),
-    ])
+    const rows = await prisma.connector.findMany({
+      where: { tenantId: ctx.activeTenantId, type: 'mcp', lifecycleState: { not: 'archived' } },
+      include: {
+        activeSpecVersion: true,
+        specVersions: { where: { status: 'proposed' }, orderBy: { versionNo: 'desc' }, take: 1 },
+        grants: { where: { userId: ctx.user.id, status: 'active' }, select: { id: true } },
+        agentConnectors: { select: { agent: { select: { name: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
     return ok({
-      allowedHosts,
       connectors: rows.map((row) => {
         const config = parseMcpConnectorConfig(row.config)
         const active = parseMcpCapabilitySet(row.activeSpecVersion?.capabilitySet)
@@ -219,7 +240,6 @@ export async function listMcpConnectors() {
           name: row.name,
           serverUrl: config?.serverUrl ?? '',
           authMode: row.authMode,
-          domainAllowed: config ? allowedHosts.includes(mcpServerHost(config)) : false,
           hasOwnGrant: row.grants.length > 0,
           usedByAgents: row.agentConnectors.map((link) => link.agent.name),
           active: active
@@ -248,7 +268,7 @@ export async function createMcpConnector(input: unknown) {
   try {
     const ctx = await requireTenantRole('admin')
     const parsed = createSchema.parse(input)
-    const { hosts, host } = await allowedHostsOrFail(parsed.serverUrl)
+    const { host } = pinnedHostOrFail(parsed.serverUrl)
     connectorId = randomUUID()
 
     let config: McpConnectorConfig = { serverUrl: parsed.serverUrl }
@@ -259,12 +279,14 @@ export async function createMcpConnector(input: unknown) {
       // „Ellenőrzés”: initialize + tools/list a megadott tokennel.
       tools = await mcpListTools({ serverUrl: parsed.serverUrl, allowedHosts: [host], accessToken: secret ?? undefined })
     } else {
-      if (!parsed.clientId) {
-        throw new Error('client_id_required')
-      }
-      secret = parsed.clientSecret || null
       const scopes = (parsed.scopes ?? '').split(/[\s,]+/).filter(Boolean)
-      config = { ...config, oauth: await discoverMcpOAuth(parsed.serverUrl, hosts, { clientId: parsed.clientId, scopes }) }
+      const oauth = await discoverMcpOAuth(parsed.serverUrl, {
+        clientId: parsed.clientId,
+        scopes,
+        clientName: parsed.name,
+      })
+      config = { ...config, oauth: oauth.oauth }
+      secret = parsed.clientSecret || oauth.clientSecret || null
     }
     if (secret) {
       await saveConnectorApiKey(connectorId, secret)
@@ -495,7 +517,7 @@ export async function tryMcpTool(input: unknown) {
     }
     const config = parseMcpConnectorConfig(connector.config)
     if (!config) return fail('invalid_config')
-    const { hosts } = await allowedHostsOrFail(config.serverUrl)
+    const { hosts } = pinnedHostOrFail(config.serverUrl)
     const result = await executeMcpTool({
       connector,
       accessToken: await adminAccessToken(connector, ctx.user.id),
@@ -547,45 +569,6 @@ export async function archiveMcpConnector(input: unknown) {
       })
     })
     return ok({ archived: true })
-  } catch (error) {
-    return fail(mcpActionError(error))
-  }
-}
-
-// ── D8: platform-admin MCP-domain allowlist ─────────────────────────────────
-
-export async function getMcpAllowedHosts() {
-  try {
-    await requirePlatformRole('platform_operator')
-    return ok({ hosts: await services.platformSettings.getMcpAllowedHosts() })
-  } catch (error) {
-    return fail(mcpActionError(error))
-  }
-}
-
-export async function setMcpHostAllowed(input: unknown) {
-  try {
-    const ctx = await requirePlatformRole('superadmin')
-    const parsed = hostSchema.parse(input)
-    const result = await services.platformSettings.setMcpHostAllowed(parsed.host, parsed.allowed, ctx.user.id)
-    if (!result.ok) {
-      return fail(result.reason === 'forbidden_host' ? 'forbidden_host' : 'invalid_host')
-    }
-    await repositories.audit.append({
-      actorType: 'human',
-      actorId: ctx.user.id,
-      agentVersion: null,
-      action: parsed.allowed ? 'platform.mcp_host.allow' : 'platform.mcp_host.revoke',
-      targetType: 'platform_setting',
-      targetId: null,
-      modelUsed: null,
-      inputRef: result.host,
-      outputRef: null,
-      policyDecision: parsed.allowed ? 'allowed' : 'denied',
-      metadata: { host: result.host },
-      tenantId: null,
-    })
-    return ok({ hosts: result.hosts })
   } catch (error) {
     return fail(mcpActionError(error))
   }

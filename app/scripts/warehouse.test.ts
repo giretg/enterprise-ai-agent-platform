@@ -10,6 +10,7 @@ import {
   assertWarehouseUpload,
   readWorkbookGrid,
   WAREHOUSE_MAX_COLUMNS,
+  WAREHOUSE_MAX_FILE_BYTES,
   WAREHOUSE_MAX_MERGE_FILL_CELLS,
   WAREHOUSE_MAX_ROWS,
   WarehouseFileError,
@@ -26,6 +27,13 @@ import { customersXlsx, ordersXlsx, zipBombXlsx } from './warehouse-fixtures'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import type { WarehouseAgentAccess } from '../src/lib/warehouse-settings'
 import { readWarehouseSettings, warehouseAccessForAgent } from '../src/lib/warehouse-settings'
+import {
+  warehouseUploadFileIssue,
+  warehouseUploadStatus,
+  WAREHOUSE_UPLOAD_MAX_BYTES,
+  WAREHOUSE_UPLOAD_NEED_FILE,
+  WAREHOUSE_UPLOAD_NEED_ROLE,
+} from '../src/lib/warehouse-labels'
 import { hermesWarehouseTools } from '../src/lib/agent-checkout'
 import { invokeWarehouseTool, toCsv, WAREHOUSE_READ_ONLY_TOOLS, WAREHOUSE_TOOLS, warehouseInputSchemas, type WarehouseMcpDeps } from '../src/domain/warehouse/mcp'
 import { WarehouseService, type WarehouseRegistry } from '../src/domain/warehouse/warehouse-service'
@@ -370,6 +378,32 @@ async function main() {
     assert.equal(canWarehouse('approver', 'operate'), false)
     assert.equal(canWarehouse('admin', 'operate'), true)
     assert.equal(canWarehouse(null, 'read'), false)
+  })
+
+  await check('Feltöltés gomb: a kliens előszűr és mindig megmondja, miért vár', () => {
+    assert.equal(WAREHOUSE_UPLOAD_MAX_BYTES, WAREHOUSE_MAX_FILE_BYTES)
+    assert.equal(warehouseUploadFileIssue({ name: 'ugyfelek.xlsx', size: 100 }), null)
+    assert.equal(warehouseUploadFileIssue({ name: 'UGYFELEK.XLSX', size: 100 }), null)
+    assert.equal(warehouseUploadFileIssue({ name: 'ugyfelek.xls', size: 100 }), 'Egyelőre csak .xlsx Excel-fájlt tudunk betölteni.')
+    assert.equal(warehouseUploadFileIssue({ name: 'ugyfelek.csv', size: 100 }), 'Egyelőre csak .xlsx Excel-fájlt tudunk betölteni.')
+    assert.equal(warehouseUploadFileIssue({ name: 'ugyfelek.xlsx', size: 0 }), 'A fájl üres.')
+    assert.equal(
+      warehouseUploadFileIssue({ name: 'ugyfelek.xlsx', size: WAREHOUSE_MAX_FILE_BYTES + 1 }),
+      'A fájl nagyobb 10 MB-nál. Bontsd kisebb részekre.',
+    )
+    assert.equal(
+      warehouseUploadStatus({ canImport: false, pending: false, fileName: null, issue: null }).text,
+      WAREHOUSE_UPLOAD_NEED_ROLE,
+    )
+    assert.equal(
+      warehouseUploadStatus({ canImport: true, pending: false, fileName: null, issue: null }).text,
+      WAREHOUSE_UPLOAD_NEED_FILE,
+    )
+    assert.equal(warehouseUploadStatus({ canImport: true, pending: true, fileName: 'a.xlsx', issue: null }).text, 'Feltöltés folyamatban.')
+    assert.equal(
+      warehouseUploadStatus({ canImport: true, pending: false, fileName: 'a.xlsx', issue: null }).text,
+      'Kiválasztva: a.xlsx. Nyomd meg a Feltöltést.',
+    )
   })
 
   await check('AC8 MCP: hamis cégazonosító a tool-argumentumban hatástalan; szerep-kapu; nincs tömb a sémában', async () => {
