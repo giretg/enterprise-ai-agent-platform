@@ -38,6 +38,7 @@ import { UpdateModelConfigForm } from '@/components/agents/update-model-config-f
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateWriteApprovalForm } from '@/components/agents/update-write-approval-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
+import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -227,15 +228,20 @@ export default async function AgentDetailPage({
             label: sectionLabel('modell'),
             description: sectionDesc('modell'),
             content: (
-              <UpdateModelConfigForm
-                agentId={agent.id}
-                policy={modelRes.data.policy}
-                globalChain={modelRes.data.globalChain}
-                config={modelRes.data.config}
-                effectivePrimary={modelRes.data.effectivePrimary}
-                maxAttempts={modelRes.data.maxAttempts}
-                canEdit={canManage}
-              />
+              <div className="space-y-4">
+                <UpdateModelConfigForm
+                  agentId={agent.id}
+                  policy={modelRes.data.policy}
+                  globalChain={modelRes.data.globalChain}
+                  config={modelRes.data.config}
+                  effectivePrimary={modelRes.data.effectivePrimary}
+                  maxAttempts={modelRes.data.maxAttempts}
+                  canEdit={canManage}
+                />
+                <Card title="Platform-chat">
+                  <UpdatePlatformChatForm agentId={agent.id} enabled={agent.platformChatEnabled} canEdit={canManage} />
+                </Card>
+              </div>
             ),
           },
         ]

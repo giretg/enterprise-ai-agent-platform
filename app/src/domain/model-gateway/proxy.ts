@@ -22,6 +22,7 @@ import type { GatewayTokenFailure, GatewayTokenClaims } from '@/domain/model-gat
 import type { McpPrincipal } from '@/auth/mcp-principal'
 import { loadGeminiTenantKey, resolveGeminiApiKey, GEMINI_OPENAI_BASE_URL } from '@/lib/gemini-tenant-key'
 import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrouter-tenant-key'
+import { BLOCK_REASON_HEADER, PLATFORM_CHAT_INSTALL_ID } from '@/domain/platform-chat/gateway'
 
 export const SESSION_HEADER = 'x-excellence-session'
 export const TURN_HEADER = 'x-excellence-turn'
@@ -106,7 +107,8 @@ export type ModelCallEvent = GatewayCallContext & {
   /** A providernek ténylegesen elküldött kérés (szűrés után). Az audit-mélység dönt a tárolásról (V1-5). */
   request: unknown
   response: { content: string; toolCalls: unknown[]; finishReason: string | null } | null
-  usage: { promptTokens?: number; completionTokens?: number } | null
+  /** `costUsd`: a provider által visszaadott tényleges költség (OpenRouter usage accounting), ha van. */
+  usage: { promptTokens?: number; completionTokens?: number; costUsd?: number } | null
   latencyMs: number
 }
 
@@ -183,23 +185,30 @@ const TOKEN_FAILURE: Record<GatewayTokenFailure['code'], [number, string]> = {
 }
 
 /** D15: a blokk hétköznapi nyelvű asszisztens-üzenet, HTTP 200 — stream és nem-stream kérésre is. */
-export function syntheticCompletion(message: string, opts: { stream: boolean; model: string }): Response {
+export function syntheticCompletion(
+  message: string,
+  opts: { stream: boolean; model: string; reason?: string },
+): Response {
+  const reasonHeader: Record<string, string> = opts.reason ? { [BLOCK_REASON_HEADER]: opts.reason.slice(0, 100) } : {}
   const id = `chatcmpl-blocked-${randomUUID()}`
   const created = Math.floor(Date.now() / 1000)
   const base = { id, created, model: opts.model }
   if (!opts.stream) {
-    return json(200, {
-      ...base,
-      object: 'chat.completion',
-      choices: [{ index: 0, message: { role: 'assistant', content: message }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-    })
+    return new Response(
+      JSON.stringify({
+        ...base,
+        object: 'chat.completion',
+        choices: [{ index: 0, message: { role: 'assistant', content: message }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json', ...reasonHeader } },
+    )
   }
   const chunk = (delta: object, finish: string | null) =>
     `data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
   return new Response(
     chunk({ role: 'assistant', content: message }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n',
-    { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' } },
+    { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', ...reasonHeader } },
   )
 }
 
@@ -207,7 +216,7 @@ export function syntheticCompletion(message: string, opts: { stream: boolean; mo
 type OpenAiPayload = {
   model?: string
   error?: { code?: string | number; message?: string }
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }
   choices?: Array<{
     finish_reason?: string | null
     message?: { content?: unknown; tool_calls?: unknown[] }
@@ -216,6 +225,14 @@ type OpenAiPayload = {
       tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
     }
   }>
+}
+
+function usageOf(u: NonNullable<OpenAiPayload['usage']>): NonNullable<ModelCallEvent['usage']> {
+  return {
+    promptTokens: u.prompt_tokens,
+    completionTokens: u.completion_tokens,
+    ...(typeof u.cost === 'number' ? { costUsd: u.cost } : {}),
+  }
 }
 
 /** SSE-ből gyűjti az auditnak a választ (szöveg, tool-hívások, usage) — a bájtokat nem módosítja. */
@@ -245,7 +262,7 @@ class SseCollector {
 
   private add(parsed: OpenAiPayload): void {
     if (typeof parsed?.model === 'string') this.model = parsed.model
-    if (parsed?.usage) this.usage = { promptTokens: parsed.usage.prompt_tokens, completionTokens: parsed.usage.completion_tokens }
+    if (parsed?.usage) this.usage = usageOf(parsed.usage)
     const choice = parsed?.choices?.[0]
     if (choice?.finish_reason) this.finishReason = choice.finish_reason
     const delta = choice?.delta
@@ -343,7 +360,9 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
       .catch((err) => logger.error({ event: 'model_gateway.audit_failed', error: String(err) }, 'Model call audit failed'))
   const blocked = (reason: string, message: string) => {
     void record({ outcome: 'blocked', blockReason: reason })
-    return syntheticCompletion(message, { stream, model: requestedModel ?? 'excellence' })
+    // A blokk okát csak a platform-chat worker kapja meg (keret-blokk → a forduló lezárul).
+    const exposeReason = ctx.installId === PLATFORM_CHAT_INSTALL_ID
+    return syntheticCompletion(message, { stream, model: requestedModel ?? 'excellence', ...(exposeReason ? { reason } : {}) })
   }
 
   // --- Modellválasztás (D12) + tartalék-lánc (#768) ---
@@ -399,7 +418,15 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
       out.temperature ??= config.temperature
       if (out.max_completion_tokens === undefined) out.max_tokens ??= config.maxTokens
     }
-    return { ...out, model: candidate.model, stream, ...(stream ? { stream_options: { include_usage: true } } : {}) }
+    // #1004 D14: a platform-chat napi kerete a tényleges OpenRouter-költségből számol.
+    const costAccounting = ctx.installId === PLATFORM_CHAT_INSTALL_ID && candidate.provider === 'openrouter'
+    return {
+      ...out,
+      model: candidate.model,
+      stream,
+      ...(stream ? { stream_options: { include_usage: true } } : {}),
+      ...(costAccounting ? { usage: { include: true } } : {}),
+    }
   }
 
   const failed: ModelCallEvent['failedCandidates'] = []
@@ -509,7 +536,7 @@ async function callProvider(
     const msg = data.choices[0]?.message
     onDone('ok', {
       response: { content: typeof msg?.content === 'string' ? msg.content : '', toolCalls: msg?.tool_calls ?? [], finishReason: data.choices[0]?.finish_reason ?? null },
-      usage: data.usage ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens } : null,
+      usage: data.usage ? usageOf(data.usage) : null,
     })
     return out(text, 'application/json')
   }

@@ -10,9 +10,12 @@ import { createContentFilterHooks } from '@/domain/model-gateway/content-filter'
 import { PostgresGatewaySurrogateRepository } from '@/repositories/postgres/gateway-surrogate-repository'
 import { clientPolicyDeps } from '@/auth/client-policy-deps'
 import { createManagedGate } from '@/domain/client-policy/client-install'
+import { createPlatformChatGate, withPlatformChatSpend } from '@/domain/platform-chat/gateway'
+import { platformChatGatewayDeps } from '@/auth/platform-chat-deps'
 
 export async function productionModelGatewayDeps(): Promise<ModelGatewayDeps> {
   const tokenDeps = await productionGatewayTokenDeps()
+  const platformChat = platformChatGatewayDeps()
   return {
     verify: (authorization) => verifyGatewayToken(tokenDeps, authorization),
     loadAgentModelConfig: async ({ tenantId, agentId }) =>
@@ -22,13 +25,14 @@ export async function productionModelGatewayDeps(): Promise<ModelGatewayDeps> {
     getAllowedModels: async (input) => (await getPolicySnapshot(clientPolicyStore, input)).models,
     providers: envProviderRegistry(),
     hooks: {
-      gate: createManagedGate(clientPolicyDeps()),
+      // #1004: a platform-chat install saját kapun megy (kapcsolók + napi keret), minden más a Managed/Open-en.
+      gate: createPlatformChatGate(platformChat, createManagedGate(clientPolicyDeps())),
       ...createContentFilterHooks({
         vault: new PostgresGatewaySurrogateRepository(),
         getCapabilities: async (ctx) => (await getPolicySnapshot(clientPolicyStore, ctx)).capabilities,
         audit: repositories.audit,
       }),
     },
-    audit: createGatewayAuditSink(productionAiAuditDeps()),
+    audit: withPlatformChatSpend(createGatewayAuditSink(productionAiAuditDeps()), platformChat),
   }
 }
