@@ -7,6 +7,80 @@ ellenőrzéseket és a residual riskeket rögzíti. Cél: bizonyítható kockáz
 
 ---
 
+## 2026-10-29 — AI-adattárház (#984/#985) Excel-import: összevont tartományok (merge) memória-amplifikáció → PR #997
+
+**Scope-választás (kockázati alapon):** `git fetch` után `origin/main` `ef7a2e5e`-en állt; a 10-28-i kör bázisa
+(`64b656ca`) óta több merge, köztük a legnagyobb, **még nem auditált** új alrendszer: a **#984/#985 AI-adattárház
+1. fázis** (`c0b9047c` + követő fixek `6b9f0286`, `199df3ce`, `eacfc9cd`). Ez a legmagasabb unknown-unknown
+kockázat: **untrusted `.xlsx` beolvasás** (DoS/zip-bomba/memória), **lekérdezés-motor** (SQL-injekció,
+cross-tenant), **export**, **agentenkénti hozzáférés** (friss authz), **dinamikus DDL** (tenant-séma). A visszatérő
+🟡 DNS-rebinding TOCTOU residualt (carry-forward 10-20…10-28) **tudatosan megint nem** választottam (felügyelet
+nélkül a fetch-szintű IP-pin blast-radiusa kiesés-kockázat; a #984 nem érint egressz). Minden trace `origin/main`
+HEAD-ről, külön worktree-ben (`eaap-wh`, linkelt `node_modules`), a main `.env` érintése nélkül.
+
+### Coverage (teljes import + lekérdezés adatfolyam)
+`sql.ts` (azonosító-kapu `qi`/`qs`/`qt`, séma = `warehouseSchemaName(tenantId)` **szerveroldali**, readOnly tx +
+statement_timeout), `query.ts` (strukturált lekérdezés-fordító: mezők/szűrők/aggregátum/rendezés a katalógus ellen,
+értékek paraméterként, 1 join-ugrás, LIKE-escape), `warehouse-service.ts` (schemaFor, query/export/commit/rollback,
+preview↔commit hash-kötés, advisory-lock), `mcp.ts` (9 `warehouse.*` eszköz; tenant a principalból, agent-kapu
+off/read/write), `permissions.ts` (szerep-min), `plan.ts` (`.strict()` terv, `FIELD_NAME` betűvel kezdődik → `_`
+belső oszlopok nem árnyékolhatók), `store.ts` (DDL + insert/update, minden azonosító `qi`/`qt`, értékek param),
+`excel-reader.ts` (`assertSafeOfficeArchive` a kitömörítés előtt, sor/oszlop/lap-plafon), `office-archive-guard.ts`
+(64 MB tömörítetlen plafon). A kötelező scoped security scan (Claude Security `scan-changes`) ütemezett
+munkamenetben továbbra sem futtatható (3. lépés wake-up nyugtázás) → kézi adversariális end-to-end trace.
+
+### Biztonsági megállapítás — a lekérdezés/DDL/authz felület HELYTÁLL (0 finding)
+- **SQL-injekció:** minden séma/tábla/oszlop `qi`/`qs`/`qt` regex-kapun megy (`IDENT`, `wh_[0-9a-f]{32}`), minden
+  érték `$n`-paraméter; a lekérdezés-fordító csak katalógusban létező mezőt old fel. A `rollback` jsonb-kulcs
+  interpoláció (`h.before->>'<név>'`) a katalógus-oszlopnevekre megy, amik `qi`-gatelt létrehozásúak → idézőjel
+  kizárva. **Nem reprodukálható.**
+- **Cross-tenant:** a séma kizárólag a szerveroldali `actor.tenantId`-ből (`schemaFor` + `warehouseSchemaName`), a
+  tool-argumentumból SOHA (AC8); az MCP-séma `passthrough`, de a szolgáltatás csak a principalt használja.
+- **AI-terv:** `.strict()` + `FIELD_NAME`/`DATASET_KEY` regex → a fájlba rejtett „utasítás" legfeljebb szöveg; a
+  DDL-t a szerkezetkezelő generálja, nem a terv (AC13). CSV-export képlet-injekció ellen idézőjel-prefix.
+
+### Bizonyított finding (🟠 magas, megbízhatóság / szolgáltatáskiesés) — JAVÍTVA (PR #997)
+- **Az `applyMerges` megkerülte a `WAREHOUSE_MAX_ROWS` korlátot és korlátlan memóriát allokálhatott.** A
+  `readWorkbookGrid` a nyers sorokra betartja a plafont, de az utána futó `applyMerges` a `<mergeCell>`
+  tartományokból **korlátlanul** hozott létre új sorokat. A csomagolt XLSX a merge-listát kompaktan tárolja
+  (pár száz bájt), a `merges` 5000-es plafonjával tartományonként max. 1000 sor × 200 oszlop → **~5 000 000 sor /
+  ~1e9 cella** a JS-ben, a **64 MB archívum-kapu alatt** (a merge-XML pici) → **heap-OOM a közös, több-bérlős
+  processzben** (egy import kiütheti a Cloud Run workert — l. [[healthcheck-cloud-run-oom-concurrency]]). Belépés:
+  `warehouse.prepare_import` (operator / `write` agent). **Bizonyíték:** a pre-fix algoritmus 300 merge-dzsel már
+  **300 000 sort** (3× plafon) hoz létre; 5000-re extrapolálva ~5M.
+
+### Javítás (PR #997, 2 commit)
+- `applyMerges`: a plafonon túl **nem** fabrikál új sort (meglévő sorokat a korlátig kitölt), a kitöltött cellák
+  számát **munkafüzet-szintű megosztott** költségvetés (`WAREHOUSE_MAX_MERGE_FILL_CELLS = MAX_ROWS × MAX_COLUMNS`)
+  korlátozza; a levágást `truncatedRows` jelzi. Valós (fejléc-) merge érintetlen.
+- A megosztott költségvetést a `readWorkbookGrid` egyetlen `mergeFillBudget`-ként adja át minden laphoz → 50 lap
+  plafonja nem adódik össze (a review által feltárt lapokon-átívelő rés).
+
+### Ellenőrzések
+- **Regresszió** (`scripts/warehouse.test.ts`, `npm run test:warehouse` — CI): **AC12b** 5000 rosszindulatú merge →
+  ≤ `WAREHOUSE_MAX_ROWS`, `truncatedRows`, <10 s; **AC12c** valós összevont fejléc változatlanul terjeszti a master
+  értéket; **AC12d** két rosszindulatú lap egy megosztott költségvetésen → 1. kimeríti (budget=0), 2. 0 új cellát
+  szintetizál.
+- **`tsc --noEmit`:** tiszta az érintett fájlokra (a globális `TS2688` a linkelt `node_modules` artefaktum).
+- **`test:warehouse` lokálisan nem futott**: hiányzó `@fast-csv/format` függőség (fixture→exceljs) → **CI**-ban fut;
+  az `applyMerges` logikát izolált szkripttel igazoltam (mindhárom eset zöld, OOM-input 248 ms).
+- **Független `/code-review` (Standards + Spec, párhuzamos):** Standards **0 dokumentált szabálysértés**; Spec tárta
+  fel a **laponkénti vs. munkafüzet-szintű** költségvetés-rést → javítva (`5a8e32fd`) + AC12d. A `truncatedColumns`
+  félrecímkézést (mindkét axis) `truncatedRows`-ra javítottam.
+
+### Residual risk / következő audithoz
+- **ℹ️ Valós sor-szám a readeren át `WAREHOUSE_MAX_ROWS + 50`** (a reader szándékos ráhagyása a levágás
+  detektálásához) — a memória-korlát tartja, csak a számérték +50; a JSDoc most pontos. Nem biztonsági rés.
+- **ℹ️ Per-merge `start.row + 1000` függőleges span-vágás csendes** (nem állít `truncated`-ot) — pre-existing, nem
+  e diff vezette be; >1000 soros valós merge veszthet kitöltést figyelmeztetés nélkül. Külön, alacsony prioritású kör.
+- **Warehouse még nem auditált felületei:** `transform.ts` (link-egyezés, `loadLinkTargets` LIMIT 500000 — memória?),
+  `profiler.ts` (magyar formátum-heurisztika), `warehouse-registry.ts` + 0038 migráció (séma-provisioning jogok),
+  export-route (`/api/control-plane/warehouse/export/[dataset]` — audience/jogosultság), `value-parse.ts`.
+- **🟡 Egress DNS-rebinding by-name TOCTOU** (platform-szintű, MEGERŐSÍTVE — carry-forward 10-20…10-29): változatlanul
+  nyitva; **EMBERI FELÜGYELETTEL** futtatandó dedikált kör jelöltje.
+
+---
+
 ## 2026-10-28 — Feladatátadás (handoff) idempotencia (#940 maradék → PR #989): a kötelező `idempotencyKey` érvényesítése a létrehozási úton
 
 **Scope-választás (kockázati alapon):** `git fetch` után `origin/main` `64b656ca`-n állt; a 10-27-i kör
