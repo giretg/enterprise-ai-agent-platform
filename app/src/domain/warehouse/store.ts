@@ -385,13 +385,20 @@ const SNAKE: Record<string, string> = {
   approvedBy: 'approved_by',
 }
 
+/**
+ * Import állapot/mező frissítés. `fromStates` megadásával CAS: csak a várt
+ * állapot(ok)ból ír — így a `published` / `rolled_back` végállapotot nem
+ * írhatja felül egy későn érkező preview / awaiting_approval / hibaág
+ * (duplikált append-betöltés).
+ * @returns true, ha legalább egy sor frissült
+ */
 export async function updateImport(
   sql: SqlExecutor,
   schema: string,
   id: string,
   patch: Partial<Pick<ImportRecord, 'state' | 'datasetKey' | 'plan' | 'planSource' | 'planHash' | 'recipeId' | 'checkResult' | 'preview' | 'previewHash' | 'approvalReasons' | 'result' | 'error' | 'approvedBy'>>,
-  extra: { published?: boolean; rolledBack?: boolean; approved?: boolean } = {},
-): Promise<void> {
+  extra: { published?: boolean; rolledBack?: boolean; approved?: boolean; fromStates?: readonly ImportState[] } = {},
+): Promise<boolean> {
   const sets: string[] = []
   const params: unknown[] = [id]
   for (const [key, value] of Object.entries(patch)) {
@@ -404,7 +411,13 @@ export async function updateImport(
   if (extra.rolledBack) sets.push('rolled_back_at = now()')
   if (extra.approved) sets.push('approved_at = now()')
   sets.push('updated_at = now()')
-  await sql.exec(`UPDATE ${qt(schema, '_imports')} SET ${sets.join(', ')} WHERE id = $1::uuid`, params)
+  let where = `WHERE id = $1::uuid`
+  if (extra.fromStates && extra.fromStates.length > 0) {
+    params.push([...extra.fromStates])
+    where += ` AND state = ANY($${params.length}::text[])`
+  }
+  const updated = await sql.exec(`UPDATE ${qt(schema, '_imports')} SET ${sets.join(', ')} ${where}`, params)
+  return updated > 0
 }
 
 // ── Receptek ─────────────────────────────────────────────────────────────────

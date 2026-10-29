@@ -9,10 +9,11 @@ import { assertWarehouseUpload, readWorkbookGrid, WarehouseFileError } from '../
 import { checkPlan, parseImportPlan, type CatalogDataset } from '../src/domain/warehouse/plan'
 import { profileWorkbook } from '../src/domain/warehouse/profiler'
 import { buildQuerySpec, compileQuery, QueryError } from '../src/domain/warehouse/query'
-import { qi, UnsafeIdentifierError, warehouseSchemaName } from '../src/domain/warehouse/sql'
+import { qi, UnsafeIdentifierError, warehouseSchemaName, type SqlExecutor } from '../src/domain/warehouse/sql'
 import { buildLinkIndex, matchLink, prepareRows } from '../src/domain/warehouse/transform'
 import { convertCell, nameWithoutLegalForm, parseHuDate, parseHuNumber } from '../src/domain/warehouse/value-parse'
 import { canWarehouse } from '../src/domain/warehouse/permissions'
+import { updateImport } from '../src/domain/warehouse/store'
 import { customersXlsx, ordersXlsx, zipBombXlsx } from './warehouse-fixtures'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import type { WarehouseAgentAccess } from '../src/lib/warehouse-settings'
@@ -281,6 +282,31 @@ async function main() {
     assert.equal(canWarehouse('approver', 'operate'), false)
     assert.equal(canWarehouse('admin', 'operate'), true)
     assert.equal(canWarehouse(null, 'read'), false)
+  })
+
+  await check('Import állapot CAS: published-et nem írja felül a késői awaiting_approval / preview', async () => {
+    const schema = warehouseSchemaName(TENANT)
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const calls: Array<{ sql: string; params: unknown[] }> = []
+    const sql = (rowsAffected: number): SqlExecutor => ({
+      query: async () => [],
+      exec: async (statement, params = []) => {
+        calls.push({ sql: statement, params })
+        return rowsAffected
+      },
+    })
+    // 0 sor = a published állapot nem volt a fromStates-ben → nincs clobber.
+    assert.equal(await updateImport(sql(0), schema, id, { state: 'awaiting_approval' }, { fromStates: ['previewed'] }), false)
+    assert.match(calls[0]!.sql, /AND state = ANY\(\$\d+::text\[\]\)/)
+    assert.deepEqual(calls[0]!.params.at(-1), ['previewed'])
+    assert.equal(
+      await updateImport(sql(0), schema, id, { state: 'previewed', previewHash: 'x' }, {
+        fromStates: ['planned', 'previewed', 'awaiting_approval', 'failed'],
+      }),
+      false,
+    )
+    assert.ok(!(calls[1]!.params.at(-1) as string[]).includes('published'))
+    assert.equal(await updateImport(sql(1), schema, id, { state: 'awaiting_approval' }, { fromStates: ['previewed'] }), true)
   })
 
   await check('AC8 MCP: hamis cégazonosító a tool-argumentumban hatástalan; szerep-kapu; nincs tömb a sémában', async () => {

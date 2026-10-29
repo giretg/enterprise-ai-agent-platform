@@ -262,7 +262,7 @@ export class WarehouseService {
     }
     const drift = await this.detectDrift(schema, profile)
     await this.deps.db.run((sql) =>
-      store.updateImport(sql, schema, inserted.record.id, { state: 'awaiting_plan', checkResult: drift ? { drift } : null }),
+      store.updateImport(sql, schema, inserted.record.id, { state: 'awaiting_plan', checkResult: drift ? { drift } : null }, { fromStates: ['profiled'] }),
     )
     const record = await this.deps.db.run((sql) => store.getImport(sql, schema, inserted.record.id), { readOnly: true })
     return { import: record!, created: true, recipe: null, drift }
@@ -315,19 +315,26 @@ export class WarehouseService {
       const check = checkPlan(plan, sheet, catalog)
       if (plan.mode === 'append') await this.checkDuplicateSource(sql, schema, record, plan, check)
       const planJson = canonicalPlanJson(plan)
-      await store.updateImport(sql, schema, importId, {
-        state: check.ok ? 'planned' : 'awaiting_plan',
-        datasetKey: plan.dataset.key,
-        plan,
-        planSource: source,
-        planHash: sha256(planJson).slice(0, 32),
-        recipeId,
-        checkResult: check,
-        preview: null,
-        previewHash: null,
-        approvalReasons: [],
-        error: null,
-      })
+      const planned = await store.updateImport(
+        sql,
+        schema,
+        importId,
+        {
+          state: check.ok ? 'planned' : 'awaiting_plan',
+          datasetKey: plan.dataset.key,
+          plan,
+          planSource: source,
+          planHash: sha256(planJson).slice(0, 32),
+          recipeId,
+          checkResult: check,
+          preview: null,
+          previewHash: null,
+          approvalReasons: [],
+          error: null,
+        },
+        { fromStates: ['profiled', 'awaiting_plan', 'planned', 'previewed', 'awaiting_approval', 'failed'] },
+      )
+      if (!planned) throw new WarehouseError('import_invalid_state', { state: record.state })
       return { check, import: (await store.getImport(sql, schema, importId))! }
     })
     await this.audit(actor, 'warehouse.import.planned', importId, {
@@ -493,9 +500,19 @@ export class WarehouseService {
       },
     }
     const previewHash = sha256(`${record.planHash}:${record.fileSha256}:${stableJson(computation.counts)}`).slice(0, 24)
-    await this.deps.db.run((sql) =>
-      store.updateImport(sql, schema, importId, { state: 'previewed', preview, previewHash, approvalReasons }),
+    const previewed = await this.deps.db.run((sql) =>
+      store.updateImport(
+        sql,
+        schema,
+        importId,
+        { state: 'previewed', preview, previewHash, approvalReasons },
+        { fromStates: ['planned', 'previewed', 'awaiting_approval', 'failed'] },
+      ),
     )
+    if (!previewed) {
+      const latest = await this.getImportOrThrow(schema, importId)
+      throw new WarehouseError('import_invalid_state', { state: latest.state, next: latest.state === 'published' ? undefined : 'preview_import' })
+    }
     await this.audit(actor, 'warehouse.import.previewed', importId, { counts: { ...computation.counts, links: undefined }, approvalReasons })
     return { import: (await this.getImportOrThrow(schema, importId))!, preview }
   }
@@ -521,8 +538,18 @@ export class WarehouseService {
     if (record.approvalReasons.length > 0 && !humanApproval) {
       if (input.approve && actor.channel === 'ui') throw new WarehouseError('warehouse_permission_denied', { needed: 'schema' })
       if (record.state !== 'awaiting_approval') {
-        await this.deps.db.run((sql) => store.updateImport(sql, schema, record.id, { state: 'awaiting_approval' }))
-        await this.audit(actor, 'warehouse.import.awaiting_approval', record.id, { reasons: record.approvalReasons })
+        const moved = await this.deps.db.run((sql) =>
+          store.updateImport(sql, schema, record.id, { state: 'awaiting_approval' }, { fromStates: ['previewed'] }),
+        )
+        if (!moved) {
+          const latest = await this.getImportOrThrow(schema, record.id)
+          if (latest.state === 'published') return { status: 'published', import: latest, result: latest.result, replayed: true }
+          if (latest.state !== 'awaiting_approval') {
+            throw new WarehouseError('import_invalid_state', { state: latest.state, next: 'preview_import' })
+          }
+        } else {
+          await this.audit(actor, 'warehouse.import.awaiting_approval', record.id, { reasons: record.approvalReasons })
+        }
       }
       return { status: 'awaiting_approval', import: (await this.getImportOrThrow(schema, record.id))! }
     }
@@ -608,7 +635,14 @@ export class WarehouseService {
             addedColumns: structure.addedColumns,
             recipe: recipe ? { id: recipe.id, version: recipe.version, created: recipe.created } : null,
           }
-          await store.updateImport(sql, schema, record.id, { state: 'published', result, ...(approved ? { approvedBy: actor.userId } : {}) }, { published: true, approved })
+          const published = await store.updateImport(
+            sql,
+            schema,
+            record.id,
+            { state: 'published', result, ...(approved ? { approvedBy: actor.userId } : {}) },
+            { published: true, approved, fromStates: ['previewed', 'awaiting_approval', 'loading'] },
+          )
+          if (!published) throw new WarehouseError('import_invalid_state', { state: locked.state })
           await store.refreshDatasetStats(sql, schema, { key: plan.dataset.key, tableName: table }, record.id)
           await store.recordDecision(sql, schema, 'import.published', { importId: record.id, approved, approvalReasons: record.approvalReasons, planSource: record.planSource }, actor.userId)
           return { replayed: false as const, result }
@@ -617,13 +651,24 @@ export class WarehouseService {
       )
     } catch (error) {
       const code = error instanceof WarehouseError ? error.code : 'load_failed'
+      // Végállapotot (published/rolled_back) soha ne írjuk vissza hibára — a load
+      // lockon kívül futó catch egyébként újra betölthetővé tenné a sort.
+      const recoverable: readonly store.ImportState[] = ['previewed', 'awaiting_approval', 'loading', 'failed', 'planned']
       if (code === 'preview_stale') {
-        await this.deps.db.run((sql) => store.updateImport(sql, schema, record.id, { state: 'planned', preview: null, previewHash: null }))
-      } else {
         await this.deps.db.run((sql) =>
-          store.updateImport(sql, schema, record.id, { state: 'failed', error: { code, ...(error instanceof WarehouseError ? error.extra : {}) } }),
+          store.updateImport(sql, schema, record.id, { state: 'planned', preview: null, previewHash: null }, { fromStates: recoverable }),
         )
-        await this.audit(actor, 'warehouse.import.failed', record.id, { reasonCode: code }, true)
+      } else {
+        const failed = await this.deps.db.run((sql) =>
+          store.updateImport(
+            sql,
+            schema,
+            record.id,
+            { state: 'failed', error: { code, ...(error instanceof WarehouseError ? error.extra : {}) } },
+            { fromStates: recoverable },
+          ),
+        )
+        if (failed) await this.audit(actor, 'warehouse.import.failed', record.id, { reasonCode: code }, true)
       }
       if (error instanceof WarehouseError) throw error
       throw new WarehouseError('load_failed')
@@ -690,7 +735,8 @@ export class WarehouseService {
            WHERE status = 'superseded' AND resolution->>'supersededBy' = $1`,
           [record.id],
         )
-        await store.updateImport(sql, schema, record.id, { state: 'rolled_back' }, { rolledBack: true })
+        const rolled = await store.updateImport(sql, schema, record.id, { state: 'rolled_back' }, { rolledBack: true, fromStates: ['published'] })
+        if (!rolled) throw new WarehouseError('import_invalid_state', { state: record.state })
         const previous = await sql.query<{ id: string }>(
           `SELECT id::text AS id FROM ${qt(schema, '_imports')} WHERE dataset_key = $1 AND state = 'published' ORDER BY published_at DESC LIMIT 1`,
           [dataset.key],
