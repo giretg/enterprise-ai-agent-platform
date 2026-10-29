@@ -778,8 +778,8 @@
     "nav": {
       "dashboard": "Áttekintés",
       "agents": "Munkatársak",
-      "projects": "Projektek",
-      "account": "Kapcsolt fiókok",
+      "staff_projects": "Projektek",
+      "settings_account": "Kapcsolt fiókok",
       "admin_operations": "Teendők",
       "staff": "Katalógus",
       "staff_skills": "Képességek (skill-ek)",

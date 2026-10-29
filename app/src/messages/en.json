@@ -778,8 +778,8 @@
     "nav": {
       "dashboard": "Overview",
       "agents": "Teammates",
-      "projects": "Projects",
-      "account": "Linked accounts",
+      "staff_projects": "Projects",
+      "settings_account": "Linked accounts",
       "admin_operations": "Your queue",
       "staff": "Catalog",
       "staff_skills": "Skills",
