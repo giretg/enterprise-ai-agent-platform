@@ -375,6 +375,8 @@
     "probe:crm-privacy": "tsx scripts/crm-privacy-probe.ts",
     "test:customer-promise-ui": "tsx scripts/customer-promise-ui.test.ts",
     "test:customer-promise": "tsx scripts/customer-promise.test.ts",
+    "test:scheduled-task-sync-plan": "tsx scripts/scheduled-task-sync-plan.test.ts",
+    "test:scheduled-task-service": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/scheduled-task-service.test.ts",
     "test:handoff": "tsx scripts/handoff.test.ts",
     "test:mini-app": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mini-app.test.ts",
     "test:mini-app-db": "tsx scripts/mini-app-db.test.ts",

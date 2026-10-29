@@ -1,4 +1,5 @@
 import { CUSTOMER_PROMISE_TOOLS, isCustomerPromiseTool, promiseRegisterSchema, promiseGetSchema, promiseListSchema, promiseResolveSchema } from '@/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_DESCRIPTIONS, SCHEDULED_TASK_TOOLS, isScheduledTaskTool, scheduledTaskInputSchemas } from '@/domain/scheduled-task/mcp'
 import { WIKI_MAINTAINER, withWikiMaintainer, wikiMaintainerPackage } from '@/domain/skill/llm-wiki-maintainer'
 import type { AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { auth } from '@clerk/nextjs/server'
@@ -305,6 +306,12 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   /** The caller's active promises for the briefing; get_definition already checked view access. */
   listCustomerPromises?: (input: { tenantId: string; ownerUserId: string; agentId: string }) => Promise<CustomerPromiseHeadline[]>
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
+  /** #640 `platform.scheduled_task.*`; hiányában `tool_not_configured`. */
+  invokeScheduledTask?: (input: { principal: McpPrincipal; toolName: string; args: Record<string, unknown> }) => Promise<EnterpriseToolMcpResult>
+  /** #640 S1: a get_definition `scheduledTasks` blokkja; null = nincs teendő. */
+  readScheduledTaskBriefing?: (input: { principal: McpPrincipal; agentId: string }) => Promise<Record<string, unknown> | null>
+  /** #640 K5: a `scheduledRunId` ellenőrzése + audit-összekötés; az eszközhívást sosem blokkolja. */
+  linkScheduledRun?: (input: { principal: McpPrincipal; runId: string; toolName: string }) => Promise<void>
 }
 
 export type HandoffHeadline = {
@@ -473,6 +480,20 @@ export function productionMcpDeps(): McpRuntimeDeps {
         overdue: row.overdue,
       })),
     invokeMiniApp: (input) => services.miniApps.invoke(input),
+    invokeScheduledTask: (input) => services.scheduledTaskTools.invoke(input),
+    readScheduledTaskBriefing: ({ principal, agentId }) => services.scheduledTasks.briefing(principal, agentId),
+    linkScheduledRun: async ({ principal, runId, toolName }) => {
+      const link = await services.scheduledTasks.validateRunLink(principal, runId)
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId: principal.userId,
+        action: link.ok ? 'scheduled_task.run_tool_call' : 'scheduled_task.run_link_rejected',
+        targetType: 'scheduled_task',
+        targetId: link.ok ? link.taskId : null,
+        tenantId: principal.tenantId,
+        metadata: { scheduledTaskRunId: link.ok ? runId : runId.slice(0, 64), toolName },
+      })
+    },
     invokeWarehouse: (input) => services.warehouse.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
@@ -814,11 +835,12 @@ async function getDefinitionToolResult(
   if (!allowed) return definitionNotFound()
   // #942 D13: a más felhasználó privát tudásbázisa a hívó számára nem létezik.
   const loaded = withWikiMaintainer(loadedRaw, principal.userId)
-  const [memoryContext, skills, tenant, customerPromises] = await Promise.all([
+  const [memoryContext, skills, tenant, customerPromises, scheduledTasks] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
     deps.tenants.findById(principal.tenantId),
     readCustomerPromises(principal, loaded.agentId, deps),
+    readScheduledTaskBriefing(principal, loaded.agentId, deps),
   ])
   const approverName = await deps.loadAgentApproverName?.({
     tenantId: principal.tenantId,
@@ -859,7 +881,15 @@ async function getDefinitionToolResult(
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
     customerPromises: { entries: customerPromises },
+    // #640 S1: üres pending + missed esetén a blokk elmarad.
+    ...(scheduledTasks ? { scheduledTasks } : {}),
   })
+}
+
+// Optional add-on, like the promises: a failing lookup must not break get_definition.
+async function readScheduledTaskBriefing(principal: McpPrincipal, agentId: string, deps: McpRuntimeDeps) {
+  if (!deps.readScheduledTaskBriefing) return null
+  return deps.readScheduledTaskBriefing({ principal, agentId }).catch(() => null)
 }
 
 // Optional add-on: a failing promise lookup must not break get_definition.
@@ -1210,6 +1240,8 @@ async function agentPromptResult(
 
 /** Per-client agent binding (#682 WP-2): Hermes Bots etc. send it on every MCP request. */
 export const MCP_AGENT_ID_HEADER = 'x-excellence-agent-id'
+/** #640 K5 / §10.1: a managed Hermes Guard ebben adja tovább a futás-azonosítót. */
+export const MCP_SCHEDULED_RUN_HEADER = 'x-scheduled-run-id'
 
 /**
  * The header is only input: it picks the agent, it never widens access. The
@@ -1327,6 +1359,7 @@ async function createMcpResourceHandler(
   deps: McpRuntimeDeps,
   origin: string,
   agentHeader: string | null = null,
+  scheduledRunHeader: string | null = null,
 ) {
   const { tenant, context } = await loadTenantContext(principal, deps)
   const boundSkills = agentHeader
@@ -1591,6 +1624,14 @@ async function createMcpResourceHandler(
               : toolName === 'platform.promise.get' ? promiseGetSchema : promiseResolveSchema,
           annotations: { readOnlyHint: toolName === 'platform.promise.get' || toolName === 'platform.promise.list' },
         }, async (args: Record<string, unknown>) => customerPromiseToolResult(principal, toolName, args, deps))
+      }
+      for (const toolName of SCHEDULED_TASK_TOOLS) {
+        server.registerTool(toolName, {
+          title: toolName.replace('platform.scheduled_task.', 'Scheduled task: '),
+          description: SCHEDULED_TASK_DESCRIPTIONS[toolName],
+          inputSchema: scheduledTaskInputSchemas[toolName],
+          annotations: { readOnlyHint: toolName === 'platform.scheduled_task.list' || toolName === 'platform.scheduled_task.get' },
+        }, async (args) => scheduledTaskToolResult(principal, toolName, args as Record<string, unknown>, deps, boundAgentId))
       }
       server.registerTool(
         MCP_HANDOFF_TOOL,
@@ -2047,6 +2088,16 @@ async function createMcpResourceHandler(
           rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
             ? (rawArgs as Record<string, unknown>)
             : {}
+        // #640 K5: a futás-azonosító nem része a tool argumentumainak — leválasztjuk, ellenőrizzük, auditáljuk.
+        const runArg = args.scheduledRunId
+        if (runArg !== undefined) {
+          args = { ...args }
+          delete args.scheduledRunId
+        }
+        const scheduledRunId = typeof runArg === 'string' && runArg.trim() ? runArg.trim() : scheduledRunHeader
+        if (scheduledRunId && !isScheduledTaskTool(toolName) && deps.linkScheduledRun) {
+          await deps.linkScheduledRun({ principal, runId: scheduledRunId, toolName }).catch(() => undefined)
+        }
         if (agentHeader && toolBindsToAgentHeader(toolName)) {
           const bound = await bindAgentHeader(principal, deps, toolName, args, agentHeader)
           if (!bound.ok) return bound.result
@@ -2079,6 +2130,9 @@ async function createMcpResourceHandler(
         }
         if (isCustomerPromiseTool(toolName)) {
           return customerPromiseToolResult(principal, toolName, args, deps)
+        }
+        if (isScheduledTaskTool(toolName)) {
+          return scheduledTaskToolResult(principal, toolName, args, deps, agentHeader ? boundAgentId : null)
         }
         if (isProjectWorkTool(toolName)) {
           return projectWorkToolResult(principal, toolName, args, deps, origin)
@@ -2148,6 +2202,22 @@ export function kbDocumentImageResult(result: CallToolResult): CallToolResult {
       ]),
     ],
   }
+}
+
+async function scheduledTaskToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+  boundAgentId: string | null,
+) {
+  if (!deps.invokeScheduledTask) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  // Egy agenthez kötött kliens csak annak az agentnek hozhat létre feladatot.
+  if (boundAgentId && toolName === 'platform.scheduled_task.create') {
+    if (args.agentId !== undefined && args.agentId !== boundAgentId) return textResult({ code: 'agent_mismatch', message: `${MCP_AGENT_ID_HEADER}: agent_mismatch` }, true)
+    args = { ...args, agentId: boundAgentId }
+  }
+  return deps.invokeScheduledTask({ principal, toolName, args })
 }
 
 async function customerPromiseToolResult(
@@ -2253,6 +2323,7 @@ export async function handleMcpRequest(
       { ...deps, audit: scopeMcpAuditSink(deps.audit, getMcpRequestContext(req.headers)) },
       origin,
       req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
+      req.headers.get(MCP_SCHEDULED_RUN_HEADER)?.trim() || null,
     )
     return handler(req)
   }

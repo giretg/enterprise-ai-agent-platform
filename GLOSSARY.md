@@ -108,3 +108,21 @@ Egy már közzétett importterv a fájl szerkezeti ujjlenyomatához kötve; az u
 
 **Kivétel (adattárház)**:
 Emberi döntésre váró tétel: bizonytalan / nem talált kapcsolat, hibás érték, ismétlődő azonosító. Bizonytalan egyezésből soha nem lesz magától kapcsolat.
+
+## Ütemezett feladat
+
+**Ütemezett feladat**:
+Ismétlődő agent-munka kanonikus példánya a platformon: mit, melyik agenttel, kinek a nevében, mikor és hová telepítve. A platform nem futtatja; a harness saját ütemezője indítja.
+_Avoid_: cron job, platform-dispatcher, task (ütközik a ticket- és MCP Tasks fogalommal)
+
+**Csonk**:
+A harness ütemezőjébe telepített fix, rövid prompt, ami csak a `run_start`-ot hívja. Az utasítás futáskor jön a platformról, így helyben csak az ütemezés és a be/ki állapot térhet el.
+_Avoid_: másolt utasítás, helyi feladat
+
+**Időpont-foglalás (slot)**:
+Egy ütemezett időpont egyetlen futása, amit a szerver számol és DB-unique véd. Ha a feladat több helyen is telepítve van, az első foglaló fut, a többi kihagy.
+_Avoid_: zárolás, sor (queue)
+
+**Szinkron-terv**:
+A szerver által háromutas összevetéssel (legutóbb telepített · platform · gépen lévő) számolt lépéslista. Platform-változás kérdés nélkül települ; helyi változásról a user dönt.
+_Avoid_: modell-ítélet, diff a modellben

@@ -238,6 +238,157 @@
     "failBody": "Bezárhatod ezt a lapot, és próbáld újra az AI kliensben."
   },
   "ControlPlane": {
+    "scheduledTasks": {
+      "title": "Ütemezett feladatok",
+      "body": "Ismétlődő munka, amit az AI-munkatárs a saját gépeden vagy a felhőben végez el — például minden hétköznap reggel. A platform csak nyilvántartja és összehangolja; a futtatást a te AI-kliensed végzi.",
+      "helpLabel": "Hogyan működik?",
+      "help": "Itt megadod, mit és mikor csináljon a munkatárs. A gépeden futó AI-kliens (pl. Claude) a következő megnyitáskor felajánlja a telepítést; onnantól a saját ütemezője indítja. Ha két helyen is telepítve van, egy időpontban akkor is csak egyszer fut.",
+      "empty": "Még nincs ütemezett feladat. Hozz létre egyet itt, vagy kérd meg az AI-munkatársat a saját gépeden: „minden reggel foglald össze a leveleimet”.",
+      "error": "Az ütemezett feladatokat most nem sikerült betölteni vagy menteni. Próbáld újra.",
+      "new": "Új ütemezett feladat",
+      "closeForm": "Mégsem",
+      "showArchived": "Archiváltak is",
+      "hideArchived": "Archiváltak nélkül",
+      "kindQuestion": "Kinek szól a feladat?",
+      "kinds": {
+        "personal": {
+          "name": "Csak nekem",
+          "body": "A te nevedben, a te gépeden vagy felhődben fut.",
+          "example": "Példa: „Reggel foglald össze a leveleimet.”",
+          "who": "Neked"
+        },
+        "team": {
+          "name": "Csapatnak — egyszer fut, valaki lefuttatja",
+          "body": "Közös munka, amit időpontonként egyszer kell elvégezni. Akinek épp fut a gépe, az ő nevében és jogaival fut.",
+          "example": "Példa: „8-kor sorold be az ügyfélszolgálati postafiók éjszakai leveleit.”",
+          "who": "A csapatból annak, akinek épp fut a gépe"
+        },
+        "shared": {
+          "name": "Mindenkinek a sajátja",
+          "body": "Egy feladat, de minden tagnál külön lefut, a saját adataival.",
+          "example": "Példa: „Reggel nézd át az e-mailjeimet” — egy ember megírja, mindenki megkapja.",
+          "who": "Mindenkinek a saját nevében ({count} tag)"
+        }
+      },
+      "teamWarning": "Ez a munkatárs a futtató saját fiókjait is használja (pl. a saját e-mail-címét). Csapat-feladatnál mindig az fut, akinek épp be van kapcsolva a gépe, így az eredmény napról napra más fiókból jöhet. Ha mindenkinek a saját adatain kell lefutnia, válaszd a „Mindenkinek a sajátja” lehetőséget.",
+      "switchToShared": "Átváltok: Mindenkinek a sajátja",
+      "agent": "Munkatárs",
+      "noAgents": "Nincs olyan munkatárs, akit futtathatsz. Kérd az admint, hogy adjon hozzáférést.",
+      "taskTitle": "Rövid név",
+      "taskTitlePlaceholder": "pl. Lejárt ajánlatok átnézése",
+      "instruction": "Mit csináljon minden alkalommal?",
+      "instructionPlaceholder": "pl. Nézd át a CRM-ben a lejárt ajánlatokat, és írd össze, kit kell felhívni.",
+      "when": "Mikor fusson?",
+      "presets": {
+        "weekdays8": "Hétköznap 8:00",
+        "daily8": "Naponta 8:00",
+        "monday9": "Hétfőnként 9:00",
+        "hourly": "Óránként"
+      },
+      "cron": "Ütemezés (cron, haladóknak)",
+      "timezone": "Időzóna",
+      "runsPerDay": "Naponta kb. {count} futás.",
+      "scheduleErrors": {
+        "invalid_args": "Ezt az ütemezést nem értem. Válassz a fenti gombokból, vagy adj meg 5 mezős cront (perc óra nap hónap hét napja).",
+        "schedule_too_frequent": "Legfeljebb 15 percenként futhat. Ennél sűrűbb figyelésre ez nem a megfelelő eszköz.",
+        "schedule_never_runs": "Ez az ütemezés soha nem futna le."
+      },
+      "where": "Hol fusson?",
+      "targets": {
+        "claude_routine": "A felhőben (Claude Code) — akkor is fut, ha a géped ki van kapcsolva",
+        "claude_desktop": "A laptopodon (Claude Desktop) — amíg be van kapcsolva",
+        "codex": "Codex alkalmazás",
+        "goose": "Goose",
+        "hermes": "Hermes",
+        "other": "Más AI-kliens (kézi beállítás)"
+      },
+      "targetShort": {
+        "claude_routine": "Felhő (Claude Code)",
+        "claude_desktop": "Laptop (Claude Desktop)",
+        "codex": "Codex",
+        "goose": "Goose",
+        "hermes": "Hermes",
+        "other": "Más kliens"
+      },
+      "forWhom": "Kinek a nevében?",
+      "forMe": "Nekem",
+      "forOtherNote": "A kollégának el kell fogadnia: amíg a saját gépén nem telepíti, nem fut.",
+      "audience": "Kik a tagok?",
+      "audienceSelected": "Kiválasztott kollégák",
+      "audienceOperators": "Mindenki, aki a(z) {agent} munkatársat használhatja (jelenleg {count} fő)",
+      "ownerSeesResults": "Szeretném látni a tagok futásainak összefoglalóját",
+      "ownerSeesResultsHint": "A tagok ezt elfogadáskor látják („a futások összefoglalóit te is látod”). Alapból csak az állapotot látod: sikerült, hiba vagy elmaradt.",
+      "create": "Létrehozás",
+      "created": "Kész. A gépeden futó AI-kliens a következő megnyitáskor felajánlja a telepítést.",
+      "columns": {
+        "what": "Mit csinál",
+        "agent": "Munkatárs",
+        "who": "Kinek a nevében",
+        "when": "Mikor",
+        "where": "Hol fut",
+        "lastRun": "Utolsó futás",
+        "actions": "Műveletek"
+      },
+      "statuses": {
+        "active": "Aktív",
+        "paused": "Szüneteltetve",
+        "archived": "Archiválva"
+      },
+      "installStates": {
+        "waiting": "Telepítésre vár",
+        "waitingHint": "Nyisd meg az AI-klienst a gépeden, és magától felajánlja.",
+        "installed": "Telepítve",
+        "needs_update": "Frissíteni kell a gépen",
+        "locally_disabled": "Ezen a gépen kikapcsolva",
+        "multiple": "Egyszerre több helyen telepítve — csak az egyik fut",
+        "declined": "Elutasítva"
+      },
+      "memberStates": {
+        "invited": "Telepítésre vár",
+        "active": "Telepítve",
+        "needs_reconsent": "Elfogadásra vár",
+        "declined": "Elutasította",
+        "left": "Kilépett",
+        "activeNotInstalled": "Elfogadta, még nincs telepítve"
+      },
+      "runStatuses": {
+        "running": "Fut",
+        "succeeded": "Sikerült",
+        "failed": "Hiba",
+        "missed": "Elmaradt",
+        "not_reported": "Nem jelentett vissza"
+      },
+      "missedHint": "A gép valószínűleg ki volt kapcsolva.",
+      "catchUp": "pótolva",
+      "ranBy": "{name} futtatta",
+      "noRuns": "Még nem futott.",
+      "timeline": "Eszközhívások ebben a futásban",
+      "timelineEmpty": "Ehhez a futáshoz nincs összekötött eszközhívás.",
+      "invitedBanner": "{owner} megosztott veled egy feladatot. Nyisd meg az AI-klienst a gépeden: magától felajánlja a telepítést — a telepítés az elfogadás.",
+      "reconsentBanner": "{owner} módosította a feladatot. Amíg el nem fogadod, nálad nem fut.",
+      "pause": "Szüneteltetés",
+      "resume": "Folytatás",
+      "archive": "Archiválás",
+      "archiveConfirm": "Biztosan archiválod? A gépekről a következő szinkronnál eltűnik.",
+      "edit": "Szerkesztés",
+      "save": "Mentés",
+      "cancel": "Mégsem",
+      "accept": "Elfogadom",
+      "decline": "Elutasítom",
+      "leave": "Kilépek",
+      "members": "Tagok",
+      "invite": "Meghívás",
+      "invitePick": "Kit hívsz meg?",
+      "editReconsentNote": "Ha az utasítást módosítod, a tagoknak újra el kell fogadniuk; addig náluk nem fut. Az időpont módosításához nem kell.",
+      "conflict": "Közben valaki más módosította. Frissítsd az oldalt, és próbáld újra.",
+      "codes": {
+        "not_owner": "Ezt csak a feladat gazdája módosíthatja.",
+        "agent_access_denied": "Ezt a munkatársat nem futtathatod.",
+        "agent_unavailable": "Ez a munkatárs most nem elérhető.",
+        "limit_exceeded": "Elérted a legfeljebb 50 ütemezett feladatot.",
+        "not_allowed": "Ehhez nincs jogosultságod."
+      }
+    },
     "promises": {
       "pageEmpty": "Ezen az oldalon nincs több vállalás. Lépj vissza az előző oldalra.",
       "pagination": "Lapozás",
@@ -785,6 +936,7 @@
       "staff_skills": "Képességek (skill-ek)",
       "staff_knowledge": "Tudásbázis",
       "staff_warehouse": "Adattárház",
+      "staff_scheduled-tasks": "Ütemezett feladatok",
       "settings": "Beállítások",
       "settings_get-started": "AI kliens",
       "admin": "Adminisztráció",

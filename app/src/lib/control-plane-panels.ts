@@ -59,7 +59,7 @@ const EXTRA_PANELS: ControlPlanePanelDef[] = [
     key: 'automation.scheduled-tasks',
     title: 'Ütemezett feladatok',
     eyebrow: 'Automatizálás',
-    href: '/control-plane/board?scheduled=1',
+    href: '/control-plane/scheduled-tasks',
   },
 ]
 
