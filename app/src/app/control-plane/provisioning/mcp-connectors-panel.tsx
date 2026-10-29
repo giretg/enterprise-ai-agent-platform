@@ -25,14 +25,13 @@ type ToolRow = {
   writeLikeName: boolean
 }
 type Diff = { added: string[]; removed: string[]; schemaChanged: string[]; descriptionChanged: string[] }
-export type McpConnectorsData = { allowedHosts: string[]; connectors: McpConnectorRow[] }
+export type McpConnectorsData = { connectors: McpConnectorRow[] }
 
 export type McpConnectorRow = {
   id: string
   name: string
   serverUrl: string
   authMode: string
-  domainAllowed: boolean
   hasOwnGrant: boolean
   usedByAgents: string[]
   active: { versionId: string | null; tools: ToolRow[] } | null
@@ -316,7 +315,6 @@ function McpConnectorCardBody({ row, reload }: { row: McpConnectorRow; reload: (
           </button>
         </div>
       </div>
-      {!row.domainAllowed ? <p className="text-sm text-coral-deep">{t('domainRevoked')}</p> : null}
       {delegated && !row.hasOwnGrant && !row.active && !row.proposed ? (
         <p className="text-sm text-ink-soft">{t('loginHint')}</p>
       ) : null}
@@ -351,10 +349,8 @@ function McpConnectorCardBody({ row, reload }: { row: McpConnectorRow; reload: (
 }
 
 function CreateForm({
-  allowedHosts,
   onCreated,
 }: {
-  allowedHosts: string[]
   onCreated: (text: string, connectorId: string) => void
 }) {
   const t = asTranslate(useTranslations('McpConnectors'))
@@ -396,9 +392,6 @@ function CreateForm({
         value={form.serverUrl}
         onChange={(e) => set({ serverUrl: e.target.value })}
       />
-      <p className="text-xs text-ink-soft">
-        {allowedHosts.length ? t('allowedHosts', { hosts: allowedHosts.join(', ') }) : t('noHosts')}
-      </p>
       <fieldset className="space-y-1 text-sm">
         <legend className="mb-1 text-ink-soft">{t('actingAs')}</legend>
         <label className="flex items-center gap-2">
@@ -421,6 +414,7 @@ function CreateForm({
         />
       ) : (
         <div className="space-y-2">
+          <p className="text-xs text-ink-soft">{t('oauthHint')}</p>
           <input
             className={input}
             placeholder={t('clientIdPlaceholder')}
@@ -504,7 +498,6 @@ export function McpConnectorsPanel({
         ) : null}
         {canManage && data && !createdConnectorId ? (
           <CreateForm
-            allowedHosts={data.allowedHosts}
             onCreated={(text, connectorId) => {
               if (onCreatedConnector) {
                 onCreatedConnector(connectorId, text)
@@ -554,7 +547,6 @@ export function McpConnectorsPanel({
         ))}
         {canManage && data ? (
           <CreateForm
-            allowedHosts={data.allowedHosts}
             onCreated={(text) => void reload(text)}
           />
         ) : null}

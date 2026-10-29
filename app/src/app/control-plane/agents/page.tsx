@@ -5,15 +5,21 @@ import { hasMinimumRole } from '@/auth/types'
 import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
 import { Card } from '@/components/ui/shell'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
+import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 
 export default async function AgentsIndexPage() {
   const ctx = await requireControlPlaneTenantViewer()
-  const agentsRes = await listAgentsForCatalog({ limit: 100 })
+  const [agentsRes, tenant] = await Promise.all([
+    listAgentsForCatalog({ limit: 100 }),
+    repositories.tenants.findById(ctx.activeTenantId),
+  ])
   const agents = agentsRes.success ? agentsRes.data : []
   const loadError = agentsRes.success ? null : agentsRes.error
   const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
   const t = await getTranslations('ControlPlane.agents')
 
   return (
@@ -41,7 +47,12 @@ export default async function AgentsIndexPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {agents.map((agent) => (
-            <AgentCatalogCard key={agent.id} agent={agent} />
+            <AgentCatalogCard
+              key={agent.id}
+              agent={agent}
+              canResumeHire={canCreateAgent}
+              tenantChatEnabled={tenantChatEnabled}
+            />
           ))}
           {agents.length === 0 ? (
             <Card title={t('emptyTitle')}>

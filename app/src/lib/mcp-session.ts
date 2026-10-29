@@ -18,6 +18,7 @@ export type McpClientName =
   | 'codex'
   | 'goose'
   | 'hermes'
+  | 'platform_chat'
   | 'other'
   | 'unknown'
 

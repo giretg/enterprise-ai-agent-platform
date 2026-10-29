@@ -485,14 +485,16 @@ export function SelfUpdatingConnectorCard({
   run,
   onReload,
   isSuperadmin = false,
+  defaultOpen = false,
 }: {
   row: SelfUpdatingConnectorRow
   pending: boolean
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
   onReload?: () => void | Promise<void>
   isSuperadmin?: boolean
+  defaultOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [syncModal, setSyncModal] = useState<SelfUpdatingSyncModalState | null>(null)
   const [syncPending, startSyncTransition] = useTransition()
   const [tab, setTab] = useState<CardTab>('status')

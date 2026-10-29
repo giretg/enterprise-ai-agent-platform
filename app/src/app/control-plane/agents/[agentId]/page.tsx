@@ -1,3 +1,6 @@
+import { listCustomerPromisesAction } from '@/app/actions/customer-promise'
+import { parsePromisePage } from '@/lib/customer-promise-page'
+import { PromisesPanel } from '@/app/control-plane/promises/promises-panel'
 import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
 import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
@@ -25,16 +28,21 @@ import {
   isAgentDetailSectionId,
   type AgentDetailSectionId,
 } from '@/lib/agent-detail-sections'
+import { canStartPlatformChat } from '@/lib/platform-chat-href'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { repositories } from '@/repositories/postgres'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
+import { StartPlatformChatLink } from '@/components/agents/start-platform-chat-link'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateWriteApprovalForm } from '@/components/agents/update-write-approval-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
+import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -42,7 +50,16 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
+import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
+import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { AgentAccessPanel } from '@/components/agents/agent-access-panel'
+import { AgentMiniAppsPanel } from '@/components/agents/agent-mini-apps-panel'
+import { parsePlacementOverrides } from '@/lib/agent-knowledge-placement'
+import { UpdatePlacementOverridesForm } from '@/components/agents/update-placement-overrides-form'
+import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
+import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
+import { getAgentWarehouseAccessAction } from '@/app/actions/warehouse'
+import { AgentWarehouseAccessCard } from '@/components/warehouse/warehouse-access-panels'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
 
@@ -56,6 +73,7 @@ const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   eszkozok: 'eszkozokDesc',
   skillek: 'skillekDesc',
   memoriairas: 'memoriairasDesc',
+  miniappok: 'miniappokDesc',
   hozzaferes: 'hozzaferesDesc',
 }
 
@@ -64,11 +82,12 @@ export default async function AgentDetailPage({
   searchParams,
 }: {
   params: Promise<{ agentId: string }>
-  searchParams: Promise<{ section?: string }>
+  searchParams: Promise<{ section?: string; promisePage?: string }>
 }) {
   const { agentId } = await params
   const query = await searchParams
   const initialSection = isAgentDetailSectionId(query.section) ? query.section : undefined
+  const promisePage = parsePromisePage(query.promisePage)
 
   let ctx
   try {
@@ -91,6 +110,11 @@ export default async function AgentDetailPage({
     projectsRes,
     drivePickerCtxRes,
     modelRes,
+    promisesRes,
+    wikiLinksRes,
+    miniAppsRes,
+    warehouseRes,
+    tenant,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -104,6 +128,11 @@ export default async function AgentDetailPage({
     listWorkProjectsAction(),
     getMyGoogleDriveGrantForPicker(),
     getAgentModelSettings({ agentId }),
+    listCustomerPromisesAction(agentId, false, promisePage),
+    listAgentWikiLinksAction({ agentId }),
+    listAgentMiniAppsAction({ agentId }),
+    getAgentWarehouseAccessAction({ agentId }),
+    repositories.tenants.findById(ctx.activeTenantId),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -128,6 +157,12 @@ export default async function AgentDetailPage({
   const canDelete = isSuperadmin(ctx.platformRoles)
   const projects = projectsRes.success ? projectsRes.data.projects : []
   const projectsError = projectsRes.success ? null : projectsRes.error
+  const showStartChat = canStartPlatformChat({
+    tenantEnabled: readPlatformChatSettings(tenant?.settings).enabled,
+    platformChatEnabled: agent.platformChatEnabled,
+    status: agent.status,
+    currentDefinitionVersionId: agent.currentDefinitionVersionId,
+  })
   const t = await getTranslations('ControlPlane.agentDetail')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
   const sectionDesc = (id: AgentDetailSectionId) => {
@@ -205,15 +240,20 @@ export default async function AgentDetailPage({
             label: sectionLabel('modell'),
             description: sectionDesc('modell'),
             content: (
-              <UpdateModelConfigForm
-                agentId={agent.id}
-                policy={modelRes.data.policy}
-                globalChain={modelRes.data.globalChain}
-                config={modelRes.data.config}
-                effectivePrimary={modelRes.data.effectivePrimary}
-                maxAttempts={modelRes.data.maxAttempts}
-                canEdit={canManage}
-              />
+              <div className="space-y-4">
+                <UpdateModelConfigForm
+                  agentId={agent.id}
+                  policy={modelRes.data.policy}
+                  globalChain={modelRes.data.globalChain}
+                  config={modelRes.data.config}
+                  effectivePrimary={modelRes.data.effectivePrimary}
+                  maxAttempts={modelRes.data.maxAttempts}
+                  canEdit={canManage}
+                />
+                <Card title="Platform-chat">
+                  <UpdatePlatformChatForm agentId={agent.id} enabled={agent.platformChatEnabled} canEdit={canManage} />
+                </Card>
+              </div>
             ),
           },
         ]
@@ -237,12 +277,16 @@ export default async function AgentDetailPage({
       label: sectionLabel('tudasbazis'),
       description: sectionDesc('tudasbazis'),
       content: (
-        <AgentKnowledgeBasePanel
-          agentId={agent.id}
-          documents={kbDocs}
-          catalog={kbCatalog}
-          canManage={canManage}
-        />
+        <div className="space-y-4">
+          {wikiLinksRes.success ? <AgentWikiAccessPanel agentId={agent.id} rows={wikiLinksRes.data} /> : null}
+          <AgentKnowledgeBasePanel
+            agentId={agent.id}
+            documents={kbDocs}
+            catalog={kbCatalog}
+            canManage={canManage}
+          />
+          {warehouseRes.success ? <AgentWarehouseAccessCard agentId={agent.id} data={warehouseRes.data} /> : null}
+        </div>
       ),
     },
     {
@@ -268,6 +312,11 @@ export default async function AgentDetailPage({
           isAdmin={canManage}
         />
       ),
+    },
+    {
+      id: 'igeretek',
+      label: sectionLabel('igeretek'),
+      content: promisesRes.success ? <PromisesPanel promises={promisesRes.data.promises} pagination={{ page: promisePage, hasMore: promisesRes.data.hasMore, pageHref: `/control-plane/agents/${agentId}?section=igeretek&promisePage=` }} /> : <p role="alert" className="text-red-800">{(await getTranslations('ControlPlane.promises'))('error')}</p>,
     },
     {
       id: 'memoriairas',
@@ -296,6 +345,13 @@ export default async function AgentDetailPage({
               canEdit={canManage}
             />
           </Card>
+          <Card title="Hová mit ment a munkatárs">
+            <UpdatePlacementOverridesForm
+              agentId={agent.id}
+              placementOverrides={parsePlacementOverrides(agent.placementOverrides)}
+              canEdit={canManage}
+            />
+          </Card>
           <Card title={t('projectMemory')}>
             <AgentProjectMemoryBrowser
               agentId={agent.id}
@@ -305,6 +361,24 @@ export default async function AgentDetailPage({
               canDeleteMemory={canManage || canDelete}
               initialError={projectsError}
             />
+          </Card>
+        </div>
+      ),
+    },
+    {
+      id: 'miniappok',
+      label: sectionLabel('miniappok'),
+      description: sectionDesc('miniappok'),
+      content: (
+        <div className="space-y-4">
+          <AgentMiniAppsPanel
+            agentId={agent.id}
+            agentName={agent.name}
+            data={miniAppsRes.success ? miniAppsRes.data : null}
+            error={miniAppsRes.success ? null : miniAppsRes.error}
+          />
+          <Card title="Mini app útmutató">
+            <UpdateMiniAppGuideForm agentId={agent.id} miniAppGuide={agent.miniAppGuide} canEdit={canManage} />
           </Card>
         </div>
       ),
@@ -339,6 +413,7 @@ export default async function AgentDetailPage({
           ) : null}
           <p className="mt-1 text-ink-soft">{agent.status}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
+            {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
             <AgentIdCopyButton agentId={agent.id} />
             {canManage && publishRes.success && publishRes.data.stale ? (
               <PublishStaleDraftButton

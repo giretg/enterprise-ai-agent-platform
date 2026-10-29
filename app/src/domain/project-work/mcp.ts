@@ -1,7 +1,13 @@
+import { resolveWikiScopes } from '@/lib/wiki-access'
 import { z } from 'zod'
 import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/agent-knowledge-placement'
-import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
-import { checkDefinitionPin, type DefinitionPinDeps } from '@/domain/enterprise-tools/definition-pin'
+import { canOperateAgent, canReadPublishedAgent, type AgentDefinition } from '@/domain/agent-definition'
+import {
+  checkDefinitionPin,
+  invalidArgsDetails,
+  withDefinitionUpdatedNotice,
+  type DefinitionPinDeps,
+} from '@/domain/enterprise-tools/definition-pin'
 import {
   asUuid,
   enterpriseToolErrorPayload,
@@ -296,7 +302,21 @@ export type ProjectWorkMcpDeps = DefinitionPinDeps & {
       summary: string
       links: string | null
       createdById: string
-    }): Promise<{ id: string }>
+      idempotencyKey?: string | null
+    }): Promise<{
+      handoff: {
+        id: string
+        memoryId: string | null
+        projectKey: string
+        createdById: string
+        toAgentId: string | null
+        toUserId: string | null
+        title: string
+        summary: string
+        links: string | null
+      }
+      created: boolean
+    }>
     findById(id: string): Promise<{
       id: string
       tenantId: string
@@ -327,13 +347,14 @@ function errorResult(code: string, extra?: Record<string, unknown>): EnterpriseT
   return textResult(enterpriseToolErrorPayload(code, extra), true)
 }
 
-async function auditDenied(
-  deps: ProjectWorkMcpDeps,
+export async function auditDenied(
+  deps: Pick<ProjectWorkMcpDeps, 'audit'>,
   principal: ToolCallPrincipal,
   toolName: string,
   reason: string,
   definitionId?: string,
   agentId?: string,
+  details?: Record<string, unknown>,
 ) {
   const payload = {
     toolName,
@@ -342,6 +363,7 @@ async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
+    ...details,
   }
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -388,14 +410,23 @@ async function auditOk(
   })
 }
 
+const PROJECT_WORK_READ_TOOLS = new Set<string>([
+  MCP_PROJECTS_LIST_TOOL,
+  MCP_WORK_FILE_LIST_TOOL,
+  MCP_WORK_FILE_READ_TOOL,
+  MCP_PROJECT_MEMORY_READ_TOOL,
+])
+
 export async function authorizeProjectWorkCall(
-  deps: ProjectWorkMcpDeps,
+  deps: Pick<ProjectWorkMcpDeps, 'loadDefinition' | 'findCurrentDefinitionId' | 'findAgentGrant' | 'audit'>,
   principal: ToolCallPrincipal,
   toolName: string,
   args: Record<string, unknown>,
+  schema: z.ZodTypeAny = schemaForProjectWorkTool(toolName),
+  access: 'operate' | 'view' = 'operate',
 ): Promise<
   | { ok: true; definition: AgentDefinition; parsed: Record<string, unknown> }
-  | { ok: false; result: EnterpriseToolMcpResult }
+  | { ok: false; result: EnterpriseToolMcpResult; currentDefinitionId?: string }
 > {
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) {
@@ -421,6 +452,7 @@ export async function authorizeProjectWorkCall(
         definitionId,
         currentDefinitionId: pin.currentDefinitionId,
       }),
+      ...(pin.currentDefinitionId ? { currentDefinitionId: pin.currentDefinitionId } : {}),
     }
   }
   const grant = await deps.findAgentGrant({
@@ -428,15 +460,18 @@ export async function authorizeProjectWorkCall(
     userId: principal.userId,
     agentId: definition.agentId,
   })
-  if (!canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })) {
+  const allowed = access === 'view'
+    ? canReadPublishedAgent({ role: principal.role, grant })
+    : canOperateAgent({ role: principal.role, grant, assumed: principal.assumed })
+  if (!allowed) {
     await auditDenied(deps, principal, toolName, 'agent_access_denied', definitionId, definition.agentId)
     return { ok: false, result: errorResult('agent_access_denied') }
   }
-  const schema = schemaForProjectWorkTool(toolName)
   const parsed = schema.safeParse(args)
   if (!parsed.success) {
-    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
-    return { ok: false, result: errorResult('invalid_args') }
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, details)
+    return { ok: false, result: errorResult('invalid_args', details) }
   }
   return { ok: true, definition, parsed: parsed.data as Record<string, unknown> }
 }
@@ -448,12 +483,28 @@ export async function invokeProjectWork(
     toolName: string
     args: Record<string, unknown>
     origin?: string
+    /** Belső: egyszer már átváltottunk a régi definícióról az aktuálisra. */
+    followedStaleDefinition?: boolean
   },
 ): Promise<EnterpriseToolMcpResult> {
   const { principal, toolName, args, origin } = input
   if (!isProjectWorkTool(toolName)) return errorResult('tool_not_configured')
   const authorized = await authorizeProjectWorkCall(deps, principal, toolName, args)
-  if (!authorized.ok) return authorized.result
+  if (!authorized.ok) {
+    // Újrapublikálás munka közben: olvasás az aktuális verzión fut, a válasz jelzi a váltást.
+    if (authorized.currentDefinitionId && PROJECT_WORK_READ_TOOLS.has(toolName) && !input.followedStaleDefinition) {
+      const result = await invokeProjectWork(deps, {
+        ...input,
+        args: { ...args, definitionId: authorized.currentDefinitionId },
+        followedStaleDefinition: true,
+      })
+      return withDefinitionUpdatedNotice(result, {
+        previousDefinitionId: String(args.definitionId),
+        currentDefinitionId: authorized.currentDefinitionId,
+      })
+    }
+    return authorized.result
+  }
   const { definition, parsed } = authorized
   const svc = deps.projectWork
   const tenantId = principal.tenantId
@@ -533,6 +584,7 @@ export async function invokeProjectWork(
       mergeIds: typeof parsed.mergeIds === 'string' ? splitIds(parsed.mergeIds) : undefined,
       confirmNew: parsed.confirmNew === true,
       confirmMisplaced: parsed.confirmMisplaced === true,
+      wikiCapable: resolveWikiScopes(definition.snapshot, principal.userId).writable.length > 0,
       withUserId: principal.userId,
       mode: modeRes.mode,
     })
@@ -666,7 +718,8 @@ async function invokeHandoff(
     }
   }
 
-  const handoff = await deps.handoffs.insert({
+  const idempotencyKey = typeof parsed.idempotencyKey === 'string' ? parsed.idempotencyKey : null
+  const { handoff, created } = await deps.handoffs.insert({
     tenantId: principal.tenantId,
     fromAgentId: definition.agentId,
     fromDefinitionId: definition.definitionId,
@@ -677,7 +730,50 @@ async function invokeHandoff(
     summary: validated.summary,
     links: validated.links,
     createdById: principal.userId,
+    idempotencyKey,
   })
+
+  // #940: ismételt (retry) hívás ugyanazzal az idempotencyKey-vel — a sor már
+  // létezik. Nem injektálunk újabb open_task-ot a címzett memóriájába és nem írunk
+  // újabb `handoff.created` auditot; a korábbi döntés állapotát idempotensen
+  // visszaadjuk, hogy a kliens biztonságosan újrapróbálhasson.
+  //
+  // A dedup-határ maga az átadás-SOR, ami egyben a hiteles kézbesítés is (a címzett
+  // briefingje / inboxa ebből épül). A memória-injektálás alatta csak kényelmi réteg,
+  // és a létrehozás+injektálás+audit NEM egyetlen tranzakció (#940 nyitott maradéka):
+  // ha egy hívás a sor létrehozása után, az injektálás előtt elhal, a retry itt
+  // visszatér és nem injektál — az átadás így is látszik a soron/briefingen, csak a
+  // kényelmi memória-bejegyzés marad el. Párhuzamos duplikátumnál a lenti mezők
+  // (memoryId/notified) csak tájékoztatók: ha az eredeti injektálás még fut, elavultak
+  // lehetnek, de duplikált injektálás nem történik.
+  if (!created) {
+    // Csak ugyanaz a hívó, ugyanazzal a tartalommal kaphatja vissza a meglévő átadást.
+    // Egy újrahasznált kulcs (másik felhasználó vagy más feladat) különben csendben
+    // elnyelné az új átadást, és idegen átadás adatait adná vissza.
+    const sameRequest =
+      handoff.createdById === principal.userId &&
+      handoff.toAgentId === toAgentId &&
+      handoff.toUserId === toUserId &&
+      handoff.projectKey === projectKey &&
+      handoff.title === validated.title &&
+      handoff.summary === validated.summary &&
+      handoff.links === validated.links
+    if (!sameRequest) {
+      await auditDenied(deps, principal, MCP_HANDOFF_TOOL, 'idempotency_key_conflict', definition.definitionId, definition.agentId)
+      return errorResult('idempotency_key_conflict')
+    }
+    // A hívás sikeres (a kérés teljesült), ezért a generikus siker-auditot megírjuk,
+    // de a `handoff.created` állapotváltozás-auditot NEM — nem történt új átadás.
+    await auditOk(deps, principal, MCP_HANDOFF_TOOL, definition.definitionId, definition.agentId)
+    return textResult({
+      ok: true,
+      handoffId: handoff.id,
+      memoryId: handoff.memoryId,
+      projectKey: handoff.projectKey,
+      notified: handoff.memoryId ? 'agent_memory' : 'inbox',
+      idempotent: true,
+    })
+  }
 
   // The handoff is always delivered through the Handoff row (recipient briefing /
   // human inbox). As a convenience we ALSO inject an open_task straight into the

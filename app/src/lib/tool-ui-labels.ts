@@ -31,7 +31,23 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   kb_ingest: {
     label: 'Tudásbázis feltöltés',
-    description: 'Fájl betöltése a tudásbázisba sima szövegként vagy wiki (OKF) oldalakra bontva.',
+    description:
+      'Fájl vagy rövid jegyzet betöltése a tudásbázisba: sima szövegként, gépi (OKF) oldalakra bontva, vagy a wikibe feldolgozásra.',
+  },
+  kb_wiki_write: {
+    label: 'Wiki írása',
+    description:
+      'Az AI-munkatárs a feldolgozott forrásokból wiki-oldalakat ír és frissít. Csak írási joggal; jóváhagyás módban a wiki gazdája fogadja el.',
+  },
+  kb_wiki_changes: {
+    label: 'Wiki változásai',
+    description:
+      'Megmutatja, mi változott a wikin, mióta az AI-munkatárs utoljára megnézte: ki, mikor, mely oldalakat módosította (a szöveg nélkül).',
+  },
+  kb_wiki_revert: {
+    label: 'Wiki visszaállítása',
+    description:
+      'Egy oldalt egy korábbi verziójára, vagy egy teljes módosítást az előtte lévő állapotra állít vissza. Mindig a wiki jóváhagyója fogadja el.',
   },
 
   'platform.projects.list': {
@@ -185,30 +201,76 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
       'a válasz csak összegzést és a bizonytalan párokat adja.',
   },
 
-  // Mini-app
-  'sandbox_app.create': {
-    label: 'Mini-app létrehozása',
-    description: 'Új, böngészőben megnyitható mini-app (HTML) draft létrehozása.',
+  // Mini app (#967) — MCP-eszközök
+  'platform.mini_app.create': {
+    label: 'Mini app létrehozása',
+    description: 'Új, böngészőben megnyitható oldal (jellemzően riport) egyetlen HTML-fájlból, beágyazott adattal.',
   },
-  'sandbox_app.update_artifact': {
-    label: 'Tartalom frissítése',
-    description: 'Mini-app HTML tartalmának feltöltése vagy cseréje (új verzió).',
+  'platform.mini_app.update': {
+    label: 'Mini app frissítése',
+    description: 'Új verzió feltöltése egy saját mini apphoz; a korábbi verziók visszanézhetők.',
   },
-  'sandbox_app.preview': {
-    label: 'Előnézet',
-    description: 'Rövid életű, izolált előnézeti URL a mini-apphoz.',
+  'platform.mini_app.list': {
+    label: 'Mini appok listázása',
+    description: 'A saját, a megosztott és a szervezeti mini appok listája név, verzió és dátum szerint.',
   },
-  'sandbox_app.export': {
-    label: 'Exportálás',
-    description: 'Mini-app verzió exportja letölthető .html fájlként.',
+  'platform.mini_app.get': {
+    label: 'Mini app megnyitása',
+    description: 'Friss megnyitási link vagy a HTML forrás lekérése egy mini apphoz.',
   },
-  'sandbox_app.list': {
-    label: 'Mini-appok listázása',
-    description: 'Az agent saját mini-appjainak listázása név, státusz és verzió szerint.',
+  'platform.mini_app.share': {
+    label: 'Mini app megosztása',
+    description: 'Megosztás más AI munkatársakkal vagy az egész szervezettel (olvasás és másolás).',
   },
-  'sandbox_app.get': {
-    label: 'Mini-app megnyitása',
-    description: 'Egy meglévő mini-app HTML forrásának lekérése megtekintéshez vagy szerkesztéshez.',
+  'platform.mini_app.unshare': {
+    label: 'Megosztás visszavonása',
+    description: 'Egy mini app megosztásának visszavonása munkatársaktól vagy a szervezettől.',
+  },
+  'platform.mini_app.archive': {
+    label: 'Mini app archiválása',
+    description: 'A mini app eltűnik a listákból, a megosztások megszűnnek; 90 napig visszaállítható.',
+  },
+  'platform.mini_app.guide': {
+    label: 'Mini app útmutató',
+    description: 'A platform szabályai és a munkatárs saját mini app útmutatója (arculat, felépítés).',
+  },
+
+  // AI-adattárház (#984) — MCP-eszközök
+  'warehouse.list_datasets': {
+    label: 'Adatkészletek listája',
+    description: 'A céges adattárház adatkészletei (pl. ügyfelek, rendelések): mit jelent egy sor, hány sor, mikor frissült.',
+  },
+  'warehouse.describe_dataset': {
+    label: 'Adatkészlet leírása',
+    description: 'Egy adatkészlet mezőinek üzleti jelentése, mértékegysége, kapcsolatai és betöltési előzményei.',
+  },
+  'warehouse.prepare_import': {
+    label: 'Excel betöltésének előkészítése',
+    description: 'Excel-fájl átvétele és átvizsgálása (munkalapok, fejléc, típusok); ismert szerkezetnél a mentett recept alapján.',
+  },
+  'warehouse.submit_import_plan': {
+    label: 'Betöltési terv beküldése',
+    description: 'Az AI javaslata: melyik oszlop hova kerül és mit jelent. A platform ellenőrzi, nem hajtja végre vakon.',
+  },
+  'warehouse.preview_import': {
+    label: 'Betöltés előnézete',
+    description: 'Mi változna: új, módosuló, hibás sorok és bizonytalan ügyfél-egyezések — adatmódosítás nélkül.',
+  },
+  'warehouse.commit_import': {
+    label: 'Betöltés véglegesítése',
+    description: 'Az előnézetben látott adatok betöltése. Új adatkészlethez vagy mezőhöz emberi jóváhagyás kell.',
+  },
+  'warehouse.get_import_status': {
+    label: 'Betöltés állapota',
+    description: 'Egy betöltés állapota, eredménye és a kézi döntésre váró tételek.',
+  },
+  'warehouse.query_dataset': {
+    label: 'Adatlekérdezés',
+    description: 'Szűrés, csoportosítás, összesítés az adattárházban — forrással és frissességgel együtt.',
+  },
+  'warehouse.export_dataset': {
+    label: 'Adatkészlet exportja',
+    description: 'Egy adatkészlet kimásolása CSV-ként.',
   },
 
   // Sandbox verziókezelés

@@ -77,15 +77,18 @@ export function materializeConnectorConfig(
           ),
         }
       : withFields
+  if (descriptor.endpoints.length > 0 && scopedConfig.proposedTools.length === 0) {
+    throw new ConnectorTemplateMaterializationError(
+      scopedConfig === withFields
+        ? 'Válassz legalább egy elérhető műveletet.'
+        : 'Válassz legalább egy, a kiválasztott repository-n belüli műveletet.',
+    )
+  }
 
-  // WP-3 (B3): a sablonból materializált, endpoint-listával rendelkező http_api
-  // connector alapból endpoint-korlátozott — a runtime CSAK a felsorolt (method+path)
-  // hívásokat engedi, a listán kívülit a külső rendszer megkérdezése nélkül elutasítja
-  // (`endpoint_not_allowed`). Kivétel a GitHub repo-scope connector: azt a saját
-  // repository-határ őrzi, és a katalógusa szándékosan tágabb, ezért nem korlátozzuk.
-  const isGithubRepoScoped = Boolean(scopedConfig.githubRepositoryAccess)
+  // A sablon műveletlistája a futásidejű jogosultsági határ, üres választásnál is.
+  // A GitHub repository-korlát ettől függetlenül, további szűrőként érvényesül.
   const restrictedConfig: ConnectorConfig =
-    !isGithubRepoScoped && scopedConfig.proposedTools.length > 0
+    descriptor.endpoints.length > 0
       ? { ...scopedConfig, restrictToEndpoints: true }
       : scopedConfig
   const normalized = normalizeConnectorConfig({
@@ -250,7 +253,10 @@ function chooseScopes(descriptor: TemplateDescriptor, selected?: string[]): stri
   }
   const allowed = new Set(descriptor.scopeCatalog.map((s) => s.value))
   const defaults = descriptor.scopeCatalog.filter((s) => s.default).map((s) => s.value)
-  const requested = selected && selected.length > 0 ? selected : defaults
+  const requested = selected ?? defaults
+  if (selected && requested.length === 0) {
+    throw new ConnectorTemplateMaterializationError('Válassz legalább egy hozzáférési jogosultságot.')
+  }
   const unknown = requested.filter((scope) => !allowed.has(scope))
   if (unknown.length > 0) {
     throw new ConnectorTemplateMaterializationError(`unknown template scopes: ${unknown.join(', ')}`)
@@ -262,7 +268,10 @@ function chooseEndpoints(
   descriptor: TemplateDescriptor,
   selected?: string[],
 ): ConnectorConfig['proposedTools'] {
-  const selectedSet = selected && selected.length > 0 ? new Set(selected) : null
+  if (selected && selected.length === 0 && descriptor.endpoints.length > 0) {
+    throw new ConnectorTemplateMaterializationError('Válassz legalább egy elérhető műveletet.')
+  }
+  const selectedSet = selected ? new Set(selected) : null
   const endpoints = descriptor.endpoints.filter((endpoint) =>
     selectedSet ? selectedSet.has(endpoint.name) : endpoint.default,
   )

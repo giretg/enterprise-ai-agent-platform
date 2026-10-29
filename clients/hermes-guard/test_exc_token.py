@@ -217,6 +217,36 @@ class T(unittest.TestCase):
         # Bot-profilból hívva csak az az egy Bot.
         self.assertFalse(x.share_all_mcp_tokens(bots["exc-reka"]))
 
+    def test_token_fetch_picks_up_sibling_bot_refresh(self):
+        self._sibling_refresh("exc-alfred", "exc-reka")
+
+    def test_token_fetch_picks_up_sibling_bot_refresh_listed_after_caller(self):
+        # A friss Bot a hívó után jön a rendezett körben: a gyökér csak a kör végén frissül.
+        self._sibling_refresh("exc-zoli", "exc-reka")
+
+    def _sibling_refresh(self, fresh_bot, caller):
+        # Valós eset (10-18): Alfred frissített (refresh-forgatás), a default és Réka belépője lejárt;
+        # Réka token-cseréje a lejárttal 401-ezett, amíg Alfred friss belépője vissza nem jutott.
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        open(os.path.join(root, "config.yaml"), "w").write("mcp_servers:\n  excellence-acme:\n    url: https://ai.example.com/api/mcp/acme\n")
+        write = lambda path, body: json.dump(body, open(path, "w"))
+        write(os.path.join(root, "mcp-tokens", "excellence-acme.json"), {"access_token": "stale", "expires_at": 500})
+        bots = {}
+        for name, tok, exp in ((fresh_bot, "fresh", 2000), (caller, "stale", 500)):
+            bots[name] = os.path.join(root, "profiles", name)
+            os.makedirs(os.path.join(bots[name], "mcp-tokens"))
+            open(os.path.join(bots[name], "config.yaml"), "w").write(CONFIG)
+            write(os.path.join(bots[name], "mcp-tokens", "excellence.json"), {"access_token": tok, "expires_at": exp})
+        seen = []
+        fetcher = lambda o, t, a, i, access: (seen.append(access), ("jwt", 9999))[1]
+        os.environ["EXC_TOKEN_SYNC_ALL"] = "0"
+        x.get_token_exp(bots[caller], now=lambda: 0, fetcher=fetcher)
+        os.remove(os.path.join(bots[caller], x.CACHE_NAME))
+        os.environ.pop("EXC_TOKEN_SYNC_ALL")
+        x.get_token_exp(bots[caller], now=lambda: 0, fetcher=fetcher)
+        self.assertEqual(seen, ["stale", "fresh"])
+
     def test_profile_without_agent_asks_for_bootstrap_token(self):
         # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.
         home, calls = profile(config="mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n"), []

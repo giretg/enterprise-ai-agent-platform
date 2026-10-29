@@ -44,6 +44,7 @@ export type ControlPlaneNavContext = {
   navVisibility?: NavVisibilityPolicy
   /** Nyitott teendők (írás-jóváhagyás + átadás) — badge a Teendők menüponton. */
   pendingTasksCount?: number
+  urgentPromisesCount?: number
 }
 
 const isCatalogGroup = (
@@ -60,9 +61,12 @@ const isGroup = (entry: ControlPlaneNavEntry): entry is ControlPlaneNavGroup => 
  * csendben feloldaná a tenant beállított tiltásait.
  *
  * Operátor = normál felhasználó (ticket/chat/agent-futás). A saját fiókkötés
- * (Kapcsolt fiókok) a Board mellett él, nem az Adminisztráció alatt — különben
- * a csoport elrejtése a saját Gmail/Telegram összekötést is levenné. Az
- * Adminisztráció a tenant-admin / approver / platform szerepre megy.
+ * (Kapcsolt fiókok) a felhasználói Beállítások alatt él, nem az Adminisztráció
+ * alatt — különben a csoport elrejtése a saját Gmail/Telegram összekötést is
+ * levenné. A Projektek a Katalógusba kerültek, hogy a fejléc egy sorban maradjon.
+ * A régi kulcsokat (`projects`, `account`) a `nav-visibility` legacy-aliasa
+ * viszi tovább, így a tárolt menü-tiltások érvényesek maradnak. Az Adminisztráció a tenant-admin
+ * / approver / platform szerepre megy.
  */
 export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] = [
   {
@@ -72,18 +76,6 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     requires: { tenantRole: 'viewer' },
   },
   { key: 'agents', href: '/control-plane/agents', label: 'Munkatársak' },
-  {
-    key: 'projects',
-    href: '/control-plane/projects',
-    label: 'Projektek',
-    requires: { tenantRole: 'viewer' },
-  },
-  {
-    key: 'account',
-    href: '/control-plane/account',
-    label: 'Kapcsolt fiókok',
-    requires: { tenantRole: 'viewer' },
-  },
   // #618: everyone confirms their own pending writes here; the key predates the move
   // out of Adminisztráció and stays stable for stored nav-visibility policies.
   {
@@ -92,18 +84,33 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
     label: 'Teendők',
     requires: { tenantRole: 'viewer' },
   },
+  { key: 'promises', href: '/control-plane/promises', label: 'Ígéretek', requires: { tenantRole: 'viewer' } },
   {
     key: 'staff',
     label: 'Katalógus',
     children: [
+      {
+        key: 'staff.projects',
+        href: '/control-plane/projects',
+        label: 'Projektek',
+        requires: { tenantRole: 'viewer' },
+      },
       { key: 'staff.skills', href: '/control-plane/skills', label: 'Képességek (skill-ek)' },
       { key: 'staff.knowledge', href: '/control-plane/knowledge', label: 'Tudásbázis' },
+      { key: 'staff.warehouse', href: '/control-plane/warehouse', label: 'Adattárház', requires: { tenantRole: 'viewer' } },
+      { key: 'staff.scheduled-tasks', href: '/control-plane/scheduled-tasks', label: 'Ütemezett feladatok', requires: { tenantRole: 'viewer' } },
     ],
   },
   {
     key: 'settings',
     label: 'Beállítások',
     children: [
+      {
+        key: 'settings.account',
+        href: '/control-plane/account',
+        label: 'Kapcsolt fiókok',
+        requires: { tenantRole: 'viewer' },
+      },
       {
         key: 'settings.get-started',
         href: '/control-plane/get-started',
@@ -218,7 +225,7 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
     if (!visible(entry.key)) continue
     if (!isCatalogGroup(entry)) {
       if (meetsRequirement(ctx, entry.requires)) {
-        const badge = entry.key === 'admin.operations' ? ctx.pendingTasksCount : undefined
+        const badge = entry.key === 'admin.operations' ? ctx.pendingTasksCount : entry.key === 'promises' ? ctx.urgentPromisesCount : undefined
         nav.push(toLeaf(entry, badge))
       }
       continue

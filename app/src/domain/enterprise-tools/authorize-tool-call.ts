@@ -10,6 +10,7 @@ import {
   resolveLinkedAccountGrant,
   type LinkedAccountChoice,
 } from '@/domain/connector-grant/linked-account'
+import { effectiveWikiAccess, wikiAccessAllows, isKnowledgeBaseVisibleTo, scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { asUuid } from './tool-error-messages'
 import {
   HTTP_API_GET_ALL_TOOL,
@@ -17,8 +18,10 @@ import {
   HTTP_API_REQUEST_TOOL,
   KB_GET_DOCUMENT_TOOL,
   KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  KB_WIKI_WRITE_TOOL,
 } from './tool-definitions'
 
 const KB_READ_TOOLS = [KB_GET_DOCUMENT_TOOL, KB_GET_PAGE_TOOL, KB_LIST_INDEX_TOOL, KB_SEARCH_TOOL]
@@ -46,6 +49,9 @@ export type LiveConnectorRow = {
   name?: string
   secretAlias?: string | null
   config?: unknown
+  /** #942 D13: knowledge_base láthatóság (`shared` | `private_to_user`). */
+  visibility?: unknown
+  ownerUserId?: string | null
 }
 
 export type HttpApiConnectorChoice = {
@@ -226,8 +232,13 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'tool_not_configured' }
   }
 
+  // #943: a wiki-írás a `kb_ingest` képességre is épülhet — a tényleges jog a kötés `wikiAccess`-e.
   const accepted =
-    input.toolName === KB_GET_DOCUMENT_TOOL ? KB_READ_TOOLS : [input.toolName]
+    input.toolName === KB_GET_DOCUMENT_TOOL
+      ? KB_READ_TOOLS
+      : input.toolName === KB_WIKI_WRITE_TOOL
+        ? [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL]
+        : [input.toolName]
   const capability = input.definition.snapshot.capabilities.find(
     (row) => accepted.includes(row.toolName) && row.allowed,
   )
@@ -235,11 +246,33 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'capability_not_allowed' }
   }
 
+  // #942 D13: a nem a hívónak szóló privát és a `wikiAccess: none` KB-kötés
+  // nem létezik a hívó számára; közvetlen hivatkozásra `not_found`.
+  const isKb = requirement.connectorType === 'knowledge_base'
+  const wikiIntake = input.toolName === KB_INGEST_TOOL && input.args.processingMode === 'wiki'
+  const definition = isKb
+    ? {
+        ...input.definition,
+        snapshot: {
+          ...input.definition.snapshot,
+          connectors: scopeSnapshotConnectorsToUser(input.definition.snapshot.connectors, input.principal.userId),
+        },
+      }
+    : input.definition
+  const connectorIdArg = asUuid(input.args.connectorId)
+  if (
+    isKb &&
+    connectorIdArg &&
+    !definition.snapshot.connectors.some((row) => row.connectorId === connectorIdArg && row.type === 'knowledge_base')
+  ) {
+    return { allowed: false, reason: 'not_found' }
+  }
+
   const picked = pickBinding(
-    input.definition,
+    definition,
     requirement.connectorType,
-    requirement.accessMode,
-    asUuid(input.args.connectorId),
+    wikiIntake ? 'read' : requirement.accessMode,
+    connectorIdArg,
     normalizeConnectorName(input.args.connectorName),
     input.toolName,
     input.args,
@@ -247,7 +280,8 @@ export async function authorizeToolCall(
   if ('reason' in picked) {
     return {
       allowed: false,
-      reason: picked.reason,
+      reason: input.toolName === KB_GET_DOCUMENT_TOOL && picked.reason === 'missing_knowledge_base_connector_read'
+        ? 'not_found' : picked.reason,
       ...(picked.connectorChoices ? { connectorChoices: picked.connectorChoices } : {}),
     }
   }
@@ -264,6 +298,17 @@ export async function authorizeToolCall(
   }
   if (connector.type !== requirement.connectorType) {
     return { allowed: false, reason: 'connector_not_active' }
+  }
+
+  if (isKb && !isKnowledgeBaseVisibleTo(connector, input.principal.userId)) {
+    return { allowed: false, reason: 'not_found' }
+  }
+
+  if (wikiIntake) {
+    const binding = definition.snapshot.connectors.find((row) => row.connectorId === connector.id)
+    if (!binding || !wikiAccessAllows(effectiveWikiAccess(binding), 'submit')) {
+      return { allowed: false, reason: 'wiki_submit_not_allowed' }
+    }
   }
 
   if (requirement.connectorType === 'knowledge_base' || requirement.connectorType === 'code_sandbox') {

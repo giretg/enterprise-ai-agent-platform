@@ -147,6 +147,12 @@ check('a cégindító varázsló Clerk-sessiont kér (#830) — csak a /sign-up 
 
 check('a delegált OAuth callback és az MCP done page publikus (signed state, nincs Clerk-süti)', () => {
   assertPublic('/api/connectors/oauth/callback')
+  // #967: a mini app gyors linkje token-alapú (keretoldal + tartalom); a letöltés és az állandó link védett.
+  assertPublic('/api/mini-apps/open/abc.def')
+  assertPublic('/api/mini-apps/content/abc.def')
+  assertProtected('/api/mini-apps/admin')
+  assertProtected('/api/control-plane/mini-apps/11111111-1111-4111-8111-111111111111/download')
+  assertProtected('/control-plane/mini-apps/11111111-1111-4111-8111-111111111111')
   assertPublic('/connectors/oauth/done')
   assertProtected('/connectors/oauth')
   assertProtected('/api/connectors/oauth')
@@ -174,6 +180,13 @@ check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer)
   assertProtected('/api/model-gateway/admin')
   assertProtected('/api/client-policy')
   assertProtected('/api/client-policy/machine-floor')
+})
+
+check('#1004 a platform-chat folytatási token publikus (chat-token Bearer), a session-végpont védett', () => {
+  assertPublic('/api/chat/continuation')
+  assertProtected('/api/chat/session')
+  assertProtected('/api/chat/continuation/admin')
+  assertProtected('/chat')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

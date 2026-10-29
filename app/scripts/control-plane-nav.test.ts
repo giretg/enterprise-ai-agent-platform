@@ -38,6 +38,18 @@ function policyWith(patch: Partial<NavVisibilityPolicy>): NavVisibilityPolicy {
 }
 
 function main() {
+  check('promises is a separate viewer queue with its own badge', () => {
+    const nav = buildControlPlaneNav({ tenantRole: 'viewer', platformRoles: [], pendingTasksCount: 2, urgentPromisesCount: 3 })
+    const promises = nav.find((entry) => entry.key === 'promises')
+    assert.ok(promises && !('children' in promises))
+    assert.equal(promises.href, '/control-plane/promises')
+    assert.equal(promises.badge, 3)
+    const operations = nav.find((entry) => entry.key === 'admin.operations')
+    assert.ok(operations && !('children' in operations))
+    assert.equal(operations.badge, 2)
+    assert.ok(!flattenNavHrefs(buildControlPlaneNav({ tenantRole: null, platformRoles: [] })).includes('/control-plane/promises'))
+  })
+
   check('operator sees Kapcsolt fiókok in the main nav, not under Adminisztráció', () => {
     const nav = buildControlPlaneNav({
       tenantRole: 'operator',
@@ -63,15 +75,13 @@ function main() {
     assert.ok(hrefs.includes('/control-plane/operations'))
     assert.ok(!hrefs.includes('/control-plane/audit'))
     assert.ok(!hrefs.includes('/control-plane/mcp-parity'))
-    const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
-    assert.ok(account && !('children' in account))
-    assert.equal(account.label, 'Kapcsolt fiókok')
+    assert.ok(!nav.some((entry) => !('children' in entry) && entry.key === 'account'))
     assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Adminisztráció'))
     const settings = nav.find((entry) => 'children' in entry && entry.key === 'settings')
     assert.ok(settings && 'children' in settings)
     assert.deepEqual(
       settings.children.map((child) => child.href),
-      ['/control-plane/get-started'],
+      ['/control-plane/account', '/control-plane/get-started'],
     )
   })
 
@@ -132,11 +142,10 @@ function main() {
     assert.equal(settings.label, 'Beállítások')
     assert.deepEqual(
       settings.children.map((child) => child.key),
-      ['settings.get-started'],
+      ['settings.account', 'settings.get-started'],
     )
-    const account = nav.find((entry) => !('children' in entry) && entry.key === 'account')
-    assert.ok(account && !('children' in account))
-    assert.equal(account.label, 'Kapcsolt fiókok')
+    assert.equal(settings.children[0].label, 'Kapcsolt fiókok')
+    assert.ok(!nav.some((entry) => !('children' in entry) && entry.key === 'account'))
   })
 
   check('header catalog keeps skills, not the deleted rail roster tools', () => {
@@ -147,6 +156,8 @@ function main() {
     const hrefs = staff.children.map((child) => child.href)
     assert.ok(!hrefs.includes('/control-plane/training'))
     assert.ok(hrefs.includes('/control-plane/skills'))
+    assert.ok(hrefs.includes('/control-plane/projects'))
+    assert.ok(!nav.some((entry) => !('children' in entry) && entry.key === 'projects'))
     assert.ok(!hrefs.includes('/control-plane/behavior-profiles'))
     assert.ok(!hrefs.includes('/control-plane/apps'))
     assert.ok(!hrefs.includes('/control-plane/sandbox-versions'))
@@ -189,6 +200,18 @@ function main() {
     )
     assert.ok(!hrefs.includes('/control-plane/account'))
     assert.ok(hrefs.includes('/control-plane/agents'))
+  })
+
+  check('hiding legacy top-level projects still hides Katalógus / Projektek', () => {
+    const hrefs = flattenNavHrefs(
+      buildControlPlaneNav({
+        tenantRole: 'operator',
+        platformRoles: [],
+        navVisibility: policyWith({ operator: ['projects'] }),
+      }),
+    )
+    assert.ok(!hrefs.includes('/control-plane/projects'))
+    assert.ok(hrefs.includes('/control-plane/skills'))
   })
 
   check('hiding the Adminisztráció group does not hide Kapcsolt fiókok', () => {

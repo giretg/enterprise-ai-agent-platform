@@ -4,7 +4,7 @@
  * Az SDK `Client` + `StreamableHTTPClientTransport` párosát használjuk; a saját
  * JSON-RPC réteg helyett csak a transzport `fetch`-jét cseréljük egy őrzöttre:
  *  - minden kérés `guardEgressUrl`-en megy át (https, SSRF, feloldás utáni
- *    privát-IP, az MCP-allowlist hostjai — D8/D10);
+ *    privát-IP, a connector hostjára pinelve — D8/D10);
  *  - átirányítás nem követhető (`redirect: 'manual'` → hiba);
  *  - a válasz bájtban korlátozott, a hívás időben korlátozott;
  *  - sampling / elicitation / roots nincs hirdetve, a szerver ilyen kérését
@@ -15,7 +15,7 @@
 import { lookup } from 'node:dns/promises'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { discoverOAuthServerInfo } from '@modelcontextprotocol/sdk/client/auth.js'
+import { discoverOAuthServerInfo, registerClient } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
 
@@ -59,8 +59,10 @@ export type McpClientDeps = {
 
 export type McpSessionInput = {
   serverUrl: string
-  /** Az engedélyezett MCP-hostok (platform-allowlist ∩ a connector hostja). */
+  /** Az engedélyezett MCP-hostok (a connector saját hostja; OAuth-felderítésnél pin-to-request). */
   allowedHosts: string[]
+  /** OAuth-felderítés: minden kérés a saját hostjára pinelve (SSRF-őr marad). */
+  pinToRequestHost?: boolean
   accessToken?: string
   timeoutMs?: number
   maxResponseBytes?: number
@@ -100,9 +102,18 @@ export function guardedMcpFetch(input: McpSessionInput, deps: McpClientDeps = {}
   const resolveHostIps = deps.resolveHostIps ?? defaultResolveHostIps
   const maxBytes = input.maxResponseBytes ?? MCP_DEFAULT_MAX_RESPONSE_BYTES
   return async (url, init) => {
+    const target = url.toString()
+    let allowlistHosts = input.allowedHosts
+    if (input.pinToRequestHost) {
+      try {
+        allowlistHosts = [new URL(target).hostname.toLowerCase()]
+      } catch {
+        throw new McpClientError('egress_blocked', 'invalid_url')
+      }
+    }
     const guard = await guardEgressUrl({
-      url: url.toString(),
-      allowlistHosts: input.allowedHosts,
+      url: target,
+      allowlistHosts,
       resolveHostIps,
     })
     if (!guard.ok) throw new McpClientError('egress_blocked', guard.detail ?? guard.reason)
@@ -220,6 +231,8 @@ export type McpOAuthDiscovery = {
   authUrl: string
   tokenUrl: string
   scopes: string[]
+  authorizationServerUrl: string
+  registrationEndpoint?: string
 }
 
 /**
@@ -231,7 +244,10 @@ export async function discoverMcpOAuthMetadata(
   allowedHosts: string[],
   deps: McpClientDeps = {},
 ): Promise<McpOAuthDiscovery> {
-  const fetchFn = guardedMcpFetch({ serverUrl, allowedHosts, passUnauthorized: true }, deps)
+  const fetchFn = guardedMcpFetch(
+    { serverUrl, allowedHosts, pinToRequestHost: true, passUnauthorized: true },
+    deps,
+  )
   const fromWellKnown = await oauthInfoToDiscovery(
     await discoverOAuthServerInfo(serverUrl, { fetchFn }).catch(() => null),
   )
@@ -271,10 +287,58 @@ async function oauthInfoToDiscovery(
   info: Awaited<ReturnType<typeof discoverOAuthServerInfo>> | null,
 ): Promise<McpOAuthDiscovery | null> {
   const metadata = info?.authorizationServerMetadata
-  if (!metadata?.authorization_endpoint || !metadata.token_endpoint) return null
+  if (!info || !metadata?.authorization_endpoint || !metadata.token_endpoint) return null
+  const registration = metadata.registration_endpoint
+    ? String(metadata.registration_endpoint)
+    : undefined
   return {
-    authUrl: metadata.authorization_endpoint,
-    tokenUrl: metadata.token_endpoint,
-    scopes: (info?.resourceMetadata?.scopes_supported ?? []).slice(0, 50),
+    authUrl: String(metadata.authorization_endpoint),
+    tokenUrl: String(metadata.token_endpoint),
+    scopes: (info.resourceMetadata?.scopes_supported ?? []).slice(0, 50),
+    authorizationServerUrl: info.authorizationServerUrl,
+    ...(registration ? { registrationEndpoint: registration } : {}),
+  }
+}
+
+/** RFC 7591: client ID nélküli MCP-szerver (pl. T3 Google-belépés) DCR-rel. */
+export async function registerMcpOAuthClient(
+  input: {
+    authorizationServerUrl: string
+    registrationEndpoint: string
+    redirectUri: string
+    clientName: string
+    scopes?: string[]
+  },
+  deps: McpClientDeps = {},
+): Promise<{ clientId: string; clientSecret?: string }> {
+  const registrationUrl = new URL(input.registrationEndpoint)
+  const fetchFn = guardedMcpFetch(
+    {
+      serverUrl: input.registrationEndpoint,
+      allowedHosts: [registrationUrl.hostname.toLowerCase()],
+      pinToRequestHost: true,
+    },
+    deps,
+  )
+  try {
+    const registered = await registerClient(input.authorizationServerUrl, {
+      metadata: { registration_endpoint: input.registrationEndpoint } as never,
+      clientMetadata: {
+        redirect_uris: [input.redirectUri],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        client_name: input.clientName.slice(0, 120),
+        ...(input.scopes?.length ? { scope: input.scopes.join(' ') } : {}),
+      } as never,
+      fetchFn,
+    })
+    return {
+      clientId: registered.client_id,
+      ...(registered.client_secret ? { clientSecret: registered.client_secret } : {}),
+    }
+  } catch (error) {
+    if (error instanceof McpClientError) throw error
+    throw new McpClientError('unauthorized', 'dcr_failed')
   }
 }

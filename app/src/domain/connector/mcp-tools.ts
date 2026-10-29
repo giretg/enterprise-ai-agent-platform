@@ -238,7 +238,7 @@ export function mcpServerHost(config: McpConnectorConfig): string {
   return new URL(config.serverUrl).hostname.toLowerCase()
 }
 
-/** Létrehozáskor és hívásonként: a szerver hostja az MCP-allowlisten van-e (D8). */
+/** A szerver hostja a pin-listán van-e (a connector saját hostja). */
 export function mcpHostAllowed(allowedHosts: readonly string[], serverUrl: string): boolean {
   try {
     const host = new URL(serverUrl).hostname.toLowerCase()

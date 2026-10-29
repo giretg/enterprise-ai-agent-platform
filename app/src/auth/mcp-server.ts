@@ -1,3 +1,7 @@
+import { CUSTOMER_PROMISE_TOOLS, isCustomerPromiseTool, promiseRegisterSchema, promiseGetSchema, promiseListSchema, promiseResolveSchema } from '@/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_DESCRIPTIONS, SCHEDULED_TASK_TOOLS, isScheduledTaskTool, scheduledTaskInputSchemas } from '@/domain/scheduled-task/mcp'
+import { WIKI_MAINTAINER, withWikiMaintainer, wikiMaintainerPackage } from '@/domain/skill/llm-wiki-maintainer'
+import type { AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { auth } from '@clerk/nextjs/server'
 import type { SkillVersionStatus } from '@prisma/client'
 import {
@@ -47,10 +51,12 @@ import {
   renderAgentCheckout,
   renderAgentPrompt,
   type CheckoutSkill,
+  type CustomerPromiseHeadline,
 } from '@/lib/agent-checkout'
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import { readTenantLanguage } from '@/lib/tenant-language'
+import { scopeSnapshotToUser } from '@/lib/wiki-access'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
@@ -76,6 +82,9 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  KB_WIKI_WRITE_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_REVERT_TOOL,
   SANDBOX_RUN_TOOL,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
@@ -98,9 +107,12 @@ import {
   httpApiRequestInputSchema,
   kbGetDocumentInputSchema,
   kbGetPageInputSchema,
-  kbIngestInputSchema,
+  kbIngestObject,
   kbListIndexInputSchema,
   kbSearchInputSchema,
+  kbWikiWriteObject,
+  kbWikiChangesObject,
+  kbWikiRevertObject,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   type EnterpriseToolMcpResult,
@@ -188,6 +200,28 @@ import {
   workFileReadInputSchema,
   workFileWriteInputSchema,
 } from '@/domain/project-work/mcp'
+import {
+  isMiniAppTool,
+  MINI_APP_TOOLS,
+  MINI_APP_TOOL_DESCRIPTIONS,
+  MINI_APP_VIEWER_URI,
+  schemaForMiniAppTool,
+  MCP_MINI_APP_CREATE_TOOL,
+  MCP_MINI_APP_GET_TOOL,
+  MCP_MINI_APP_UPDATE_TOOL,
+  type MiniAppMcpResult,
+} from '@/domain/mini-app/mcp'
+import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
+import { MINI_APP_VIEWER_HTML, miniAppViewerResourceMeta } from '@/domain/mini-app/viewer'
+import { chatTokenKeyFromEnv, verifyChatToken } from '@/domain/platform-chat/chat-token'
+import {
+  isWarehouseTool,
+  WAREHOUSE_READ_ONLY_TOOLS,
+  WAREHOUSE_TOOLS,
+  WAREHOUSE_TOOL_DESCRIPTIONS,
+  warehouseInputSchemas,
+  type WarehouseMcpResult,
+} from '@/domain/warehouse/mcp'
 
 export type McpAgentListItem = McpCoworkerSummary
 
@@ -253,10 +287,32 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     args: Record<string, unknown>
     origin?: string
   }) => Promise<EnterpriseToolMcpResult>
+  /** #967 `platform.mini_app.*`; hiányában az eszköz `tool_not_configured`-ot ad. */
+  /** #984 `warehouse.*`; hiányában az eszköz `tool_not_configured`-ot ad. */
+  invokeWarehouse?: (input: {
+    principal: McpPrincipal
+    toolName: string
+    args: Record<string, unknown>
+  }) => Promise<WarehouseMcpResult>
+  invokeMiniApp?: (input: {
+    principal: McpPrincipal
+    toolName: string
+    args: Record<string, unknown>
+  }) => Promise<MiniAppMcpResult>
   /** skillVersionIds: exactly these pinned versions (#653); omitted → the tenant's active skills. */
   listMcpSkills: (input: { tenantId: string; skillVersionIds?: string[] }) => Promise<McpSkillPackage[]>
+  loadAgentWikis?: (principal: McpPrincipal, definition: AgentDefinition) => Promise<AgentWikiBriefing[]>
   agentScaffold: AgentScaffoldDeps
+  invokeCustomerPromise?: (input: { principal: McpPrincipal; toolName: string; args: Record<string, unknown> }) => Promise<EnterpriseToolMcpResult>
+  /** The caller's active promises for the briefing; get_definition already checked view access. */
+  listCustomerPromises?: (input: { tenantId: string; ownerUserId: string; agentId: string }) => Promise<CustomerPromiseHeadline[]>
   listOpenHandoffs?: (input: { tenantId: string; agentId: string }) => Promise<HandoffHeadline[]>
+  /** #640 `platform.scheduled_task.*`; hiányában `tool_not_configured`. */
+  invokeScheduledTask?: (input: { principal: McpPrincipal; toolName: string; args: Record<string, unknown> }) => Promise<EnterpriseToolMcpResult>
+  /** #640 S1: a get_definition `scheduledTasks` blokkja; null = nincs teendő. */
+  readScheduledTaskBriefing?: (input: { principal: McpPrincipal; agentId: string }) => Promise<Record<string, unknown> | null>
+  /** #640 K5: a `scheduledRunId` ellenőrzése + audit-összekötés; az eszközhívást sosem blokkolja. */
+  linkScheduledRun?: (input: { principal: McpPrincipal; runId: string; toolName: string }) => Promise<void>
 }
 
 export type HandoffHeadline = {
@@ -295,6 +351,11 @@ export async function verifyClerkOAuthToken(bearerToken: string): Promise<Verifi
   }
 }
 
+/** #1004: a beépített platform-chat first-party tokenje (mindkét audience). */
+export function productionChatTokenVerifier(bearerToken: string) {
+  return verifyChatToken(bearerToken, chatTokenKeyFromEnv(), Math.floor(Date.now() / 1000))
+}
+
 export async function canViewAgent(input: {
   tenantId: string
   userId: string
@@ -321,6 +382,7 @@ async function toPublishedListItem(agent: {
   description: string | null
   roleInstruction: string
   currentDefinitionVersionId: string | null
+  platformChatEnabled?: boolean
 }): Promise<McpAgentListItem> {
   const current = agent.currentDefinitionVersionId
     ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
@@ -335,6 +397,7 @@ async function toPublishedListItem(agent: {
     roleInstructionPreview: previewRoleInstruction(roleInstruction),
     currentDefinitionId: agent.currentDefinitionVersionId,
     currentVersion: current?.version ?? null,
+    platformChatEnabled: agent.platformChatEnabled ?? true,
   }
 }
 
@@ -343,6 +406,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
     isClerkConfigured: isClerkEnabled,
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
+    verifyChatToken: productionChatTokenVerifier,
     users: repositories.users,
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
@@ -365,6 +429,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       )
     },
     loadDefinition: (input) => services.agentDefinitions.loadAgentDefinition(input),
+    loadAgentWikis: (principal, definition) => services.wiki.listWikis({ ...principal, agentId: definition.agentId, snapshot: definition.snapshot }),
     canViewAgent,
     loadAgentApproverName: async ({ tenantId, agentId }) => {
       const agent = await repositories.agents.findById(agentId, tenantId)
@@ -413,6 +478,32 @@ export function productionMcpDeps(): McpRuntimeDeps {
         }),
       ),
     invokeProjectWork: (input) => services.projectWork.invoke(input),
+    invokeCustomerPromise: (input) => services.customerPromiseTools.invoke(input),
+    listCustomerPromises: async (input) =>
+      (await services.customerPromises.list({ ...input, status: 'active', limit: 50 })).map((row) => ({
+        id: row.id,
+        title: row.title,
+        dueAt: row.dueAt.toISOString(),
+        customerName: row.customerName,
+        customerEmail: row.customerEmail,
+        overdue: row.overdue,
+      })),
+    invokeMiniApp: (input) => services.miniApps.invoke(input),
+    invokeScheduledTask: (input) => services.scheduledTaskTools.invoke(input),
+    readScheduledTaskBriefing: ({ principal, agentId }) => services.scheduledTasks.briefing(principal, agentId),
+    linkScheduledRun: async ({ principal, runId, toolName }) => {
+      const link = await services.scheduledTasks.validateRunLink(principal, runId)
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId: principal.userId,
+        action: link.ok ? 'scheduled_task.run_tool_call' : 'scheduled_task.run_link_rejected',
+        targetType: 'scheduled_task',
+        targetId: link.ok ? link.taskId : null,
+        tenantId: principal.tenantId,
+        metadata: { scheduledTaskRunId: link.ok ? runId : runId.slice(0, 64), toolName },
+      })
+    },
+    invokeWarehouse: (input) => services.warehouse.invoke(input),
     listOpenHandoffs: async (input) => {
       const rows = await services.projectWork.handoffs.listOpenForAgent(input.tenantId, input.agentId, 10)
       return Promise.all(
@@ -596,7 +687,8 @@ async function loadAgentSkills(
   ) {
     return 'not_found'
   }
-  const pins = loaded.snapshot.skills
+  const scoped = withWikiMaintainer(loaded, principal.userId)
+  const pins = scoped.snapshot.skills
   const entrySkillVersionId = pins.find((pin) => pin.entry)?.skillVersionId ?? null
   const packages = [
     ...(await deps.listMcpSkills({
@@ -604,6 +696,7 @@ async function loadAgentSkills(
       skillVersionIds: pins.map((pin) => pin.skillVersionId),
     })),
   ]
+  if (pins.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) packages.push(wikiMaintainerPackage())
   if (entrySkillVersionId) {
     packages.sort(
       (a, b) =>
@@ -702,6 +795,7 @@ async function submitSkillToolResult(
       instructions: parsed.data.instructions,
       requires: lists.requires,
       attachments: lists.attachments,
+      triggerKeywords: lists.triggerKeywords,
     },
     buildConversationSkillPorts(),
   )
@@ -734,24 +828,28 @@ async function getDefinitionToolResult(
   bound = false,
 ) {
   await auditMcpToolCall(deps, principal, MCP_AGENT_GET_DEFINITION_TOOL, agentCtx(args))
-  const loaded = await deps.loadDefinition({
+  const loadedRaw = await deps.loadDefinition({
     tenantId: principal.tenantId,
     definitionId: asUuid(args.definitionId),
     agentId: asUuid(args.agentId),
     version: asVersion(args.version),
   })
-  if (!loaded) return definitionNotFound()
+  if (!loadedRaw) return definitionNotFound()
   const allowed = await deps.canViewAgent({
     tenantId: principal.tenantId,
     userId: principal.userId,
     role: principal.role,
-    agentId: loaded.agentId,
+    agentId: loadedRaw.agentId,
   })
   if (!allowed) return definitionNotFound()
-  const [memoryContext, skills, tenant] = await Promise.all([
+  // #942 D13: a más felhasználó privát tudásbázisa a hívó számára nem létezik.
+  const loaded = withWikiMaintainer(loadedRaw, principal.userId)
+  const [memoryContext, skills, tenant, customerPromises, scheduledTasks] = await Promise.all([
     readMemoryContext(principal, loaded.definitionId, loaded.agentId, deps),
     deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId)),
     deps.tenants.findById(principal.tenantId),
+    readCustomerPromises(principal, loaded.agentId, deps),
+    readScheduledTaskBriefing(principal, loaded.agentId, deps),
   ])
   const approverName = await deps.loadAgentApproverName?.({
     tenantId: principal.tenantId,
@@ -761,6 +859,8 @@ async function getDefinitionToolResult(
     tenantId: principal.tenantId,
     agentId: loaded.agentId,
   })
+  if (loaded.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, loaded) ?? []
   const roots = loaded.snapshot.localRoots
   if (memoryContext.memoryIndex) {
     memoryContext.memoryIndex = {
@@ -772,19 +872,46 @@ async function getDefinitionToolResult(
     briefing: renderAgentBriefing({
       definition: loaded,
       skills,
+      wikis,
       bound,
       recentSessionLogs: memoryContext.recentSessionLogs?.entries,
       handoffs: memoryContext.handoffs?.entries,
+      customerPromises,
       approverName: approverName ?? null,
       writeModes: writeModes ?? undefined,
       // #717 B réteg: a briefing platform-szövegei a tenant kimeneti nyelvén.
       language: readTenantLanguage(tenant?.settings),
     }),
     ...loaded,
-    contentHash: hashSnapshot(loaded.snapshot),
+    // #967 D12: a mini app útmutatót csak a platform.mini_app.guide adja, a definíció nem viszi.
+    snapshot: withoutMiniAppGuide(loaded.snapshot),
+    // A publikált (szűretlen) snapshot hash-e — a vázlat/közzétett összevetés ezt várja.
+    contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
     ...memoryContext,
+    customerPromises: { entries: customerPromises },
+    // #640 S1: üres pending + missed esetén a blokk elmarad.
+    ...(scheduledTasks ? { scheduledTasks } : {}),
   })
+}
+
+// Optional add-on, like the promises: a failing lookup must not break get_definition.
+async function readScheduledTaskBriefing(principal: McpPrincipal, agentId: string, deps: McpRuntimeDeps) {
+  if (!deps.readScheduledTaskBriefing) return null
+  return deps.readScheduledTaskBriefing({ principal, agentId }).catch(() => null)
+}
+
+// Optional add-on: a failing promise lookup must not break get_definition.
+async function readCustomerPromises(principal: McpPrincipal, agentId: string, deps: McpRuntimeDeps): Promise<CustomerPromiseHeadline[]> {
+  if (!deps.listCustomerPromises) return []
+  return deps.listCustomerPromises({ tenantId: principal.tenantId, ownerUserId: principal.userId, agentId }).catch(() => [])
+}
+
+function withoutMiniAppGuide(snapshot: AgentDefinitionSnapshot): AgentDefinitionSnapshot {
+  if (snapshot.miniAppGuide === undefined) return snapshot
+  const rest = { ...snapshot }
+  delete rest.miniAppGuide
+  return rest
 }
 
 function isFocusMemoryItem(item: unknown): boolean {
@@ -953,7 +1080,7 @@ async function createDraftToolResult(
       skills,
       connectors,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch (error) {
     if (error instanceof AgentScaffoldError && error.code === 'invalid_args') {
       return invalidArgs(error.message)
@@ -983,7 +1110,7 @@ async function getWorkingSetToolResult(
       agentId,
       tenantId: principal.tenantId,
     })
-    return textResult(result)
+    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
   } catch {
     return definitionNotFound()
   }
@@ -1006,7 +1133,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult(result)
+    return textResult({ ...result, snapshot: withoutMiniAppGuide(scopeSnapshotToUser(result.snapshot, principal.userId)) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()
@@ -1046,14 +1173,22 @@ async function checkoutToolResult(
   const skills = await deps.loadSkillVersions(
     loaded.snapshot.skills.map((skill) => skill.skillVersionId),
   )
+  const scoped = withWikiMaintainer(loaded, principal.userId)
+  if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
+  const tenant = await deps.tenants.findById(principal.tenantId)
   // A published snapshot történeti bizonyíték: a később visszavont skill csak
   // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
     renderAgentCheckout({
-      definition: loaded,
+      definition: scoped,
+      wikis,
+      language: readTenantLanguage(tenant?.settings),
+      publishedContentHash: hashSnapshot(loaded.snapshot),
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
       harness: asCheckoutHarness(args.harness),
+      warehouseAccess: warehouseAccessForAgent(readWarehouseSettings(tenant?.settings), loaded.agentId),
     }),
   )
 }
@@ -1086,7 +1221,10 @@ async function agentPromptResult(
   ) {
     throw new Error('Agent not found')
   }
+  const scoped = withWikiMaintainer(loaded, principal.userId)
   const skills = await deps.loadSkillVersions(loaded.snapshot.skills.map((skill) => skill.skillVersionId))
+  if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
+  const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
   const tenant = await deps.tenants.findById(principal.tenantId)
   return {
     description: hermesBotTitle(loaded.snapshot),
@@ -1096,8 +1234,9 @@ async function agentPromptResult(
         content: {
           type: 'text' as const,
           text: renderAgentPrompt({
-            definition: loaded,
+            definition: scoped,
             skills,
+            wikis,
             task,
             bound: boundAgentId !== null,
             language: readTenantLanguage(tenant?.settings),
@@ -1110,6 +1249,8 @@ async function agentPromptResult(
 
 /** Per-client agent binding (#682 WP-2): Hermes Bots etc. send it on every MCP request. */
 export const MCP_AGENT_ID_HEADER = 'x-excellence-agent-id'
+/** #640 K5 / §10.1: a managed Hermes Guard ebben adja tovább a futás-azonosítót. */
+export const MCP_SCHEDULED_RUN_HEADER = 'x-scheduled-run-id'
 
 /**
  * The header is only input: it picks the agent, it never widens access. The
@@ -1173,6 +1314,9 @@ function toolBindsToAgentHeader(toolName: string): boolean {
     toolName === MCP_SKILLS_LIST_TOOL ||
     toolName === MCP_SKILL_READ_TOOL ||
     isProjectWorkTool(toolName) ||
+    isCustomerPromiseTool(toolName) ||
+    isMiniAppTool(toolName) ||
+    isWarehouseTool(toolName) ||
     isEnterpriseTool(toolName)
   )
 }
@@ -1224,6 +1368,7 @@ async function createMcpResourceHandler(
   deps: McpRuntimeDeps,
   origin: string,
   agentHeader: string | null = null,
+  scheduledRunHeader: string | null = null,
 ) {
   const { tenant, context } = await loadTenantContext(principal, deps)
   const boundSkills = agentHeader
@@ -1374,7 +1519,7 @@ async function createMcpResourceHandler(
         {
           title: 'Submit skill from conversation',
           description:
-            'Submit a new tenant skill written in this conversation for the named agentId — use for operating rules and procedures ("how we do it"), not for one-off facts (see Where to save what table). requires and attachments are JSON strings, not arrays. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken). A tenant admin gets a live skill without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
+            'Submit a tenant skill written in this conversation for the named agentId — use for operating rules and procedures ("how we do it"), not for one-off facts (see Where to save what table). The description and triggerKeywords are what tells the agent WHEN to use the skill, so write them so that the role briefing never has to name the skill: say what the skill is for and list the words or situations that should make the agent reach for it. requires and attachments are JSON strings, not arrays; triggerKeywords is a comma-separated string. If a tenant skill with this name already exists, the call adds a NEW VERSION to it (description and instructions are replaced; triggerKeywords, requires and attachments you omit stay as they were) — use this to fix a description or add trigger keywords. The server decides the outcome and the text must be relayed to the user: created (live, assigned, enabled), revised (new version of an existing skill is live), pending_approval, or rejected with a reason (no_producer_skill, cannot_use_agent, validation, name_taken — the name belongs to a skill that cannot be changed from a conversation). A tenant admin gets the skill or the new version live without opening the web UI. Anyone else who can operate the agent gets one open proposal (a new call overwrites it). Viewers and agents without an enabled producer skill are rejected and nothing is stored. Missing tools are listed; this call does not grant them. This tool cannot create or mark a producer skill.',
           inputSchema: conversationSkillSubmitSchema,
         },
         async (args) =>
@@ -1473,6 +1618,30 @@ async function createMcpResourceHandler(
         },
         async (args) => projectWorkToolResult(principal, MCP_PROJECT_MEMORY_WRITE_TOOL, args, deps),
       )
+      for (const toolName of CUSTOMER_PROMISE_TOOLS) {
+        server.registerTool(toolName, {
+          title: toolName.replace('platform.promise.', 'Customer promise: '),
+          description: toolName === 'platform.promise.register'
+            ? 'Record a time-bound customer commitment before or when making it. Resolve relative dates to an absolute ISO dueAt. Use the published definitionId, or omit it on a bound client. This is a ledger; fulfillment is explicit.'
+            : toolName === 'platform.promise.list'
+              ? 'List your customer promises for this agent (active by default). Call at session start, including when the briefing is empty. Filter by status and due upcoming|overdue|all.'
+              : toolName === 'platform.promise.get'
+                ? 'Read your customer promise by promiseId.'
+                : 'Explicitly resolve your open or claimed customer promise by promiseId. Optional note: at most 500 characters.',
+          inputSchema: toolName === 'platform.promise.register' ? promiseRegisterSchema
+            : toolName === 'platform.promise.list' ? promiseListSchema
+              : toolName === 'platform.promise.get' ? promiseGetSchema : promiseResolveSchema,
+          annotations: { readOnlyHint: toolName === 'platform.promise.get' || toolName === 'platform.promise.list' },
+        }, async (args: Record<string, unknown>) => customerPromiseToolResult(principal, toolName, args, deps))
+      }
+      for (const toolName of SCHEDULED_TASK_TOOLS) {
+        server.registerTool(toolName, {
+          title: toolName.replace('platform.scheduled_task.', 'Scheduled task: '),
+          description: SCHEDULED_TASK_DESCRIPTIONS[toolName],
+          inputSchema: scheduledTaskInputSchemas[toolName],
+          annotations: { readOnlyHint: toolName === 'platform.scheduled_task.list' || toolName === 'platform.scheduled_task.get' },
+        }, async (args) => scheduledTaskToolResult(principal, toolName, args as Record<string, unknown>, deps, boundAgentId))
+      }
       server.registerTool(
         MCP_HANDOFF_TOOL,
         {
@@ -1492,6 +1661,53 @@ async function createMcpResourceHandler(
           inputSchema: handoffAckInputSchema,
         },
         async (args) => projectWorkToolResult(principal, MCP_HANDOFF_ACK_TOOL, args, deps),
+      )
+      for (const toolName of WAREHOUSE_TOOLS) {
+        server.registerTool(
+          toolName,
+          {
+            title: toolName.replace('warehouse.', 'Adattárház: '),
+            description: WAREHOUSE_TOOL_DESCRIPTIONS[toolName],
+            inputSchema: warehouseInputSchemas[toolName],
+            ...(WAREHOUSE_READ_ONLY_TOOLS.has(toolName) ? { annotations: { readOnlyHint: true } } : {}),
+          },
+          async (args) => warehouseToolResult(principal, toolName, args as Record<string, unknown>, deps),
+        )
+      }
+      for (const toolName of MINI_APP_TOOLS) {
+        // #967 §3.8: a linket adó eszközök az MCP Apps nézőt is deklarálják (ahol a kliens támogatja).
+        const opensViewer =
+          toolName === MCP_MINI_APP_CREATE_TOOL || toolName === MCP_MINI_APP_UPDATE_TOOL || toolName === MCP_MINI_APP_GET_TOOL
+        server.registerTool(
+          toolName,
+          {
+            title: toolName.replace('platform.mini_app.', 'Mini app: '),
+            description: MINI_APP_TOOL_DESCRIPTIONS[toolName],
+            inputSchema: schemaForMiniAppTool(toolName),
+            ...(toolName.endsWith('.list') || toolName.endsWith('.get') || toolName.endsWith('.guide')
+              ? { annotations: { readOnlyHint: true } }
+              : {}),
+            ...(opensViewer ? { _meta: { ui: { resourceUri: MINI_APP_VIEWER_URI } } } : {}),
+          },
+          async (args) => miniAppToolResult(principal, toolName, args as Record<string, unknown>, deps),
+        )
+      }
+      server.registerResource(
+        'mini-app-viewer',
+        MINI_APP_VIEWER_URI,
+        {
+          title: 'Mini app néző',
+          description: 'Beágyazott néző a mini appokhoz (MCP Apps).',
+          mimeType: 'text/html;profile=mcp-app',
+        },
+        async () => {
+          await auditMcpResourceRead(deps, principal, MINI_APP_VIEWER_URI)
+          return {
+            contents: [
+              { uri: MINI_APP_VIEWER_URI, mimeType: 'text/html;profile=mcp-app', text: MINI_APP_VIEWER_HTML, _meta: miniAppViewerResourceMeta() },
+            ],
+          }
+        },
       )
       server.registerTool(
         GOOGLE_DRIVE_SEARCH_TOOL,
@@ -1689,7 +1905,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search knowledge base',
           description:
-            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
+            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
           inputSchema: kbSearchInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
@@ -1699,7 +1915,7 @@ async function createMcpResourceHandler(
         {
           title: 'List knowledge base index',
           description:
-            'Call this first. With no pathPrefix or artifactId, returns one row per source (filename, purpose, size; wiki rows include page titles). Pass pathPrefix or artifactId to list wiki pages.',
+            'Call this first. Returns the agent wiki index by category (if any) and one row per raw source (filename, purpose, size). With several knowledge bases and no wikiId it lists the wikis. Pass pathPrefix or artifactId to list OKF pages. inbox:true lists sources waiting to be processed into the wiki, with pending/inProgress/processed/skipped counts per wiki and batch.',
           inputSchema: kbListIndexInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
@@ -1709,7 +1925,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base page',
           description:
-            'Read one wiki page by path. For the table of contents pass path "index.md" and artifactId from kb_list_index. Do not open every page.',
+            'Read one page by path. Agent wiki: pass wikiId and path "WIKI.md" (rules), "index.md", "log.md" or a page path; the answer has baseVersion for kb_wiki_write. asOf (change number or ISO date) returns the page or index.md as it was then, read-only — a moved page is found under its old path. OKF wiki: path "index.md" and artifactId from kb_list_index. Do not open every page.',
           inputSchema: kbGetPageInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_PAGE_TOOL, args, deps),
@@ -1719,9 +1935,8 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base file',
           description:
-            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text.',
+            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text. PDF pages include textQuality; for low_text/no_text use pageImages:true and pages:"1-3,7" (max 5 pages per call, default page 1) to receive PNG images. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
-          annotations: { readOnlyHint: true },
         },
         async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
       )
@@ -1730,10 +1945,41 @@ async function createMcpResourceHandler(
         {
           title: 'Ingest knowledge base file',
           description:
-            'Load a file into the agent knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into a wiki. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
-          inputSchema: kbIngestInputSchema,
+            'Load a file into the knowledge base (reference documents and knowledge material — see Where to save what table). processingMode=raw_text_only keeps the extracted text; okf splits it into pages mechanically; wiki stores the raw source for the agent wiki — then process it NOW in this session: read it and call kb_wiki_write. Use defer:true only when the user asks to process later. Pass wikiId when several wikis are writable. kind:"note" saves a short fact learned in conversation as a raw source (no filename needed). Identical files return duplicateOf. PDF responses include per-page textQuality and a pageImages nextStep when needed. Optional purpose is one line on what the file is for. Pass UTF-8 content or contentBase64 for PDF/DOCX/XLSX.',
+          inputSchema: kbIngestObject,
         },
         async (args) => enterpriseToolResult(principal, KB_INGEST_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_WRITE_TOOL,
+        {
+          title: 'Write agent wiki pages',
+          description:
+            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category, frontmatter (sources [{documentId}], source_date required on source pages), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a raw source of this knowledge base. Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. On success the response lists every written page with its new baseVersion — that is the confirmation; do not re-read the pages to verify. Errors: invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode returns awaiting_approval and an approvalUrl — show the link, do not poll.',
+          inputSchema: kbWikiWriteObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_WRITE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CHANGES_TOOL,
+        {
+          title: 'List agent wiki changes',
+          description:
+            'What changed in an agent wiki since you last looked: per change its number (seq), time, author, log title and note, and per page path, action (created|updated|archived|moved|restored), title and line counts (+added/−removed). No page text — read details with kb_get_page. Call it once at the start of wiki work when the briefing shows unseen changes. since defaults to "last_seen"; markSeen (default true) remembers what you have seen. Pass wikiId when several wikis are bound.',
+          inputSchema: kbWikiChangesObject,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CHANGES_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_REVERT_TOOL,
+        {
+          title: 'Revert agent wiki change',
+          description:
+            'Propose a revert in an agent wiki you have write access to: changeSeq reverts a whole change (number from kb_wiki_changes) to the state before it; or path + version restores one page to an earlier version (see kb_get_page asOf). Always needs approval, even in direct write mode: returns awaiting_approval and an approvalUrl — show the link, do not poll. conflict = a page changed after that change; restore those pages one by one instead. Use it only when the user asks or a change is clearly wrong; say why in note.',
+          inputSchema: kbWikiRevertObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_REVERT_TOOL, args, deps),
       )
       server.registerTool(
         SANDBOX_RUN_TOOL,
@@ -1851,6 +2097,16 @@ async function createMcpResourceHandler(
           rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
             ? (rawArgs as Record<string, unknown>)
             : {}
+        // #640 K5: a futás-azonosító nem része a tool argumentumainak — leválasztjuk, ellenőrizzük, auditáljuk.
+        const runArg = args.scheduledRunId
+        if (runArg !== undefined) {
+          args = { ...args }
+          delete args.scheduledRunId
+        }
+        const scheduledRunId = typeof runArg === 'string' && runArg.trim() ? runArg.trim() : scheduledRunHeader
+        if (scheduledRunId && !isScheduledTaskTool(toolName) && deps.linkScheduledRun) {
+          await deps.linkScheduledRun({ principal, runId: scheduledRunId, toolName }).catch(() => undefined)
+        }
         if (agentHeader && toolBindsToAgentHeader(toolName)) {
           const bound = await bindAgentHeader(principal, deps, toolName, args, agentHeader)
           if (!bound.ok) return bound.result
@@ -1881,8 +2137,20 @@ async function createMcpResourceHandler(
         if (toolName === MCP_SKILL_SUBMIT_TOOL) {
           return submitSkillToolResult(principal, args, deps)
         }
+        if (isCustomerPromiseTool(toolName)) {
+          return customerPromiseToolResult(principal, toolName, args, deps)
+        }
+        if (isScheduledTaskTool(toolName)) {
+          return scheduledTaskToolResult(principal, toolName, args, deps, agentHeader ? boundAgentId : null)
+        }
         if (isProjectWorkTool(toolName)) {
           return projectWorkToolResult(principal, toolName, args, deps, origin)
+        }
+        if (isMiniAppTool(toolName)) {
+          return miniAppToolResult(principal, toolName, args, deps)
+        }
+        if (isWarehouseTool(toolName)) {
+          return warehouseToolResult(principal, toolName, args, deps)
         }
         if (toolName === MCP_GATEWAY_OPERATION_GET_TOOL) {
           return getGatewayOperationToolResult(principal, args, deps)
@@ -1915,9 +2183,60 @@ async function enterpriseToolResult(
   confirm?: WriteConfirmInput,
 ) {
   // InputRequiredToolResult is the wire shape of the SDK's InputRequiredResult.
-  return deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as Promise<
+  const result = await deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm }) as
     CallToolResult | InputRequiredResult
-  >
+  return toolName === KB_GET_DOCUMENT_TOOL && args.pageImages === true && 'content' in result
+    ? kbDocumentImageResult(result as CallToolResult)
+    : result
+}
+
+/** Lift only server-generated KB page images into MCP image content blocks. */
+export function kbDocumentImageResult(result: CallToolResult): CallToolResult {
+  if (result.isError) return result
+  const first = result.content[0]
+  if (first?.type !== 'text') return result
+  const payload = JSON.parse(first.text)
+  if (!Array.isArray(payload.images)) return result
+  const { images, ...metadata } = payload as {
+    images: Array<{ page: number; data: string; mimeType: 'image/png'; width: number; height: number }>
+    [key: string]: unknown
+  }
+  return {
+    ...result,
+    content: [
+      { type: 'text', text: JSON.stringify({ ...metadata, pageImages: images.map(({ page, width, height, mimeType }) => ({ page, width, height, mimeType })) }) },
+      ...images.flatMap((image): CallToolResult['content'] => [
+        { type: 'text', text: `PDF page ${image.page}` },
+        { type: 'image', data: image.data, mimeType: image.mimeType },
+      ]),
+    ],
+  }
+}
+
+async function scheduledTaskToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+  boundAgentId: string | null,
+) {
+  if (!deps.invokeScheduledTask) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  // Egy agenthez kötött kliens csak annak az agentnek hozhat létre feladatot.
+  if (boundAgentId && toolName === 'platform.scheduled_task.create') {
+    if (args.agentId !== undefined && args.agentId !== boundAgentId) return textResult({ code: 'agent_mismatch', message: `${MCP_AGENT_ID_HEADER}: agent_mismatch` }, true)
+    args = { ...args, agentId: boundAgentId }
+  }
+  return deps.invokeScheduledTask({ principal, toolName, args })
+}
+
+async function customerPromiseToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+) {
+  if (!deps.invokeCustomerPromise) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  return deps.invokeCustomerPromise({ principal, toolName, args })
 }
 
 async function projectWorkToolResult(
@@ -1928,6 +2247,26 @@ async function projectWorkToolResult(
   origin?: string,
 ) {
   return deps.invokeProjectWork({ principal, toolName, args, origin })
+}
+
+async function warehouseToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+): Promise<CallToolResult> {
+  if (!deps.invokeWarehouse) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  return (await deps.invokeWarehouse({ principal, toolName, args })) as CallToolResult
+}
+
+async function miniAppToolResult(
+  principal: McpPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+  deps: McpRuntimeDeps,
+): Promise<CallToolResult> {
+  if (!deps.invokeMiniApp) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
+  return (await deps.invokeMiniApp({ principal, toolName, args })) as CallToolResult
 }
 
 async function getGatewayOperationToolResult(
@@ -1963,6 +2302,8 @@ export async function handleMcpRequest(
   const origin = deps.resolveOrigin(request)
   const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
     if (!bearerToken) return undefined
+    const chat = deps.verifyChatToken?.(bearerToken)
+    if (chat) return { token: bearerToken, clientId: 'platform_chat', scopes: [], extra: { userId: chat.sub } }
     const verified = await deps.verifyOAuthToken(bearerToken)
     if (!verified) {
       // withMcpAuth(required) 401s here and never calls inner / resolveMcpPrincipal.
@@ -1987,12 +2328,27 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
+    const agentHeader = req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null
+    const principal = resolved.principal
+    // #1004 §7: a folytatási token csak a saját fordulója agentjéhez köthető.
+    if (principal.boundAgentId && agentHeader !== principal.boundAgentId) {
+      return forbiddenResponse({ ok: false, code: 'not_a_member', message: 'Access denied' })
+    }
+    const requestContext = getMcpRequestContext(req.headers)
     const handler = await createMcpResourceHandler(
-      resolved.principal,
+      principal,
       // #666: per-request audit-hatókör — sessionId + kliens minden sor metadata-jába.
-      { ...deps, audit: scopeMcpAuditSink(deps.audit, getMcpRequestContext(req.headers)) },
+      // A platform-chat jelölés a tokenből jön, nem a (hamisítható) user-agentből.
+      {
+        ...deps,
+        audit: scopeMcpAuditSink(
+          deps.audit,
+          principal.client ? { ...requestContext, clientName: principal.client } : requestContext,
+        ),
+      },
       origin,
-      req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
+      agentHeader,
+      req.headers.get(MCP_SCHEDULED_RUN_HEADER)?.trim() || null,
     )
     return handler(req)
   }

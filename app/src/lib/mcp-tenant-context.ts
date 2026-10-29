@@ -5,6 +5,7 @@ import {
 } from '@/lib/agent-knowledge-placement'
 import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
 import { settingsRecord } from '@/lib/tenant-settings'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 
 export const TENANT_MCP_INTRO_SETTING = 'mcpIntro'
 
@@ -31,6 +32,8 @@ export type McpCoworkerSummary = {
   roleInstructionPreview?: string | null
   currentDefinitionId: string | null
   currentVersion: number | null
+  /** #1004: az agent saját platform-chat kapcsolója (a tenant-kapcsolót a payload teszi hozzá). */
+  platformChatEnabled?: boolean
 }
 
 export function readTenantMcpIntro(settings: unknown): string | null {
@@ -81,6 +84,7 @@ export function buildTenantContextPayload(input: {
   coworkers: McpCoworkerSummary[]
 }) {
   const tenant = input.tenant
+  const platformChatOn = readPlatformChatSettings(tenant?.settings).enabled
   return {
     tenantSlug: input.tenantSlug,
     tenantDisplayName: tenant?.displayName ?? null,
@@ -95,6 +99,9 @@ export function buildTenantContextPayload(input: {
       roleInstructionPreview: coworker.roleInstructionPreview ?? null,
       currentDefinitionId: coworker.currentDefinitionId,
       currentVersion: coworker.currentVersion,
+      // #1004 D4: a beépített chat ezt szűri (hiányzó = nem elérhető); a külső kliensek figyelmen
+      // kívül hagyhatják. Kikapcsolt tenantnál a mező sincs ott, hogy a payload ne változzon.
+      ...(platformChatOn ? { platformChat: coworker.platformChatEnabled !== false } : {}),
     })),
   }
 }
@@ -123,7 +130,8 @@ export function buildMcpServerInstructions(input: {
     'MEMORY FIRST',
     `This server holds the AI agents' memory and knowledge about ${organization}. You can only answer company questions correctly with it. At the start of every conversation call platform.agent.get_definition — its memoryIndex catalog (and focus) is the agent's current memory. Load full text with platform.project_memory.read (ids or query; omit projectKey for general memory). Before answering any company-specific question (where is X, who owns Y, how do we do Z) and before searching Drive, Gmail, KB or APIs, check that memory. Memory overrides search results: if a search finds something else, follow the memory, search for the name it gives, and tell the user about the conflict. When the user corrects a fact, update the memory.`,
     '',
-    renderKnowledgePlacementBlock(),
+    renderKnowledgePlacementBlock({ wikiCapable: true }),
+    'A published agent can have its own version of some rows (marked "agent rule" in its briefing from platform.agent.get_definition). For that agent the briefing wins over this table.',
     '',
     'YOUR ROLE',
     'You are the MCP-connected assistant (Cursor, Codex, Claude Desktop, etc.) — not a second runtime inside the platform. Help the user through published agent definitions: platform.whoami, platform.agents.list, then platform.agent.get_definition for the agentId you picked (this also loads its memory). Pass definitionId on every enterprise tool (Drive, Gmail, http_api_*, kb_*).',

@@ -59,7 +59,7 @@ const EXTRA_PANELS: ControlPlanePanelDef[] = [
     key: 'automation.scheduled-tasks',
     title: 'Ütemezett feladatok',
     eyebrow: 'Automatizálás',
-    href: '/control-plane/board?scheduled=1',
+    href: '/control-plane/scheduled-tasks',
   },
 ]
 
@@ -69,8 +69,10 @@ export const CONTROL_PLANE_PANELS: Record<string, ControlPlanePanelDef> = Object
 )
 
 const PANEL_KEY_ALIASES: Record<string, string> = {
-  'admin.account': 'account',
-  'admin.connectors': 'account',
+  account: 'settings.account',
+  'admin.account': 'settings.account',
+  'admin.connectors': 'settings.account',
+  projects: 'staff.projects',
 }
 
 export function panelDefForKey(key: string | null | undefined): ControlPlanePanelDef | null {

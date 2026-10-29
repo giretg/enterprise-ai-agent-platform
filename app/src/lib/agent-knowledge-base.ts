@@ -90,6 +90,9 @@ export function toolsNeedKnowledgeBase(toolNames: string[]): boolean {
       name === 'kb_list_index' ||
       name === 'kb_get_page' ||
       name === 'kb_get_document' ||
-      name === 'kb_ingest',
+      name === 'kb_ingest' ||
+      name === 'kb_wiki_write' ||
+      name === 'kb_wiki_changes' ||
+      name === 'kb_wiki_revert',
   )
 }

@@ -59,7 +59,7 @@ function hostOf(url: string): string | null {
 }
 
 /** A draft által deklarált kimenő hostok (egressHosts + base/token/auth URL). */
-function declaredEgressHosts(config: ConnectorConfig): string[] {
+export function declaredEgressHosts(config: ConnectorConfig): string[] {
   const hosts = new Set(config.egressHosts.map((h) => h.toLowerCase()))
   for (const url of [config.baseUrl, config.auth.tokenUrl, config.auth.userInfoUrl, config.auth.authUrl]) {
     const host = typeof url === 'string' ? hostOf(url) : null
