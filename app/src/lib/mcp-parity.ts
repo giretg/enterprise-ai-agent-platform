@@ -89,6 +89,7 @@ const LOG_WRITE_TOOLS = new Set([
   'platform.mini_app.create',
   'platform.mini_app.update',
   'warehouse.commit_import',
+  'warehouse.discard_import',
 ])
 
 const MEMORY_WRITE_TOOLS = new Set([

@@ -20,6 +20,7 @@ export const MCP_WAREHOUSE_SUBMIT_PLAN_TOOL = 'warehouse.submit_import_plan'
 export const MCP_WAREHOUSE_PREVIEW_IMPORT_TOOL = 'warehouse.preview_import'
 export const MCP_WAREHOUSE_COMMIT_IMPORT_TOOL = 'warehouse.commit_import'
 export const MCP_WAREHOUSE_IMPORT_STATUS_TOOL = 'warehouse.get_import_status'
+export const MCP_WAREHOUSE_DISCARD_IMPORT_TOOL = 'warehouse.discard_import'
 export const MCP_WAREHOUSE_QUERY_TOOL = 'warehouse.query_dataset'
 export const MCP_WAREHOUSE_EXPORT_TOOL = 'warehouse.export_dataset'
 
@@ -31,6 +32,7 @@ export const WAREHOUSE_TOOLS = [
   MCP_WAREHOUSE_PREVIEW_IMPORT_TOOL,
   MCP_WAREHOUSE_COMMIT_IMPORT_TOOL,
   MCP_WAREHOUSE_IMPORT_STATUS_TOOL,
+  MCP_WAREHOUSE_DISCARD_IMPORT_TOOL,
   MCP_WAREHOUSE_QUERY_TOOL,
   MCP_WAREHOUSE_EXPORT_TOOL,
 ] as const
@@ -96,6 +98,7 @@ export const warehouseInputSchemas: Record<WarehouseTool, z.ZodTypeAny> = {
   [MCP_WAREHOUSE_IMPORT_STATUS_TOOL]: z
     .object({ definitionId, importId: importId.optional().describe('Omit to list the latest imports.') })
     .passthrough(),
+  [MCP_WAREHOUSE_DISCARD_IMPORT_TOOL]: z.object({ definitionId, importId }).passthrough(),
   [MCP_WAREHOUSE_QUERY_TOOL]: z
     .object({
       definitionId,
@@ -134,6 +137,8 @@ export const WAREHOUSE_TOOL_DESCRIPTIONS: Record<WarehouseTool, string> = {
     'Load the previewed import. Data and catalog become visible together. If the import creates a new dataset or new fields, it waits for a human approval in the Control Plane: give the user reviewUrl. Uncertain customer matches never become links automatically — they appear as exceptions for a human.',
   [MCP_WAREHOUSE_IMPORT_STATUS_TOOL]:
     'Status of one import (state, check errors, preview, result, exceptions) or, without importId, the latest imports.',
+  [MCP_WAREHOUSE_DISCARD_IMPORT_TOOL]:
+    'Delete an upload that has not been loaded yet (e.g. a wrong file or an outdated version), together with the stored source file. Dataset data never changes. Loaded imports cannot be deleted — a human can roll back the latest load at reviewUrl. Ask the user before deleting.',
   [MCP_WAREHOUSE_QUERY_TOOL]: `Query a dataset with a structured request (no SQL): fields, filters, groupBy, aggregates, orderBy, limit (max ${QUERY_MAX_LIMIT}). The answer carries provenance (source files, freshness) and warnings (unconfirmed definitions, open exceptions, stale source) — mention them to the user. ${DATA_NOTE}`,
   [MCP_WAREHOUSE_EXPORT_TOOL]: `Export a dataset as CSV text (max ${EXPORT_INLINE_MAX_ROWS} rows here; the full XLSX export is on the warehouse page: exportUrl). ${DATA_NOTE}`,
 }
@@ -329,6 +334,10 @@ export async function invokeWarehouseTool(
           reviewUrl: reviewUrl(res.import.id),
           next: 'Tell the user what was loaded. Open exceptions (unmatched / uncertain links, invalid rows) are reviewed by a human at reviewUrl.',
         }
+      }
+      case MCP_WAREHOUSE_DISCARD_IMPORT_TOOL: {
+        const res = await svc.discardImport(actor, String(parsed.importId))
+        return { ...res, discarded: true, next: 'Tell the user the upload was deleted; no dataset changed.' }
       }
       case MCP_WAREHOUSE_IMPORT_STATUS_TOOL: {
         const id = str('importId')

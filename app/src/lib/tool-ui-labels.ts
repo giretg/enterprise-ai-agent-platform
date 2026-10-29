@@ -260,6 +260,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Betöltés véglegesítése',
     description: 'Az előnézetben látott adatok betöltése. Új adatkészlethez vagy mezőhöz emberi jóváhagyás kell.',
   },
+  'warehouse.discard_import': {
+    label: 'Feltöltés törlése',
+    description: 'Még be nem töltött Excel-feltöltés törlése (pl. rossz fájl). Az adatkészletek nem változnak.',
+  },
   'warehouse.get_import_status': {
     label: 'Betöltés állapota',
     description: 'Egy betöltés állapota, eredménye és a kézi döntésre váró tételek.',

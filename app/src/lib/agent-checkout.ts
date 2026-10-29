@@ -42,6 +42,7 @@ const HERMES_WAREHOUSE_IMPORT_TOOLS = [
   'warehouse.submit_import_plan',
   'warehouse.preview_import',
   'warehouse.commit_import',
+  'warehouse.discard_import',
 ]
 
 export function hermesWarehouseTools(access: WarehouseAgentAccess): string[] {
