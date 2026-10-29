@@ -14,6 +14,7 @@ import type { GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
 
 export const HEARTBEAT_INTERVAL_SECONDS = 60
 export const HEARTBEAT_FRESHNESS_SECONDS = 180
+export const MIN_GUARD_VERSION = '0.3.2'
 const MAX_SESSIONS_PER_HEARTBEAT = 50
 /** Ennél régebbi session-sorokat a heartbeat törli, hogy a tábla ne nőjön korlátlanul. */
 const SESSION_RETENTION_MS = 24 * 3600_000
@@ -54,7 +55,7 @@ export interface ClientInstallStore {
   /** null = ehhez a (tenant, user, installId)-hoz nincs heartbeat. */
   findInstall(
     input: ClientInstallKey & { agentId: string; sessionId: string | null },
-  ): Promise<{ lastHeartbeatAt: Date; sessionLastSeenAt: Date | null; managedDirHash: string } | null>
+  ): Promise<{ lastHeartbeatAt: Date; sessionLastSeenAt: Date | null; managedDirHash: string; guardVersion: string } | null>
 }
 
 export type DeviationKind =
@@ -65,6 +66,20 @@ export type DeviationKind =
   | 'heartbeat_gap'
   | 'managed_dir_hash_mismatch'
   | 'managed_dir_unissued'
+  | 'guard_outdated'
+
+/** Ismeretlen vagy előzetes Guard-verzióra nem adunk céges modellt. */
+export function compatibleGuardVersion(version: string): boolean {
+  const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(version)
+  if (!parts) return false
+  const minimum = MIN_GUARD_VERSION.split('.').map(Number)
+  const current = parts.slice(1).map(Number)
+  if (!current.every(Number.isSafeInteger)) return false
+  for (let index = 0; index < current.length; index++) {
+    if (current[index] !== minimum[index]) return current[index] > minimum[index]
+  }
+  return true
+}
 
 /** R8 eltérés-jel; v1-ben a riasztási csatorna maga az audit-esemény. */
 async function recordDeviation(
@@ -142,6 +157,8 @@ export async function recordHeartbeat(
 
 export const CLIENT_OPEN_MESSAGE =
   'A Hermes most nem céges módban fut, ezért az Excellence modellek nem érhetők el. Indítsd újra normál módban, vagy szólj a rendszergazdának.'
+export const CLIENT_GUARD_OUTDATED_MESSAGE =
+  'A Hermes Guard frissítésre szorul, ezért az Excellence modellek nem érhetők el. Kérd a rendszergazdától a legújabb kezelt kliens telepítését.'
 
 export type ClientMode = { mode: 'managed' } | { mode: 'open'; why: DeviationKind }
 
@@ -154,6 +171,7 @@ export async function resolveClientMode(
   const found = await deps.store.findInstall(input)
   if (!found) return { mode: 'open', why: 'no_heartbeat' }
   if (found.lastHeartbeatAt.getTime() < cutoff) return { mode: 'open', why: 'stale_heartbeat' }
+  if (!compatibleGuardVersion(found.guardVersion)) return { mode: 'open', why: 'guard_outdated' }
   const fromInstall = deps.lookupExpectedManagedDirHash ? await deps.lookupExpectedManagedDirHash(input) : null
   const accepted = acceptedManagedDirHashes(fromInstall, deps.expectedManagedDirHash)
   if (accepted.length === 0) return { mode: 'open', why: 'managed_dir_unissued' }
@@ -170,6 +188,6 @@ export function createManagedGate(deps: ClientPolicyDeps): NonNullable<GatewayPi
     const decision = await resolveClientMode(deps, { ...key, sessionId: ctx.sessionId })
     if (decision.mode === 'managed') return null
     await recordDeviation(deps.audit, { ...key, kind: decision.why, detail: { sessionId: ctx.sessionId } })
-    return { block: CLIENT_OPEN_MESSAGE, reason: `client_open:${decision.why}` }
+    return { block: decision.why === 'guard_outdated' ? CLIENT_GUARD_OUTDATED_MESSAGE : CLIENT_OPEN_MESSAGE, reason: `client_open:${decision.why}` }
   }
 }

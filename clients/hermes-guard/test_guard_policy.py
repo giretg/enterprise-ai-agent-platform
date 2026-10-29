@@ -169,6 +169,35 @@ class Policy(unittest.TestCase):
         self.assertEqual(blocked.action, "block")
         self.assertIn("tiltja", blocked.message)
 
+    def test_tool_exception_cannot_exceed_agent_ceiling(self):
+        allow = ({"pattern": "terminal", "action": "allow", "source": "user"},)
+        denied = {**snap(p.BOUND, allow), "agentCeilings": {"code_execution": "denied"}}
+        self.assertEqual(p.decide(denied, "terminal").action, "block")
+
+        approval = {**snap({**p.FREE, "human_approval": "none"}, allow),
+                    "agentCeilings": {"code_execution": "local_with_approval"}}
+        self.assertEqual(p.decide(approval, "terminal").action, "approve")
+
+        human_approval = {**snap({**p.FREE, "human_approval": "always"}, allow),
+                          "agentCeilings": {"human_approval": "always"}}
+        self.assertEqual(p.decide(human_approval, "terminal").action, "approve")
+
+        user_exception = {**snap(p.BOUND, allow), "agentCeilings": {"code_execution": "local_free"}}
+        self.assertEqual(p.decide(user_exception, "terminal").action, "allow")
+
+        stale_snapshot = {k: v for k, v in snap(p.BOUND, allow).items() if k != "agentCeilings"}
+        self.assertEqual(p.decide(stale_snapshot, "terminal").action, "block")
+
+        agent_approval = {**snap(p.BOUND, ({"pattern": "terminal", "action": "approve", "source": "agent"},)),
+                          "agentCeilings": {}}
+        self.assertEqual(p.decide(agent_approval, "terminal").action, "block")
+
+        user_allow_agent_approval = snap(p.BOUND, (
+            {"pattern": "terminal", "action": "allow", "source": "user"},
+            {"pattern": "terminal", "action": "approve", "source": "agent"},
+        ))
+        self.assertEqual(p.decide(user_allow_agent_approval, "terminal").action, "approve")
+
     def test_unknown_mcp_server_is_blocked_company_server_is_not(self):
         bound = snap(p.BOUND)
         unknown = p.decide(bound, "mcp__github__search")

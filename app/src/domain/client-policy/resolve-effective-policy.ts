@@ -51,6 +51,8 @@ export type ToolRule = { pattern: string; action: ToolAction; source: 'tenant' |
 
 export type EffectivePolicy = {
   capabilities: CapabilityMap
+  /** Az agent külön plafonja; az eszközszintű user-kivétel sem lépheti túl. */
+  agentCeilings: Partial<CapabilityMap>
   /** Engedett modell-lista; null = nincs szűkítés (a tenant `model.policy` továbbra is érvényes). */
   models: string[] | null
   toolRules: ToolRule[]
@@ -141,6 +143,7 @@ export function resolveEffectivePolicy(input: {
   const agentOv = parseOverrides(agent?.capabilities)
 
   const capabilities = {} as CapabilityMap
+  const agentCeilings: Partial<CapabilityMap> = {}
   const reasons = {} as EffectivePolicy['reasons']
   const tenantPreset = presetOf(tenant)
   const userPreset = presetOf(user)
@@ -166,6 +169,7 @@ export function resolveEffectivePolicy(input: {
 
     // 3. agent-plafon: képességenként min (a nem megadott plafon = nincs plafon)
     const ceiling = agentOv.levels[key] ?? agentPreset?.[key]
+    if (ceiling !== undefined) agentCeilings[key] = ceiling
     if (ceiling !== undefined && strictnessOf(key, ceiling) < strictnessOf(key, value)) {
       value = ceiling
       source = 'agent_ceiling'
@@ -190,28 +194,24 @@ export function resolveEffectivePolicy(input: {
   }
   reasons.models = { source: modelsSource, widenedBeyondTenant: modelsWidened && modelsSource !== 'agent_ceiling' }
 
-  // Tool-szabályok: tenant < user (azonos mintán a user felülír, D3); agent azonos mintán: legszigorúbb
+  // A user azonos mintán felülírhatja a tenantot (D3); az agent csak szigoríthat.
   const merged = new Map<string, ToolRule>()
-  const apply = (raw: unknown, source: ToolRule['source'], strictest: boolean) => {
+  const apply = (raw: unknown, source: 'tenant' | 'user') => {
     for (const [pattern, action] of parseToolOverrides(raw)) {
-      const prev = merged.get(pattern)
-      if (!strictest || !prev) {
-        merged.set(pattern, { pattern, action, source })
-        continue
-      }
-      const winner = strictestAction(prev.action, action)
-      // A lazább agent-akció nem írja felül a forrást: a szigorúbb réteg marad a döntés oka.
-      merged.set(pattern, { pattern, action: winner, source: winner === prev.action ? prev.source : source })
+      merged.set(pattern, { pattern, action, source })
     }
   }
-  apply(tenant?.toolOverrides, 'tenant', false)
-  apply(user?.toolOverrides, 'user', false)
-  apply(agent?.toolOverrides, 'agent', true)
+  apply(tenant?.toolOverrides, 'tenant')
+  apply(user?.toolOverrides, 'user')
+  const agentRules: ToolRule[] = [...parseToolOverrides(agent?.toolOverrides)]
+    .filter(([, action]) => action !== 'allow')
+    .map(([pattern, action]) => ({ pattern, action, source: 'agent' }))
 
   return {
     capabilities,
+    agentCeilings,
     models,
-    toolRules: [...merged.values()].sort((a, b) => a.pattern.localeCompare(b.pattern)),
+    toolRules: [...merged.values(), ...agentRules].sort((a, b) => a.pattern.localeCompare(b.pattern)),
     floor: { modelGatewayRequired: true, guardRequired: true, auditMinimum: AUDIT_DEPTH_FLOOR, enterpriseToolsServerAuthorized: true },
     policyVersion: computePolicyVersion([tenant, user, agent]),
     reasons,
