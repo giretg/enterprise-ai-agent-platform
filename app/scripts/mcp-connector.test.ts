@@ -36,6 +36,7 @@ import {
   mcpCallTool,
   mcpListTools,
   McpClientError,
+  registerMcpOAuthClient,
 } from '../src/domain/connector/mcp-client'
 import { allowlistForOAuthEndpoint } from '../src/domain/net/egress-guard'
 import type { ExecuteMcpToolInput } from '../src/domain/enterprise-tools/handlers/mcp'
@@ -126,7 +127,6 @@ function harness(opts: {
   definition?: AgentDefinition
   connector?: LiveConnectorRow
   active?: McpCapabilitySet | null
-  allowedHosts?: string[]
   grants?: Record<string, LiveGrantRow | null>
   directWrites?: boolean
   execute?: (input: ExecuteMcpToolInput) => Promise<unknown>
@@ -143,7 +143,6 @@ function harness(opts: {
     findActiveGrant: async ({ userId }) => opts.grants?.[userId] ?? null,
     resolveAccessToken: async ({ actingUserId }) => `token-for-${actingUserId}`,
     loadMcpActiveTools: async () => (opts.active === undefined ? ACTIVE : opts.active),
-    resolveMcpAllowedHosts: async () => opts.allowedHosts ?? [HOST],
     findAgentWriteModes: async () => ({
       memory: 'approval',
       httpApi: opts.directWrites ? 'direct' : 'approval',
@@ -280,26 +279,25 @@ async function main() {
     assert.equal(payload(await call(h, 'create_issue', { idempotencyKey: 'k5' })).code, 'missing_mcp_connector_write')
     assert.equal(h.enqueued.length, 0)
   })
-  await check('visszavont domain után a meglévő connector hívása elutasítva (D8)', async () => {
-    const h = harness({ allowedHosts: ['other.example.com'] })
-    assert.equal(payload(await call(h, 'search_issues')).code, 'mcp_domain_not_allowed')
-    assert.equal(h.executed.length, 0)
+  await check('hívás a connector saját hostjára van pinelve (tenant-döntés)', async () => {
+    const h = harness()
+    await call(h, 'search_issues')
+    assert.deepEqual(h.executed[0]!.allowedHosts, [HOST])
   })
-  await check('nem engedélyezett domainre connector nem hozható létre (D8, létrehozás)', () => {
+  await check('pin: a connector hostja a listán van, idegen host nincs', () => {
     assert.equal(mcpHostAllowed([HOST], SERVER_URL), true)
     assert.equal(mcpHostAllowed(['other.example.com'], SERVER_URL), false)
     assert.equal(mcpHostAllowed([HOST], 'not-a-url'), false)
   })
-  await check('token-csere D8: MCP nem pinel a token-hostjára, visszavont AS-host kiesik', () => {
+  await check('token-csere: MCP a tárolt AS-hostjára pinel (tenant választotta)', () => {
     const tokenUrl = new URL('https://auth.example.com/token')
     const tokenHosts = allowlistForOAuthEndpoint({
       connectorType: 'mcp',
       url: tokenUrl.href,
       tenantAllowlist: [HOST],
-      pinToEndpointHost: false,
+      pinToEndpointHost: true,
     })
-    assert.deepEqual(tokenHosts, [HOST])
-    assert.equal(tokenHosts.some((host) => host === tokenUrl.hostname), false)
+    assert.deepEqual(tokenHosts, [tokenUrl.hostname])
   })
   await check('más tenant connectora nem érhető el', async () => {
     const h = harness({ connector: connector({ tenantId: OTHER_TENANT }) })
@@ -374,7 +372,6 @@ async function main() {
       operations: store,
       resolveRequester: async () => ({ role: 'operator', assumed: false }),
       loadMcpActiveTools: async () => active,
-      resolveMcpAllowedHosts: async () => [HOST],
       executeMcpTool: async (input) => {
         executed.push(input)
         return { content: [{ type: 'text', text: 'created' }] }
@@ -512,12 +509,69 @@ async function main() {
       }
       return new Response('missing', { status: 404 })
     }
-    const discovered = await discoverMcpOAuthMetadata(SERVER_URL, [HOST, asHost], {
+    const discovered = await discoverMcpOAuthMetadata(SERVER_URL, [HOST], {
       fetchImpl,
       resolveHostIps: publicIp,
     })
     assert.equal(discovered.authUrl, `https://${asHost}/authorize`)
     assert.equal(discovered.tokenUrl, `https://${asHost}/token`)
+  })
+
+  await check('DCR: client ID nélküli szerver regisztrál egy nyilvános PKCE-klienst', async () => {
+    const asHost = 'auth.example.com'
+    const registerUrl = `https://${asHost}/register`
+    const asMeta = `https://${asHost}/.well-known/oauth-authorization-server`
+    const fetchImpl = async (url: string | URL, init?: RequestInit) => {
+      const href = String(url)
+      if (href === SERVER_URL || href.startsWith(`https://${HOST}/.well-known/`)) {
+        return new Response(
+          JSON.stringify({
+            resource: SERVER_URL,
+            authorization_servers: [`https://${asHost}`],
+          }),
+          { status: href === SERVER_URL ? 401 : 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      if (href === asMeta || href.startsWith(`https://${asHost}/.well-known/`)) {
+        return new Response(
+          JSON.stringify({
+            issuer: `https://${asHost}`,
+            authorization_endpoint: `https://${asHost}/authorize`,
+            token_endpoint: `https://${asHost}/token`,
+            registration_endpoint: registerUrl,
+            response_types_supported: ['code'],
+            code_challenge_methods_supported: ['S256'],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      if (href === registerUrl && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { token_endpoint_auth_method?: string; redirect_uris?: string[] }
+        assert.equal(body.token_endpoint_auth_method, 'none')
+        assert.ok(body.redirect_uris?.[0]?.endsWith('/api/connectors/oauth/callback'))
+        return new Response(JSON.stringify({ client_id: 'dcr-client', redirect_uris: body.redirect_uris }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response('missing', { status: 404 })
+    }
+    const discovered = await discoverMcpOAuthMetadata(SERVER_URL, [HOST], {
+      fetchImpl,
+      resolveHostIps: publicIp,
+    })
+    assert.equal(discovered.registrationEndpoint, registerUrl)
+    const registered = await registerMcpOAuthClient(
+      {
+        authorizationServerUrl: discovered.authorizationServerUrl,
+        registrationEndpoint: discovered.registrationEndpoint!,
+        redirectUri: 'https://app.example/api/connectors/oauth/callback',
+        clientName: 'T3 code',
+      },
+      { fetchImpl, resolveHostIps: publicIp },
+    )
+    assert.equal(registered.clientId, 'dcr-client')
+    assert.equal(registered.clientSecret, undefined)
   })
 
   await check('auth-URL: resource = szerver-cím, scope nélkül is indul, PKCE S256', async () => {

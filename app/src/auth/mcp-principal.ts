@@ -14,8 +14,11 @@ import type {
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 import { CUSTOMER_PROMISE_TOOLS } from '@/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_TOOLS } from '@/domain/scheduled-task/mcp'
 import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '@/domain/mini-app/mcp'
+import { WAREHOUSE_TOOLS } from '@/domain/warehouse/mcp'
+import type { ChatTokenClaims } from '@/domain/platform-chat/chat-token'
 
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
@@ -41,7 +44,9 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_SKILL_SUBMIT_TOOL,
   ...PROJECT_WORK_TOOLS,
   ...CUSTOMER_PROMISE_TOOLS,
+  ...SCHEDULED_TASK_TOOLS,
   ...MINI_APP_TOOLS,
+  ...WAREHOUSE_TOOLS,
   MCP_GATEWAY_OPERATION_GET_TOOL,
 ] as const
 export const MCP_ALLOWED_TOOLS = [...MCP_PLATFORM_TOOLS, ...ENTERPRISE_TOOLS] as const
@@ -56,6 +61,11 @@ export type McpPrincipal = {
   role: UserRole
   assumed: boolean
   platformRoles: PlatformRole[]
+  /** #1004: a beépített platform-chat first-party tokenje (nem Clerk OAuth). Auditban `client=platform_chat`. */
+  client?: 'platform_chat'
+  /** Folytatási token (#1004 §7): csak erre az agentre és fordulóra jó. */
+  boundAgentId?: string
+  turnId?: string
 }
 
 export type McpPrincipalFailureCode =
@@ -90,6 +100,8 @@ export type McpPrincipalDeps = {
   memberships: Pick<TenantMembershipRepository, 'findByTenantAndUser'>
   platformMemberships: Pick<PlatformMembershipRepository, 'findByUser'>
   audit?: AuditSink
+  /** #1004: a platform-chat tokenje; null = nem ilyen token (a Clerk-út dönt). */
+  verifyChatToken?: (bearerToken: string) => ChatTokenClaims | null
 }
 
 const GENERIC_MESSAGE: Record<McpPrincipalFailureCode, string> = {
@@ -238,6 +250,9 @@ export async function resolveMcpPrincipal(
     return deny(deps, fail('unauthenticated'), input.tenantSlug)
   }
 
+  const chat = deps.verifyChatToken?.(parsed.token) ?? null
+  if (chat) return resolveChatPrincipal(chat, input.tenantSlug, deps)
+
   const verified = await deps.verifyOAuthToken(parsed.token)
   if (!verified) {
     return deny(deps, fail('invalid_token'), input.tenantSlug)
@@ -249,6 +264,28 @@ export async function resolveMcpPrincipal(
 
   const user = await deps.users.findByExternalAuthId(verified.clerkUserId)
   return resolvePrincipalForUser(user, input.tenantSlug, deps)
+}
+
+/** #1004 §3: a chat-token ugyanarra a principalra oldódik fel, mint a user Clerk OAuth tokenje. */
+async function resolveChatPrincipal(
+  chat: ChatTokenClaims,
+  tenantSlug: string,
+  deps: McpPrincipalDeps,
+): Promise<McpPrincipalResult> {
+  if (normalizeTenantSlug(tenantSlug) !== chat.tenant) {
+    return deny(deps, fail('invalid_token'), tenantSlug)
+  }
+  const resolved = await resolvePrincipalForUser(await deps.users.findById(chat.sub), tenantSlug, deps)
+  if (!resolved.ok) return resolved
+  return {
+    ok: true,
+    principal: {
+      ...resolved.principal,
+      client: 'platform_chat',
+      ...(chat.agentId ? { boundAgentId: chat.agentId } : {}),
+      ...(chat.turnId ? { turnId: chat.turnId } : {}),
+    },
+  }
 }
 
 /**
@@ -342,6 +379,7 @@ export async function auditMcpToolCall(
       tenantSlug: principal.tenantSlug,
       assumed: principal.assumed,
       ...agentMeta(ctx),
+      ...(principal.client ? { client: principal.client } : {}),
     },
     tenantId: principal.tenantId,
   })

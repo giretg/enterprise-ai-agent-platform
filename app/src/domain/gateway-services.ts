@@ -62,8 +62,15 @@ import { CustomerPromiseService } from '@/domain/customer-promise/customer-promi
 import { PostgresCustomerPromiseRepository } from '@/repositories/postgres/customer-promise-repository'
 import { invokeCustomerPromise } from '@/domain/customer-promise/mcp'
 import { PostgresHandoffRepository } from '@/repositories/postgres/handoff-repository'
+import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
+import { invokeScheduledTask } from '@/domain/scheduled-task/mcp'
+import { PostgresScheduledTaskRepository } from '@/repositories/postgres/scheduled-task-repository'
+import { hashSnapshot } from '@/domain/agent-definition'
 import { MiniAppService } from '@/domain/mini-app/mini-app-service'
 import { invokeMiniAppTool } from '@/domain/mini-app/mcp'
+import { invokeWarehouseTool } from '@/domain/warehouse/mcp'
+import { warehousePageUrl, warehouseService } from '@/lib/warehouse'
+import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { readMiniAppSettings } from '@/lib/mini-app-settings'
 import { miniAppPermanentUrl, mintMiniAppLinks } from '@/lib/mini-app-origin'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
@@ -84,7 +91,6 @@ const resolveEgressAllowlist = (tenantId: string | null) =>
 const connectorGrantService = new ConnectorGrantService(
   repositories.connectorGrants,
   resolveEgressAllowlist,
-  () => platformSettingsService.getMcpAllowedHosts(),
 )
 
 const iamService = new IamService(
@@ -142,6 +148,8 @@ const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
   connectorGrants: connectorGrantService,
   resolveEgressAllowlist,
+  extendEgressAllowlist: (tenantId, host, actorId, provenance) =>
+    platformSettingsService.extendEgressAllowlist(tenantId, host, actorId, provenance),
   resolveBankPreset,
   sandboxTester: new HttpSandboxConnectionTester({ resolveEgressAllowlist, resolveBankPreset }),
   resolvePlatformGoogleOAuth: async (service: 'gmail' | 'drive' | 'api' = 'gmail') => {
@@ -259,6 +267,37 @@ const projectWorkService = new ProjectWorkService(
 const handoffRepository = new PostgresHandoffRepository()
 const customerPromiseService = new CustomerPromiseService(new PostgresCustomerPromiseRepository(), repositories.audit)
 
+/** #640: ütemezett feladatok — nyilvántartás, slot-foglalás, szinkron-terv; modellt nem futtat. */
+const scheduledTaskService = new ScheduledTaskService({
+  store: new PostgresScheduledTaskRepository(),
+  audit: repositories.audit,
+  loadAgent: (tenantId, agentId) => repositories.agents.findById(agentId, tenantId),
+  loadCurrentDefinition: async (tenantId, agentId) => {
+    const definition = await agentDefinitionService.loadAgentDefinition({ tenantId, agentId })
+    return definition ? { definitionId: definition.definitionId, contentHash: hashSnapshot(definition.snapshot) } : null
+  },
+  findAgentGrant: (input) => repositories.resourceGrants.findAgentGrant(input),
+  listOperatorUserIds: async (tenantId, agentId) =>
+    (await repositories.resourceGrants.listAgentGrantsForAgent({ tenantId, agentId }))
+      .filter((grant) => grant.accessLevel === 'operate')
+      .map((grant) => grant.userId),
+  listOperableAgentIds: async (tenantId, userId) =>
+    (await repositories.resourceGrants.listAgentGrantsForUser({ tenantId, userId }))
+      .filter((grant) => grant.accessLevel === 'operate')
+      .map((grant) => grant.resourceId),
+  activeMemberIds: async (tenantId, userIds) => {
+    if (!userIds.length) return new Set<string>()
+    const rows = await prisma.tenantMembership.findMany({ where: { tenantId, userId: { in: userIds }, status: 'active' }, select: { userId: true } })
+    return new Set(rows.map((row) => row.userId))
+  },
+  userNames: async (userIds) => {
+    const users = userIds.length ? await repositories.users.findManyByIds(userIds) : []
+    return new Map(users.map((user) => [user.id, user.name || user.email]))
+  },
+  countLinkedCalls: ({ tenantId, runId }) =>
+    prisma.auditLog.count({ where: { tenantId, action: 'scheduled_task.run_tool_call', metadata: { path: ['scheduledTaskRunId'], equals: runId } } }),
+})
+
 /** #395: az MCP-connector aktív, jóváhagyott eszközlistája (null = nincs aktív verzió → fail-closed). */
 const mcpGateDeps = {
   async loadMcpActiveTools(input: { connectorId: string; tenantId: string }) {
@@ -269,7 +308,6 @@ const mcpGateDeps = {
     const active = connector?.activeSpecVersion
     return active?.status === 'approved' ? parseMcpCapabilitySet(active.capabilitySet) : null
   },
-  resolveMcpAllowedHosts: () => platformSettingsService.getMcpAllowedHosts(),
 }
 
 function isStubDriveCredential(tokenRef: string): boolean {
@@ -649,6 +687,14 @@ export const services = {
   connectorGrants: connectorGrantService,
   knowledgeBase: knowledgeBaseService,
   customerPromises: customerPromiseService,
+  scheduledTasks: scheduledTaskService,
+  scheduledTaskTools: {
+    invoke: (input: Parameters<typeof invokeScheduledTask>[1]) => invokeScheduledTask({
+      scheduledTasks: scheduledTaskService,
+      audit: repositories.audit,
+      resolveLanguage: resolveTenantLanguage,
+    }, input),
+  },
   customerPromiseTools: {
     invoke: (input: Parameters<typeof invokeCustomerPromise>[1]) => invokeCustomerPromise({
       ...sharedToolLookups,
@@ -711,6 +757,21 @@ export const services = {
           handoffs: handoffRepository,
           miniApps: miniAppService,
           audit: repositories.audit,
+        },
+        input,
+      ),
+  },
+  /** #984 AI-adattárház — `warehouse.*` MCP-eszközök. */
+  warehouse: {
+    invoke: (input: Parameters<typeof invokeWarehouseTool>[1]) =>
+      invokeWarehouseTool(
+        {
+          ...sharedToolLookups,
+          warehouse: warehouseService(),
+          audit: repositories.audit,
+          pageUrl: warehousePageUrl,
+          agentAccess: async ({ tenantId, agentId }) =>
+            warehouseAccessForAgent(readWarehouseSettings((await repositories.tenants.findById(tenantId))?.settings), agentId),
         },
         input,
       ),

@@ -64,6 +64,13 @@ export const AGENT_SETTING_SECTIONS = [
     wizardUses: ['UpdateModelConfigForm'],
   },
   {
+    id: 'platformChat',
+    detailSection: 'modell',
+    detailComponent: 'UpdatePlatformChatForm',
+    wizardSkipReason:
+      'Alapból bekapcsolva: minden új munkatárs elérhető a platform-chatben, ha a cégnél be van kapcsolva — kikapcsolni utólag az adatlapon lehet.',
+  },
+  {
     id: 'connectors',
     detailSection: 'kapcsolatok',
     detailComponent: 'AgentConnectorBindingForm',

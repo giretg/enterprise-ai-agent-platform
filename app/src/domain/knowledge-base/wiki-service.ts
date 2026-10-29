@@ -1380,6 +1380,24 @@ export class WikiService {
           conflicts.push(conflictPayload(existing, 'the page changed after the version you restore'))
           continue
         }
+        // GDPR: a függő change-set a törlés előtt fagyasztotta be a tartalmat —
+        // sír-jeles hash-re ne írjuk vissza (applyApproved újra plan-el).
+        const restoreState: WikiPageState = {
+          path: target.path,
+          type: target.type,
+          title: target.title,
+          summary: target.summary,
+          category: target.category,
+          frontmatter: stripManagedFrontmatter(target.frontmatter),
+          body: target.body,
+          sources: target.sources,
+        }
+        const restoreHash = wikiPageContentHash(restoreState)
+        const revisions = await this.deps.wikis.listRevisions(existing.id)
+        if (revisions.some((rev) => rev.erasedAt && rev.contentHash === restoreHash)) {
+          error(path, 'version_erased', 'That version was erased for data-protection reasons and cannot be restored.')
+          continue
+        }
         if (target.path !== existing.path) {
           if (!isValidWikiPath(target.path) || isReservedWikiPath(target.path)) {
             error(path, 'invalid_path', 'The restored path is not a valid wiki path.')
@@ -1396,16 +1414,7 @@ export class WikiService {
         planned.push({
           input: page,
           existing,
-          state: {
-            path: target.path,
-            type: target.type,
-            title: target.title,
-            summary: target.summary,
-            category: target.category,
-            frontmatter: stripManagedFrontmatter(target.frontmatter),
-            body: target.body,
-            sources: target.sources,
-          },
+          state: restoreState,
           status: target.status,
           othersPage: false,
         })

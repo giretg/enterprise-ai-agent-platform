@@ -3,6 +3,7 @@ import { getTranslations } from 'next-intl/server'
 import { countUrgentCustomerPromisesAction } from '@/app/actions/customer-promise'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
+import { getPlatformChatAvailabilityAction } from '@/app/actions/platform-chat'
 import { getAuthContext } from '@/auth/context'
 import { isControlPlaneEmbedRequest } from '@/lib/control-plane-embed'
 import { buildControlPlaneNav } from '@/lib/control-plane-nav'
@@ -22,11 +23,12 @@ export default async function ControlPlaneLayout({ children }: { children: React
   const canSeeTasks = hasMinimumRole(ctx?.activeTenantRole ?? null, 'viewer')
   // ponytail: a badge a teljes inbox-listák hossza, minden control-plane oldalon.
   // Upgrade: count-only query, ha ez a layout-latencyben látszik.
-  const [navVisibility, pendingRes, inboxRes, urgentPromisesCount] = await Promise.all([
+  const [navVisibility, pendingRes, inboxRes, urgentPromisesCount, chatRes] = await Promise.all([
     loadTenantNavVisibility(ctx?.activeTenantId ?? null),
     canSeeTasks ? listPendingGatewayOperationsAction() : Promise.resolve(null),
     canSeeTasks ? listHandoffInboxAction() : Promise.resolve(null),
     canSeeTasks ? countUrgentCustomerPromisesAction() : Promise.resolve(0),
+    canSeeTasks ? getPlatformChatAvailabilityAction() : Promise.resolve(null),
   ])
   const pendingTasksCount =
     (pendingRes?.success ? pendingRes.data.operations.length : 0) +
@@ -44,7 +46,7 @@ export default async function ControlPlaneLayout({ children }: { children: React
   )
 
   return (
-    <ControlPlaneRoot embedFromServer={false} navItems={navItems}>
+    <ControlPlaneRoot embedFromServer={false} navItems={navItems} chatAvailable={chatRes?.success ? chatRes.data.available : false}>
       {children}
     </ControlPlaneRoot>
   )

@@ -421,7 +421,9 @@ export async function invokeMiniAppTool(
     if (notify && deps.handoffs) {
       // Csak az új címzett kap átadást: az ismételt hívás nem duplikál.
       for (const agentId of res.newlySharedAgentIds) {
-        const handoff = await deps.handoffs.insert({
+        // A megosztás maga idempotens (csak az újonnan megosztott címzettek),
+        // ezért idempotencyKey nélkül hívunk — mindig új átadás jön létre.
+        const { handoff } = await deps.handoffs.insert({
           tenantId: principal.tenantId,
           fromAgentId: definition.agentId,
           fromDefinitionId: definition.definitionId,

@@ -92,7 +92,10 @@ jobs:
           npm run test:agent-hire
           npm run test:project-work
           npm run test:handoff
+          npm run test:scheduled-task-sync-plan
+          npm run test:scheduled-task-service
           npm run test:mini-app
+          npm run test:warehouse
           npm run test:work-file-output
           npm run test:mcp-skills
           npm run test:conversation-skill
@@ -102,6 +105,7 @@ jobs:
           npm run test:client-policy-admin
           npm run test:client-policy-tool-catalog
           npm run test:client-install
+          npm run test:platform-chat
           npm run test:machine-floor
           npm run test:hermes-installer
           npm run test:model-gateway-token
@@ -150,6 +154,47 @@ jobs:
           npm run test:iam-token-redeem-escalation
           npm run test:tenant-management
           npm run test:self-service-tenant
+
+  platform-chat-worker:
+    # #1004: a beépített platform-chat worker (külön csomag). Elfogadási feltétel 7: a CI elbukik,
+    # ha a worker importál az app/src-ből (vagy fordítva).
+    name: Platform-chat worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/platform-chat
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: owner
+          POSTGRES_PASSWORD: owner
+          POSTGRES_DB: chat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U owner"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clients/platform-chat/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - name: Postgres-integráció (migráció + szűk worker-szerep)
+        env:
+          PGPASSWORD: owner
+        run: |
+          psql -h 127.0.0.1 -U owner -d chat -c "CREATE TABLE public.tenants (id uuid PRIMARY KEY, slug text); INSERT INTO public.tenants VALUES ('22222222-2222-4222-8222-222222222222', 'acme');"
+          PLATFORM_CHAT_MIGRATE_URL=postgresql://owner:owner@127.0.0.1:5432/chat npm run migrate
+          psql -h 127.0.0.1 -U owner -d chat -v worker_password="'worker'" -f ../../ops/platform-chat/db-role.sql
+          PLATFORM_CHAT_TEST_DATABASE_URL=postgresql://platform_chat_worker:worker@127.0.0.1:5432/chat npm run test:pg
 
   hermes-guard-windows:
     # #755: a natív Windows telepítő élesben (ACL, gépszintű env, .cmd → python -I → exc-guard).
@@ -214,9 +259,15 @@ jobs:
       - name: Handoff decision concurrency
         run: npm run test:handoff-repository
 
+      - name: Project work files (concurrent quota and append)
+        run: npm run test:project-work-file-db
+
       # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
       - name: Mini app repository (Postgres)
         run: npm run test:mini-app-db
+
+      - name: AI-adattárház (#984) valódi Postgresen
+        run: npm run test:warehouse-db
 
       # #942: privát KB végleges törlés + 30 napos sweep + tálca-SQL valódi Postgresen.
       - name: Wiki private KB purge (Postgres)

@@ -20,7 +20,7 @@ export type ExecuteMcpToolInput = {
   accessToken?: string
   tool: string
   arguments: Record<string, unknown>
-  /** Platform MCP-allowlist (D8); a hívás csak a connector saját hostjára mehet. */
+  /** A hívás csak a connector saját hostjára mehet. */
   allowedHosts: string[]
   onServerRequest?: (method: string) => void
 }
@@ -54,8 +54,6 @@ export async function executeMcpTool(
 export type McpGateDeps = {
   /** Az MCP-connector aktív (jóváhagyott) eszközlistája; null = nincs aktív verzió. */
   loadMcpActiveTools?: (input: { connectorId: string; tenantId: string }) => Promise<McpCapabilitySet | null>
-  /** D8: platform-admin által engedélyezett MCP-hostok. */
-  resolveMcpAllowedHosts?: () => Promise<string[]>
 }
 
 export type McpGateResult =
@@ -63,26 +61,25 @@ export type McpGateResult =
   | { ok: false; code: string }
 
 /**
- * §3.3–3.4 kapu egy `mcp_call`-ra: engedélyezett domain (hívásonként, hogy a
- * visszavonás azonnal hasson), aktív verzió, jóváhagyott eszköz. Az MCP-hívás és a
- * jóváhagyás utáni végrehajtás is ezen megy át.
+ * §3.3–3.4 kapu egy `mcp_call`-ra: a connector hostjára pinelve (a tenant-admin
+ * a létrehozással engedélyezte), aktív verzió, jóváhagyott eszköz. Az MCP-hívás
+ * és a jóváhagyás utáni végrehajtás is ezen megy át.
  */
 export async function checkMcpCallGate(
   deps: McpGateDeps,
   input: { connector: LiveConnectorRow; tool: string },
 ): Promise<McpGateResult> {
-  if (!deps.loadMcpActiveTools || !deps.resolveMcpAllowedHosts) return { ok: false, code: 'tool_not_configured' }
+  if (!deps.loadMcpActiveTools) return { ok: false, code: 'tool_not_configured' }
   const config = parseMcpConnectorConfig(input.connector.config)
   if (!config) return { ok: false, code: 'connector_not_active' }
-  const allowedHosts = await deps.resolveMcpAllowedHosts()
-  if (!allowedHosts.includes(mcpServerHost(config))) return { ok: false, code: 'mcp_domain_not_allowed' }
+  const host = mcpServerHost(config)
   const active = await deps.loadMcpActiveTools({
     connectorId: input.connector.id,
     tenantId: input.connector.tenantId,
   })
   const decision = resolveMcpToolRisk(active, input.tool)
   if (!decision.ok) return { ok: false, code: decision.reason }
-  return { ok: true, risk: decision.risk, allowedHosts }
+  return { ok: true, risk: decision.risk, allowedHosts: [host] }
 }
 
 /** D11: csak olvasó hívás ismételhető, egyszer; egress- és auth-hibát sosem ismétlünk. */

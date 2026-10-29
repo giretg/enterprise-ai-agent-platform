@@ -2,7 +2,9 @@
  * MCP HTTP handler — stub token verifier, no live Clerk (#538).
  * Futtatás: npm run test:mcp-http
  */
+import { WAREHOUSE_TOOLS } from '../src/domain/warehouse/mcp'
 import assert from 'node:assert/strict'
+import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
 import type {
   PlatformMembership,
   Tenant,
@@ -51,6 +53,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 import { CUSTOMER_PROMISE_TOOLS, invokeCustomerPromise } from '../src/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_TOOLS } from '../src/domain/scheduled-task/mcp'
 import { CustomerPromiseService, type CustomerPromiseStore } from '../src/domain/customer-promise/customer-promise-service'
 import { MCP_WORK_FILE_LIST_TOOL, PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '../src/domain/mini-app/mcp'
@@ -558,6 +561,41 @@ function writerDeps(extra: { requestStateKey?: string; driveCalls?: unknown[] } 
 }
 
 async function main() {
+  await check('#640 scheduledRunId is stripped and linked; scheduled_task tools dispatch; S1 block on get_definition', async () => {
+    const { deps } = writerDeps()
+    const links: Array<{ runId: string; toolName: string }> = []
+    const seenArgs: Array<Record<string, unknown>> = []
+    const scheduledCalls: Array<{ toolName: string; args: Record<string, unknown> }> = []
+    deps.linkScheduledRun = async ({ runId, toolName }) => { links.push({ runId, toolName }) }
+    deps.invokeEnterpriseTool = async (input) => {
+      seenArgs.push(input.args)
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    }
+    deps.invokeScheduledTask = async (input) => {
+      scheduledCalls.push({ toolName: input.toolName, args: input.args })
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    }
+    deps.readScheduledTaskBriefing = async () => ({ syncRevision: 'r1', pending: [{ taskId: 't1', title: 'Heti riport', reason: 'not_installed', clientType: 'claude_routine' }], missed: [] })
+    async function call(tool: string, args: Record<string, unknown>, headers: Record<string, string> = {}) {
+      const response = await post('acme', { jsonrpc: '2.0', id: 640, method: 'tools/call', params: { name: tool, arguments: args } }, { authorization: `Bearer ${TOKEN}`, ...headers }, deps)
+      assert.equal(response.status, 200)
+      const body = await readJson(response) as { result: { content: Array<{ text: string }> } }
+      return JSON.parse(body.result.content[0].text)
+    }
+    const RUN = '64064064-0640-4640-8640-640640640640'
+    await call(GOOGLE_DRIVE_SEARCH_TOOL, { definitionId: DEFINITION_ID, query: 'x', scheduledRunId: RUN })
+    assert.equal('scheduledRunId' in seenArgs[0], false)
+    await call(GOOGLE_DRIVE_SEARCH_TOOL, { definitionId: DEFINITION_ID, query: 'y' }, { 'x-scheduled-run-id': RUN })
+    assert.deepEqual(links, [{ runId: RUN, toolName: GOOGLE_DRIVE_SEARCH_TOOL }, { runId: RUN, toolName: GOOGLE_DRIVE_SEARCH_TOOL }])
+    await call('platform.scheduled_task.run_start', { taskId: RUN, scheduledRunId: RUN })
+    assert.equal(links.length, 2, 'scheduled_task tools are not linked to a run')
+    assert.equal(scheduledCalls[0].toolName, 'platform.scheduled_task.run_start')
+    const definition = await call(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.equal(definition.scheduledTasks.pending[0].reason, 'not_installed')
+    deps.readScheduledTaskBriefing = async () => { throw new Error('relation "scheduled_tasks" does not exist') }
+    assert.equal((await call(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })).scheduledTasks, undefined)
+  })
+
   await check('promise HTTP tools enforce grants, ownership, tenant and argument boundaries', async () => {
     const { deps, audit } = writerDeps()
     const rows: import('../src/domain/customer-promise/customer-promise-service').CustomerPromiseRecord[] = []
@@ -891,7 +929,9 @@ async function main() {
       MCP_SKILL_SUBMIT_TOOL,
       ...PROJECT_WORK_TOOLS.slice(0, -2),
       ...CUSTOMER_PROMISE_TOOLS,
+      ...SCHEDULED_TASK_TOOLS,
       ...PROJECT_WORK_TOOLS.slice(-2),
+      ...WAREHOUSE_TOOLS,
       ...MINI_APP_TOOLS,
       ...ENTERPRISE_TOOLS,
       MCP_GATEWAY_OPERATION_GET_TOOL,
@@ -2552,6 +2592,41 @@ async function main() {
       if (previousApp === undefined) delete process.env.NEXT_PUBLIC_APP_URL
       else process.env.NEXT_PUBLIC_APP_URL = previousApp
     }
+  })
+
+  await check('#1004 platform-chat token: tools/call a Clerk OAuth nélkül, client=platform_chat audit; folytatási token csak a saját agentjével', async () => {
+    const { deps: base, audit } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+    const chatKey = 'p'.repeat(40)
+    const now = new Date()
+    const browser = signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, chatKey, now).token
+    const turn = signChatToken({ aud: CHAT_TURN_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false, turnId: 't1', agentId: AGENT_ID }, chatKey, now).token
+    const deps: McpRuntimeDeps = {
+      ...base,
+      verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+      users: { ...base.users, findById: async () => user() },
+    }
+    const call = (token: string, headers: Record<string, string> = {}) =>
+      post('acme', { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } }, { authorization: `Bearer ${token}`, ...headers }, deps)
+    const res = await call(browser)
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    assert.equal((JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { agents: Array<{ agentId: string }> }).agents[0]?.agentId, AGENT_ID)
+    const row = audit.find((a) => a.action === 'mcp.tools.call')
+    assert.equal((row?.metadata as Record<string, unknown> | undefined)?.client, 'platform_chat')
+    assert.equal((await call(turn)).status, 403) // agent-fejléc nélkül
+    assert.equal((await call(turn, { 'x-excellence-agent-id': FOREIGN_AGENT_ID })).status, 403)
+    assert.equal((await call(turn, { 'x-excellence-agent-id': AGENT_ID })).status, 200)
+    assert.equal((await call(signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, 'x'.repeat(40), now).token)).status, 401)
+    // A worker állapotmentesen (initialize nélkül) listáz: 2026-07-28 envelope a `_meta`-ban.
+    const meta = {
+      'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientInfo': { name: 'excellence-platform-chat', version: '1.0.0' },
+      'io.modelcontextprotocol/clientCapabilities': { elicitation: { form: {} } },
+    }
+    const list = await post('acme', { jsonrpc: '2.0', id: 10, method: 'tools/list', params: { _meta: meta } }, { authorization: `Bearer ${turn}`, 'x-excellence-agent-id': AGENT_ID, 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, deps)
+    assert.equal(list.status, 200)
+    const tools = ((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []
+    assert.ok(tools.some((t) => t.name === MCP_AGENTS_LIST_TOOL))
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

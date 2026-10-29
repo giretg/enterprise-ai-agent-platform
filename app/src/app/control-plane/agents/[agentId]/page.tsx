@@ -28,16 +28,21 @@ import {
   isAgentDetailSectionId,
   type AgentDetailSectionId,
 } from '@/lib/agent-detail-sections'
+import { canStartPlatformChat } from '@/lib/platform-chat-href'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { repositories } from '@/repositories/postgres'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
+import { StartPlatformChatLink } from '@/components/agents/start-platform-chat-link'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateWriteApprovalForm } from '@/components/agents/update-write-approval-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
+import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -53,6 +58,8 @@ import { parsePlacementOverrides } from '@/lib/agent-knowledge-placement'
 import { UpdatePlacementOverridesForm } from '@/components/agents/update-placement-overrides-form'
 import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
 import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
+import { getAgentWarehouseAccessAction } from '@/app/actions/warehouse'
+import { AgentWarehouseAccessCard } from '@/components/warehouse/warehouse-access-panels'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
 
@@ -106,6 +113,8 @@ export default async function AgentDetailPage({
     promisesRes,
     wikiLinksRes,
     miniAppsRes,
+    warehouseRes,
+    tenant,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -122,6 +131,8 @@ export default async function AgentDetailPage({
     listCustomerPromisesAction(agentId, false, promisePage),
     listAgentWikiLinksAction({ agentId }),
     listAgentMiniAppsAction({ agentId }),
+    getAgentWarehouseAccessAction({ agentId }),
+    repositories.tenants.findById(ctx.activeTenantId),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -146,6 +157,12 @@ export default async function AgentDetailPage({
   const canDelete = isSuperadmin(ctx.platformRoles)
   const projects = projectsRes.success ? projectsRes.data.projects : []
   const projectsError = projectsRes.success ? null : projectsRes.error
+  const showStartChat = canStartPlatformChat({
+    tenantEnabled: readPlatformChatSettings(tenant?.settings).enabled,
+    platformChatEnabled: agent.platformChatEnabled,
+    status: agent.status,
+    currentDefinitionVersionId: agent.currentDefinitionVersionId,
+  })
   const t = await getTranslations('ControlPlane.agentDetail')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
   const sectionDesc = (id: AgentDetailSectionId) => {
@@ -223,15 +240,20 @@ export default async function AgentDetailPage({
             label: sectionLabel('modell'),
             description: sectionDesc('modell'),
             content: (
-              <UpdateModelConfigForm
-                agentId={agent.id}
-                policy={modelRes.data.policy}
-                globalChain={modelRes.data.globalChain}
-                config={modelRes.data.config}
-                effectivePrimary={modelRes.data.effectivePrimary}
-                maxAttempts={modelRes.data.maxAttempts}
-                canEdit={canManage}
-              />
+              <div className="space-y-4">
+                <UpdateModelConfigForm
+                  agentId={agent.id}
+                  policy={modelRes.data.policy}
+                  globalChain={modelRes.data.globalChain}
+                  config={modelRes.data.config}
+                  effectivePrimary={modelRes.data.effectivePrimary}
+                  maxAttempts={modelRes.data.maxAttempts}
+                  canEdit={canManage}
+                />
+                <Card title="Platform-chat">
+                  <UpdatePlatformChatForm agentId={agent.id} enabled={agent.platformChatEnabled} canEdit={canManage} />
+                </Card>
+              </div>
             ),
           },
         ]
@@ -263,6 +285,7 @@ export default async function AgentDetailPage({
             catalog={kbCatalog}
             canManage={canManage}
           />
+          {warehouseRes.success ? <AgentWarehouseAccessCard agentId={agent.id} data={warehouseRes.data} /> : null}
         </div>
       ),
     },
@@ -390,6 +413,7 @@ export default async function AgentDetailPage({
           ) : null}
           <p className="mt-1 text-ink-soft">{agent.status}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
+            {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
             <AgentIdCopyButton agentId={agent.id} />
             {canManage && publishRes.success && publishRes.data.stale ? (
               <PublishStaleDraftButton

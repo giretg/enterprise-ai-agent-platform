@@ -8,6 +8,7 @@ import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import {
   COMPANY_CONNECTOR_TYPES,
   lastMcpUseByUser,
@@ -35,7 +36,7 @@ export default async function DashboardPage() {
   const userId = ctx.user.id
   const isAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin')
   const canCreateAgent = isAdmin
-  const [agentsRes, listed, inbox, mcpUse, connectors, members] = await Promise.all([
+  const [agentsRes, listed, inbox, mcpUse, connectors, members, tenant] = await Promise.all([
     listAgentsForCatalog({ limit: 100 }),
     listPendingGatewayOperationsAction(),
     listHandoffInboxAction(),
@@ -53,8 +54,10 @@ export default async function DashboardPage() {
           .findByTenantWithUsers(tenantId)
           .then((rows) => rows.filter((m) => m.status === 'active'))
       : [],
+    repositories.tenants.findById(tenantId),
   ])
   const agents = agentsRes.success ? agentsRes.data : []
+  const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
   const operations = listed.success ? listed.data.operations : []
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const t = await getTranslations('ControlPlane.dashboard')
@@ -187,7 +190,12 @@ export default async function DashboardPage() {
         {agentsRes.success ? (
           <div className="grid gap-4 md:grid-cols-2">
             {agents.map((agent) => (
-              <AgentCatalogCard key={agent.id} agent={agent} canResumeHire={canCreateAgent} />
+              <AgentCatalogCard
+                key={agent.id}
+                agent={agent}
+                canResumeHire={canCreateAgent}
+                tenantChatEnabled={tenantChatEnabled}
+              />
             ))}
             {agents.length === 0 ? (
               <Card title={tAgents('emptyTitle')}>

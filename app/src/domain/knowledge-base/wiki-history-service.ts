@@ -692,16 +692,32 @@ export class WikiHistoryService {
           ...(rev.path && rev.path.toLowerCase().includes(phrase.toLowerCase()) ? { path: pathMap.get(rev.path) ?? erasedPath(rev.pageId) } : {}),
         })
       }
+      const rejectedChangeSetIds = new Set<string>()
       for (const row of matches.changeSets) {
         counts.changeSet++
         locations.push({ where: 'changeSet', label: row.seq ? `#${row.seq}` : 'pending', snippet: snippetOf(JSON.stringify(row.pages), phrase) })
-        write.changeSets.push({
-          id: row.id,
-          pages: deepRedact(row.pages, pattern) as Prisma.InputJsonValue,
-          ...(row.pageSummary ? { pageSummary: deepRedact(row.pageSummary, pattern) as Prisma.InputJsonValue } : {}),
-          ...(row.logEntry ? { logEntry: deepRedact(row.logEntry, pattern) as Prisma.InputJsonValue } : {}),
-          ...(row.validation ? { validation: deepRedact(row.validation, pattern) as Prisma.InputJsonValue } : {}),
-        })
+        if (scope.mode === 'erase') {
+          // Teljes törlés: a sír-jeles verzió másolata ne maradjon a pages JSON-ban,
+          // és a függő restore/upsert ne legyen újra alkalmazható (különben a kifejezés
+          // nélküli személyes adat visszatérhetne a live wikibe).
+          if (row.status === 'pending') rejectedChangeSetIds.add(row.id)
+          write.changeSets.push({
+            id: row.id,
+            pages: stripPhraseCopies(row.pages, pattern, pathMap) as Prisma.InputJsonValue,
+            ...(row.pageSummary ? { pageSummary: deepRedact(row.pageSummary, pattern) as Prisma.InputJsonValue } : {}),
+            logEntry: { op: (row.logEntry as { op?: string } | null)?.op ?? 'note', title: WIKI_ERASURE_MARK },
+            validation: {},
+            reject: row.status === 'pending',
+          })
+        } else {
+          write.changeSets.push({
+            id: row.id,
+            pages: deepRedact(row.pages, pattern) as Prisma.InputJsonValue,
+            ...(row.pageSummary ? { pageSummary: deepRedact(row.pageSummary, pattern) as Prisma.InputJsonValue } : {}),
+            ...(row.logEntry ? { logEntry: deepRedact(row.logEntry, pattern) as Prisma.InputJsonValue } : {}),
+            ...(row.validation ? { validation: deepRedact(row.validation, pattern) as Prisma.InputJsonValue } : {}),
+          })
+        }
       }
       for (const entry of matches.logEntries) {
         counts.log++
@@ -725,10 +741,31 @@ export class WikiHistoryService {
         locations.push({ where: 'chunk', label: String(matches.chunks) })
         write.chunkPattern = escapeRegExp(phrase)
       }
+      const seenGateway = new Set<string>()
       for (const op of matches.gatewayOperations) {
         counts.gatewayOperation++
         locations.push({ where: 'gatewayOperation', label: op.id.slice(0, 8) })
-        write.gatewayOperations.push({ id: op.id, argsJson: deepRedact(op.argsJson, pattern) as Prisma.InputJsonValue })
+        seenGateway.add(op.id)
+        // Teljes törlésnél a gateway-kártya se őrizhet / futtathat másolatot.
+        write.gatewayOperations.push(
+          scope.mode === 'erase'
+            ? { id: op.id, argsJson: {}, reject: true }
+            : { id: op.id, argsJson: deepRedact(op.argsJson, pattern) as Prisma.InputJsonValue },
+        )
+      }
+      // A valós kb_wiki_revert kártya args-a rendszerint csak changeSetId-t + path-ot
+      // tartalmaz (nincs benne a keresett kifejezés) — a rejectelt CS-hez kötött
+      // nyitott kártyákat külön le kell zárni (mint oldal-módban).
+      if (scope.mode === 'erase' && rejectedChangeSetIds.size > 0) {
+        for (const op of await this.deps.history.listPendingGatewayOperations(connector.id)) {
+          if (seenGateway.has(op.id)) continue
+          const args = op.argsJson as { changeSetId?: string } | null
+          if (!args?.changeSetId || !rejectedChangeSetIds.has(args.changeSetId)) continue
+          write.gatewayOperations.push({ id: op.id, argsJson: {}, reject: true })
+          counts.gatewayOperation++
+          locations.push({ where: 'gatewayOperation', label: op.id.slice(0, 8) })
+          seenGateway.add(op.id)
+        }
       }
       return { counts, locations, write }
     }
@@ -831,12 +868,67 @@ export class WikiHistoryService {
     write.erasedHashes.push(rev.contentHash)
     counts.revision = 1
     locations.push({ where: 'revision', label: `${page.path} v${rev.version}` })
-    if (rev.changeSetId) {
+    // Ugyanaz a másolat-tisztítás, mint oldal-módban: függő visszaállítás / gateway
+    // és a keletkező change-set pages JSON is őrizheti a törölt tartalmat.
+    const pathKeys = [...new Set([page.path, rev.path].filter((value): value is string => !!value))]
+    const pathMap = new Map(pathKeys.map((path) => [path, path]))
+    const changeSets = await this.deps.history.listPageChangeSets(wikiId, [page.id], pathKeys)
+    const changeSetIds = new Set<string>()
+    const erasedCopy = {
+      paths: pathKeys,
+      contentHash: rev.contentHash,
+      title: rev.title,
+      summary: rev.summary,
+      body: rev.body,
+      type: (rev.type ?? page.type) as WikiPageTypeName,
+      category: rev.category,
+      frontmatter: rev.frontmatter,
+      sourceRefs: rev.sourceRefs,
+    }
+    for (const row of changeSets) {
+      const isOrigin = row.id === rev.changeSetId
+      if (!isOrigin && !changeSetHoldsRevisionCopy(row.pages, erasedCopy)) continue
+      changeSetIds.add(row.id)
+      write.changeSets.push({
+        id: row.id,
+        pages: stripPagesJson(row.pages, pathMap) as Prisma.InputJsonValue,
+        pageSummary: readPageSummary(row.pageSummary).map((item) =>
+          item.pageId === page.id || pathKeys.includes(item.path)
+            ? { ...item, title: WIKI_ERASURE_MARK, fromPath: null }
+            : item,
+        ) as unknown as Prisma.InputJsonValue,
+        logEntry: { op: (row.logEntry as { op?: string } | null)?.op ?? 'note', title: WIKI_ERASURE_MARK },
+        validation: {},
+        reject: row.status === 'pending',
+      })
+      counts.changeSet++
+      locations.push({ where: 'changeSet', label: row.seq ? `#${row.seq}` : 'pending' })
+    }
+    if (rev.changeSetId && !changeSetIds.has(rev.changeSetId)) {
       const changeSet = await this.deps.wikis.findChangeSet(rev.changeSetId)
       if (changeSet) {
-        const paths = new Map([[rev.path ?? page.path, rev.path ?? page.path]])
-        write.changeSets.push({ id: changeSet.id, pages: stripPagesJson(changeSet.pages, paths) as Prisma.InputJsonValue })
-        counts.changeSet = 1
+        changeSetIds.add(changeSet.id)
+        write.changeSets.push({
+          id: changeSet.id,
+          pages: stripPagesJson(changeSet.pages, pathMap) as Prisma.InputJsonValue,
+          pageSummary: readPageSummary(changeSet.pageSummary).map((item) =>
+            item.pageId === page.id || pathKeys.includes(item.path)
+              ? { ...item, title: WIKI_ERASURE_MARK, fromPath: null }
+              : item,
+          ) as unknown as Prisma.InputJsonValue,
+          logEntry: { op: (changeSet.logEntry as { op?: string } | null)?.op ?? 'note', title: WIKI_ERASURE_MARK },
+          validation: {},
+          reject: changeSet.status === 'pending',
+        })
+        counts.changeSet++
+      }
+    }
+    for (const op of await this.deps.history.listPendingGatewayOperations(connector.id)) {
+      const args = op.argsJson as { changeSetId?: string } | null
+      if (args?.changeSetId && changeSetIds.has(args.changeSetId)) {
+        write.gatewayOperations.push({ id: op.id, argsJson: {}, reject: true })
+        counts.gatewayOperation++
+        locations.push({ where: 'gatewayOperation', label: op.id.slice(0, 8) })
       }
     }
     return { counts, locations, write }
@@ -963,6 +1055,85 @@ function stripPagesJson(value: unknown, paths: Map<string, string>): unknown {
       erased: true,
     }
   })
+}
+
+/**
+ * Szöveges teljes törlés: a kifejezést tartalmazó pages-elemből a teljes tartalom
+ * kiürül (nem csak a kifejezés cseréje) — így a sír-jeles verzió többi személyes
+ * adata sem marad restore/upsert másolatban.
+ */
+function stripPhraseCopies(value: unknown, pattern: RegExp, paths: Map<string, string>): unknown {
+  if (!Array.isArray(value)) return deepRedact(value, pattern)
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') return item
+    pattern.lastIndex = 0
+    if (!pattern.test(JSON.stringify(item))) return item
+    pattern.lastIndex = 0
+    const row = item as Record<string, unknown>
+    const path = typeof row.path === 'string' ? row.path : ''
+    const newPath = typeof row.newPath === 'string' ? row.newPath : ''
+    const scrub = (text: string) => {
+      pattern.lastIndex = 0
+      return text.replace(pattern, WIKI_ERASURE_MARK)
+    }
+    return {
+      path: paths.get(path) ?? (path ? scrub(path) : path),
+      action: row.action,
+      ...(newPath ? { newPath: paths.get(newPath) ?? scrub(newPath) } : {}),
+      erased: true,
+    }
+  })
+}
+
+/**
+ * A change-set pages JSON tartalmazza-e a törölt revízió tartalmát (eredeti írás
+ * vagy későbbi `restore` másolat). Revízió-módú GDPR-nál csak ezeket takarjuk.
+ */
+function changeSetHoldsRevisionCopy(
+  pages: unknown,
+  erased: {
+    paths: string[]
+    contentHash: string
+    title: string
+    summary: string
+    body: string
+    type: WikiPageTypeName
+    category: string | null
+    frontmatter: unknown
+    sourceRefs: unknown
+  },
+): boolean {
+  if (!Array.isArray(pages)) return false
+  const pathSet = new Set(erased.paths)
+  for (const item of pages) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const restore = row.restore && typeof row.restore === 'object' ? (row.restore as Record<string, unknown>) : null
+    if (restore) {
+      const restorePath =
+        typeof restore.path === 'string' ? restore.path : typeof row.path === 'string' ? row.path : ''
+      if (!pathSet.has(restorePath) && !(typeof row.path === 'string' && pathSet.has(row.path))) continue
+      const hash = wikiPageContentHash({
+        type: (typeof restore.type === 'string' ? restore.type : erased.type) as WikiPageTypeName,
+        title: String(restore.title ?? ''),
+        summary: String(restore.summary ?? ''),
+        category: typeof restore.category === 'string' ? restore.category : restore.category === null ? null : erased.category,
+        frontmatter: stripManagedFrontmatter(restore.frontmatter),
+        body: String(restore.body ?? ''),
+        sources: readWikiSources(restore.sources ?? erased.sourceRefs),
+      })
+      if (hash === erased.contentHash) return true
+      if (restore.body === erased.body && restore.title === erased.title) return true
+      continue
+    }
+    const rowPath = typeof row.path === 'string' ? row.path : ''
+    const newPath = typeof row.newPath === 'string' ? row.newPath : ''
+    if (!pathSet.has(rowPath) && !pathSet.has(newPath)) continue
+    if (typeof row.body === 'string' && row.body === erased.body) {
+      if (row.title === undefined || row.title === erased.title) return true
+    }
+  }
+  return false
 }
 
 function replacePaths(value: unknown, paths: Map<string, string>): unknown {

@@ -79,6 +79,20 @@ _Avoid_: global pack, published catalog item
 A munkatárs gépén lévő vékony Hermes-profil (név, MCP URL, `X-Excellence-Agent-Id`). Szerep, skill, memória és céges tények élőben a platform `get_definition` válaszából jönnek — a lemezre nem másolódnak.
 _Avoid_: checkout-mappa, helyi skill-másolat, szinkronizált SOUL-briefing
 
+## Platform-chat
+
+**Platform-chat**:
+A platformba épített beszélgetés a munkatársakkal (Chat gomb). Belül szigorúan külső MCP-kliens: a tool-okat a nyilvános MCP-n, a modellt a Model Gatewayen éri el, a platform kódjából semmit nem használ.
+_Avoid_: agent-chat runtime, beágyazott chat, második runtime
+
+**Forduló**:
+Egy user-üzenet feldolgozása a platform-chatben a végső válaszig: modell- és tool-lépések sora, ami a böngésző bezárása után is a szerveren fut tovább.
+_Avoid_: run, ticket, beszélgetés
+
+**Napi modell-keret**:
+Tenant-szintű napi USD-plafon a platform-chat modellhívásaira, budapesti éjfélkor nullázódik. A Hermes-forgalmat nem érinti.
+_Avoid_: napi model-keret (dispatch), költségkeret
+
 ## Konnektor-szintek
 
 **Platform-szintű konnektor-beállítás**:
@@ -92,3 +106,37 @@ _Avoid_: platform-fiók, alapértelmezett fiók, account scope
 **Felhasználói belépés (grant)**:
 Egy tenant-felhasználó saját hitelesítése egy delegált konnektorhoz (pl. a saját Google-fiókjával). Ezzel a felhasználó jogosultsága érvényesül: csak akkor ér el adatot, ha a saját fiókjának is van hozzáférése a kötött cégfiókhoz.
 _Avoid_: tenant-token, közös fiók
+
+## AI-adattárház
+
+**Adattárház**:
+A cég saját, elkülönített adatterülete (v1: külön PostgreSQL-séma), ahová Excel-táblák töltődnek, és ahonnan az AI munkatársak strukturált lekérdezéssel olvasnak.
+_Avoid_: adatbázis-hozzáférés, SQL-konzol
+
+**Importterv**:
+Deklaratív javaslat (`warehouse.import_plan/v1`): melyik munkalap, melyik oszlop melyik mezőbe, milyen típussal és üzleti jelentéssel. Az AI javasolja, a platform ellenőrzi és hajtja végre.
+_Avoid_: import-szkript, generált kód
+
+**Importrecept**:
+Egy már közzétett importterv a fájl szerkezeti ujjlenyomatához kötve; az ugyanilyen szerkezetű következő fájl AI nélkül töltődik be vele.
+
+**Kivétel (adattárház)**:
+Emberi döntésre váró tétel: bizonytalan / nem talált kapcsolat, hibás érték, ismétlődő azonosító. Bizonytalan egyezésből soha nem lesz magától kapcsolat.
+
+## Ütemezett feladat
+
+**Ütemezett feladat**:
+Ismétlődő agent-munka kanonikus példánya a platformon: mit, melyik agenttel, kinek a nevében, mikor és hová telepítve. A platform nem futtatja; a harness saját ütemezője indítja.
+_Avoid_: cron job, platform-dispatcher, task (ütközik a ticket- és MCP Tasks fogalommal)
+
+**Csonk**:
+A harness ütemezőjébe telepített fix, rövid prompt, ami csak a `run_start`-ot hívja. Az utasítás futáskor jön a platformról, így helyben csak az ütemezés és a be/ki állapot térhet el.
+_Avoid_: másolt utasítás, helyi feladat
+
+**Időpont-foglalás (slot)**:
+Egy ütemezett időpont egyetlen futása, amit a szerver számol és DB-unique véd. Ha a feladat több helyen is telepítve van, az első foglaló fut, a többi kihagy.
+_Avoid_: zárolás, sor (queue)
+
+**Szinkron-terv**:
+A szerver által háromutas összevetéssel (legutóbb telepített · platform · gépen lévő) számolt lépéslista. Platform-változás kérdés nélkül települ; helyi változásról a user dönt.
+_Avoid_: modell-ítélet, diff a modellben

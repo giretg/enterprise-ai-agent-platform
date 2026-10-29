@@ -103,6 +103,38 @@ enum CustomerPromiseStatus {
   missed
 }
 
+enum ScheduledTaskStatus {
+  active
+  paused
+  archived
+}
+
+enum ScheduledTaskRunStatus {
+  running
+  succeeded
+  failed
+  missed
+}
+
+enum ScheduledTaskKind {
+  personal
+  team
+  shared
+}
+
+enum ScheduledTaskAudience {
+  selected
+  agent_operators
+}
+
+enum ScheduledTaskMemberState {
+  invited
+  active
+  needs_reconsent
+  declined
+  left
+}
+
 enum HandoffStatus {
   open
   accepted
@@ -139,11 +171,15 @@ enum KnowledgeArtifactStatus {
 
 enum KnowledgeArtifactFormat {
   okf
-  /** #942: connectoronkénti wiki-konténer a wiki-oldalak chunkjaihoz. */
+  /**
+   * #942: connectoronkénti wiki-konténer a wiki-oldalak chunkjaihoz.
+   */
   llm_wiki
 }
 
-/** #942 LLM Wiki (#941 §7). */
+/**
+ * #942 LLM Wiki (#941 §7).
+ */
 enum WikiPageStatus {
   published
   pending_approval
@@ -167,7 +203,9 @@ enum WikiLogOp {
   revert
 }
 
-/** Agent ↔ wiki kapcsolat joga (D2): nem látja / olvassa / tálcára küldhet / írhatja. */
+/**
+ * Agent ↔ wiki kapcsolat joga (D2): nem látja / olvassa / tálcára küldhet / írhatja.
+ */
 enum WikiAccess {
   none
   read
@@ -189,7 +227,9 @@ enum WikiChangeSetStatus {
   reverted
 }
 
-/** D13: `private_to_user` tartalmát csak `Connector.ownerUserId` éri el. */
+/**
+ * D13: `private_to_user` tartalmát csak `Connector.ownerUserId` éri el.
+ */
 enum KnowledgeBaseVisibility {
   shared
   private_to_user
@@ -355,32 +395,34 @@ model User {
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  invitedBy                   User?                 @relation("UserInvitedBy", fields: [invitedById], references: [id])
-  invitedUsers                User[]                @relation("UserInvitedBy")
-  suspendedBy                 User?                 @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
-  suspendedUsers              User[]                @relation("UserSuspendedBy")
-  approvedSkillVersions       SkillVersion[]        @relation("SkillApprovedBy")
+  invitedBy                   User?                       @relation("UserInvitedBy", fields: [invitedById], references: [id])
+  invitedUsers                User[]                      @relation("UserInvitedBy")
+  suspendedBy                 User?                       @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
+  suspendedUsers              User[]                      @relation("UserSuspendedBy")
+  approvedSkillVersions       SkillVersion[]              @relation("SkillApprovedBy")
   conversationSkillsRequested ConversationSkillProposal[] @relation("ConversationSkillRequestedBy")
   conversationSkillsDecided   ConversationSkillProposal[] @relation("ConversationSkillDecidedBy")
-  createdInvitations          Invitation[]          @relation("InvitationCreatedBy")
+  createdInvitations          Invitation[]                @relation("InvitationCreatedBy")
   connectorGrants             ConnectorGrant[]
-  resourceGrantsReceived      ResourceGrant[]       @relation("ResourceGrantUser")
-  resourceGrantsIssued        ResourceGrant[]       @relation("ResourceGrantGrantedBy")
-  tenantMemberships           TenantMembership[]    @relation("MembershipUser")
-  membershipsInvited          TenantMembership[]    @relation("MembershipInvitedBy")
-  platformMemberships         PlatformMembership[]  @relation("PlatformMembershipUser")
-  tenantsCreated              Tenant[]              @relation("TenantCreatedBy")
-  publishedDefinitions        AgentDefinitionVersion[] @relation("DefinitionPublishedBy")
-  gatewayOperations           GatewayOperation[]    @relation("GatewayOperationPrincipal")
-  gatewayApprovalsDecided     GatewayApproval[]     @relation("GatewayApprovalDecidedBy")
-  uploadedDocuments           Document[]            @relation("DocumentUploadedBy")
-  workProjectsCreated         WorkProject[]         @relation("WorkProjectCreatedBy")
-  workFilesWritten            WorkFile[]            @relation("WorkFileLastWriter")
-  projectMemoryItems          ProjectMemoryItem[]   @relation("ProjectMemoryWithUser")
-  customerPromises CustomerPromise[]
-  handoffsCreated             Handoff[]             @relation("HandoffCreatedBy")
-  handoffsReceived            Handoff[]             @relation("HandoffToUser")
-  reviewedContactInquiries     ContactInquiry[]       @relation("ContactInquiryReviewedBy")
+  resourceGrantsReceived      ResourceGrant[]             @relation("ResourceGrantUser")
+  resourceGrantsIssued        ResourceGrant[]             @relation("ResourceGrantGrantedBy")
+  tenantMemberships           TenantMembership[]          @relation("MembershipUser")
+  membershipsInvited          TenantMembership[]          @relation("MembershipInvitedBy")
+  platformMemberships         PlatformMembership[]        @relation("PlatformMembershipUser")
+  tenantsCreated              Tenant[]                    @relation("TenantCreatedBy")
+  publishedDefinitions        AgentDefinitionVersion[]    @relation("DefinitionPublishedBy")
+  gatewayOperations           GatewayOperation[]          @relation("GatewayOperationPrincipal")
+  gatewayApprovalsDecided     GatewayApproval[]           @relation("GatewayApprovalDecidedBy")
+  uploadedDocuments           Document[]                  @relation("DocumentUploadedBy")
+  workProjectsCreated         WorkProject[]               @relation("WorkProjectCreatedBy")
+  workFilesWritten            WorkFile[]                  @relation("WorkFileLastWriter")
+  projectMemoryItems          ProjectMemoryItem[]         @relation("ProjectMemoryWithUser")
+  customerPromises            CustomerPromise[]
+  scheduledTasksOwned         ScheduledTask[]             @relation("ScheduledTaskOwner")
+  scheduledTaskMemberships    ScheduledTaskMember[]
+  handoffsCreated             Handoff[]                   @relation("HandoffCreatedBy")
+  handoffsReceived            Handoff[]                   @relation("HandoffToUser")
+  reviewedContactInquiries    ContactInquiry[]            @relation("ContactInquiryReviewedBy")
 
   @@index([status])
   @@map("users")
@@ -440,31 +482,34 @@ model Tenant {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz
 
-  createdBy         User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
-  memberships       TenantMembership[]
-  invitations       Invitation[]
-  agents            Agent[]
-  skills            Skill[]
+  createdBy                  User?                       @relation("TenantCreatedBy", fields: [createdById], references: [id])
+  memberships                TenantMembership[]
+  invitations                Invitation[]
+  agents                     Agent[]
+  skills                     Skill[]
   conversationSkillProposals ConversationSkillProposal[]
-  connectors        Connector[]
-  connectorGrants   ConnectorGrant[]
-  connectorDrafts   ConnectorDraft[]
-  connectorTemplates ConnectorTemplate[]
-  resourceGrants    ResourceGrant[]
-  gatewayOperations GatewayOperation[]
-  auditLogs         AuditLog[]
-  documents         Document[]
-  workProjects      WorkProject[]
-  workFiles         WorkFile[]
-  projectMemoryItems ProjectMemoryItem[]
-  customerPromises CustomerPromise[]
-  handoffs          Handoff[]
-  clientPolicies    ClientPolicy[]
-  clientInstalls    ClientInstall[]
-  clientMachineFloors ClientMachineFloor[]
-  aiInteractionEvents AiInteractionEvent[]
-  gatewaySurrogates GatewaySurrogate[]
-  miniApps          MiniApp[]
+  connectors                 Connector[]
+  connectorGrants            ConnectorGrant[]
+  connectorDrafts            ConnectorDraft[]
+  connectorTemplates         ConnectorTemplate[]
+  resourceGrants             ResourceGrant[]
+  gatewayOperations          GatewayOperation[]
+  auditLogs                  AuditLog[]
+  documents                  Document[]
+  workProjects               WorkProject[]
+  workFiles                  WorkFile[]
+  projectMemoryItems         ProjectMemoryItem[]
+  customerPromises           CustomerPromise[]
+  scheduledTasks             ScheduledTask[]
+  handoffs                   Handoff[]
+  clientPolicies             ClientPolicy[]
+  clientInstalls             ClientInstall[]
+  platformChatDailyUsage     PlatformChatDailyUsage[]
+  clientMachineFloors        ClientMachineFloor[]
+  aiInteractionEvents        AiInteractionEvent[]
+  gatewaySurrogates          GatewaySurrogate[]
+  miniApps                   MiniApp[]
+  warehouse                  TenantWarehouse?
 
   @@index([status])
   @@index([createdById, selfService])
@@ -539,54 +584,77 @@ model ResourceGrant {
 }
 
 model Agent {
-  id                         String      @id @default(uuid()) @db.Uuid
-  tenantId                   String      @map("tenant_id") @db.Uuid
+  id                         String          @id @default(uuid()) @db.Uuid
+  tenantId                   String          @map("tenant_id") @db.Uuid
   name                       String
-  roleInstruction            String      @map("role_instruction")
-  /** Megszeghetetlen szabályok — soronként egy bejegyzés; publikáláskor befagy a snapshot.rules-ba. */
-  hardRules                  String      @default("") @map("hard_rules")
-  /** Jóváhagyott betanított működési szabályok; új tanítás csak újrapublikáláskor érvényes MCP-n. */
-  trainedRules               String      @default("") @map("trained_rules")
+  roleInstruction            String          @map("role_instruction")
+  /**
+   * Megszeghetetlen szabályok — soronként egy bejegyzés; publikáláskor befagy a snapshot.rules-ba.
+   */
+  hardRules                  String          @default("") @map("hard_rules")
+  /**
+   * Jóváhagyott betanított működési szabályok; új tanítás csak újrapublikáláskor érvényes MCP-n.
+   */
+  trainedRules               String          @default("") @map("trained_rules")
   description                String?
-  status                     AgentStatus @default(draft)
-  currentDefinitionVersionId String?     @unique @map("current_definition_version_id") @db.Uuid
-  avatarUrl                  String?     @map("avatar_url")
+  status                     AgentStatus     @default(draft)
+  currentDefinitionVersionId String?         @unique @map("current_definition_version_id") @db.Uuid
+  avatarUrl                  String?         @map("avatar_url")
   memoryWriteMode            MemoryWriteMode @default(approval) @map("memory_write_mode")
-  /** Céges HTTP API írás (http_api_request): jóváhagyás vagy azonnali. */
+  /**
+   * Céges HTTP API írás (http_api_request): jóváhagyás vagy azonnali.
+   */
   httpApiWriteMode           MemoryWriteMode @default(approval) @map("http_api_write_mode")
-  /** Gmail írás (küldés, piszkozat, címke, kuka). */
+  /**
+   * Gmail írás (küldés, piszkozat, címke, kuka).
+   */
   gmailWriteMode             MemoryWriteMode @default(approval) @map("gmail_write_mode")
-  /** Drive / Sheets írás. Az output-mappa ettől függetlenül marad kivétel. */
+  /**
+   * Drive / Sheets írás. Az output-mappa ettől függetlenül marad kivétel.
+   */
   driveWriteMode             MemoryWriteMode @default(approval) @map("drive_write_mode")
-  /** Megnevezett jóváhagyó (#663): a tenant egyik usere; az írások elsősorban hozzá kerülnek. */
+  /**
+   * Megnevezett jóváhagyó (#663): a tenant egyik usere; az írások elsősorban hozzá kerülnek.
+   */
   approverUserId             String?         @map("approver_user_id") @db.Uuid
-  /** Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut. */
+  /**
+   * Agent saját Drive output-mappája (#661): ide a feltöltés jóváhagyás nélkül, auditáltan fut.
+   */
   outputDriveFolderId        String?         @map("output_drive_folder_id")
-  /** Helyi kódmappa-hint (#729): soronként egy jelölt ~/… vagy abszolút path (több gép); publikáláskor a snapshotba. */
+  /**
+   * Helyi kódmappa-hint (#729): soronként egy jelölt ~/… vagy abszolút path (több gép); publikáláskor a snapshotba.
+   */
   localRoots                 String          @default("") @map("local_roots")
-  /** Admin által beállított modell (#768): provider/model/modelType/temperature/maxTokens/fallbackModels. NEM kerül az MCP-snapshotba. */
+  /**
+   * Admin által beállított modell (#768): provider/model/modelType/temperature/maxTokens/fallbackModels. NEM kerül az MCP-snapshotba.
+   */
   modelConfig                Json?           @map("model_config")
-  /** Mini app útmutató (#967 D12): opcionális prompt; publikáláskor a snapshot.miniAppGuide-ba fagy. ≤ 8000 karakter. */
+  /**
+   * Mini app útmutató (#967 D12): opcionális prompt; publikáláskor a snapshot.miniAppGuide-ba fagy. ≤ 8000 karakter.
+   */
   miniAppGuide               String          @default("") @map("mini_app_guide")
   /// „Hová mit ments” tábla agentenkénti felülírása: { sor-kulcs: saját szabály }. Publikáláskor a snapshot.placementOverrides-ba fagy.
   placementOverrides         Json?           @map("placement_overrides")
-  createdAt                  DateTime    @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                  DateTime    @updatedAt @map("updated_at") @db.Timestamptz
-  retiredAt                  DateTime?   @map("retired_at") @db.Timestamptz
+  /// Elérhető-e a beépített platform-chatben (#1004 D3); a tenant-kapcsoló is kell hozzá.
+  platformChatEnabled        Boolean         @default(true) @map("platform_chat_enabled")
+  createdAt                  DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                  DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+  retiredAt                  DateTime?       @map("retired_at") @db.Timestamptz
 
-  tenant            Tenant                   @relation(fields: [tenantId], references: [id])
-  currentDefinition AgentDefinitionVersion?  @relation("AgentCurrentDefinition", fields: [currentDefinitionVersionId], references: [id], onDelete: SetNull)
-  definitionVersions AgentDefinitionVersion[] @relation("AgentDefinitionHistory")
-  agentConnectors   AgentConnector[]
-  capabilities      Capability[]
-  agentSkills       AgentSkill[]
+  tenant                     Tenant                      @relation(fields: [tenantId], references: [id])
+  currentDefinition          AgentDefinitionVersion?     @relation("AgentCurrentDefinition", fields: [currentDefinitionVersionId], references: [id], onDelete: SetNull)
+  definitionVersions         AgentDefinitionVersion[]    @relation("AgentDefinitionHistory")
+  agentConnectors            AgentConnector[]
+  capabilities               Capability[]
+  agentSkills                AgentSkill[]
   conversationSkillProposals ConversationSkillProposal[]
-  projectMemoryItems ProjectMemoryItem[]
-  customerPromises CustomerPromise[]
-  handoffsSent     Handoff[] @relation("HandoffFromAgent")
-  handoffsReceived Handoff[] @relation("HandoffToAgent")
-  miniApps         MiniApp[]
-  miniAppShares    MiniAppShare[]
+  projectMemoryItems         ProjectMemoryItem[]
+  customerPromises           CustomerPromise[]
+  scheduledTasks             ScheduledTask[]
+  handoffsSent               Handoff[]                   @relation("HandoffFromAgent")
+  handoffsReceived           Handoff[]                   @relation("HandoffToAgent")
+  miniApps                   MiniApp[]
+  miniAppShares              MiniAppShare[]
 
   @@index([tenantId, status])
   @@map("agents")
@@ -601,9 +669,9 @@ model AgentDefinitionVersion {
   publishedById String   @map("published_by") @db.Uuid
   publishedAt   DateTime @default(now()) @map("published_at") @db.Timestamptz
 
-  agent         Agent               @relation("AgentDefinitionHistory", fields: [agentId], references: [id], onDelete: Cascade)
-  publishedBy   User                @relation("DefinitionPublishedBy", fields: [publishedById], references: [id])
-  currentForAgent Agent?            @relation("AgentCurrentDefinition")
+  agent             Agent              @relation("AgentDefinitionHistory", fields: [agentId], references: [id], onDelete: Cascade)
+  publishedBy       User               @relation("DefinitionPublishedBy", fields: [publishedById], references: [id])
+  currentForAgent   Agent?             @relation("AgentCurrentDefinition")
   gatewayOperations GatewayOperation[]
 
   @@unique([agentId, version])
@@ -611,22 +679,22 @@ model AgentDefinitionVersion {
 }
 
 model Skill {
-  id           String            @id @default(uuid()) @db.Uuid
-  name         String
-  displayName  String?           @map("display_name")
-  description  String
-  catalogScope SkillCatalogScope @default(tenant)
-  tenantId     String?           @map("tenant_id") @db.Uuid
-  kind         SkillKind         @default(tenant)
-  sourceType   SkillSourceType   @default(authored)
-  provenance   Json?
-  license      String?
-  riskTier     SkillRiskTier
-  producesSkills Boolean         @default(false) @map("produces_skills")
-  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  id             String            @id @default(uuid()) @db.Uuid
+  name           String
+  displayName    String?           @map("display_name")
+  description    String
+  catalogScope   SkillCatalogScope @default(tenant)
+  tenantId       String?           @map("tenant_id") @db.Uuid
+  kind           SkillKind         @default(tenant)
+  sourceType     SkillSourceType   @default(authored)
+  provenance     Json?
+  license        String?
+  riskTier       SkillRiskTier
+  producesSkills Boolean           @default(false) @map("produces_skills")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant   Tenant?        @relation(fields: [tenantId], references: [id])
-  versions SkillVersion[]
+  tenant                Tenant?                     @relation(fields: [tenantId], references: [id])
+  versions              SkillVersion[]
   conversationProposals ConversationSkillProposal[]
 
   @@index([tenantId])
@@ -700,46 +768,50 @@ model ConversationSkillProposal {
 }
 
 model Connector {
-  id             String                  @id @default(uuid()) @db.Uuid
-  type           ConnectorType
-  name           String
-  authMode       ConnectorAuthMode       @default(service) @map("auth_mode")
-  scope          ConnectorScope
-  secretAlias    String?                 @map("secret_alias")
-  version        Int                     @default(1)
-  config         Json                    @default("{}")
-  lifecycleState ConnectorLifecycleState @default(active) @map("lifecycle_state")
-  tenantId       String                  @map("tenant_id") @db.Uuid
-  /** Megnevezett jóváhagyó (#663): az agent-szintűt felülírja. */
-  approverUserId String?                 @map("approver_user_id") @db.Uuid
-  /** KB-keresés nyelve (#717 A réteg): `hu`/`en`, más típusnál figyelmen kívül. */
-  kbLanguage     String                  @default("hu") @map("kb_language")
+  id                String                  @id @default(uuid()) @db.Uuid
+  type              ConnectorType
+  name              String
+  authMode          ConnectorAuthMode       @default(service) @map("auth_mode")
+  scope             ConnectorScope
+  secretAlias       String?                 @map("secret_alias")
+  version           Int                     @default(1)
+  config            Json                    @default("{}")
+  lifecycleState    ConnectorLifecycleState @default(active) @map("lifecycle_state")
+  tenantId          String                  @map("tenant_id") @db.Uuid
+  /**
+   * Megnevezett jóváhagyó (#663): az agent-szintűt felülírja.
+   */
+  approverUserId    String?                 @map("approver_user_id") @db.Uuid
+  /**
+   * KB-keresés nyelve (#717 A réteg): `hu`/`en`, más típusnál figyelmen kívül.
+   */
+  kbLanguage        String                  @default("hu") @map("kb_language")
   /**
    * #942 D13: csak `knowledge_base`-nél lehet `private_to_user`; ilyenkor az
    * `ownerUserId` kötelező (DB check constraint, 0031), és visszaállítani `shared`-re nem lehet.
    */
-  visibility     KnowledgeBaseVisibility @default(shared)
-  ownerUserId    String?                 @map("owner_user_id") @db.Uuid
-  ownerMissingSince DateTime?            @map("owner_missing_since") @db.Timestamptz
-  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  visibility        KnowledgeBaseVisibility @default(shared)
+  ownerUserId       String?                 @map("owner_user_id") @db.Uuid
+  ownerMissingSince DateTime?               @map("owner_missing_since") @db.Timestamptz
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
-  connectorMode       ConnectorMode          @default(fixed) @map("connector_mode")
-  activeSpecVersionId String?                @map("active_spec_version_id") @db.Uuid
-  activeSpecVersion   ConnectorSpecVersion?  @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
+  connectorMode       ConnectorMode         @default(fixed) @map("connector_mode")
+  activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
+  activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
 
-  tenant            Tenant                 @relation(fields: [tenantId], references: [id])
-  agentConnectors   AgentConnector[]
-  grants            ConnectorGrant[]
-  draft             ConnectorDraft?
-  gatewayOperations GatewayOperation[]
-  specSource        ConnectorSpecSource?
-  specVersions      ConnectorSpecVersion[] @relation("SpecVersions")
-  documents         Document[]
+  tenant             Tenant                 @relation(fields: [tenantId], references: [id])
+  agentConnectors    AgentConnector[]
+  grants             ConnectorGrant[]
+  draft              ConnectorDraft?
+  gatewayOperations  GatewayOperation[]
+  specSource         ConnectorSpecSource?
+  specVersions       ConnectorSpecVersion[] @relation("SpecVersions")
+  documents          Document[]
   knowledgeArtifacts KnowledgeArtifact[]
-  knowledgeChunks   KnowledgeChunk[]
-  wiki              AgentWiki?
-  wikiPages         WikiPage[]
-  wikiChangeSets    WikiChangeSet[]
+  knowledgeChunks    KnowledgeChunk[]
+  wiki               AgentWiki?
+  wikiPages          WikiPage[]
+  wikiChangeSets     WikiChangeSet[]
 
   @@unique([tenantId, type, name])
   @@index([tenantId, visibility, ownerUserId])
@@ -768,20 +840,20 @@ model ConnectorTemplate {
 }
 
 model ConnectorDraft {
-  id                      String                     @id @default(uuid()) @db.Uuid
-  tenantId                String                     @map("tenant_id") @db.Uuid
-  connectorId             String                     @unique @map("connector_id") @db.Uuid
-  sourceType              ConnectorDraftSourceType   @map("source_type")
-  sourceRef               String?                    @map("source_ref")
-  sourceHash              String                     @map("source_hash")
-  generatedByAgentId      String?                    @map("generated_by_agent_id") @db.Uuid
-  validationResult        Json?                      @map("validation_result")
-  reviewStatus            ConnectorDraftReviewStatus @default(pending) @map("review_status")
-  reviewedById            String?                    @map("reviewed_by") @db.Uuid
-  secondApproverId        String?                    @map("second_approver_id") @db.Uuid
-  sandboxTestOk           Boolean?                   @map("sandbox_test_ok")
-  createdAt               DateTime                   @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt               DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
+  id                 String                     @id @default(uuid()) @db.Uuid
+  tenantId           String                     @map("tenant_id") @db.Uuid
+  connectorId        String                     @unique @map("connector_id") @db.Uuid
+  sourceType         ConnectorDraftSourceType   @map("source_type")
+  sourceRef          String?                    @map("source_ref")
+  sourceHash         String                     @map("source_hash")
+  generatedByAgentId String?                    @map("generated_by_agent_id") @db.Uuid
+  validationResult   Json?                      @map("validation_result")
+  reviewStatus       ConnectorDraftReviewStatus @default(pending) @map("review_status")
+  reviewedById       String?                    @map("reviewed_by") @db.Uuid
+  secondApproverId   String?                    @map("second_approver_id") @db.Uuid
+  sandboxTestOk      Boolean?                   @map("sandbox_test_ok")
+  createdAt          DateTime                   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
@@ -859,15 +931,21 @@ model ConnectorGrant {
 }
 
 model AgentConnector {
-  agentId     String              @map("agent_id") @db.Uuid
-  connectorId String              @map("connector_id") @db.Uuid
-  accessMode  ConnectorAccessMode @map("access_mode")
-  /** #942 D2: wiki-jog; `write` csak `accessMode: write` mellett érvényes. Csak knowledge_base-nél számít. */
-  wikiAccess       WikiAccess      @default(read) @map("wiki_access")
-  /** #942 D1: a `wiki` write-kind módja kapcsolatonként (nem az Agent táblán). */
-  wikiWriteMode    MemoryWriteMode @default(approval) @map("wiki_write_mode")
-  /** „Mit gyűjtsön ebbe a wikibe?" */
-  wikiCollectFocus String?         @map("wiki_collect_focus")
+  agentId          String              @map("agent_id") @db.Uuid
+  connectorId      String              @map("connector_id") @db.Uuid
+  accessMode       ConnectorAccessMode @map("access_mode")
+  /**
+   * #942 D2: wiki-jog; `write` csak `accessMode: write` mellett érvényes. Csak knowledge_base-nél számít.
+   */
+  wikiAccess       WikiAccess          @default(read) @map("wiki_access")
+  /**
+   * #942 D1: a `wiki` write-kind módja kapcsolatonként (nem az Agent táblán).
+   */
+  wikiWriteMode    MemoryWriteMode     @default(approval) @map("wiki_write_mode")
+  /**
+   * „Mit gyűjtsön ebbe a wikibe?"
+   */
+  wikiCollectFocus String?             @map("wiki_collect_focus")
 
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
@@ -889,36 +967,38 @@ model Capability {
 }
 
 model Document {
-  id              String                    @id @default(uuid()) @db.Uuid
-  tenantId        String                    @map("tenant_id") @db.Uuid
-  filename        String
-  storageRef      String?                   @map("storage_ref")
-  extractedText   String?                   @map("extracted_text") @db.Text
-  mimeType        String?                   @map("mime_type")
-  contentHash     String?                   @map("content_hash")
-  status          DocumentStatus            @default(uploaded)
-  processingMode  KnowledgeProcessingMode?  @map("processing_mode")
-  metadata        Json                      @default("{}")
-  connectorId     String?                   @map("connector_id") @db.Uuid
-  uploadedById    String                    @map("uploaded_by") @db.Uuid
-  /** KB-nyelv felülírás (#717): NULL = öröklés a connectorról. */
-  kbLanguageOverride String?                @map("kb_language_override")
+  id                         String                   @id @default(uuid()) @db.Uuid
+  tenantId                   String                   @map("tenant_id") @db.Uuid
+  filename                   String
+  storageRef                 String?                  @map("storage_ref")
+  extractedText              String?                  @map("extracted_text") @db.Text
+  mimeType                   String?                  @map("mime_type")
+  contentHash                String?                  @map("content_hash")
+  status                     DocumentStatus           @default(uploaded)
+  processingMode             KnowledgeProcessingMode? @map("processing_mode")
+  metadata                   Json                     @default("{}")
+  connectorId                String?                  @map("connector_id") @db.Uuid
+  uploadedById               String                   @map("uploaded_by") @db.Uuid
+  /**
+   * KB-nyelv felülírás (#717): NULL = öröklés a connectorról.
+   */
+  kbLanguageOverride         String?                  @map("kb_language_override")
   /**
    * #942 D6 tálca: `null` = nem wiki-forrás. `in_progress` + lejárt `wikiClaimExpiresAt`
    * olvasáskor `pending`-nek számít (háttérjob nincs).
    */
-  wikiStatus                 WikiInboxStatus? @map("wiki_status")
-  wikiSubmittedByAgentId     String?          @map("wiki_submitted_by_agent_id") @db.Uuid
-  wikiClaimedByAgentId       String?          @map("wiki_claimed_by_agent_id") @db.Uuid
-  wikiClaimExpiresAt         DateTime?        @map("wiki_claim_expires_at") @db.Timestamptz
-  wikiProcessedByChangeSetId String?          @map("wiki_processed_by_change_set_id") @db.Uuid
-  wikiBatchId                String?          @map("wiki_batch_id") @db.Uuid
-  wikiBatchSeq               Int?             @map("wiki_batch_seq")
-  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz
+  wikiStatus                 WikiInboxStatus?         @map("wiki_status")
+  wikiSubmittedByAgentId     String?                  @map("wiki_submitted_by_agent_id") @db.Uuid
+  wikiClaimedByAgentId       String?                  @map("wiki_claimed_by_agent_id") @db.Uuid
+  wikiClaimExpiresAt         DateTime?                @map("wiki_claim_expires_at") @db.Timestamptz
+  wikiProcessedByChangeSetId String?                  @map("wiki_processed_by_change_set_id") @db.Uuid
+  wikiBatchId                String?                  @map("wiki_batch_id") @db.Uuid
+  wikiBatchSeq               Int?                     @map("wiki_batch_seq")
+  createdAt                  DateTime                 @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant     Tenant               @relation(fields: [tenantId], references: [id])
-  connector  Connector?           @relation(fields: [connectorId], references: [id], onDelete: SetNull)
-  uploadedBy User                 @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  tenant     Tenant              @relation(fields: [tenantId], references: [id])
+  connector  Connector?          @relation(fields: [connectorId], references: [id], onDelete: SetNull)
+  uploadedBy User                @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
   artifacts  KnowledgeArtifact[]
   sourceFile DocumentSourceFile?
 
@@ -930,7 +1010,7 @@ model Document {
 
 // Original source bytes stay private and are deleted with their Document (including KB purge).
 model DocumentSourceFile {
-  documentId String @id @map("document_id") @db.Uuid
+  documentId String   @id @map("document_id") @db.Uuid
   data       Bytes
   document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
@@ -938,21 +1018,21 @@ model DocumentSourceFile {
 }
 
 model KnowledgeArtifact {
-  id               String                   @id @default(uuid()) @db.Uuid
-  connectorId      String                   @map("connector_id") @db.Uuid
-  sourceDocumentId String?                  @map("source_document_id") @db.Uuid
-  createdByAgentId String?                  @map("created_by_agent_id") @db.Uuid
-  status           KnowledgeArtifactStatus  @default(pending_review)
-  format           KnowledgeArtifactFormat  @default(okf)
-  version          Int                      @default(1)
-  contentHash      String                   @map("content_hash")
-  bundle           Json                     @default("{}")
-  validationResult Json?                    @map("validation_result")
-  publishedAt      DateTime?                @map("published_at") @db.Timestamptz
-  createdAt        DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  id               String                  @id @default(uuid()) @db.Uuid
+  connectorId      String                  @map("connector_id") @db.Uuid
+  sourceDocumentId String?                 @map("source_document_id") @db.Uuid
+  createdByAgentId String?                 @map("created_by_agent_id") @db.Uuid
+  status           KnowledgeArtifactStatus @default(pending_review)
+  format           KnowledgeArtifactFormat @default(okf)
+  version          Int                     @default(1)
+  contentHash      String                  @map("content_hash")
+  bundle           Json                    @default("{}")
+  validationResult Json?                   @map("validation_result")
+  publishedAt      DateTime?               @map("published_at") @db.Timestamptz
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
-  connector      Connector         @relation(fields: [connectorId], references: [id], onDelete: Cascade)
-  sourceDocument Document?         @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  connector      Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  sourceDocument Document?        @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
   chunks         KnowledgeChunk[]
 
   @@index([connectorId, status])
@@ -981,21 +1061,31 @@ model KnowledgeChunk {
   @@map("knowledge_chunks")
 }
 
-/** #942: egy knowledge_base connectorhoz egy élő wiki (D11). */
+/**
+ * #942: egy knowledge_base connectorhoz egy élő wiki (D11).
+ */
 model AgentWiki {
-  id          String   @id @default(uuid()) @db.Uuid
-  connectorId String   @unique @map("connector_id") @db.Uuid
-  /** WIKI.md — csak ember szerkeszti (D15). */
-  schemaMd    String   @map("schema_md") @db.Text
-  lastLint    Json?    @map("last_lint")
-  /** #978 D6: a következő alkalmazott change-set sorszáma (sor-zár az alkalmazáskor). */
-  nextSeq             Int  @default(1) @map("next_seq")
-  /** #978 D1: ennyi napig minden verzió megmarad. */
-  retentionFullDays   Int  @default(90) @map("retention_full_days")
-  /** #978 D1: ennyi nap után a régi verziók törlődnek; null = soha. */
-  retentionDeleteDays Int? @default(365) @map("retention_delete_days")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  id                  String   @id @default(uuid()) @db.Uuid
+  connectorId         String   @unique @map("connector_id") @db.Uuid
+  /**
+   * WIKI.md — csak ember szerkeszti (D15).
+   */
+  schemaMd            String   @map("schema_md") @db.Text
+  lastLint            Json?    @map("last_lint")
+  /**
+   * #978 D6: a következő alkalmazott change-set sorszáma (sor-zár az alkalmazáskor).
+   */
+  nextSeq             Int      @default(1) @map("next_seq")
+  /**
+   * #978 D1: ennyi napig minden verzió megmarad.
+   */
+  retentionFullDays   Int      @default(90) @map("retention_full_days")
+  /**
+   * #978 D1: ennyi nap után a régi verziók törlődnek; null = soha.
+   */
+  retentionDeleteDays Int?     @default(365) @map("retention_delete_days")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   connector   Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   pages       WikiPage[]
@@ -1011,7 +1101,9 @@ model AgentWiki {
 model WikiPage {
   id               String         @id @default(uuid()) @db.Uuid
   wikiId           String         @map("wiki_id") @db.Uuid
-  /** Scope-kulcs (D-B): minden lekérdezés connectorra szűr. */
+  /**
+   * Scope-kulcs (D-B): minden lekérdezés connectorra szűr.
+   */
   connectorId      String         @map("connector_id") @db.Uuid
   path             String
   type             WikiPageType
@@ -1020,13 +1112,17 @@ model WikiPage {
   category         String?
   frontmatter      Json           @default("{}")
   body             String         @db.Text
-  /** `[{ documentId, page?, section?, cell? }]` */
+  /**
+   * `[{ documentId, page?, section?, cell? }]`
+   */
   sourceRefs       Json           @default("[]") @map("source_refs")
   outLinks         String[]       @default([]) @map("out_links")
   status           WikiPageStatus @default(published)
   version          Int            @default(1)
   contentHash      String         @map("content_hash")
-  /** D5: „más oldala" — archiválás/áthelyezés mindig jóváhagyással. */
+  /**
+   * D5: „más oldala" — archiválás/áthelyezés mindig jóváhagyással.
+   */
   createdByAgentId String?        @map("created_by_agent_id") @db.Uuid
   createdByUserId  String?        @map("created_by_user_id") @db.Uuid
   updatedByAgentId String?        @map("updated_by_agent_id") @db.Uuid
@@ -1042,7 +1138,9 @@ model WikiPage {
   @@map("wiki_pages")
 }
 
-/** Egy `kb_wiki_write` hívás — a jóváhagyás egysége (D1/D4). */
+/**
+ * Egy `kb_wiki_write` hívás — a jóváhagyás egysége (D1/D4).
+ */
 model WikiChangeSet {
   id                 String              @id @default(uuid()) @db.Uuid
   wikiId             String              @map("wiki_id") @db.Uuid
@@ -1050,27 +1148,39 @@ model WikiChangeSet {
   agentId            String?             @map("agent_id") @db.Uuid
   userId             String?             @map("user_id") @db.Uuid
   status             WikiChangeSetStatus @default(pending)
-  /** Javasolt oldal-műveletek + `baseVersion`. */
+  /**
+   * Javasolt oldal-műveletek + `baseVersion`.
+   */
   pages              Json                @default("[]")
   validation         Json?
   logEntry           Json?               @map("log_entry")
   sourceDocumentIds  String[]            @default([]) @map("source_document_ids")
   inboxItemId        String?             @map("inbox_item_id") @db.Uuid
   gatewayOperationId String?             @map("gateway_operation_id") @db.Uuid
-  /** D4: `{ kind: agent_owner | tenant_admin | owner_user, ... }` */
+  /**
+   * D4: `{ kind: agent_owner | tenant_admin | owner_user, ... }`
+   */
   approverScope      Json                @default("{}") @map("approver_scope")
-  /** #978 D6: alkalmazáskor, wikin belül növekvő; pending/rejected = null. */
+  /**
+   * #978 D6: alkalmazáskor, wikin belül növekvő; pending/rejected = null.
+   */
   seq                Int?
-  /** #978 D5: ezt a change-setet vonja vissza. */
+  /**
+   * #978 D5: ezt a change-setet vonja vissza.
+   */
   revertsId          String?             @map("reverts_id") @db.Uuid
-  /** #978 D5: ez a change-set vonta vissza. */
+  /**
+   * #978 D5: ez a change-set vonta vissza.
+   */
   revertedById       String?             @map("reverted_by_id") @db.Uuid
   /**
    * #978 §6: alkalmazáskor számolt oldal-összefoglaló (útvonal, művelet, cím,
    * sorstatisztika) — a `pages` kiürítése után is megmarad.
    */
   pageSummary        Json?               @map("page_summary")
-  /** #978 §6: a `pages` JSON tartalma kiürítve (megőrzés vagy GDPR-törlés). */
+  /**
+   * #978 §6: a `pages` JSON tartalma kiürítve (megőrzés vagy GDPR-törlés).
+   */
   pagesPrunedAt      DateTime?           @map("pages_pruned_at") @db.Timestamptz
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz
   appliedAt          DateTime?           @map("applied_at") @db.Timestamptz
@@ -1085,28 +1195,34 @@ model WikiChangeSet {
 }
 
 model WikiPageRevision {
-  id          String   @id @default(uuid()) @db.Uuid
-  pageId      String   @map("page_id") @db.Uuid
-  changeSetId String?  @map("change_set_id") @db.Uuid
-  version     Int
-  title       String
-  summary     String
-  body        String   @db.Text
-  frontmatter Json     @default("{}")
-  contentHash String   @map("content_hash")
-  /** #978: a revízió teljes állapota (áthelyezés, archiválás, források visszaállításához). */
+  id               String          @id @default(uuid()) @db.Uuid
+  pageId           String          @map("page_id") @db.Uuid
+  changeSetId      String?         @map("change_set_id") @db.Uuid
+  version          Int
+  title            String
+  summary          String
+  body             String          @db.Text
+  frontmatter      Json            @default("{}")
+  contentHash      String          @map("content_hash")
+  /**
+   * #978: a revízió teljes állapota (áthelyezés, archiválás, források visszaállításához).
+   */
   path             String?
   status           WikiPageStatus?
-  /** NULL = a bevezetés előtti (backfill) revízió. */
+  /**
+   * NULL = a bevezetés előtti (backfill) revízió.
+   */
   type             WikiPageType?
   category         String?
   sourceRefs       Json?           @map("source_refs")
   createdByAgentId String?         @map("created_by_agent_id") @db.Uuid
   createdByUserId  String?         @map("created_by_user_id") @db.Uuid
-  /** #978 D9: GDPR-sír-jel — a tartalom törölve, a sor és a `contentHash` megmarad. */
+  /**
+   * #978 D9: GDPR-sír-jel — a tartalom törölve, a sor és a `contentHash` megmarad.
+   */
   erasedAt         DateTime?       @map("erased_at") @db.Timestamptz
   erasureId        String?         @map("erasure_id") @db.Uuid
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz
 
   page      WikiPage       @relation(fields: [pageId], references: [id], onDelete: Cascade)
   changeSet WikiChangeSet? @relation(fields: [changeSetId], references: [id], onDelete: SetNull)
@@ -1117,13 +1233,17 @@ model WikiPageRevision {
   @@map("wiki_page_revisions")
 }
 
-/** #978 §5.5: elnevezett wiki-állapot (a ritkítás nem törli). */
+/**
+ * #978 §5.5: elnevezett wiki-állapot (a ritkítás nem törli).
+ */
 model WikiTag {
   id              String   @id @default(uuid()) @db.Uuid
   wikiId          String   @map("wiki_id") @db.Uuid
   name            String
   note            String?
-  /** Erre az állapotra mutat (alkalmazott change-set sorszáma). */
+  /**
+   * Erre az állapotra mutat (alkalmazott change-set sorszáma).
+   */
   seq             Int
   createdByUserId String   @map("created_by_user_id") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
@@ -1134,7 +1254,9 @@ model WikiTag {
   @@map("wiki_tags")
 }
 
-/** #978 §5.4: az agent „legutóbb látott” sorszáma (wiki, agent, felhasználó). */
+/**
+ * #978 §5.4: az agent „legutóbb látott” sorszáma (wiki, agent, felhasználó).
+ */
 model WikiReadCursor {
   wikiId    String   @map("wiki_id") @db.Uuid
   agentId   String   @map("agent_id") @db.Uuid
@@ -1148,19 +1270,29 @@ model WikiReadCursor {
   @@map("wiki_read_cursors")
 }
 
-/** #978 §7: auditált GDPR-törlés — a törölt tartalom és a keresett kifejezés nélkül. */
+/**
+ * #978 §7: auditált GDPR-törlés — a törölt tartalom és a keresett kifejezés nélkül.
+ */
 model WikiErasure {
   id           String   @id @default(uuid()) @db.Uuid
   wikiId       String   @map("wiki_id") @db.Uuid
   connectorId  String   @map("connector_id") @db.Uuid
   requestedBy  String   @map("requested_by") @db.Uuid
-  /** Jogalap / ügyszám, PII nélkül. */
+  /**
+   * Jogalap / ügyszám, PII nélkül.
+   */
   reason       String
-  /** `{ kind, mode, pageIds?, revisionId?, matchHash?, salt? }` */
+  /**
+   * `{ kind, mode, pageIds?, revisionId?, matchHash?, salt? }`
+   */
   scope        Json
-  /** Érintett sorok darabszáma táblánként. */
+  /**
+   * Érintett sorok darabszáma táblánként.
+   */
   counts       Json
-  /** A sír-jellé vált revíziók `contentHash`-e. */
+  /**
+   * A sír-jellé vált revíziók `contentHash`-e.
+   */
   erasedHashes String[] @default([]) @map("erased_hashes")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
 
@@ -1170,7 +1302,9 @@ model WikiErasure {
   @@map("wiki_erasures")
 }
 
-/** `log.md` forrása (D8): append-only. */
+/**
+ * `log.md` forrása (D8): append-only.
+ */
 model WikiLogEntry {
   id           String    @id @default(uuid()) @db.Uuid
   wikiId       String    @map("wiki_id") @db.Uuid
@@ -1228,23 +1362,23 @@ model WorkFile {
 }
 
 model ProjectMemoryItem {
-  id           String               @id @default(uuid()) @db.Uuid
-  tenantId     String               @map("tenant_id") @db.Uuid
-  agentId      String               @map("agent_id") @db.Uuid
-  projectKey   String               @map("project_key")
+  id           String              @id @default(uuid()) @db.Uuid
+  tenantId     String              @map("tenant_id") @db.Uuid
+  agentId      String              @map("agent_id") @db.Uuid
+  projectKey   String              @map("project_key")
   kind         ProjectMemoryKind
   title        String
-  body         String               @db.Text
-  artifactPath String?              @map("artifact_path")
-  withUserId   String               @map("with_user_id") @db.Uuid
-  status       ProjectMemoryStatus  @default(active)
-  supersedesId String?              @map("supersedes_id") @db.Uuid
-  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  body         String              @db.Text
+  artifactPath String?             @map("artifact_path")
+  withUserId   String              @map("with_user_id") @db.Uuid
+  status       ProjectMemoryStatus @default(active)
+  supersedesId String?             @map("supersedes_id") @db.Uuid
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz
 
-  tenant     Tenant              @relation(fields: [tenantId], references: [id])
-  agent      Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  withUser   User                @relation("ProjectMemoryWithUser", fields: [withUserId], references: [id])
-  supersedes ProjectMemoryItem?  @relation("ProjectMemorySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
+  tenant       Tenant              @relation(fields: [tenantId], references: [id])
+  agent        Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  withUser     User                @relation("ProjectMemoryWithUser", fields: [withUserId], references: [id])
+  supersedes   ProjectMemoryItem?  @relation("ProjectMemorySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
   supersededBy ProjectMemoryItem[] @relation("ProjectMemorySupersedes")
 
   @@index([tenantId, agentId, projectKey, status])
@@ -1253,22 +1387,24 @@ model ProjectMemoryItem {
 }
 
 model GatewayOperation {
-  id                        String                 @id @default(uuid()) @db.Uuid
-  tenantId                  String                 @map("tenant_id") @db.Uuid
-  agentDefinitionVersionId  String                 @map("agent_definition_version_id") @db.Uuid
-  principalUserId           String                 @map("principal_user_id") @db.Uuid
-  toolName                  String                 @map("tool_name")
-  argsJson                  Json                   @map("args_json")
-  idempotencyKey            String                 @map("idempotency_key")
-  status                    GatewayOperationStatus
-  connectorId               String?                @map("connector_id") @db.Uuid
-  /** #663: enqueue-kori pillanatkép a megnevezett jóváhagyóról (konnektor > agent). */
-  designatedApproverUserId  String?                @map("designated_approver_user_id") @db.Uuid
-  designatedApproverName    String?                @map("designated_approver_name")
-  errorCode                 String?                @map("error_code")
-  resultJson                Json?                  @map("result_json")
-  createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                 DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+  id                       String                 @id @default(uuid()) @db.Uuid
+  tenantId                 String                 @map("tenant_id") @db.Uuid
+  agentDefinitionVersionId String                 @map("agent_definition_version_id") @db.Uuid
+  principalUserId          String                 @map("principal_user_id") @db.Uuid
+  toolName                 String                 @map("tool_name")
+  argsJson                 Json                   @map("args_json")
+  idempotencyKey           String                 @map("idempotency_key")
+  status                   GatewayOperationStatus
+  connectorId              String?                @map("connector_id") @db.Uuid
+  /**
+   * #663: enqueue-kori pillanatkép a megnevezett jóváhagyóról (konnektor > agent).
+   */
+  designatedApproverUserId String?                @map("designated_approver_user_id") @db.Uuid
+  designatedApproverName   String?                @map("designated_approver_name")
+  errorCode                String?                @map("error_code")
+  resultJson               Json?                  @map("result_json")
+  createdAt                DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                DateTime               @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant     Tenant                 @relation(fields: [tenantId], references: [id])
   definition AgentDefinitionVersion @relation(fields: [agentDefinitionVersionId], references: [id])
@@ -1282,13 +1418,13 @@ model GatewayOperation {
 }
 
 model GatewayApproval {
-  id              String                   @id @default(uuid()) @db.Uuid
-  operationId     String                   @unique @map("operation_id") @db.Uuid
-  decidedByUserId String?                  @map("decided_by_user_id") @db.Uuid
-  decision        GatewayApprovalDecision  @default(pending)
+  id              String                  @id @default(uuid()) @db.Uuid
+  operationId     String                  @unique @map("operation_id") @db.Uuid
+  decidedByUserId String?                 @map("decided_by_user_id") @db.Uuid
+  decision        GatewayApprovalDecision @default(pending)
   reason          String?
-  decidedAt       DateTime?                @map("decided_at") @db.Timestamptz
-  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  decidedAt       DateTime?               @map("decided_at") @db.Timestamptz
+  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   operation GatewayOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
   decidedBy User?            @relation("GatewayApprovalDecidedBy", fields: [decidedByUserId], references: [id])
@@ -1373,6 +1509,11 @@ model Handoff {
   createdById      String        @map("created_by_id") @db.Uuid
   decidedById      String?       @map("decided_by_id") @db.Uuid
   decidedAt        DateTime?     @map("decided_at") @db.Timestamptz
+  // #940: a létrehozó MCP-kérés idempotencia-kulcsa. Ismételt (retry) hívás
+  // ugyanazzal a kulccsal nem hoz létre duplikált átadást. NULL a kulcs nélküli
+  // (pl. mini-app-megosztás) utakon — a Postgres a NULL-okat külön kezeli, így
+  // nem ütköznek.
+  idempotencyKey   String?       @map("idempotency_key")
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1382,6 +1523,7 @@ model Handoff {
   toUser    User?  @relation("HandoffToUser", fields: [toUserId], references: [id], onDelete: Cascade)
   createdBy User   @relation("HandoffCreatedBy", fields: [createdById], references: [id])
 
+  @@unique([tenantId, fromAgentId, idempotencyKey])
   @@index([tenantId, toAgentId, status])
   @@index([tenantId, toUserId, status])
   @@map("handoffs")
@@ -1422,6 +1564,8 @@ model ClientInstall {
   policyVersion   String   @map("policy_version")
   guardVersion    String   @map("guard_version")
   hermesVersion   String   @map("hermes_version")
+  /// `hermes` = Guard heartbeat; `platform_chat` = szerveroldali platform-chat (#1004 WP-3), Guard-mezői üresek.
+  kind            String   @default("hermes")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1429,6 +1573,20 @@ model ClientInstall {
 
   @@unique([tenantId, userId, installId])
   @@map("client_installs")
+}
+
+/// Platform-chat napi modell-költés (#1004 D14): tenantonként és budapesti naponként, a gateway írja.
+model PlatformChatDailyUsage {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  day       DateTime @db.Date
+  costUsd   Decimal  @default(0) @map("cost_usd") @db.Decimal(12, 6)
+  calls     Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, day])
+  @@map("platform_chat_daily_usage")
 }
 
 /// A Guard által regisztrált Hermes-session; a Model Gateway csak ilyen sessionnek ad céges modellt.
@@ -1448,15 +1606,15 @@ model ClientInstallSession {
 /// A user gép-padlója (#771): stabil installId és a heartbeat által várt managed-dir hash.
 /// Userenként egy (a gép a user legbővebb engedélyét követi; az eszközkötés #758).
 model ClientMachineFloor {
-  id             String   @id @default(uuid()) @db.Uuid
-  tenantId       String   @map("tenant_id") @db.Uuid
-  userId         String   @map("user_id") @db.Uuid
-  installId             String  @map("install_id")
-  managedDirHash        String  @map("managed_dir_hash")
+  id                    String   @id @default(uuid()) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  userId                String   @map("user_id") @db.Uuid
+  installId             String   @map("install_id")
+  managedDirHash        String   @map("managed_dir_hash")
   /// A Windows-padló hash-e. A posix hash mellett él: egy munkatársnak lehet Macje és Windows-gépe is.
-  windowsManagedDirHash String? @map("windows_managed_dir_hash")
+  windowsManagedDirHash String?  @map("windows_managed_dir_hash")
   createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -1519,6 +1677,117 @@ model CustomerPromise {
   @@map("customer_promises")
 }
 
+/// #640 ütemezett feladat: a platform a kanonikus példány, a harness a saját natív
+/// ütemezőjében egy vékony csonkot futtat, ami `platform.scheduled_task.run_start`-ot hív.
+model ScheduledTask {
+  id               String                @id @default(uuid()) @db.Uuid
+  tenantId         String                @map("tenant_id") @db.Uuid
+  agentId          String                @map("agent_id") @db.Uuid
+  /// Egyéni feladatnál akinek a nevében fut; csapat/megosztott feladatnál aki szerkesztheti.
+  ownerUserId      String                @map("owner_user_id") @db.Uuid
+  kind             ScheduledTaskKind     @default(personal)
+  createdById      String                @map("created_by") @db.Uuid
+  title            String
+  instruction      String                @db.Text
+  /// 5 mezős cron, a `timezone`-ban értve.
+  cron             String
+  timezone         String
+  graceMinutes     Int?                  @map("grace_minutes")
+  targets          String[]
+  audience         ScheduledTaskAudience @default(selected)
+  ownerSeesResults Boolean               @default(false) @map("owner_sees_results")
+  /// Minden szerkesztés +1; a tagok elfogadása (D15) ehhez a verzióhoz kötött.
+  version          Int                   @default(1)
+  scheduleHash     String                @map("schedule_hash")
+  status           ScheduledTaskStatus   @default(active)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant        Tenant                      @relation(fields: [tenantId], references: [id])
+  agent         Agent                       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  owner         User                        @relation("ScheduledTaskOwner", fields: [ownerUserId], references: [id])
+  installations ScheduledTaskInstallation[]
+  members       ScheduledTaskMember[]
+  runs          ScheduledTaskRun[]
+
+  @@index([tenantId, ownerUserId, status])
+  @@index([tenantId, agentId])
+  @@map("scheduled_tasks")
+}
+
+model ScheduledTaskInstallation {
+  id                    String    @id @default(uuid()) @db.Uuid
+  taskId                String    @map("task_id") @db.Uuid
+  /// Akinek a harness-ében telepítve van (csapat/megosztott feladatnál tagonként külön).
+  userId                String    @map("user_id") @db.Uuid
+  clientType            String    @map("client_type")
+  clientInstanceId      String    @map("client_instance_id")
+  externalId            String    @map("external_id")
+  /// A háromutas összevetés alapja: amit legutóbb ténylegesen telepítettünk.
+  installedScheduleHash String    @map("installed_schedule_hash")
+  installedStubHash     String    @map("installed_stub_hash")
+  installedVersion      Int       @map("installed_version")
+  locallyDisabled       Boolean   @default(false) @map("locally_disabled")
+  lastSeenAt            DateTime  @map("last_seen_at") @db.Timestamptz
+  lastSyncAt            DateTime? @map("last_sync_at") @db.Timestamptz
+  removedAt             DateTime? @map("removed_at") @db.Timestamptz
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, clientType, clientInstanceId, externalId])
+  @@index([taskId, removedAt])
+  @@index([userId, clientType, clientInstanceId])
+  @@map("scheduled_task_installations")
+}
+
+/// Csapat- és megosztott feladat tagjai (a tulajdonos is tag), illetve egyéni feladatnál
+/// a más által létrehozott feladat beleegyezése (K8).
+model ScheduledTaskMember {
+  id              String                   @id @default(uuid()) @db.Uuid
+  taskId          String                   @map("task_id") @db.Uuid
+  userId          String                   @map("user_id") @db.Uuid
+  state           ScheduledTaskMemberState @default(invited)
+  acceptedVersion Int?                     @map("accepted_version")
+  invitedById     String                   @map("invited_by") @db.Uuid
+  createdAt       DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime                 @updatedAt @map("updated_at") @db.Timestamptz
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User          @relation(fields: [userId], references: [id])
+
+  @@unique([taskId, userId])
+  @@index([userId, state])
+  @@map("scheduled_task_members")
+}
+
+model ScheduledTaskRun {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  taskId              String                 @map("task_id") @db.Uuid
+  /// Szerver-számolt ütemezési időpont.
+  slot                DateTime               @db.Timestamptz
+  installationId      String?                @map("installation_id") @db.Uuid
+  runnerUserId        String                 @map("runner_user_id") @db.Uuid
+  /// Megosztott feladatnál a futtató userId-ja, egyébként "".
+  claimKey            String                 @default("") @map("claim_key")
+  taskVersion         Int                    @map("task_version")
+  definitionVersionId String?                @map("definition_version_id") @db.Uuid
+  status              ScheduledTaskRunStatus
+  /// A futás indításakor elfogadott megosztás; korábbi privát eredményt nem tesz láthatóvá.
+  ownerSeesResults    Boolean                @default(false) @map("owner_sees_results")
+  catchUp             Boolean                @default(false) @map("catch_up")
+  summary             String?                @db.Text
+  startedAt           DateTime               @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt          DateTime?              @map("finished_at") @db.Timestamptz
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// D4: egy időpont = egy futás (megosztottnál tagonként egy).
+  @@unique([taskId, slot, claimKey])
+  @@index([runnerUserId, status, startedAt])
+  @@map("scheduled_task_runs")
+}
+
 /// Mini app láthatósága (#967 D11). `agents`: van aktív MiniAppShare; `organization` ettől függetlenül mindenkinek.
 enum MiniAppVisibility {
   private
@@ -1533,23 +1802,23 @@ enum MiniAppStatus {
 
 /// Mini app (#967): agent által készített, statikus, egyfájlos HTML (A0). Az app az agenté (D3).
 model MiniApp {
-  id                    String            @id @default(uuid()) @db.Uuid
-  tenantId              String            @map("tenant_id") @db.Uuid
-  ownerAgentId          String            @map("owner_agent_id") @db.Uuid
-  projectKey            String            @map("project_key")
-  name                  String
-  description           String?
-  status                MiniAppStatus     @default(active)
-  visibility            MiniAppVisibility @default(private)
-  currentVersion        Int               @map("current_version")
-  copiedFromAppId       String?           @map("copied_from_app_id") @db.Uuid
-  copiedFromVersion     Int?              @map("copied_from_version")
+  id                   String            @id @default(uuid()) @db.Uuid
+  tenantId             String            @map("tenant_id") @db.Uuid
+  ownerAgentId         String            @map("owner_agent_id") @db.Uuid
+  projectKey           String            @map("project_key")
+  name                 String
+  description          String?
+  status               MiniAppStatus     @default(active)
+  visibility           MiniAppVisibility @default(private)
+  currentVersion       Int               @map("current_version")
+  copiedFromAppId      String?           @map("copied_from_app_id") @db.Uuid
+  copiedFromVersion    Int?              @map("copied_from_version")
   /// A létrehozó hívás idempotencia-kulcsa (ismételt create = ugyanaz az app).
-  createIdempotencyKey  String?           @map("create_idempotency_key")
-  createdByUserId       String            @map("created_by") @db.Uuid
-  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt             DateTime          @updatedAt @map("updated_at") @db.Timestamptz
-  archivedAt            DateTime?         @map("archived_at") @db.Timestamptz
+  createIdempotencyKey String?           @map("create_idempotency_key")
+  createdByUserId      String            @map("created_by") @db.Uuid
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt           DateTime?         @map("archived_at") @db.Timestamptz
 
   tenant     Tenant           @relation(fields: [tenantId], references: [id])
   ownerAgent Agent            @relation(fields: [ownerAgentId], references: [id], onDelete: Cascade)
@@ -1602,4 +1871,26 @@ model MiniAppShare {
   @@unique([appId, agentId])
   @@index([tenantId, agentId, revokedAt])
   @@map("mini_app_shares")
+}
+
+/// #984 AI-adattárház: melyik céghez melyik adattárház tartozik. Az üzleti adat,
+/// a katalógus és az importok a tenant saját sémájában élnek, nem itt.
+model TenantWarehouse {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @unique @map("tenant_id") @db.Uuid
+  /// requested → provisioning → verifying → ready | failed
+  status          String
+  provisioner     String
+  schemaName      String    @map("schema_name")
+  internalVersion Int?      @map("internal_version")
+  lastError       String?   @map("last_error")
+  attempts        Int       @default(0)
+  requestedById   String?   @map("requested_by") @db.Uuid
+  readyAt         DateTime? @map("ready_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_warehouses")
 }

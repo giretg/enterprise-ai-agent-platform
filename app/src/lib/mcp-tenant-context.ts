@@ -5,6 +5,7 @@ import {
 } from '@/lib/agent-knowledge-placement'
 import { HERMES_SYNC_PROMPT } from '@/lib/mcp-client-setup'
 import { settingsRecord } from '@/lib/tenant-settings'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 
 export const TENANT_MCP_INTRO_SETTING = 'mcpIntro'
 
@@ -31,6 +32,8 @@ export type McpCoworkerSummary = {
   roleInstructionPreview?: string | null
   currentDefinitionId: string | null
   currentVersion: number | null
+  /** #1004: az agent saját platform-chat kapcsolója (a tenant-kapcsolót a payload teszi hozzá). */
+  platformChatEnabled?: boolean
 }
 
 export function readTenantMcpIntro(settings: unknown): string | null {
@@ -81,6 +84,7 @@ export function buildTenantContextPayload(input: {
   coworkers: McpCoworkerSummary[]
 }) {
   const tenant = input.tenant
+  const platformChatOn = readPlatformChatSettings(tenant?.settings).enabled
   return {
     tenantSlug: input.tenantSlug,
     tenantDisplayName: tenant?.displayName ?? null,
@@ -95,6 +99,9 @@ export function buildTenantContextPayload(input: {
       roleInstructionPreview: coworker.roleInstructionPreview ?? null,
       currentDefinitionId: coworker.currentDefinitionId,
       currentVersion: coworker.currentVersion,
+      // #1004 D4: a beépített chat ezt szűri (hiányzó = nem elérhető); a külső kliensek figyelmen
+      // kívül hagyhatják. Kikapcsolt tenantnál a mező sincs ott, hogy a payload ne változzon.
+      ...(platformChatOn ? { platformChat: coworker.platformChatEnabled !== false } : {}),
     })),
   }
 }
