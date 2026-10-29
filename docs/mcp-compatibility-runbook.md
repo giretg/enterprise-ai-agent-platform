@@ -179,19 +179,18 @@ The platform can proxy tools of an external MCP server through two fixed tools o
 `mcp_list_tools` and `mcp_call`. Credentials stay on the platform; every call goes through the same
 gate as other enterprise tools (definition pin → agent access → `authorizeToolCall` → write gate → audit).
 
-1. **Platform admin** (Platform → Beállítások → MCP-szolgáltatók): allow the server host, and the OAuth
-   host if login runs elsewhere. No wildcards. Revoking a host stops every connector on it at the next call.
-2. **Tenant admin** (Kapcsolatok → Külső MCP-szerverek): name + `https://` address + mode.
+1. **Tenant admin** (Kapcsolatok → Külső MCP-szerverek): name + `https://` address + mode.
    - *Közös céges fiókkal* (`service`): optional token, stored in the connector secret store.
      „Ellenőrzés és mentés” runs `initialize` + `tools/list`.
-   - *Mindenki a saját fiókjával* (`user_delegated`): client ID from the vendor (optional secret,
-     optional scopes). The platform discovers the authorization server (RFC 9728 → RFC 8414) and sends
-     `resource=<server address>` on the authorize and token requests. The admin then logs in once with
-     their own account and fetches the tool list. Dynamic client registration is not supported yet.
-3. Review the tools: full description, parameters, risk (`read` runs at once, `write` waits for
+   - *Mindenki a saját fiókjával* (`user_delegated`): optional client ID (and secret/scopes). If the
+     ID is empty, the platform registers a public PKCE client via RFC 7591 DCR (T3 Google sign-in).
+     The authorization server is discovered (RFC 9728 → RFC 8414); authorize/token requests send
+     `resource=<server address>`. The admin then signs in once (Google window on T3) and we fetch
+     the tool list.
+2. Review the tools: full description, parameters, risk (`read` runs at once, `write` waits for
    approval unless the agent's „Céges API” write mode is direct, `danger` always waits). New tools start
    as `danger` and unapproved. Marking a write-like name as `read` needs an extra confirmation.
-4. Try a read tool (real call), then bind the connector to an agent on the usual screen and publish.
+3. Try a read tool (real call), then bind the connector to an agent on the usual screen and publish.
 
 Changes on the server never take effect on their own: „Újraellenőrzés” stores a `proposed` version with
 a diff; the old approved list stays active until an admin approves the new one. A changed description or

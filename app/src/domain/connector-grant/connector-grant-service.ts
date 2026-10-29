@@ -297,8 +297,8 @@ type OAuthEgressPolicy = {
 
 function pinsOAuthToEndpointHost(connector: Connector): boolean {
   if (connector.type === 'gmail' || connector.type === 'google_drive') return true
-  // MCP: token-csere is a D8 host-listán megy (visszavonás azonnal leállít).
-  if (connector.type === 'mcp') return false
+  // MCP: a tenant-admin a connectorral az AS-t is választotta — pin a tárolt token-URL hostjára.
+  if (connector.type === 'mcp') return true
   return isPlatformGoogleApiConnectorTemplateKey(provenanceTemplateKey(connector.config))
 }
 
@@ -487,13 +487,9 @@ export class ConnectorGrantService {
   constructor(
     private grants: ConnectorGrantRepository,
     private readonly resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>,
-    private readonly resolveMcpAllowedHosts?: () => Promise<string[]>,
   ) {}
 
   private async tenantAllowlistOrNull(connector: Connector): Promise<string[] | null> {
-    if (connector.type === 'mcp') {
-      return this.resolveMcpAllowedHosts ? this.resolveMcpAllowedHosts() : []
-    }
     if (!this.resolveEgressAllowlist) return null
     return this.resolveEgressAllowlist(connector.tenantId)
   }

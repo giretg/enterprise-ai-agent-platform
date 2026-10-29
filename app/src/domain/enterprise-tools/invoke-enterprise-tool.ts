@@ -987,7 +987,7 @@ async function invokeMcpTool(
       role: principal.role,
       toolName,
     })
-  if (!deps.loadMcpActiveTools || !deps.resolveMcpAllowedHosts) return deny('tool_not_configured')
+  if (!deps.loadMcpActiveTools) return deny('tool_not_configured')
 
   if (toolName === MCP_LIST_TOOLS_TOOL) {
     const parsed = mcpListToolsInputSchema.safeParse(args)
