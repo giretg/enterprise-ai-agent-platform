@@ -453,6 +453,65 @@ async function main() {
     assert.ok(seenAuth.length > 0 && seenAuth.every((value) => value === 'Bearer svc-token'))
   })
 
+  await check('tools/list nem-haladó lapozás (üres lap / vissza nem mozduló kurzor) → lezár, nem pörög', async () => {
+    // Üres lapot ad vissza NEM-null kurzorral: naiv lapozó a session-timeoutig pörögne.
+    let emptyCalls = 0
+    const emptyPages = async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(null, { status: 405 })
+      const message = JSON.parse(String(init.body)) as { id?: number; method: string }
+      if (message.id === undefined) return new Response(null, { status: 202 })
+      const result =
+        message.method === 'initialize'
+          ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'f', version: '1' } }
+          : (emptyCalls++, { tools: [], nextCursor: `cur-${emptyCalls}` })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const empty = await mcpListTools({ serverUrl: SERVER_URL, allowedHosts: [HOST] }, { fetchImpl: emptyPages, resolveHostIps: publicIp })
+    assert.deepEqual(empty, [])
+    assert.equal(emptyCalls, 1) // üres lap → azonnali lezárás, nincs második tools/list kérés
+
+    // Vissza nem mozduló kurzor TARTALOMMAL: legfeljebb egy ismétlés után lezár.
+    let stuckCalls = 0
+    const stuckCursor = async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(null, { status: 405 })
+      const message = JSON.parse(String(init.body)) as { id?: number; method: string }
+      if (message.id === undefined) return new Response(null, { status: 202 })
+      const result =
+        message.method === 'initialize'
+          ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'f', version: '1' } }
+          : (stuckCalls++, { tools: [{ name: `t${stuckCalls}`, inputSchema: { type: 'object' } }], nextCursor: 'same' })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const stuck = await mcpListTools({ serverUrl: SERVER_URL, allowedHosts: [HOST] }, { fetchImpl: stuckCursor, resolveHostIps: publicIp })
+    assert.equal(stuck.length, 2) // 2. lap után a kurzor nem mozdult → lezár
+    assert.equal(stuckCalls, 2)
+
+    // Körbeérő kurzor (A → B → A): a már elküldött kurzorra lezár, nem gyűjt duplikátumot a plafonig.
+    let cycleCalls = 0
+    const cyclingCursor = async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(null, { status: 405 })
+      const message = JSON.parse(String(init.body)) as { id?: number; method: string }
+      if (message.id === undefined) return new Response(null, { status: 202 })
+      const result =
+        message.method === 'initialize'
+          ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'f', version: '1' } }
+          : (cycleCalls++, { tools: [{ name: `c${cycleCalls}`, inputSchema: { type: 'object' } }], nextCursor: cycleCalls % 2 ? 'A' : 'B' })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const cycle = await mcpListTools({ serverUrl: SERVER_URL, allowedHosts: [HOST] }, { fetchImpl: cyclingCursor, resolveHostIps: publicIp })
+    assert.equal(cycle.length, 3) // A, B elküldve; a 3. lap újra A-t ad → lezár
+    assert.equal(cycleCalls, 3)
+  })
+
   await check('401 → unauthorized; túl nagy válasz → too_large', async () => {
     const deny = { fetchImpl: async () => new Response('no', { status: 401 }), resolveHostIps: publicIp }
     await assert.rejects(mcpListTools({ serverUrl: SERVER_URL, allowedHosts: [HOST] }, deny), (e: McpClientError) => e.code === 'unauthorized')
