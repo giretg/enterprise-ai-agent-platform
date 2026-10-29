@@ -44,3 +44,35 @@ const FIELD_TYPES: Record<string, string> = {
 export function warehouseFieldTypeLabel(type: string): string {
   return FIELD_TYPES[type] ?? 'Egyéb adat'
 }
+
+/** Tükrözi a szerver `WAREHOUSE_MAX_FILE_BYTES` értékét; a kliens csak előszűr. */
+export const WAREHOUSE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+
+export const WAREHOUSE_UPLOAD_NEED_FILE =
+  'Előbb válassz egy .xlsx fájlt (Fájl kiválasztása). A Feltöltés gomb utána indul.'
+
+export const WAREHOUSE_UPLOAD_NEED_ROLE =
+  'Fájlt feltölteni operátor, jóváhagyó vagy admin szerep kell. Kérd egy jogosult kollégát.'
+
+/** Kliensoldali előszűrés a feltöltés gombhoz — a szerver a tartalmat is ellenőrzi. */
+export function warehouseUploadFileIssue(file: { name: string; size: number }): string | null {
+  if (!file.name.toLowerCase().endsWith('.xlsx')) {
+    return 'Egyelőre csak .xlsx Excel-fájlt tudunk betölteni.'
+  }
+  if (file.size <= 0) return 'A fájl üres.'
+  if (file.size > WAREHOUSE_UPLOAD_MAX_BYTES) return 'A fájl nagyobb 10 MB-nál. Bontsd kisebb részekre.'
+  return null
+}
+
+export function warehouseUploadStatus(input: {
+  canImport: boolean
+  pending: boolean
+  fileName: string | null
+  issue: string | null
+}): { tone: 'error' | 'info'; text: string } {
+  if (!input.canImport) return { tone: 'info', text: WAREHOUSE_UPLOAD_NEED_ROLE }
+  if (input.issue) return { tone: 'error', text: input.issue }
+  if (input.pending) return { tone: 'info', text: 'Feltöltés folyamatban.' }
+  if (!input.fileName) return { tone: 'info', text: WAREHOUSE_UPLOAD_NEED_FILE }
+  return { tone: 'info', text: `Kiválasztva: ${input.fileName}. Nyomd meg a Feltöltést.` }
+}

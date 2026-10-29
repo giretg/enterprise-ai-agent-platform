@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useRef, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
@@ -16,7 +16,14 @@ import {
 import type { ImportPreview } from '@/domain/warehouse/warehouse-service'
 import type { PlanCheck } from '@/domain/warehouse/plan'
 import { Badge, Card } from '@/components/ui/shell'
-import { warehouseFieldTypeLabel, warehouseMessage } from '@/lib/warehouse-labels'
+import {
+  warehouseFieldTypeLabel,
+  warehouseMessage,
+  warehouseUploadFileIssue,
+  warehouseUploadStatus,
+  WAREHOUSE_UPLOAD_NEED_FILE,
+  WAREHOUSE_UPLOAD_NEED_ROLE,
+} from '@/lib/warehouse-labels'
 
 type PageData = Extract<Awaited<ReturnType<typeof loadWarehousePageAction>>, { success: true }>['data']
 type ReadyData = Extract<PageData, { ready: true }>
@@ -127,7 +134,13 @@ export function WarehousePanel({ data, selectedImportId }: { data: PageData; sel
     <div className="space-y-6">
       {banner}
       <UsageStrip data={data} />
-      {data.permissions.import ? <UploadCard pending={pending} act={act} onUploaded={(id) => router.push(`/control-plane/warehouse?import=${id}`)} /> : null}
+      {data.permissions.import ? (
+        <UploadCard pending={pending} act={act} onUploaded={(id) => router.push(`/control-plane/warehouse?import=${id}`)} />
+      ) : (
+        <Card title="Excel feltöltése">
+          <p className="text-sm text-ink-soft">{WAREHOUSE_UPLOAD_NEED_ROLE}</p>
+        </Card>
+      )}
       {data.selected ? <ImportDetail data={data} pending={pending} act={act} /> : selectedImportId ? <p className="text-sm text-ink-soft">Ez a betöltés nem található.</p> : null}
       <ExceptionsCard data={data} pending={pending} act={act} />
       <DatasetsCard data={data} pending={pending} act={act} />
@@ -151,14 +164,35 @@ function UsageStrip({ data }: { data: ReadyData }) {
 }
 
 function UploadCard({ pending, act, onUploaded }: { pending: boolean; act: Act; onUploaded: (importId: string) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
+  const [issue, setIssue] = useState<string | null>(null)
+  const status = warehouseUploadStatus({ canImport: true, pending, fileName: file?.name ?? null, issue })
+  const hintId = 'warehouse-upload-hint'
+
+  function pick(next: File | null) {
+    if (!next) {
+      setFile(null)
+      setIssue(null)
+      return
+    }
+    const nextIssue = warehouseUploadFileIssue(next)
+    setFile(nextIssue ? null : next)
+    setIssue(nextIssue)
+  }
+
   return (
     <Card title="Excel feltöltése">
       <form
         className="flex flex-wrap items-center gap-3"
         onSubmit={(event) => {
           event.preventDefault()
-          if (!file) return
+          if (pending) return
+          if (!file) {
+            setIssue(WAREHOUSE_UPLOAD_NEED_FILE)
+            inputRef.current?.click()
+            return
+          }
           const form = new FormData()
           form.set('file', file)
           let importId: string | null = null
@@ -173,11 +207,33 @@ function UploadCard({ pending, act, onUploaded }: { pending: boolean; act: Act; 
           )
         }}
       >
-        <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="text-sm" aria-label="Excel-fájl (.xlsx)" />
-        <button type="submit" disabled={!file || pending} className="rounded-lg bg-ink px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+        <label className="inline-flex cursor-pointer items-center rounded-lg border border-ink/20 bg-panel px-3 py-2 text-sm font-medium hover:bg-ink/5">
+          Fájl kiválasztása
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="sr-only"
+            aria-describedby={hintId}
+            onChange={(event) => {
+              pick(event.target.files?.[0] ?? null)
+              event.target.value = ''
+            }}
+          />
+        </label>
+        <span className="text-sm text-ink-soft">{file ? file.name : 'Nincs fájl kiválasztva'}</span>
+        <button
+          type="submit"
+          disabled={pending}
+          aria-describedby={hintId}
+          className="rounded-lg bg-ink px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
           {pending ? 'Feltöltés…' : 'Feltöltés'}
         </button>
       </form>
+      <p id={hintId} role={status.tone === 'error' ? 'alert' : 'status'} className={`mt-2 text-sm ${status.tone === 'error' ? 'text-red-800' : 'text-ink-soft'}`}>
+        {status.text}
+      </p>
       <div className="mt-3">
         <Help label="Mi történik feltöltés után?">
           <p>A platform átvizsgálja a fájlt (munkalapok, fejléc, típusok, magyar szám- és dátumformátumok). Az eredeti fájl megmarad.</p>
