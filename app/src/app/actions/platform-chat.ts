@@ -122,6 +122,8 @@ export async function setAgentPlatformChatAction(input: { agentId: string; enabl
       tenantId: ctx.activeTenantId,
     })
     revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    revalidatePath('/control-plane/agents')
+    revalidatePath('/control-plane/dashboard')
     return ok({ enabled: parsed.enabled })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'save_failed')

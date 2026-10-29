@@ -979,7 +979,9 @@
         "retired": "nyugdíjazva"
       },
       "halfFinished": "Félkész",
-      "halfFinishedHint": "A felvétel félbemaradt — kattints, és ott folytathatod, ahol abbahagytad."
+      "halfFinishedHint": "A felvétel félbemaradt — kattints, és ott folytathatod, ahol abbahagytad.",
+      "startChat": "Beszélgetés indítása",
+      "startChatHint": "Beszélgetés ezzel a munkatárssal a platformon"
     },
     "dashboard": {
       "eyebrow": "Kezdőlap",
