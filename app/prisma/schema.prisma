@@ -74,6 +74,12 @@ enum AgentStatus {
   retired
 }
 
+/// #1016 D1: egy agent vagy belső munkatárs, vagy nyilvános ügyfélszolgálati asszisztens — utólag nem váltható.
+enum AgentKind {
+  internal
+  public
+}
+
 enum MemoryWriteMode {
   approval
   direct
@@ -510,6 +516,9 @@ model Tenant {
   gatewaySurrogates          GatewaySurrogate[]
   miniApps                   MiniApp[]
   warehouse                  TenantWarehouse?
+  publicAssistants           PublicAssistant[]
+  publicChatSessions         PublicChatSession[]
+  publicChatDailyUsage       PublicChatDailyUsage[]
 
   @@index([status])
   @@index([createdById, selfService])
@@ -637,6 +646,8 @@ model Agent {
   placementOverrides         Json?           @map("placement_overrides")
   /// Elérhető-e a beépített platform-chatben (#1004 D3); a tenant-kapcsoló is kell hozzá.
   platformChatEnabled        Boolean         @default(true) @map("platform_chat_enabled")
+  /// #1016 D1: létrehozáskor dől el; `public` agent sosem publikálható MCP-re / Hermesbe / platform-chatbe.
+  kind                       AgentKind       @default(internal)
   createdAt                  DateTime        @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime        @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?       @map("retired_at") @db.Timestamptz
@@ -655,6 +666,7 @@ model Agent {
   handoffsReceived           Handoff[]                   @relation("HandoffToAgent")
   miniApps                   MiniApp[]
   miniAppShares              MiniAppShare[]
+  publicAssistant            PublicAssistant?
 
   @@index([tenantId, status])
   @@map("agents")
@@ -793,6 +805,8 @@ model Connector {
   visibility        KnowledgeBaseVisibility @default(shared)
   ownerUserId       String?                 @map("owner_user_id") @db.Uuid
   ownerMissingSince DateTime?               @map("owner_missing_since") @db.Timestamptz
+  /// #1016 D4: nyilvános tudásbázis („ami ide kerül, az nyilvános”) — csak ilyen köthető nyilvános asszisztenshez.
+  publicKb          Boolean                 @default(false) @map("public_kb")
   createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   connectorMode       ConnectorMode         @default(fixed) @map("connector_mode")
@@ -1893,4 +1907,101 @@ model TenantWarehouse {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("tenant_warehouses")
+}
+
+/// #1016 nyilvános ügyfélszolgálati asszisztens profilja. A `draft`-ot a munkatárs szerkeszti, a látogató
+/// mindig a `published` pillanatképet kapja (D16); a konfiguráció alakja: `src/domain/public-chat/config.ts`.
+model PublicAssistant {
+  agentId          String    @id @map("agent_id") @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  /// A nyilvános cím `/c/<slug>`; a szerver ebből oldja fel a tenantot és az agentet.
+  slug             String    @unique
+  draft            Json      @default("{}")
+  published        Json?
+  publishedAt      DateTime? @map("published_at") @db.Timestamptz
+  publishedById    String?   @map("published_by") @db.Uuid
+  /// D16: azonnali szünet — a látogató barátságos „nem elérhető” állapotot lát.
+  paused           Boolean   @default(false)
+  /// D21 állapotjelző: honnan és mikor töltötték be utoljára a widgetet / linket.
+  lastLoadedDomain String?   @map("last_loaded_domain")
+  lastLoadedAt     DateTime? @map("last_loaded_at") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  agent    Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sessions PublicChatSession[]
+
+  @@index([tenantId])
+  @@map("public_assistants")
+}
+
+/// #1016 D11/D17: egy névtelen látogató egy beszélgetése (`public_web` csatorna). 30 nap után törlődik.
+model PublicChatSession {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  agentId        String    @map("agent_id") @db.Uuid
+  /// A böngészőben tárolt névtelen látogató-azonosító (véletlen, ≥ 32 karakter) — a beszélgetés kulcsa is.
+  visitorId      String    @map("visitor_id")
+  /// D22: „Kipróbálás látogatóként” — az analitikán kívül.
+  isTest         Boolean   @default(false) @map("is_test")
+  /// D2/D3: a widget által átadott, MEGBÍZHATATLAN kontextus (≤ 8 kB).
+  context        Json?
+  /// [{ role: 'user' | 'assistant', content, at }]
+  messages       Json      @default("[]")
+  messageCount   Int       @default(0) @map("message_count")
+  /// none | forwarded | callback_requested
+  handoff        String    @default("none")
+  handoffContact String?   @map("handoff_contact")
+  handoffSummary String?   @map("handoff_summary")
+  ipHash         String?   @map("ip_hash")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
+
+  tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assistant PublicAssistant    @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
+  signals   PublicChatSignal[]
+
+  @@index([tenantId, agentId, lastActivityAt])
+  @@index([agentId, visitorId])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
+  @@map("public_chat_sessions")
+}
+
+/// #1016 D20: „Megválaszolatlan kérdések” jelzés — forrás: az agent „nem tudtam” eszköze, KB-találat hiánya, továbbítás.
+model PublicChatSignal {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  agentId     String    @map("agent_id") @db.Uuid
+  sessionId   String    @map("session_id") @db.Uuid
+  /// uncertain | no_kb_hit | forward
+  source      String
+  question    String
+  /// A napi LLM-összefoglaló csoportja.
+  groupLabel  String?   @map("group_label")
+  /// A munkatárs válasz-javaslata a nyilvános KB-ba; admin jóváhagyásáig nem kerül be.
+  answerDraft String?   @map("answer_draft")
+  answeredAt  DateTime? @map("answered_at") @db.Timestamptz
+  dismissedAt DateTime? @map("dismissed_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  session PublicChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, agentId, createdAt])
+  @@map("public_chat_signals")
+}
+
+/// #1016 D14: a nyilvános chat napi modell-költése tenantonként, külön „nyilvános chat” gateway-sorként.
+model PublicChatDailyUsage {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  day       DateTime @db.Date
+  costUsd   Decimal  @default(0) @map("cost_usd") @db.Decimal(12, 6)
+  calls     Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, day])
+  @@map("public_chat_daily_usage")
 }

@@ -46,6 +46,7 @@ import {
 /** Publish needs a short "when to call me" so MCP clients can pick among teammates. */
 export const AGENT_SCOPE_REQUIRED =
   'A közzétételhez add meg a felelősségi kört: mikor ezt a munkatársat hívd.'
+export const PUBLIC_AGENT_NOT_PUBLISHABLE = 'A nyilvános asszisztens nem publikálható belső munkatársként.'
 
 export type { AgentDefinitionSnapshotRule, AgentDefinitionRuleSource } from '@/domain/agent-definition/snapshot-rules'
 export { collectSnapshotRules, renderSnapshotRulesBriefingBlock, SNAPSHOT_RULES_OVERRIDE_HINT } from '@/domain/agent-definition/snapshot-rules'
@@ -376,6 +377,8 @@ export class AgentDefinitionService {
   }): Promise<AgentDefinition> {
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
+    // #1016 D1/D7: nyilvános asszisztens sosem kerül MCP-re / Hermesbe / platform-chatbe.
+    if (agent.kind === 'public') throw new Error(PUBLIC_AGENT_NOT_PUBLISHABLE)
     if (!agent.description?.trim()) throw new Error(AGENT_SCOPE_REQUIRED)
 
     const [enabledSkills, connectors, capabilities] = await Promise.all([

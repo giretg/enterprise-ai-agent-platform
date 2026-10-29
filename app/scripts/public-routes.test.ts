@@ -189,5 +189,13 @@ check('#1004 a platform-chat folytatási token publikus (chat-token Bearer), a s
   assertProtected('/chat')
 })
 
+check('#1016 a nyilvános chat oldala és végpontja publikus, az alútjai nem', () => {
+  assertPublic('/c/acme-support')
+  assertPublic('/api/public-chat/acme-support')
+  assertProtected('/c/acme-support/admin')
+  assertProtected('/api/public-chat/acme-support/admin')
+  assertProtected('/control-plane/agents')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
