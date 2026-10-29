@@ -29,6 +29,7 @@ const MESSAGES: Record<string, string> = {
   unsupported_format: 'Egyelőre csak .xlsx Excel-fájlt tudunk betölteni.',
   unreadable_file: 'Az Excel-fájlt nem sikerült megnyitni. Mentsd el újra .xlsx formátumban.',
   import_invalid_state: 'Ez a lépés most nem végezhető el ezen a betöltésen (frissítsd az oldalt).',
+  import_not_found: 'Ez a betöltés már nem létezik (lehet, hogy valaki törölte).',
   preview_stale: 'Az adatok az előnézet óta megváltoztak — nézd meg újra az előnézetet.',
   plan_check_failed: 'A betöltési terv nem illik a fájlhoz vagy az adattárházhoz — kérd az AI munkatársat, hogy javítsa.',
   rollback_not_latest: 'Csak az adatkészlet legutóbbi betöltése vonható vissza.',
@@ -132,6 +133,10 @@ export async function commitImportAction(input: { importId: string; previewHash:
 
 export async function rollbackImportAction(input: { importId: string }) {
   return run(async (ctx) => warehouseService().rollback(actor(ctx), z.string().uuid().parse(input.importId)))
+}
+
+export async function discardImportAction(input: { importId: string }) {
+  return run(async (ctx) => warehouseService().discardImport(actor(ctx), z.string().uuid().parse(input.importId)))
 }
 
 export async function resolveExceptionAction(input: { exceptionId: string; action: 'link' | 'dismiss'; targetId?: string }) {

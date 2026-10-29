@@ -7,6 +7,7 @@ import {
   activateWarehouseAction,
   commitImportAction,
   confirmDatasetAction,
+  discardImportAction,
   previewImportAction,
   resolveExceptionAction,
   rollbackImportAction,
@@ -15,6 +16,7 @@ import {
 } from '@/app/actions/warehouse'
 import type { ImportPreview } from '@/domain/warehouse/warehouse-service'
 import type { PlanCheck } from '@/domain/warehouse/plan'
+import { canDiscardImport } from '@/domain/warehouse/permissions'
 import { Badge, Card } from '@/components/ui/shell'
 import {
   warehouseFieldTypeLabel,
@@ -144,7 +146,7 @@ export function WarehousePanel({ data, selectedImportId }: { data: PageData; sel
       {data.selected ? <ImportDetail data={data} pending={pending} act={act} /> : selectedImportId ? <p className="text-sm text-ink-soft">Ez a betöltés nem található.</p> : null}
       <ExceptionsCard data={data} pending={pending} act={act} />
       <DatasetsCard data={data} pending={pending} act={act} />
-      <ImportsCard data={data} />
+      <ImportsCard data={data} pending={pending} act={act} selectedImportId={selectedImportId} />
     </div>
   )
 }
@@ -273,7 +275,26 @@ function CountsTable({ preview }: { preview: ImportPreview }) {
   )
 }
 
+function DiscardButton({ fileName, importId, pending, act, onDone, compact }: { fileName: string; importId: string; pending: boolean; act: Act; onDone?: () => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      title="A fájl még nincs betöltve, így a törlés semmilyen adatot nem érint."
+      onClick={() => {
+        if (window.confirm(`Törlöd a(z) „${fileName}” feltöltést? A fájl még nincs betöltve, így az adatkészletek nem változnak. A törlés nem vonható vissza.`)) {
+          act(() => discardImportAction({ importId }), 'A feltöltés törölve.', onDone)
+        }
+      }}
+      className={`rounded-lg border border-coral/40 font-medium text-coral disabled:opacity-50 ${compact ? 'px-2 py-0.5 text-xs' : 'px-3 py-1.5'}`}
+    >
+      Törlés
+    </button>
+  )
+}
+
 function ImportDetail({ data, pending, act }: { data: ReadyData; pending: boolean; act: Act }) {
+  const router = useRouter()
   const selected = data.selected!
   const record = selected.import
   const preview = record.preview as ImportPreview | null
@@ -357,6 +378,9 @@ function ImportDetail({ data, pending, act }: { data: ReadyData; pending: boolea
             >
               Betöltés visszavonása
             </button>
+          ) : null}
+          {data.permissions.import && canDiscardImport(record.state) ? (
+            <DiscardButton fileName={record.fileName} importId={record.id} pending={pending} act={act} onDone={() => router.push('/control-plane/warehouse')} />
           ) : null}
         </div>
       </div>
@@ -446,13 +470,14 @@ function DatasetsCard({ data, pending, act }: { data: ReadyData; pending: boolea
   )
 }
 
-function ImportsCard({ data }: { data: ReadyData }) {
+function ImportsCard({ data, pending, act, selectedImportId }: { data: ReadyData; pending: boolean; act: Act; selectedImportId: string | null }) {
+  const router = useRouter()
   if (data.imports.length === 0) return null
   return (
     <Card title="Betöltések">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="text-ink-soft"><tr><th className="py-2 pr-4 font-medium">Fájl</th><th className="pr-4 font-medium">Állapot</th><th className="pr-4 font-medium">Adatkészlet</th><th className="pr-4 font-medium">Feltöltve</th><th className="font-medium">Betöltve</th></tr></thead>
+          <thead className="text-ink-soft"><tr><th className="py-2 pr-4 font-medium">Fájl</th><th className="pr-4 font-medium">Állapot</th><th className="pr-4 font-medium">Adatkészlet</th><th className="pr-4 font-medium">Feltöltve</th><th className="pr-4 font-medium">Betöltve</th><th className="font-medium"><span className="sr-only">Műveletek</span></th></tr></thead>
           <tbody>
             {data.imports.map((i) => (
               <tr key={i.id} className="border-t border-ink/10">
@@ -460,7 +485,19 @@ function ImportsCard({ data }: { data: ReadyData }) {
                 <td className="pr-4"><Badge tone={STATE_TONE[i.state] ?? 'neutral'}>{STATE_LABEL[i.state] ?? i.state}</Badge></td>
                 <td className="pr-4">{i.datasetKey ?? '—'}</td>
                 <td className="pr-4">{formatDate(i.createdAt)}</td>
-                <td>{formatDate(i.publishedAt)}</td>
+                <td className="pr-4">{formatDate(i.publishedAt)}</td>
+                <td className="text-right">
+                  {data.permissions.import && canDiscardImport(i.state) ? (
+                    <DiscardButton
+                      compact
+                      fileName={i.fileName}
+                      importId={i.id}
+                      pending={pending}
+                      act={act}
+                      onDone={selectedImportId === i.id ? () => router.push('/control-plane/warehouse') : undefined}
+                    />
+                  ) : null}
+                </td>
               </tr>
             ))}
           </tbody>
