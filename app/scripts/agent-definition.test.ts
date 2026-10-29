@@ -438,6 +438,20 @@ async function main() {
     assert.equal(stale.stale, true)
   })
 
+  await check('placementOverrides: empty omitted, set values publish into the snapshot and mark stale on change', async () => {
+    const empty = memoryDeps()
+    const first = await empty.service.publishAgentDefinition({ agentId: AGENT_ID, tenantId: TENANT_A, publishedById: USER_ID })
+    assert.equal(first.snapshot.placementOverrides, undefined)
+
+    const { service, agents } = memoryDeps()
+    agents.set(AGENT_ID, { ...agentRow(), placementOverrides: { fact: 'knowledge base', bogus: 'x', plan: ' ' } })
+    const published = await service.publishAgentDefinition({ agentId: AGENT_ID, tenantId: TENANT_A, publishedById: USER_ID })
+    assert.deepEqual(published.snapshot.placementOverrides, { fact: 'knowledge base' })
+    agents.set(AGENT_ID, { ...agents.get(AGENT_ID)!, placementOverrides: { fact: 'memory page' } })
+    const stale = await service.getPublishStatus({ agentId: AGENT_ID, tenantId: TENANT_A })
+    assert.equal(stale.stale, true)
+  })
+
   if (failures > 0) {
     console.error(`agent-definition: ${failures} failure(s)`)
     process.exit(1)

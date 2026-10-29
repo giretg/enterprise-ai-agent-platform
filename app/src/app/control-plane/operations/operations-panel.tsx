@@ -8,6 +8,7 @@ import {
 } from '@/app/actions/gateway-operation'
 import { asTranslate } from '@/i18n/translate'
 import { operationErrorLabel } from './labels'
+import { WikiChangeSetReview } from '@/components/knowledge/wiki/wiki-change-set-review'
 import type { PendingOperationRow } from './types'
 import {
   OperationConnectorIcon,
@@ -111,7 +112,19 @@ export function OperationsPanel({ operations }: { operations: PendingOperationRo
                         : ''}
                     </p>
                   ) : null}
-                  <OperationSummaryBlock row={row} t={t} expanded mode="details" />
+                  {row.toolName === 'kb_wiki_write' && typeof row.args.changeSetId === 'string' ? (
+                    <WikiChangeSetReview
+                      changeSetId={row.args.changeSetId}
+                      busy={busy}
+                      onApprove={() => {
+                        setRejectingId(null)
+                        void onApprove(row.operationId)
+                      }}
+                      onReject={() => setRejectingId(row.operationId)}
+                    />
+                  ) : (
+                    <OperationSummaryBlock row={row} t={t} expanded mode="details" />
+                  )}
                   {rejecting ? (
                     <label className="mt-2 block text-xs text-ink-soft">
                       {t('rejectReason')}

@@ -63,6 +63,12 @@ export const KB_LIST_INDEX_TOOL = 'kb_list_index'
 export const KB_GET_PAGE_TOOL = 'kb_get_page'
 export const KB_GET_DOCUMENT_TOOL = 'kb_get_document'
 export const KB_INGEST_TOOL = 'kb_ingest'
+/** #943: agent-wiki change-set (write-kind `wiki`, a mód a cél-kapcsolaton él). */
+export const KB_WIKI_WRITE_TOOL = 'kb_wiki_write'
+/** #978 §5.4: mi változott a wikin az agent legutóbbi átnézése óta (összefoglaló, diff nélkül). */
+export const KB_WIKI_CHANGES_TOOL = 'kb_wiki_changes'
+/** #978 §5.2: oldal / change-set visszaállítása — D2: MINDIG jóváhagyással. */
+export const KB_WIKI_REVERT_TOOL = 'kb_wiki_revert'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
@@ -70,6 +76,9 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_GET_PAGE_TOOL,
   KB_GET_DOCUMENT_TOOL,
   KB_INGEST_TOOL,
+  KB_WIKI_WRITE_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_REVERT_TOOL,
 ] as const
 
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
@@ -95,6 +104,28 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_MCP_TOOLS,
 ] as const
 
+/**
+ * Csak olvasó eszközök: újrapublikálás után a régi definitionId-val érkező hívás az
+ * aktuális verzión lefuthat (`withDefinitionUpdatedNotice`). Írás és külső hívás nem.
+ */
+export const ENTERPRISE_READ_ONLY_TOOLS = [
+  GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_READ_FILE_TOOL,
+  GMAIL_SEARCH_TOOL,
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_LIST_LABELS_TOOL,
+  GMAIL_LIST_DRAFTS_TOOL,
+  HTTP_API_GET_TOOL,
+  HTTP_API_GET_ALL_TOOL,
+  KB_SEARCH_TOOL,
+  KB_LIST_INDEX_TOOL,
+  KB_GET_PAGE_TOOL,
+  KB_GET_DOCUMENT_TOOL,
+  KB_WIKI_CHANGES_TOOL,
+  MCP_LIST_TOOLS_TOOL,
+] as const
+
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
 export type EnterpriseDriveTool = (typeof ENTERPRISE_DRIVE_TOOLS)[number]
 export type EnterpriseGmailTool = (typeof ENTERPRISE_GMAIL_TOOLS)[number]
@@ -117,6 +148,7 @@ const ENTERPRISE_KB_TOOL_SET = new Set<string>(ENTERPRISE_KB_TOOLS)
 const ENTERPRISE_SANDBOX_TOOL_SET = new Set<string>(ENTERPRISE_SANDBOX_TOOLS)
 const ENTERPRISE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_WRITE_TOOLS)
 const ENTERPRISE_TOOL_SET = new Set<string>(ENTERPRISE_TOOLS)
+const ENTERPRISE_READ_ONLY_TOOL_SET = new Set<string>(ENTERPRISE_READ_ONLY_TOOLS)
 
 export function isEnterpriseDriveTool(toolName: string): toolName is EnterpriseDriveTool {
   return ENTERPRISE_DRIVE_TOOL_SET.has(toolName)
@@ -154,6 +186,10 @@ export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcp
   return toolName === MCP_LIST_TOOLS_TOOL || toolName === MCP_CALL_TOOL
 }
 
+export function isEnterpriseReadOnlyTool(toolName: string): boolean {
+  return ENTERPRISE_READ_ONLY_TOOL_SET.has(toolName)
+}
+
 export function isEnterpriseWriteTool(toolName: string): toolName is EnterpriseWriteTool {
   return ENTERPRISE_WRITE_TOOL_SET.has(toolName)
 }
@@ -165,7 +201,10 @@ export function isEnterpriseTool(toolName: string): toolName is EnterpriseTool {
 const definitionId = z
   .string()
   .uuid()
-  .describe('Published agent definition id — from platform.agent.get_definition for the chosen agentId (required on every enterprise tool)')
+  .optional()
+  .describe(
+    'Published agent definition id from platform.agent.get_definition. Omit it when this client sends X-Excellence-Agent-Id — the server uses the current published definition. Unbound clients must pass it.',
+  )
 const optionalAgentId = z
   .string()
   .uuid()
@@ -536,10 +575,13 @@ export function schemaForEnterpriseDriveTool(toolName: EnterpriseDriveTool) {
   return googleDriveSearchInputSchema
 }
 
+const optionalWikiId = z.string().uuid().optional()
+
 export const kbSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    wikiId: optionalWikiId,
     query: z.string().min(1).max(1000),
     k: z.number().int().min(1).max(20).optional(),
   })
@@ -549,9 +591,14 @@ export const kbListIndexInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    wikiId: optionalWikiId,
     pathPrefix: z.string().max(200).optional(),
     maxDepth: z.number().int().min(1).max(8).optional(),
     artifactId: z.string().uuid().optional(),
+    /** #943: a tálca (fel nem dolgozott wiki-források) listája + köteg-összesítő. */
+    inbox: z.boolean().optional(),
+    batchId: z.string().uuid().optional(),
+    limit: z.number().int().min(1).max(200).optional(),
   })
   .passthrough()
 
@@ -559,8 +606,14 @@ export const kbGetPageInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    wikiId: optionalWikiId,
     path: z.string().min(1).max(400),
     artifactId: z.string().uuid().optional(),
+    /** #978 §5.3: a wiki korábbi állapota — change-szám (pl. "97") vagy ISO-dátum ("2026-10-01"). */
+    asOf: z
+      .union([z.string().trim().min(1).max(40), z.number().int().min(0)])
+      .optional()
+      .describe('Agent wiki only: read the page as it was at a change number ("97") or date ("2026-10-01"). Read-only; never use its version for writing.'),
   })
   .passthrough()
 
@@ -570,27 +623,221 @@ export const kbGetDocumentInputSchema = z
     agentId: optionalAgentId,
     documentId: z.string().uuid(),
     section: z.string().max(200).optional(),
+    pageImages: z.boolean().optional().describe('Return original PDF pages as PNG images; max 5 pages per call.'),
+    pages: z.string().min(1).max(100).optional().describe('1-based PDF pages, e.g. "1-3,7". Defaults to page 1.'),
+    /** #943: tálca-tétel foglalása a hívó agentre (2 óra), csak írási joggal. */
+    claimForWiki: z.boolean().optional(),
   })
   .passthrough()
 
-export const kbIngestInputSchema = z
+/** MCP `registerTool` sima objektum-sémát kér; a finomítások a `kbIngestInputSchema`-ban. */
+export const kbIngestObject = z
   .object({
     definitionId,
     agentId: optionalAgentId,
-    filename: z.string().min(1).max(255),
-    processingMode: z.enum(['raw_text_only', 'okf']),
+    /** `kind: note` mellett elhagyható (a szerver ad nevet). */
+    filename: z.string().min(1).max(255).optional(),
+    processingMode: z.enum(['raw_text_only', 'okf', 'wiki']),
     mimeType: z.string().max(200).optional(),
     purpose: z.string().max(240).optional(),
     content: z.string().max(2_000_000).optional(),
     contentBase64: z.string().max(2_800_000).optional(),
+    /** #943 wiki mód: cél-wiki (több beküldhető / írható wikinél kötelező). */
+    wikiId: optionalWikiId,
+    /** Tálcára tesz azonnali feldolgozás helyett (csak ha a felhasználó kérte, D6). */
+    defer: z.boolean().optional(),
+    /** `note`: rövid szöveges forrás egy beszélgetésből (D9); a szerver bélyegzi. */
+    kind: z.enum(['file', 'note']).optional(),
   })
   .passthrough()
+
+export const kbIngestInputSchema = kbIngestObject
+  .refine((value) => value.kind === 'note' || !!value.filename, { path: ['filename'] })
+  .refine((value) => value.processingMode === 'wiki' || (value.defer === undefined && value.kind !== 'note'), {
+    path: ['processingMode'],
+  })
+
+const wikiSourceRefSchema = z
+  .object({
+    documentId: z.string().uuid(),
+    filename: z.string().max(255).optional(),
+    page: z.number().int().min(1).optional(),
+    section: z.string().max(200).optional(),
+    cell: z.string().max(64).optional(),
+  })
+  .strict()
+
+const wikiPatchOpSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('appendToSection'), section: z.string().min(1).max(200), text: z.string().min(1).max(20_000) }),
+  z.object({ op: z.literal('replaceSection'), section: z.string().min(1).max(200), text: z.string().max(20_000) }),
+  z.object({ op: z.literal('addSource'), source: wikiSourceRefSchema }),
+])
+
+const wikiPathSchema = z.string().min(1).max(200)
+
+export const kbWikiPageInputSchema = z
+  .object({
+    path: wikiPathSchema,
+    action: z.enum(['upsert', 'patch', 'archive', 'move']),
+    title: z.string().max(200).optional(),
+    type: z.enum(['source', 'entity', 'concept', 'analysis', 'overview']).optional(),
+    summary: z.string().max(400).optional(),
+    category: z.string().max(120).optional(),
+    frontmatter: z.record(z.string(), z.unknown()).optional(),
+    body: z.string().max(40_000).optional(),
+    /** Az utoljára olvasott tartalom hash-e (`kb_get_page` `baseVersion`). */
+    baseVersion: z.string().max(128).optional(),
+    patch: z.array(wikiPatchOpSchema).min(1).max(20).optional(),
+    /** `move` cél-path. */
+    newPath: wikiPathSchema.optional(),
+  })
+  .strict()
+
+export type KbWikiPageInput = z.infer<typeof kbWikiPageInputSchema>
+
+const kbWikiLogEntrySchema = z.object({
+  op: z.enum(['ingest', 'query', 'lint', 'note']),
+  title: z.string().min(1).max(200),
+  note: z.string().max(2000).optional(),
+})
+
+/**
+ * MCP-n hirdetett alak. Claude.ai eldobja a tömb-sémás eszközt, ezért a `pages`
+ * JSON-szöveg, a `sourceDocumentIds` vesszővel elválasztott lista; a szerver bontja ki.
+ */
+export const kbWikiWriteObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    pages: z
+      .string()
+      .min(2)
+      .max(2_000_000)
+      .describe(
+        'JSON array of page changes (max 50), e.g. [{"path":"entities/teya.md","action":"upsert","type":"entity","title":"Teya","summary":"…","category":"Providers","frontmatter":{"sources":[{"documentId":"…"}]},"body":"…"}] or [{"path":"entities/teya.md","action":"patch","patch":[{"op":"appendToSection","section":"Fees","text":"| Foreign | 1.5% |"}]}]',
+      ),
+    sourceDocumentIds: z.string().max(2000).optional().describe('Comma-separated raw source documentIds'),
+    logEntry: kbWikiLogEntrySchema.optional(),
+    inboxItemId: z.string().uuid().optional(),
+    final: z.boolean().optional(),
+  })
+  .passthrough()
+
+function parseJsonText(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    return value
+  }
+}
+
+function splitIdList(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  return value
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+}
+
+/** Az elemzett alak: a szövegként érkező listák tömbbé bontva (tömböt is elfogad). */
+export const kbWikiWriteInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    pages: z.preprocess(parseJsonText, z.array(kbWikiPageInputSchema).min(1).max(50)),
+    sourceDocumentIds: z.preprocess(splitIdList, z.array(z.string().uuid()).max(50).optional()),
+    logEntry: kbWikiLogEntrySchema.optional(),
+    inboxItemId: z.string().uuid().optional(),
+    final: z.boolean().optional(),
+  })
+  .passthrough()
+
+/**
+ * #943: a jóváhagyási sorba tett `kb_wiki_write` argumentuma. A tartalom a
+ * `WikiChangeSet`-ben él; itt csak azonosítók és (közös wikinél) path-összesítő.
+ */
+export const kbWikiWriteOperationArgsSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    idempotencyKey: z.string().min(1).max(200),
+    connectorId: z.string().uuid(),
+    wikiId: z.string().uuid(),
+    changeSetId: z.string().uuid(),
+    pageCount: z.number().int().min(0).max(50),
+    pages: z
+      .array(z.object({ path: z.string().max(200), action: z.string().max(16) }).strict())
+      .max(50)
+      .optional(),
+  })
+  .strict()
+
+const seqNumber = z.preprocess(
+  (value) => (typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : value),
+  z.number().int().min(1),
+)
+
+/** MCP-n hirdetett alak (transzformáció nélkül); az elemzés a `…InputSchema`-val megy. */
+export const kbWikiChangesObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    since: z
+      .union([z.string().max(20), z.number().int().min(0)])
+      .optional()
+      .describe('Change number to list after, or "last_seen" (default): changes since you last looked.'),
+    limit: z.number().int().min(1).max(50).optional(),
+    markSeen: z.boolean().optional().describe('Default true: remember that you have seen these changes.'),
+  })
+  .passthrough()
+
+export const kbWikiChangesInputSchema = kbWikiChangesObject.extend({
+  since: z
+    .preprocess(
+      (value) => (typeof value === 'string' && /^\d+$/.test(value.trim()) ? Number(value) : value),
+      z.union([z.literal('last_seen'), z.number().int().min(0)]),
+    )
+    .optional(),
+})
+
+/** Egy oldal egy korábbi verzióra, vagy egy teljes change-set (sorszám) visszavonása. */
+export const kbWikiRevertObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    changeSeq: z
+      .union([z.number().int().min(1), z.string().max(20)])
+      .optional()
+      .describe('Revert a whole change (its number from kb_wiki_changes).'),
+    path: z.string().min(1).max(200).optional().describe('Restore one page (together with version).'),
+    version: z
+      .union([z.number().int().min(1), z.string().max(20)])
+      .optional()
+      .describe('The page version to restore (from kb_get_page asOf).'),
+    note: z.string().max(2000).optional().describe('Why — shown to the approver.'),
+  })
+  .passthrough()
+
+export const kbWikiRevertInputSchema = kbWikiRevertObject
+  .extend({ changeSeq: seqNumber.optional(), version: seqNumber.optional() })
+  .refine((value) => (value.changeSeq !== undefined) !== (value.path !== undefined && value.version !== undefined), {
+    path: ['changeSeq'],
+    message: 'Pass either changeSeq, or path and version.',
+  })
 
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
   if (toolName === KB_GET_DOCUMENT_TOOL) return kbGetDocumentInputSchema
   if (toolName === KB_INGEST_TOOL) return kbIngestInputSchema
+  if (toolName === KB_WIKI_WRITE_TOOL) return kbWikiWriteInputSchema
+  if (toolName === KB_WIKI_CHANGES_TOOL) return kbWikiChangesInputSchema
+  if (toolName === KB_WIKI_REVERT_TOOL) return kbWikiRevertInputSchema
   return kbSearchInputSchema
 }
 

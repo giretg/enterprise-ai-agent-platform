@@ -7,6 +7,7 @@
  *
  * Nincs látható agent → minden kapuzott toolset tiltva (üres unió, fail-closed).
  */
+import type { WarehouseAgentAccess } from '@/lib/warehouse-settings'
 import { createHash, randomUUID } from 'node:crypto'
 import { CAPABILITY_KEYS, capabilityLevels, type CapabilityKey } from '@/domain/client-policy/capabilities'
 import { DEFAULT_TOOL_CATALOG, type ToolCatalogEntry } from '@/domain/client-policy/tool-catalog'
@@ -67,7 +68,8 @@ export const AUXILIARY_TASKS = [
 
 /**
  * Ismert modell-szolgáltatói kulcsok és base-URL env-ek. A managed `.env` üresre pineli őket,
- * ezért a `/model --provider openrouter` (és társai) nem visz ki a gateway mellé.
+ * ezért kulcs nélkül a `/model --provider openrouter` már a kliensépítésnél elhasal.
+ * Ha a folyamatban mégis van kulcs, a Guard 0.3.1 HTTP-kapu + aux wrap a végrehajtásnál zár.
  * Csak a Hermes folyamat env-jét írja felül, a gép többi programjáét nem.
  */
 export const PINNED_EMPTY_ENV_KEYS = [
@@ -157,6 +159,7 @@ export type VisibleHermesBot = {
   agentId: string
   version: number
   snapshot: HermesBotSnapshot
+  warehouseAccess?: WarehouseAgentAccess
 }
 
 export type MachineFloorDeps = {
@@ -297,6 +300,7 @@ export async function issueMachineFloor(
         snapshot: bot.snapshot,
         mcpUrl: input.mcpUrl,
         tenantSlug: input.tenantSlug,
+        warehouseAccess: bot.warehouseAccess,
       })
       if (!isHermesProfileName(connector.profile) || seen.has(connector.profile)) continue
       seen.add(connector.profile)

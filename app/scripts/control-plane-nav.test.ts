@@ -38,6 +38,18 @@ function policyWith(patch: Partial<NavVisibilityPolicy>): NavVisibilityPolicy {
 }
 
 function main() {
+  check('promises is a separate viewer queue with its own badge', () => {
+    const nav = buildControlPlaneNav({ tenantRole: 'viewer', platformRoles: [], pendingTasksCount: 2, urgentPromisesCount: 3 })
+    const promises = nav.find((entry) => entry.key === 'promises')
+    assert.ok(promises && !('children' in promises))
+    assert.equal(promises.href, '/control-plane/promises')
+    assert.equal(promises.badge, 3)
+    const operations = nav.find((entry) => entry.key === 'admin.operations')
+    assert.ok(operations && !('children' in operations))
+    assert.equal(operations.badge, 2)
+    assert.ok(!flattenNavHrefs(buildControlPlaneNav({ tenantRole: null, platformRoles: [] })).includes('/control-plane/promises'))
+  })
+
   check('operator sees Kapcsolt fiókok in the main nav, not under Adminisztráció', () => {
     const nav = buildControlPlaneNav({
       tenantRole: 'operator',

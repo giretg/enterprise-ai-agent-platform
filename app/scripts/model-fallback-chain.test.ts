@@ -10,14 +10,14 @@ import {
   GatewayBlockedError,
   shouldFallback,
 } from '../src/domain/model-gateway/fallback-chain'
-import { normalizeModelConfig, parseAgentModelConfig, resolveAgentPrimary } from '../src/lib/agent-model-config'
+import { agentModelConfigSchema, normalizeModelConfig, parseAgentModelConfig, resolveAgentPrimary } from '../src/lib/agent-model-config'
 import { fallbackPreviewSteps } from '../src/lib/model-fallback-preview'
 import { isModelAllowed, parseModelPolicy, setModelEnabled, type ModelRef } from '../src/lib/model-policy'
 
-const gpt: ModelRef = { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' }
-const sonnet: ModelRef = { provider: 'claude-code-oauth', model: 'claude-sonnet-4-6' }
+const gpt: ModelRef = { provider: 'openrouter', model: '~openai/gpt-latest' }
+const sonnet: ModelRef = { provider: 'openrouter', model: 'anthropic/claude-sonnet-4' }
 const gemini: ModelRef = { provider: 'gemini', model: 'gemini-3.5-flash' }
-const grok: ModelRef = { provider: 'grok-cli-oauth', model: 'grok-4.6' }
+const grok: ModelRef = { provider: 'openrouter', model: 'x-ai/grok-4.5' }
 const policy = parseModelPolicy({ enabled: [gpt, sonnet, gemini] })
 
 let failures = 0
@@ -119,6 +119,20 @@ check('modell-konfig: parse, alapérték az engedett lista első eleme', () => {
 check('modell-konfig: a tartalék nem lehet az elsődleges, duplikátum nélkül', () => {
   const cfg = normalizeModelConfig({ ...gpt, fallbackModels: [gpt, sonnet, sonnet] })
   assert.deepEqual(cfg.fallbackModels, [sonnet])
+})
+
+check('régi OAuth tartalék nem törli az érvényes céges modell beállításait', () => {
+  const raw = {
+    ...gemini,
+    temperature: 0.7,
+    maxTokens: 8192,
+    fallbackModels: [{ provider: 'claude-code-oauth', model: 'claude-sonnet-4-6' }, sonnet],
+  }
+  assert.deepEqual(parseAgentModelConfig(raw), { ...raw, fallbackModels: [sonnet] })
+  assert.deepEqual(resolveAgentPrimary(raw, policy), gemini)
+  assert.equal(agentModelConfigSchema.safeParse(raw).success, false)
+  assert.equal(parseAgentModelConfig({ ...raw, fallbackModels: 'invalid' }), null)
+  assert.deepEqual(resolveAgentPrimary({ provider: 'chatgpt-oauth', model: 'old' }, policy), gpt)
 })
 
 check('előnézet: elsődleges → tartalék lépések', () => {

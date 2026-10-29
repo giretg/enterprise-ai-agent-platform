@@ -1,5 +1,5 @@
 """exc-token cache + hibaágak. Futtatás: python3 clients/hermes-guard/test_exc_token.py"""
-import json, os, tempfile, unittest
+import json, os, tempfile, time, unittest
 import exc_token as x
 
 CONFIG = """model:
@@ -121,6 +121,50 @@ class T(unittest.TestCase):
         self.assertTrue(x.share_mcp_tokens(bot))
         self.assertEqual(x.mcp_access_token(bot), "oauth-relogin")
 
+    def test_legacy_bot_login_without_expires_at_beats_expired_parent(self):
+        # Telepítő / pre-Fix-A Hermes: nincs expires_at. A 0-ra esés miatt a szülő
+        # lejárt, de expires_at-es másolata felülírta a Bot friss belépőjét (#895 lyuk).
+        root = tempfile.mkdtemp()
+        bot = os.path.join(root, "profiles", "exc-reka")
+        for d in (os.path.join(root, "mcp-tokens"), os.path.join(bot, "mcp-tokens")):
+            os.makedirs(d)
+        open(os.path.join(bot, "config.yaml"), "w").write(CONFIG)
+        parent = os.path.join(root, "mcp-tokens", "excellence.json")
+        child = os.path.join(bot, "mcp-tokens", "excellence.json")
+        json.dump({"access_token": "stale-parent", "refresh_token": "dead", "expires_at": 100}, open(parent, "w"))
+        json.dump({"access_token": "fresh-bot", "refresh_token": "live", "expires_in": 3600}, open(child, "w"))
+        os.utime(parent, (1_700_000_000, 1_700_000_000))
+        os.utime(child, (1_800_000_000, 1_800_000_000))
+        self.assertFalse(x.share_mcp_tokens(bot))
+        self.assertEqual(json.load(open(child))["access_token"], "fresh-bot")
+        self.assertEqual(x.mcp_access_token(bot), "fresh-bot")
+        # A Bot frissebb → visszamegy a default profilba (refresh-forgás).
+        self.assertEqual(json.load(open(parent))["access_token"], "fresh-bot")
+
+    def test_legacy_copy_keeps_expiry_and_does_not_replace_new_login(self):
+        with tempfile.TemporaryDirectory() as root:
+            bot = os.path.join(root, "profiles", "exc-reka")
+            for home in (root, bot):
+                os.makedirs(os.path.join(home, "mcp-tokens"))
+            parent = os.path.join(root, "mcp-tokens", "excellence.json")
+            child = os.path.join(bot, "mcp-tokens", "excellence.json")
+            now = int(time.time())
+            with open(parent, "w") as fh:
+                json.dump({"access_token": "old-parent", "expires_at": now - 9000}, fh)
+            with open(child, "w") as fh:
+                json.dump({"access_token": "expired-legacy", "expires_in": 3600}, fh)
+            os.utime(child, (now - 7200, now - 7200))
+            legacy_expiry = x._expires_at(child)
+            self.assertFalse(x.share_mcp_tokens(bot))
+            self.assertEqual(x._expires_at(parent), legacy_expiry)
+            self.assertFalse(x.share_mcp_tokens(bot))
+            with open(child, "w") as fh:
+                json.dump({"access_token": "fresh-login", "expires_at": now + 1800}, fh)
+            self.assertFalse(x.share_mcp_tokens(bot))
+            self.assertEqual(x.mcp_access_token(bot), "fresh-login")
+            with open(parent) as fh:
+                self.assertEqual(json.load(fh)["access_token"], "fresh-login")
+
     def test_bot_takes_parent_login_by_url_not_by_name(self):
         # Valós eset: a default `excellence` saját tenantra mutat (lejárt), a Bot tenantjára tett
         # belépés `excellence-acme` néven áll. A Bot csak az azonos URL-ű belépőt veheti át.
@@ -172,6 +216,36 @@ class T(unittest.TestCase):
         self.assertEqual(json.load(open(os.path.join(bots["plain"], "mcp-tokens", "excellence.json")))["access_token"], "oauth-own")
         # Bot-profilból hívva csak az az egy Bot.
         self.assertFalse(x.share_all_mcp_tokens(bots["exc-reka"]))
+
+    def test_token_fetch_picks_up_sibling_bot_refresh(self):
+        self._sibling_refresh("exc-alfred", "exc-reka")
+
+    def test_token_fetch_picks_up_sibling_bot_refresh_listed_after_caller(self):
+        # A friss Bot a hívó után jön a rendezett körben: a gyökér csak a kör végén frissül.
+        self._sibling_refresh("exc-zoli", "exc-reka")
+
+    def _sibling_refresh(self, fresh_bot, caller):
+        # Valós eset (10-18): Alfred frissített (refresh-forgatás), a default és Réka belépője lejárt;
+        # Réka token-cseréje a lejárttal 401-ezett, amíg Alfred friss belépője vissza nem jutott.
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        open(os.path.join(root, "config.yaml"), "w").write("mcp_servers:\n  excellence-acme:\n    url: https://ai.example.com/api/mcp/acme\n")
+        write = lambda path, body: json.dump(body, open(path, "w"))
+        write(os.path.join(root, "mcp-tokens", "excellence-acme.json"), {"access_token": "stale", "expires_at": 500})
+        bots = {}
+        for name, tok, exp in ((fresh_bot, "fresh", 2000), (caller, "stale", 500)):
+            bots[name] = os.path.join(root, "profiles", name)
+            os.makedirs(os.path.join(bots[name], "mcp-tokens"))
+            open(os.path.join(bots[name], "config.yaml"), "w").write(CONFIG)
+            write(os.path.join(bots[name], "mcp-tokens", "excellence.json"), {"access_token": tok, "expires_at": exp})
+        seen = []
+        fetcher = lambda o, t, a, i, access: (seen.append(access), ("jwt", 9999))[1]
+        os.environ["EXC_TOKEN_SYNC_ALL"] = "0"
+        x.get_token_exp(bots[caller], now=lambda: 0, fetcher=fetcher)
+        os.remove(os.path.join(bots[caller], x.CACHE_NAME))
+        os.environ.pop("EXC_TOKEN_SYNC_ALL")
+        x.get_token_exp(bots[caller], now=lambda: 0, fetcher=fetcher)
+        self.assertEqual(seen, ["stale", "fresh"])
 
     def test_profile_without_agent_asks_for_bootstrap_token(self):
         # Alap profil (#858): nincs X-Excellence-Agent-Id → agentId nélküli kérés, a szerver választ.

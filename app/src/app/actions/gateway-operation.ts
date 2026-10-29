@@ -63,10 +63,23 @@ export async function listPendingGatewayOperationsAction(): Promise<
     const actor = actorFrom(ctx)
     // #618 D4: approver/admin lát minden pending írást; más csak a sajátját.
     // #663: a megnevezett jóváhagyó a rá váró idegen kéréseket is (operator is).
-    const operations = await services.gatewayOperations.listPending({
+    const listed = await services.gatewayOperations.listPending({
       tenantId: ctx.activeTenantId,
       ...(canApproveGatewayOperation(actor) ? {} : { principalUserId: actor.userId }),
     })
+    // #946 D4/D13: a wiki-kártya a wiki gazdájáé; privát wikinél admin sem látja.
+    const operations = []
+    for (const row of listed) {
+      const changeSetId = row.toolName === 'kb_wiki_write' ? row.args.changeSetId : null
+      if (
+        typeof changeSetId === 'string' &&
+        row.principalUserId !== actor.userId &&
+        !(await services.wiki.canDecide({ ...actor, tenantId: ctx.activeTenantId }, changeSetId))
+      ) {
+        continue
+      }
+      operations.push(row)
+    }
     return ok({ operations })
   } catch (error) {
     return mapActionError(error)

@@ -502,7 +502,83 @@ async function main() {
     assert.equal(parsePayload(result).code, 'agent_inactive')
   })
 
-  await check('stale definitionId is agent_stale', async () => {
+  await check('stale definitionId on a write is agent_stale with currentDefinitionId', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: definition({ definitionId: STALE_DEFINITION_ID }),
+        currentDefinitionId: DEFINITION_ID,
+      }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: { definitionId: STALE_DEFINITION_ID, name: 'x' },
+      },
+    )
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result)
+    assert.equal(payload.code, 'agent_stale')
+    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
+    assert.match(String(payload.message), /platform\.agent\.get_definition/)
+  })
+
+  // Újrapublikálás munka közben: az olvasás az aktuális verzión fut, és a válasz jelzi.
+  const byId = (current: AgentDefinition) => async ({ definitionId }: { definitionId: string }) =>
+    definitionId === STALE_DEFINITION_ID ? definition({ definitionId: STALE_DEFINITION_ID }) : current
+
+  await check('stale definitionId on a read runs on the current version with a notice', async () => {
+    let calls = 0
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps({
+        currentDefinitionId: DEFINITION_ID,
+        executeDriveTool: async () => {
+          calls++
+          return { files: [] }
+        },
+      }),
+      loadDefinition: byId(definition()),
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: STALE_DEFINITION_ID },
+    })
+    assert.ok('content' in result)
+    assert.equal(result.isError, undefined)
+    assert.equal(calls, 1)
+    const notice = JSON.parse(result.content[1]?.text ?? '{}') as {
+      definitionUpdated?: { previousDefinitionId: string; currentDefinitionId: string; message: string }
+    }
+    assert.equal(notice.definitionUpdated?.previousDefinitionId, STALE_DEFINITION_ID)
+    assert.equal(notice.definitionUpdated?.currentDefinitionId, DEFINITION_ID)
+    assert.match(notice.definitionUpdated?.message ?? '', /platform\.agent\.get_definition/)
+  })
+
+  await check('stale read follows the current version permissions, not the old ones', async () => {
+    let calls = 0
+    const revoked = definition({
+      snapshot: { ...definition().snapshot, capabilities: [] },
+    })
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps({
+        currentDefinitionId: DEFINITION_ID,
+        executeDriveTool: async () => {
+          calls++
+          return { files: [] }
+        },
+      }),
+      loadDefinition: byId(revoked),
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: STALE_DEFINITION_ID },
+    })
+    assert.equal(result.isError, true)
+    assert.equal(calls, 0)
+    assert.notEqual(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('stale read does not follow twice when the current version is stale too', async () => {
     const result = await invokeEnterpriseTool(
       invokeDeps({
         definition: definition({ definitionId: STALE_DEFINITION_ID }),
@@ -515,9 +591,33 @@ async function main() {
       },
     )
     assert.equal(result.isError, true)
-    const payload = parsePayload(result)
-    assert.equal(payload.code, 'agent_stale')
-    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
+    assert.equal(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('invalid_args names the bad fields for the client and the audit', async () => {
+    const audit: Array<{ action: string; metadata?: unknown }> = []
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps(),
+      audit: {
+        async append(data) {
+          audit.push({ action: data.action, metadata: data.metadata })
+        },
+      },
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_READ_FILE_TOOL,
+      args: { definitionId: DEFINITION_ID },
+    })
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result as { content: Array<{ text: string }> })
+    assert.equal(payload.code, 'invalid_args')
+    const issues = payload.issues as Array<{ path: string; message: string }>
+    assert.ok(issues.some((issue) => issue.path === 'fileId'))
+    const denied = audit.find((row) => row.action === 'enterprise.tool.denied')
+    assert.ok(
+      (denied?.metadata as { issues?: Array<{ path: string }> }).issues?.some((issue) => issue.path === 'fileId'),
+    )
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {
@@ -641,6 +741,126 @@ async function main() {
     assert.equal(payload.code, 'google_drive_api_error')
     assert.equal(payload.status, 413)
     assert.equal(payload.googleCode, 'file_too_large')
+  })
+
+  await check('Drive API error maps structured Google details without raw body', async () => {
+    const logs = captureInfo()
+    try {
+      const result = await invokeEnterpriseTool(
+        invokeDeps({
+          executeDriveTool: async () => {
+            throw new GoogleDriveApiError(
+              'google_drive.search failed: 400',
+              400,
+              undefined,
+              'INVALID_ARGUMENT',
+              ['invalid'],
+              ['q'],
+              'Invalid Query',
+            )
+          },
+        }),
+        {
+          principal: principal({ role: 'admin' }),
+          toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+          args: { definitionId: DEFINITION_ID },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, 'google_drive_api_error')
+      assert.equal(payload.status, 400)
+      assert.equal(payload.googleStatus, 'INVALID_ARGUMENT')
+      assert.deepEqual(payload.googleReasonCodes, ['invalid'])
+      assert.deepEqual(payload.googleLocations, ['q'])
+      assert.equal(payload.googleMessage, 'Invalid Query')
+      const serialized = result.content[0]?.text ?? ''
+      assert.equal(serialized.includes('secret-content'), false)
+      const logged = logs.events.find((row) => row.event === 'enterprise.tool.error')
+      assert.equal(logged?.payload.googleStatus, 'INVALID_ARGUMENT')
+      assert.deepEqual(logged?.payload.googleReasonCodes, ['invalid'])
+      assert.deepEqual(logged?.payload.googleLocations, ['q'])
+      assert.equal(logged?.payload.googleMessage, 'Invalid Query')
+    } finally {
+      logs.restore()
+    }
+  })
+
+  await check('Drive upload 400 logs googleMessage and upload meta without file body', async () => {
+    const logs = captureInfo()
+    const html = '<h1>secret-report-body</h1>'
+    try {
+      const result = await invokeEnterpriseTool(
+        {
+          ...invokeDeps({
+            grant: grant({
+              scopes: [
+                'https://www.googleapis.com/auth/drive.readonly',
+                'https://www.googleapis.com/auth/drive.file',
+              ],
+            }),
+            definition: definition({
+              snapshot: {
+                name: 'Writer',
+                roleInstruction: 'Write',
+                skills: [],
+                connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+                capabilities: [{ toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL, allowed: true }],
+              },
+            }),
+            executeDriveTool: async () => {
+              throw new GoogleDriveApiError(
+                'google_drive.upload_file failed: 400',
+                400,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'Invalid multipart request with 0 mime parts',
+              )
+            },
+          }),
+          async findAgentWriteModes() {
+            return { memory: 'approval', httpApi: 'approval', gmail: 'approval', drive: 'direct' }
+          },
+          async enqueueWrite() {
+            throw new Error('direct Drive upload must not enqueue')
+          },
+        },
+        {
+          principal: principal({ role: 'admin' }),
+          toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+          args: {
+            definitionId: DEFINITION_ID,
+            name: 'birtok-arharmonizacio-nagyker-2026-09.html',
+            mimeType: 'text/html',
+            textContent: html,
+            idempotencyKey: 'upload-400-1',
+          },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, 'google_drive_api_error')
+      assert.equal(payload.status, 400)
+      assert.equal(payload.googleMessage, 'Invalid multipart request with 0 mime parts')
+      assert.equal(payload.uploadName, 'birtok-arharmonizacio-nagyker-2026-09.html')
+      assert.equal(payload.uploadMimeType, 'text/html')
+      assert.equal(payload.hasParentFolderId, false)
+      assert.equal(payload.uploadContentLength, Buffer.byteLength(html, 'utf8'))
+      assert.equal(payload.textContent, undefined)
+      const serialized = result.content[0]?.text ?? ''
+      assert.equal(serialized.includes('secret-report-body'), false)
+      const logged = logs.events.find((row) => row.event === 'enterprise.tool.denied')
+      assert.equal(logged?.payload.googleMessage, 'Invalid multipart request with 0 mime parts')
+      assert.equal(logged?.payload.uploadName, 'birtok-arharmonizacio-nagyker-2026-09.html')
+      assert.equal(logged?.payload.uploadMimeType, 'text/html')
+      assert.equal(logged?.payload.hasParentFolderId, false)
+      assert.equal(logged?.payload.uploadContentLength, Buffer.byteLength(html, 'utf8'))
+      assert.equal(logged?.payload.textContent, undefined)
+    } finally {
+      logs.restore()
+    }
   })
 
   await check('invoke create_folder enqueues instead of calling Drive', async () => {
@@ -1533,6 +1753,20 @@ async function main() {
       },
     )
     assert.deepEqual(result, { allowed: false, reason: 'missing_knowledge_base_connector_write' })
+  })
+
+  await check('wiki intake respects submit permission independently of legacy write access', async () => {
+    for (const wikiAccess of ['read', 'submit', 'write'] as const) {
+      const result = await authorizeToolCall(authorizeDeps({ connector: kbConnector }), {
+        principal: principal(), toolName: KB_INGEST_TOOL, args: { processingMode: 'wiki' },
+        definition: definition({ snapshot: { ...kbDefinition.snapshot, connectors: [{
+          connectorId: CONNECTOR_ID, type: 'knowledge_base', wikiAccess,
+          accessMode: wikiAccess === 'write' ? 'write' : 'read',
+        }] } }),
+      })
+      assert.equal(result.allowed, wikiAccess !== 'read')
+      if (!result.allowed) assert.equal(result.reason, 'wiki_submit_not_allowed')
+    }
   })
 
   await check('kb_ingest invoke publishes without Drive token lookup', async () => {

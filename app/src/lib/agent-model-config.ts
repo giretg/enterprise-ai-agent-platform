@@ -21,7 +21,10 @@ export type AgentModelConfig = z.infer<typeof agentModelConfigSchema>
 
 /** A tárolt JSON olvasása: hibás/hiányzó → null (a hívó az alapértékre esik vissza). */
 export function parseAgentModelConfig(raw: unknown): AgentModelConfig | null {
-  const parsed = agentModelConfigSchema.safeParse(raw)
+  // Régi/ismeretlen tartalék kieshet anélkül, hogy az érvényes elsődleges modell elveszne.
+  const parsed = agentModelConfigSchema.extend({
+    fallbackModels: z.array(z.unknown()).max(MAX_FALLBACK_MODELS).default([]),
+  }).safeParse(raw)
   if (!parsed.success) return null
   return { ...parsed.data, fallbackModels: parseModelRefs(parsed.data.fallbackModels) }
 }

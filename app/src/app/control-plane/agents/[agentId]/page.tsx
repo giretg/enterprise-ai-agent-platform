@@ -1,3 +1,6 @@
+import { listCustomerPromisesAction } from '@/app/actions/customer-promise'
+import { parsePromisePage } from '@/lib/customer-promise-page'
+import { PromisesPanel } from '@/app/control-plane/promises/promises-panel'
 import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
 import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
@@ -42,7 +45,16 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
+import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
+import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { AgentAccessPanel } from '@/components/agents/agent-access-panel'
+import { AgentMiniAppsPanel } from '@/components/agents/agent-mini-apps-panel'
+import { parsePlacementOverrides } from '@/lib/agent-knowledge-placement'
+import { UpdatePlacementOverridesForm } from '@/components/agents/update-placement-overrides-form'
+import { UpdateMiniAppGuideForm } from '@/components/agents/update-mini-app-guide-form'
+import { listAgentMiniAppsAction } from '@/app/actions/mini-apps'
+import { getAgentWarehouseAccessAction } from '@/app/actions/warehouse'
+import { AgentWarehouseAccessCard } from '@/components/warehouse/warehouse-access-panels'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
 
@@ -56,6 +68,7 @@ const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   eszkozok: 'eszkozokDesc',
   skillek: 'skillekDesc',
   memoriairas: 'memoriairasDesc',
+  miniappok: 'miniappokDesc',
   hozzaferes: 'hozzaferesDesc',
 }
 
@@ -64,11 +77,12 @@ export default async function AgentDetailPage({
   searchParams,
 }: {
   params: Promise<{ agentId: string }>
-  searchParams: Promise<{ section?: string }>
+  searchParams: Promise<{ section?: string; promisePage?: string }>
 }) {
   const { agentId } = await params
   const query = await searchParams
   const initialSection = isAgentDetailSectionId(query.section) ? query.section : undefined
+  const promisePage = parsePromisePage(query.promisePage)
 
   let ctx
   try {
@@ -91,6 +105,10 @@ export default async function AgentDetailPage({
     projectsRes,
     drivePickerCtxRes,
     modelRes,
+    promisesRes,
+    wikiLinksRes,
+    miniAppsRes,
+    warehouseRes,
   ] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
@@ -104,6 +122,10 @@ export default async function AgentDetailPage({
     listWorkProjectsAction(),
     getMyGoogleDriveGrantForPicker(),
     getAgentModelSettings({ agentId }),
+    listCustomerPromisesAction(agentId, false, promisePage),
+    listAgentWikiLinksAction({ agentId }),
+    listAgentMiniAppsAction({ agentId }),
+    getAgentWarehouseAccessAction({ agentId }),
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
@@ -237,12 +259,16 @@ export default async function AgentDetailPage({
       label: sectionLabel('tudasbazis'),
       description: sectionDesc('tudasbazis'),
       content: (
-        <AgentKnowledgeBasePanel
-          agentId={agent.id}
-          documents={kbDocs}
-          catalog={kbCatalog}
-          canManage={canManage}
-        />
+        <div className="space-y-4">
+          {wikiLinksRes.success ? <AgentWikiAccessPanel agentId={agent.id} rows={wikiLinksRes.data} /> : null}
+          <AgentKnowledgeBasePanel
+            agentId={agent.id}
+            documents={kbDocs}
+            catalog={kbCatalog}
+            canManage={canManage}
+          />
+          {warehouseRes.success ? <AgentWarehouseAccessCard agentId={agent.id} data={warehouseRes.data} /> : null}
+        </div>
       ),
     },
     {
@@ -268,6 +294,11 @@ export default async function AgentDetailPage({
           isAdmin={canManage}
         />
       ),
+    },
+    {
+      id: 'igeretek',
+      label: sectionLabel('igeretek'),
+      content: promisesRes.success ? <PromisesPanel promises={promisesRes.data.promises} pagination={{ page: promisePage, hasMore: promisesRes.data.hasMore, pageHref: `/control-plane/agents/${agentId}?section=igeretek&promisePage=` }} /> : <p role="alert" className="text-red-800">{(await getTranslations('ControlPlane.promises'))('error')}</p>,
     },
     {
       id: 'memoriairas',
@@ -296,15 +327,40 @@ export default async function AgentDetailPage({
               canEdit={canManage}
             />
           </Card>
+          <Card title="Hová mit ment a munkatárs">
+            <UpdatePlacementOverridesForm
+              agentId={agent.id}
+              placementOverrides={parsePlacementOverrides(agent.placementOverrides)}
+              canEdit={canManage}
+            />
+          </Card>
           <Card title={t('projectMemory')}>
             <AgentProjectMemoryBrowser
               agentId={agent.id}
               agentName={agent.name}
               projects={projects}
               canEdit={canEditMemory}
-              canDeleteMemory={canManage}
+              canDeleteMemory={canManage || canDelete}
               initialError={projectsError}
             />
+          </Card>
+        </div>
+      ),
+    },
+    {
+      id: 'miniappok',
+      label: sectionLabel('miniappok'),
+      description: sectionDesc('miniappok'),
+      content: (
+        <div className="space-y-4">
+          <AgentMiniAppsPanel
+            agentId={agent.id}
+            agentName={agent.name}
+            data={miniAppsRes.success ? miniAppsRes.data : null}
+            error={miniAppsRes.success ? null : miniAppsRes.error}
+          />
+          <Card title="Mini app útmutató">
+            <UpdateMiniAppGuideForm agentId={agent.id} miniAppGuide={agent.miniAppGuide} canEdit={canManage} />
           </Card>
         </div>
       ),

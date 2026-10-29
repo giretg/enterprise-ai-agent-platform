@@ -86,7 +86,7 @@ type HandoffRow = {
 }
 
 class MemHandoffs {
-  rows = new Map<string, HandoffRow & { projectKey: string; title: string; summary: string; links: string | null; memoryId: string | null; createdById: string; decidedById: string | null }>()
+  rows = new Map<string, HandoffRow & { projectKey: string; title: string; summary: string; links: string | null; memoryId: string | null; createdById: string; decidedById: string | null; idempotencyKey: string | null }>()
   async insert(input: {
     tenantId: string
     fromAgentId: string
@@ -98,10 +98,20 @@ class MemHandoffs {
     summary: string
     links: string | null
     createdById: string
+    idempotencyKey?: string | null
   }) {
-    const row = { id: globalThis.crypto.randomUUID(), status: 'open', memoryId: null as string | null, decidedById: null as string | null, ...input }
+    const idempotencyKey = input.idempotencyKey ?? null
+    if (idempotencyKey) {
+      // #940: ugyanaz a (tenant, küldő agent, kulcs) → a meglévő sort adjuk vissza.
+      for (const existing of this.rows.values()) {
+        if (existing.tenantId === input.tenantId && existing.fromAgentId === input.fromAgentId && existing.idempotencyKey === idempotencyKey) {
+          return { handoff: existing, created: false }
+        }
+      }
+    }
+    const row = { id: globalThis.crypto.randomUUID(), status: 'open', memoryId: null as string | null, decidedById: null as string | null, ...input, idempotencyKey }
     this.rows.set(row.id, row)
-    return { id: row.id }
+    return { handoff: row, created: true }
   }
   async findById(id: string) {
     return this.rows.get(id) ?? null
@@ -204,6 +214,83 @@ async function main() {
     assert.equal(memRows[0]?.kind, 'open_task')
     assert.ok(memRows[0]?.body.includes(handoffId))
     assert.ok(memRows[0]?.body.includes('Kati'))
+    assert.equal(out.notified, 'agent_memory')
+  })
+
+  // #940 regression: egy retry (azonos idempotencyKey) nem hozhat létre második
+  // átadást, és nem injektálhat második open_task-ot a címzett memóriájába. A régi
+  // kód a kulcsot figyelmen kívül hagyta → duplikált átadás + duplikált memória.
+  await check('idempotencyKey: ismételt hívás nem duplikál átadást/memóriát', async () => {
+    const { memory, handoffs, invokeArgs } = deps()
+    const args = {
+      principal: { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false },
+      toolName: 'platform.handoff',
+      args: {
+        definitionId: KATI_DEF,
+        toAgentId: GABOR,
+        title: 'Sales lead: Acme',
+        summary: 'Keresés: árajánlat 3 napon belül.',
+        idempotencyKey: 'retry-key',
+      },
+    }
+    const first = parsePayload(await invokeProjectWork(invokeArgs, args))
+    const second = parsePayload(await invokeProjectWork(invokeArgs, args))
+    assert.equal(first.ok, true)
+    assert.equal(second.ok, true)
+    // Ugyanaz az átadás jön vissza, a második idempotensként jelölve.
+    assert.equal(second.handoffId, first.handoffId)
+    assert.equal(second.idempotent, true)
+    // Csak egy átadás-sor és csak egy open_task a címzett memóriájában.
+    assert.equal(handoffs.rows.size, 1)
+    const memRows = await memory.listActive({ tenantId: TENANT, agentId: GABOR, projectKey: '__general__' })
+    assert.equal(memRows.length, 1)
+  })
+
+  await check('idempotencyKey: más tartalommal újrahasznált kulcs ütközést ad, nem nyeli el', async () => {
+    const { handoffs, invokeArgs } = deps()
+    const base = {
+      principal: { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false },
+      toolName: 'platform.handoff',
+    }
+    const first = parsePayload(await invokeProjectWork(invokeArgs, {
+      ...base,
+      args: { definitionId: KATI_DEF, toAgentId: GABOR, title: 'Első feladat', summary: 'A', idempotencyKey: 'handoff-1' },
+    }))
+    const reused = await invokeProjectWork(invokeArgs, {
+      ...base,
+      args: { definitionId: KATI_DEF, toAgentId: GABOR, title: 'Második feladat', summary: 'B', idempotencyKey: 'handoff-1' },
+    })
+    assert.equal(first.ok, true)
+    assert.equal(reused.isError, true)
+    assert.match(JSON.stringify(reused), /idempotency_key_conflict/)
+    assert.equal(handoffs.rows.size, 1)
+  })
+
+  // Security regression: a caller with only `view` on the recipient agent must NOT
+  // be able to force an open_task into that agent's trusted memory (memory poisoning
+  // / privilege escalation — a direct memory write would require `operate`). The
+  // handoff is still delivered via the recipient's briefing (the Handoff row).
+  await check('view-only recipient: handoff delivered but memory NOT injected', async () => {
+    const { memory, handoffs, invokeArgs } = deps({
+      // operate on the sender (Kati), only view on the recipient (Gábor)
+      findAgentGrant: async (input: { agentId: string }) =>
+        input.agentId === GABOR ? { accessLevel: 'view' } : { accessLevel: 'operate' },
+    })
+    const out = parsePayload(
+      await invokeProjectWork(invokeArgs, {
+        principal: { userId: ANNA, tenantId: TENANT, role: 'operator', assumed: false },
+        toolName: 'platform.handoff',
+        args: { definitionId: KATI_DEF, toAgentId: GABOR, title: 'Átadás', summary: 'Nézd meg.', idempotencyKey: 'hv1' },
+      }),
+    )
+    assert.equal(out.ok, true)
+    const row = await handoffs.findById(out.handoffId as string)
+    assert.equal(row?.status, 'open') // handoff still delivered (briefing/inbox)
+    assert.equal(row?.memoryId, null) // but no memory injected
+    assert.equal(out.memoryId, null)
+    assert.equal(out.notified, 'inbox')
+    const memRows = await memory.listActive({ tenantId: TENANT, agentId: GABOR, projectKey: '__general__' })
+    assert.equal(memRows.length, 0) // recipient memory not poisoned
   })
 
   await check('briefing shows handed-off work with handoffId', () => {
@@ -302,7 +389,7 @@ async function main() {
 
   await check('cross-tenant handoff row is invisible', async () => {
     const { invokeArgs, handoffs } = deps()
-    const inserted = await handoffs.insert({
+    const { handoff: inserted } = await handoffs.insert({
       tenantId: OTHER_TENANT,
       fromAgentId: KATI,
       fromDefinitionId: KATI_DEF,

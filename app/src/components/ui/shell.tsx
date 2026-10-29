@@ -146,7 +146,7 @@ export function AppShell({
               </div>
             </div>
 
-            <nav aria-label={t('navAria')} className="hidden items-center gap-1 lg:flex">
+            <nav aria-label={t('navAria')} className="hidden min-w-0 flex-1 flex-wrap items-center justify-center gap-1 lg:flex">
               {navItems.map((item) => {
                 if (isGroup(item)) {
                   const active = isGroupActive(item)

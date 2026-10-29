@@ -761,6 +761,64 @@ tucatnyi `tools/list` kérést zúdított a szerverre.
   (#890/#896/#907 — a memóriában 401-regresszió-jelzés van), gateway `maxTokens` közvetlen-író ág
   (#903), attachments-only external services (#873/#877).
 
+## 2026-10-16 — Handoff: jogosulatlan memóriaírás és a teljes kézbesítés megőrzése (PR #899)
+
+**Üzleti hatás:** a `platform.handoff` a fogadó agenten csak `view` jogosultsággal
+rendelkező munkatárs szövegét is közvetlenül az agent bizalmi memóriájába írta,
+a fogadó írási jóváhagyási módját megkerülve. A normál memóriaíráshoz `operate` kell.
+
+**Javítás:** a közvetlen memória-injektálás ugyanazt a közös `canOperateAgent`
+jogosultságellenőrzést használja, mint a normál memóriaírás. Az átadás rekordja
+megmarad akkor is, ha a memóriaírás kimarad; a `notified` a tényleges eredményt,
+a `handoff.created` audit `memoryInjection` mezője a kihagyás okát rögzíti.
+
+**2026-10-19 merge előtti review:** a rekord megléte önmagában nem jelentett teljes
+kézbesítést: a briefing csak címet adott, az összefoglalóért pedig a már nem létrejövő
+memóriabejegyzésre utalt. Két független review-tengely igazolta ezt a regressziót.
+A fogadó `get_definition` válaszában a tenant+agent szerint szűrt átadások most a teljes
+`summary` és `links` mezőt tartalmazzák, a briefing a `handoffs.entries` mezőre mutat.
+Az átadás munkatárstól származó feladatadat, nem szabály vagy jogosultság; a meglévő
+engedélyezési és jóváhagyási kapuk érvényben maradnak. A teljes átadási adat csak
+sikeres, `operate`-ot követelő memóriaolvasás után kerül a válaszba; a definíciót
+csak megtekintő hívó nem kapja meg a részleteket.
+
+**Ellenőrzés:** `test:handoff`, `test:project-work`, `test:mcp-http`, `test:agent-checkout`,
+ESLint és TypeScript. A regressziós ellenőrzés bizonyítja a view-only címzettnél
+kihagyott memóriaírást és megmaradó átadást, valamint a teljes tartalom elérését
+memóriabejegyzés nélkül és annak kihagyását tiltott olvasásnál. Az új olvasásiút-teszt
+az eredeti PR-kódon elbukott. A handoff-tesztek a CI-be is bekerültek. Migráció nincs.
+
+**Megmaradó határ:** a közvetlen handoff-létrehozás idempotenciája továbbra sem megoldott;
+kliens-újrapróbálás duplikált rekordot okozhat. Ez külön adatmodell-módosítást igényel.
+A work-file titokszűrés és a párhuzamos append kérdése külön felület, itt nem változott.
+
+## 2026-10-15 — Hermes Model Gateway: `data:`-prefixes tartalomszűrés megkerülése (PR #891)
+
+**Üzleti hatás:** a `collectSlots` minden `data:`-vel kezdődő stringet kihagyott,
+így nyers bankkártyaszám és személyes adat juthatott a külső AI-modellhez.
+A megosztott függvényen user-, system-, assistant-, tool-szöveg és tool-argumentum is átmegy.
+
+**2026-10-19 merge előtti review:** a PR eredeti base64-fejléc regexe önmagában
+nem igazolta, hogy a törzs bináris. A hamis `data:image/png;base64,<nyers PAN>`
+és az e-mailt tartalmazó MIME-fejléc is kimaradt; a nagybetűs `DATA:` új megkerülést
+is okozott. Két független review-tengely igazolta a hiányt.
+
+**Végső javítás:** a prefixalapú kivétel teljes eltávolítása. Minden nem-strukturális
+string átmegy ugyanazon PAN-blokkon és tokenizáláson; nincs új parser vagy függőség.
+A valódi base64-kép érzékeny szöveg hiányában bájtazonosan továbbítódik.
+
+**Ellenőrzés:** a bővített regressziós teszt az eredeti PR-kódon elbukott, a végső
+javítással zöld: hamis base64-fejléc, kis-/nagybetű, tömör és tagolt PAN, user/tool/assistant
+szöveg, MIME-paraméter és nyers e-mail; legitim PNG változatlan. A teljes
+`test:model-gateway-content-filter`, `test:model-gateway-proxy`, ESLint és TypeScript ellenőrzés zöld.
+Egy 1 MiB véletlen bináris adat base64-szövegének detektorszkennelése helyben 14 ms volt
+(egyszeri tájékoztató mérés, nem teljes kérésre vonatkozó teljesítménygarancia).
+
+**Megmaradó határ:** a szövegszűrő nem dekódol base64-kódolt szöveget, és nem OCR-ez képet;
+a nyers értékekre vonatkozó garancia nem teljes multimodális DLP. A `ponytail:` komment
+rögzíti a típusfüggő dekódolás lehetséges későbbi irányát. A kategóriák tenant-policy szerinti
+`off` beállítása továbbra is szándékos termékfunkció. Migráció nincs.
+
 ## 2026-10-01 — Kimenő író-kliensek 5xx retry-duplikátum (Drive/Sheets/Docs/Slides + http_api)
 
 **Scope-választás (kockázati alapon):** a 2026-09-25-i kör a #674-ben a Gmail-küldés

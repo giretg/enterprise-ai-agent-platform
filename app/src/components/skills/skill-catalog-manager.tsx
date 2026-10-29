@@ -29,6 +29,7 @@ import {
   rollbackSkillVersionAction,
   deactivateSkillAction,
   deleteSkillAction,
+  getSkillUsageAction,
   proposeSkillVersionAction,
   getSkillVersionAction,
   diffSkillVersionsAction,
@@ -58,6 +59,7 @@ import {
   type SkillKind,
 } from '@/lib/skill/skill-kind'
 import { SkillKindFields } from '@/components/skills/skill-kind-fields'
+import { SkillSharePanel } from '@/components/skills/skill-share-panel'
 
 function useSkillT(): TranslateFn {
   return asTranslate(useTranslations('SkillCatalog'))
@@ -739,14 +741,22 @@ function SkillCatalogRow({
   skill,
   isAdmin,
   isPlatformAdmin,
+  isSuperadmin,
   inactive,
   onOpen,
+  onShare,
+  onDelete,
+  disabled,
 }: {
   skill: SkillCatalogEntry
   isAdmin: boolean
   isPlatformAdmin: boolean
+  isSuperadmin: boolean
   inactive?: boolean
   onOpen: (skillId: string, tab: SkillRowTab) => void
+  onShare: (skillId: string) => void
+  onDelete: (skill: SkillCatalogEntry) => void
+  disabled?: boolean
 }) {
   const t = useSkillT()
   const locale = useLocale()
@@ -805,6 +815,26 @@ function SkillCatalogRow({
               className="rounded-full border border-coral/35 bg-coral/8 px-3 py-1.5 text-xs font-semibold text-coral hover:bg-coral/15"
             >
               {t('newVersion')}
+            </button>
+          )}
+          {isSuperadmin && !inactive && kind !== 'system' && (
+            <button
+              type="button"
+              onClick={() => onShare(skill.id)}
+              title={t('share.buttonHint')}
+              className="rounded-full border border-ink-faint/30 px-3 py-1.5 text-xs font-semibold text-ink-soft hover:border-ink-soft hover:text-ink"
+            >
+              {t('share.button')}
+            </button>
+          )}
+          {canWriteSkill && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onDelete(skill)}
+              className="rounded-full border border-coral/35 px-3 py-1.5 text-xs font-semibold text-coral hover:bg-coral/10 disabled:opacity-50"
+            >
+              {t('delete')}
             </button>
           )}
         </div>
@@ -909,6 +939,7 @@ export function SkillCatalogManager(props: {
   skills: SkillCatalogEntry[]
   isAdmin: boolean
   isPlatformAdmin?: boolean
+  isSuperadmin?: boolean
 }) {
   return (
     <SkillCatalogErrorBoundary>
@@ -921,11 +952,14 @@ function SkillCatalogManagerView({
   skills,
   isAdmin,
   isPlatformAdmin = false,
+  isSuperadmin = false,
 }: {
   skills: SkillCatalogEntry[]
   isAdmin: boolean
   /** Global skill meta/verzió írásához kell — tenant-admin önmagában nem elég. */
   isPlatformAdmin?: boolean
+  /** Skill megosztása platform-szintre / másik tenantba — csak superadmin. */
+  isSuperadmin?: boolean
 }) {
   const t = useSkillT()
   const router = useRouter()
@@ -938,6 +972,7 @@ function SkillCatalogManagerView({
   const [creationMode, setCreationMode] = useState<'import' | 'manual' | null>(null)
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogSkills, setCatalogSkills] = useState(skills)
+  const [shareSkillId, setShareSkillId] = useState<string | null>(null)
 
   const normalizedCatalogQuery = catalogQuery.trim().toLocaleLowerCase('hu-HU')
   const filteredSkills = normalizedCatalogQuery
@@ -959,13 +994,19 @@ function SkillCatalogManagerView({
   const filteredInactiveSkills = filteredSkills.filter((s) => !skillHasActiveVersion(s))
   const activeSkillCount = catalogSkills.filter(skillHasActiveVersion).length
   const inactiveSkillCount = catalogSkills.length - activeSkillCount
-  const modalOpen = Boolean(openSkillId || creationMode)
+  const modalOpen = Boolean(openSkillId || creationMode || shareSkillId)
 
   function openSkill(skillId: string, nextTab: SkillRowTab) {
     setError(null)
     setNotice(null)
     setOpenSkillId(skillId)
     setTab(nextTab)
+  }
+
+  function openShare(skillId: string) {
+    setError(null)
+    setNotice(null)
+    setShareSkillId(skillId)
   }
 
   function openCreationMode(mode: 'import' | 'manual') {
@@ -1005,6 +1046,40 @@ function SkillCatalogManagerView({
     })
   }
 
+  /** Törlés előtt megmutatja, mely agentek használják — és törléskor onnan is lekerül. */
+  async function confirmAndDeleteSkill(skill: SkillCatalogEntry) {
+    const name = skillDisplayLabel(skill)
+    const usage = await getSkillUsageAction(skill.id)
+    if (!usage.success) {
+      setError(usage.error ?? t('unknownError'))
+      return
+    }
+    const confirmed = await confirmDialog({
+      title: t('deleteSkillTitle'),
+      description:
+        usage.data.length > 0
+          ? t('deleteSkillBodyInUse', {
+              name,
+              count: usage.data.length,
+              agents: usage.data.map((a) => a.name).join(', '),
+            })
+          : t('deleteSkillBody', { name }),
+      confirmLabel: t('delete'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    run(
+      () => deleteSkillAction(skill.id),
+      t('deleted', { name }),
+      () => {
+        if (openSkillId === skill.id) setOpenSkillId(null)
+      },
+    )
+  }
+
+  const shareSkill = shareSkillId
+    ? (catalogSkills.find((s) => s.id === shareSkillId) ?? null)
+    : null
   const current = openSkillId ? (catalogSkills.find((s) => s.id === openSkillId) ?? null) : null
   // Global skillt csak platform-admin írhat — a szerver is ezt kapuzza.
   const canWriteCurrent = Boolean(
@@ -1112,7 +1187,11 @@ function SkillCatalogManagerView({
                     skill={s}
                     isAdmin={isAdmin}
                     isPlatformAdmin={isPlatformAdmin}
+                    isSuperadmin={isSuperadmin}
                     onOpen={openSkill}
+                    onDelete={confirmAndDeleteSkill}
+                    disabled={pending}
+                    onShare={openShare}
                   />
                 ))}
               </ul>
@@ -1135,8 +1214,12 @@ function SkillCatalogManagerView({
                       skill={s}
                       isAdmin={isAdmin}
                       isPlatformAdmin={isPlatformAdmin}
+                      isSuperadmin={isSuperadmin}
                       inactive
                       onOpen={openSkill}
+                      onDelete={confirmAndDeleteSkill}
+                      disabled={pending}
+                      onShare={openShare}
                     />
                   ))}
                 </ul>
@@ -1181,6 +1264,12 @@ function SkillCatalogManagerView({
             </>
           }
         >
+          <ProducerSkillStatus
+            skill={current}
+            canWrite={canWriteCurrent}
+            running={pending}
+            onRun={run}
+          />
           {tab === 'details' && <SkillDetailPanel skill={current} />}
           {tab === 'versions' && (
             <SkillVersionsPanel
@@ -1189,7 +1278,7 @@ function SkillCatalogManagerView({
               isPlatformAdmin={isPlatformAdmin}
               pending={pending}
               onRun={run}
-              onDeleted={() => setOpenSkillId(null)}
+              onDelete={confirmAndDeleteSkill}
             />
           )}
           {tab === 'edit' && canWriteCurrent && (
@@ -1201,6 +1290,31 @@ function SkillCatalogManagerView({
               onClose={() => setTab('versions')}
             />
           )}
+        </SkillModal>
+      )}
+
+      {isSuperadmin && shareSkill && (
+        <SkillModal
+          eyebrow={t('share.eyebrow')}
+          title={skillDisplayLabel(shareSkill)}
+          subtitle={<span className="font-mono">{shareSkill.name}</span>}
+          error={error}
+          notice={notice}
+          onClose={() => {
+            setError(null)
+            setNotice(null)
+            setShareSkillId(null)
+          }}
+        >
+          <SkillSharePanel
+            skill={shareSkill}
+            onError={setError}
+            onDone={(message) => {
+              setError(null)
+              setNotice(message)
+              void refreshCatalog()
+            }}
+          />
         </SkillModal>
       )}
 
@@ -1251,7 +1365,7 @@ function SkillVersionsPanel({
   isPlatformAdmin,
   pending,
   onRun,
-  onDeleted,
+  onDelete,
 }: {
   skill: SkillCatalogEntry
   canWrite: boolean
@@ -1262,7 +1376,7 @@ function SkillVersionsPanel({
     okMsg: string,
     onSuccess?: () => void | Promise<void>,
   ) => void
-  onDeleted: () => void
+  onDelete: (skill: SkillCatalogEntry) => void
 }) {
   const t = useSkillT()
   const locale = useLocale()
@@ -1371,9 +1485,6 @@ function SkillVersionsPanel({
                   isPlatformAdmin={isPlatformAdmin}
                 />
                 <SkillDescriptionEditor skill={skill} running={pending} onRun={onRun} />
-                {skill.catalogScope === 'tenant' && skill.kind === 'tenant' ? (
-                  <ProducerSkillToggle skill={skill} running={pending} onRun={onRun} />
-                ) : null}
               </div>
             )}
           </div>
@@ -1401,22 +1512,7 @@ function SkillVersionsPanel({
               <button
                 type="button"
                 disabled={pending}
-                onClick={() => {
-                  void (async () => {
-                    const confirmed = await confirmDialog({
-                      title: t('deleteSkillTitle'),
-                      description: t('deleteSkillBody', { name: skillDisplayLabel(skill) }),
-                      confirmLabel: t('delete'),
-                      tone: 'danger',
-                    })
-                    if (!confirmed) return
-                    onRun(
-                      () => deleteSkillAction(skill.id),
-                      t('deleted', { name: skillDisplayLabel(skill) }),
-                      onDeleted,
-                    )
-                  })()
-                }}
+                onClick={() => onDelete(skill)}
                 className="rounded-full border border-coral/40 px-3 py-1 text-xs font-medium text-coral disabled:opacity-50"
               >
                 {t('delete')}
@@ -2303,6 +2399,51 @@ function ProducerSkillToggle({
       </span>
     </label>
   )
+}
+
+/** Gyártó állapot a skill-modal tetején — ne a Meta panel mélyén legyen elrejtve. */
+function ProducerSkillStatus({
+  skill,
+  canWrite,
+  running,
+  onRun,
+}: {
+  skill: SkillCatalogEntry
+  canWrite: boolean
+  running: boolean
+  onRun: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
+}) {
+  const t = useSkillT()
+  if (skill.catalogScope === 'tenant' && skill.kind === 'tenant' && (canWrite || skill.producesSkills)) {
+    return (
+      <div className="mb-4 rounded-xl border border-honey/30 bg-honey/5 px-4 py-3">
+        <p className="text-xs font-semibold text-ink">{t('producerSectionTitle')}</p>
+        <p className="mt-1 text-xs text-ink-soft">{t('producerPurpose')}</p>
+        {canWrite ? (
+          <ProducerSkillToggle skill={skill} running={running} onRun={onRun} />
+        ) : (
+          <p className="mt-2 text-xs text-ink-soft">{t('producerReadOnlyHint')}</p>
+        )}
+      </div>
+    )
+  }
+  if (skill.producesSkills && skill.kind === 'published') {
+    return (
+      <div className="mb-4 rounded-xl border border-honey/30 bg-honey/5 px-4 py-3">
+        <p className="text-sm font-semibold text-ink">{t('producerPublishedTitle')}</p>
+        <p className="mt-1 text-xs text-ink-soft">{t('producerPurpose')}</p>
+        <p className="mt-2 text-xs text-ink-soft">{t('producerPublishedHint')}</p>
+      </div>
+    )
+  }
+  if (skill.producesSkills && skill.kind === 'system') {
+    return (
+      <div className="mb-4 rounded-xl border border-ink-faint/20 bg-card/50 px-4 py-3">
+        <p className="text-xs text-ink-soft">{t('producerSystemHint')}</p>
+      </div>
+    )
+  }
+  return null
 }
 
 function SkillDescriptionEditor({

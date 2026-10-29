@@ -238,6 +238,535 @@
     "failBody": "You can close this tab and retry the connection in your AI client."
   },
   "ControlPlane": {
+    "promises": {
+      "pageEmpty": "There are no more commitments on this page. Go back to the previous page.",
+      "pagination": "Pagination",
+      "previous": "Previous",
+      "next": "Next",
+      "page": "Page {page}",
+      "filterLabel": "Filter promises",
+      "active": "Open commitments",
+      "history": "Include history",
+      "title": "Promises",
+      "body": "What we promised customers, who owns it, and when it is due.",
+      "helpLabel": "How do promises appear here?",
+      "help": "Your teammate records a promise when giving a customer a deadline. After the deadline, an unfinished promise is marked overdue so you can act before the customer complains.",
+      "empty": "You have no open commitments. When a teammate promises a customer a deadline, it will appear here.",
+      "commitment": "What we promised",
+      "customer": "Customer",
+      "agent": "Teammate",
+      "dueAt": "Due",
+      "status": "Status",
+      "owner": "Owner",
+      "actions": "Actions",
+      "resolve": "Resolve",
+      "complete": "Fulfilled",
+      "cancel": "Cancel promise",
+      "back": "Back",
+      "note": "Short note (optional)",
+      "error": "Promises could not be loaded or updated. Please try again.",
+      "statuses": {
+        "open": "Open",
+        "overdue": "Overdue",
+        "claimed": "In progress",
+        "fulfilled": "Fulfilled",
+        "cancelled": "Cancelled",
+        "missed": "Missed"
+      }
+    },
+    "wiki": {
+      "eyebrow": "Knowledge base",
+      "back": "← Back to knowledge bases",
+      "tabsAria": "Knowledge base sections",
+      "authorAgent": "AI teammate",
+      "authorHuman": "person",
+      "history": {
+        "unknownAuthor": "unknown author",
+        "agent": "AI teammate",
+        "erasedNote": "This version was erased for data-protection reasons, so it cannot be opened or restored.",
+        "versionNotFound": "This version was not found. It may have been removed by the retention rule.",
+        "unchangedLines": "… {count, plural, one {# unchanged line} other {# unchanged lines}} …",
+        "noTextChange": "The text did not change.",
+        "fields": {
+          "title": "Title",
+          "summary": "Summary",
+          "path": "Path",
+          "status": "Status",
+          "category": "Category",
+          "sources": "Sources"
+        },
+        "actions": {
+          "created": "New",
+          "updated": "Changed",
+          "archived": "Archived",
+          "moved": "Moved",
+          "restored": "Restored"
+        },
+        "timeline": {
+          "title": "History ({count, plural, one {# version} other {# versions}})",
+          "help": "Every saved version of this page. Open any of them, compare two, and — if you are allowed — restore one. A restore becomes a new version; the old ones are kept.",
+          "current": "current",
+          "archived": "archived",
+          "erased": "erased for data protection",
+          "legacy": "Version from before history was introduced: its path and archive state may not be exact.",
+          "open": "Open",
+          "openCurrent": "Open for reading",
+          "compareWithPrevious": "What changed since the previous one?"
+        },
+        "compare": {
+          "from": "From",
+          "to": "To",
+          "submit": "Compare two versions",
+          "title": "Version {from} compared with version {to}"
+        },
+        "oldVersion": {
+          "banner": "This is an earlier version (version {version}, {when}).",
+          "openCurrent": "Open the current one",
+          "compareWithCurrent": "Compare with the current one",
+          "restore": "Restore this version"
+        },
+        "changes": {
+          "title": "Changes",
+          "unavailable": "Changes cannot be loaded right now. Please try again shortly.",
+          "intro": "Every approved or directly applied change with its number, newest first. Open a change, undo it, or name the state right after it.",
+          "author": "Changed by",
+          "anyAuthor": "Anyone",
+          "from": "From day",
+          "to": "To day",
+          "filter": "Filter",
+          "empty": "No changes in this wiki yet (or none match the filter).",
+          "untitled": "Change",
+          "reverted": "undone (#{seq})",
+          "reverts": "undoes #{seq}",
+          "stateAfter": "How it looked afterwards",
+          "older": "Older changes"
+        },
+        "timeTravel": {
+          "title": "Time travel",
+          "intro": "See what the wiki knew on an earlier day. The wiki is read-only in this view.",
+          "date": "State on",
+          "tag": "Or a named state",
+          "show": "Show",
+          "banner": "This is how the wiki looked after {when} (#{seq}).",
+          "beforeFirst": "The wiki had no pages yet at that time.",
+          "backToNow": "Back to now",
+          "readOnly": "This is an earlier state and is read-only.",
+          "thinned": "Some pages from this period were kept at daily resolution only."
+        },
+        "tags": {
+          "title": "Named states",
+          "view": "Show",
+          "export": "Export this state",
+          "nameState": "Name this state…",
+          "name": "Name",
+          "namePlaceholder": "e.g. Before the Q3 audit",
+          "note": "Note (optional)",
+          "help": "The pages of a named state are kept even when the retention rule would otherwise remove them.",
+          "nameTaken": "A state with this name already exists, or the name is missing.",
+          "delete": "Delete the name “{name}”",
+          "deleteConfirm": "Delete the name “{name}”? The wiki content does not change; only the name and its protection go away."
+        },
+        "changeSet": {
+          "notFound": "This change was not found.",
+          "eyebrow": "Change #{seq}",
+          "openPage": "Open page",
+          "prunedBefore": "The previous version was removed by the retention rule, so we compare with the closest earlier one.",
+          "archived": "The page was archived: its content did not change, but it is no longer shown in the wiki.",
+          "back": "← Back: {name} — Changes"
+        },
+        "revert": {
+          "pageButton": "Restore this version",
+          "changeButton": "Undo",
+          "dialogTitle": "Restore",
+          "pageBody": "The page {path} goes back to the content of version {version}.",
+          "changeBody": "{count, plural, one {# page goes} other {# pages go}} back to the state before change #{seq}.",
+          "newVersionNote": "The restore is recorded as a new change, nothing is lost — you can undo it later too.",
+          "conflictTitle": "This change cannot be undone in one step:",
+          "conflictHelp": "Nothing changed. Restore the affected pages one by one from their own history.",
+          "preview": "Preview",
+          "confirm": "Restore",
+          "working": "Restoring…",
+          "done": "Done — new change: #{seq}.",
+          "errors": {
+            "conflict": "The page changed in the meantime, so nothing was written. Review the conflicting pages.",
+            "version_erased": "This version was erased for data protection and cannot be restored.",
+            "previous_version_pruned": "The previous version was removed by the retention rule.",
+            "changeset_not_revertible": "This change has already been undone.",
+            "already_current": "This is already the current version.",
+            "generic": "The restore did not work. Please try again."
+          },
+          "reasons": {
+            "changed_since": "someone changed it since",
+            "version_erased": "the previous version was erased for data protection",
+            "previous_version_pruned": "the previous version no longer exists",
+            "page_missing": "the page no longer exists"
+          }
+        },
+        "retention": {
+          "title": "Keeping old versions",
+          "fullLabel": "Every version is kept for:",
+          "fullHelp": "For this long every saved version is available, so you can restore any of them.",
+          "deleteLabel": "After that one version per day is kept, and old versions are deleted after:",
+          "deleteHelp": "From older versions only the last one of each day is kept per page, and after this time those are deleted too. “Never” keeps everything.",
+          "never": "Never",
+          "alwaysKept": "The current page, the latest {count} versions of each page and named states are always kept.",
+          "deleteTooShort": "The deletion time cannot be shorter than the time every version is kept.",
+          "saved": "Saved. The clean-up runs once a day.",
+          "days": "{count, plural, one {# day} other {# days}}",
+          "years": "{count, plural, one {# year} other {# years}}"
+        },
+        "erasure": {
+          "title": "Data-protection erasure",
+          "intro": "Permanently erase personal data from the current pages, every old version and every copy (pending changes, log, raw sources, search index). Only the organization admin can start it, and it is logged — without the erased content.",
+          "introPrivate": "Permanently erase personal data from your private knowledge base: the current pages, every old version and every copy. The erasure is logged, without the erased content.",
+          "exportsNote": "ZIP exports downloaded earlier are outside the platform; this erasure cannot reach them.",
+          "step1": "What should be erased?",
+          "kinds": {
+            "text": "Every occurrence of a phrase",
+            "pages": "The whole history of selected page(s)",
+            "revision": "One old version of a page"
+          },
+          "kindsHelp": {
+            "text": "E.g. a name or an ID — we look for it everywhere.",
+            "pages": "Every version of the page is erased; the page stays archived and empty.",
+            "revision": "Only that version is erased; the current version cannot be erased this way."
+          },
+          "phrase": "The phrase to look for (at least 3 characters)",
+          "mode": "Mode",
+          "modeHelp": "Redact: the phrase is replaced with “[törölve]”, the rest of the text stays. Full erasure: the content of the affected old versions is erased completely, and so are the affected raw sources.",
+          "modes": {
+            "redact": "Redact",
+            "erase": "Full erasure"
+          },
+          "paths": "Page paths (one per line or comma-separated)",
+          "revisionPath": "Page path",
+          "revisionVersion": "Version",
+          "revisionHelp": "You find the version number in the page History list.",
+          "previewButton": "Preview",
+          "previewTitle": "{count, plural, one {# match} other {# matches}} — these will be erased:",
+          "locations": {
+            "page": "Current page",
+            "revision": "Old version",
+            "changeSet": "Change content",
+            "log": "Log entry",
+            "document": "Raw source",
+            "sourceFile": "Original file",
+            "chunk": "Search index",
+            "gatewayOperation": "Request awaiting approval"
+          },
+          "irreversible": "This is permanent and cannot be undone.",
+          "reason": "Reason (required)",
+          "reasonPlaceholder": "e.g. GDPR request, case 2026/123",
+          "reasonHelp": "Do not write personal data here — this text goes into the log.",
+          "execute": "Erase permanently",
+          "working": "Erasing…",
+          "done": "The erasure is done and logged.",
+          "conflict": "Someone changed an affected page in the meantime. Request a new preview and try again.",
+          "nothingFound": "No matches — nothing to erase."
+        }
+      },
+      "tabs": {
+        "wiki": "Wiki",
+        "changes": "Changes",
+        "inbox": "Inbox",
+        "log": "Log",
+        "access": "Who has access",
+        "settings": "Settings"
+      },
+      "kind": {
+        "catalog": "Shared catalog",
+        "agent": "Teammate's own",
+        "shared": "Shared",
+        "private": "Private"
+      },
+      "levels": {
+        "none": "No access",
+        "read": "Can read",
+        "submit": "Can submit to inbox",
+        "write": "Can write the wiki"
+      },
+      "modes": {
+        "approval": "With approval",
+        "direct": "Directly"
+      },
+      "common": {
+        "cancel": "Cancel",
+        "close": "Close",
+        "save": "Save",
+        "saving": "Saving…"
+      },
+      "errors": {
+        "not_found": "This knowledge base was not found, or you don't have access to it.",
+        "forbidden": "You don't have permission for this. Shared knowledge bases are managed by your organization's admin.",
+        "invalid_args": "Missing or invalid data. Check the fields and try again.",
+        "too_large": "The file is larger than 10 MB. Split it into smaller parts and upload those.",
+        "generic": "Something went wrong. Please try again a little later."
+      },
+      "header": {
+        "body": "AI teammates work from this knowledge base. The wiki is built from the material uploaded here: a teammate with write access organizes it into linked pages.",
+        "privateBody": "Only you can see this knowledge base. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI)."
+      },
+      "list": {
+        "title": "Knowledge bases and wikis",
+        "intro": "Every knowledge base has a wiki: AI teammates turn the uploaded material into linked pages. Click a row to open its wiki, inbox and access settings.",
+        "empty": "No knowledge base yet. Create one below — or enable the knowledge base tool for a teammate and their own knowledge base is created automatically.",
+        "stats": "{sources} sources · {pages} pages · {size}",
+        "inboxBadge": "{count} waiting in inbox",
+        "unknownOwner": "unknown owner",
+        "privateMetaHelp": "This is someone else's private knowledge base. As an admin you only see that it exists and how big it is — you cannot open its content."
+      },
+      "create": {
+        "open": "New knowledge base",
+        "name": "Name",
+        "namePlaceholder": "e.g. Lab results 2026, Product know-how",
+        "private": "Only I can see it (private)",
+        "privateHelp": "Nobody else can see it, not even the admin — only that it exists and how big it is. You decide which AI teammate may use it.",
+        "privateOnly": "Only admins can create shared knowledge bases, so yours will be private.",
+        "privateNotice": "Only you can see its content. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI).",
+        "template": "Wiki rules template",
+        "templateHelp": "The template tells the AI teammate which pages to create and how to name them. You can switch or rewrite it later on the knowledge base Settings tab.",
+        "submit": "Create",
+        "creating": "Creating…"
+      },
+      "templates": {
+        "general": {
+          "name": "Basic",
+          "description": "General knowledge: sources, entities, concepts, analyses and an overview page."
+        },
+        "health-journal": {
+          "name": "Health journal",
+          "description": "For medical records: lab values over time, diagnoses, medications, providers and a timeline — with exact values and page numbers."
+        }
+      },
+      "toc": {
+        "title": "Contents",
+        "help": "The wiki's pages by category. AI teammates write them from the material in the inbox.",
+        "empty": "The wiki is empty. Upload material on the Inbox tab, then ask a teammate with write access to process it (e.g. \"Process the inbox\").",
+        "uncategorized": "Other"
+      },
+      "overview": {
+        "title": "Overview",
+        "empty": "No pages yet. The wiki starts filling up when a teammate with write access processes the material waiting in the inbox.",
+        "body": "The wiki has {pages} pages. Pick one from the contents.",
+        "inbox": "Inbox: {pending} waiting, {inProgress} in progress.",
+        "writers": "{count, plural, =0 {No teammate can write this wiki — set it up on a teammate's page (Knowledge base section).} one {# teammate can write this wiki.} other {# teammates can write this wiki.}}"
+      },
+      "page": {
+        "writtenBy": "Written by {name} ({kind})",
+        "updated": "last changed {when} · version {version}",
+        "archived": "archived page",
+        "sources": "Sources",
+        "sourcesHelp": "The original documents this page was written from. Click to open the source — for PDFs it jumps to the cited page.",
+        "pageN": "page {n}",
+        "sourceMissing": "source no longer available",
+        "notFound": "This page was not found. It may have been moved or is still waiting for approval.",
+        "missingLink": "{path} — no such page yet"
+      },
+      "source": {
+        "eyebrow": "Original source",
+        "uploaded": "Uploaded {when}",
+        "help": "The text extracted from the document, unchanged. Wiki pages cite this.",
+        "notFound": "Source not found.",
+        "back": "← Back to the wiki"
+      },
+      "inbox": {
+        "title": "Inbox",
+        "help": "Material uploaded here is processed by an AI teammate with write access when you ask it to (e.g. \"Process the inbox\").",
+        "intro": "Collect the material you want turned into wiki pages here. One upload is one batch; the bar below shows how far processing has got.",
+        "dropHere": "Drop files or a whole folder here",
+        "limit": "Many files at once are fine; at most 10 MB per file. The same file is never added twice.",
+        "pickFiles": "Choose files",
+        "pickFolder": "Choose folder",
+        "readOnly": "You can't upload to this inbox. This needs at least operator access.",
+        "uploading": "Uploading: {done}/{total}…",
+        "uploaded": "{total} new files in the inbox.",
+        "duplicates": "{count} files were already in this knowledge base and were skipped: {names}",
+        "tooLarge": "{count} files are larger than 10 MB and were skipped: {names}",
+        "failed": "{count} files could not be uploaded: {names}",
+        "statusTitle": "Processing status",
+        "autoRefresh": "refreshes automatically",
+        "latestBatch": "Latest batch",
+        "batchLine": "{done}/{total} done · {pending} waiting · {inProgress} in progress",
+        "totals": "Total: {pending} waiting · {inProgress} in progress · {processed} processed · {skipped} skipped",
+        "empty": "Nothing is waiting. Material placed here is processed by a teammate with write access.",
+        "stale": "waiting 3+ days",
+        "byAgent": "sent by {name} (AI teammate)",
+        "waitingSince": "submitted {when}",
+        "skip": "Skip",
+        "doneList": "Processed and skipped items ({count})",
+        "status": {
+          "pending": "waiting",
+          "in_progress": "in progress",
+          "inProgressBy": "in progress — {name}",
+          "processed": "processed",
+          "skipped": "skipped"
+        }
+      },
+      "log": {
+        "title": "Log",
+        "intro": "What happened to the wiki, in order: processed sources, notes, changes. The log cannot be edited.",
+        "empty": "No entries yet.",
+        "ops": {
+          "ingest": "processing",
+          "query": "saved answer",
+          "lint": "check",
+          "note": "note",
+          "schema": "rules change",
+          "revert": "restore"
+        }
+      },
+      "access": {
+        "title": "Who has access",
+        "intro": "Which AI teammates can use this wiki, and with what rights.",
+        "empty": "No teammate is connected. Grant access on a teammate's page, in the Knowledge base section.",
+        "agent": "Teammate",
+        "level": "Access",
+        "mode": "Write mode",
+        "collect": "What to collect",
+        "howToChange": "Change rights on the teammate's page (Knowledge base section); changes take effect with the next publish.",
+        "introEdit": "Choose which AI teammates may use this wiki and with what access. To allow only one teammate, leave the others on \"No access\".",
+        "noAgents": "There is no teammate you could give access to yet.",
+        "publishNote": "The change takes effect with the teammate's next publish (versioned, logged). Who can see it among people is set on the Settings tab.",
+        "ownKb": "own knowledge base"
+      },
+      "whoSees": {
+        "humans": "People:",
+        "agents": "AI teammates:",
+        "noAgents": "none uses it",
+        "change": "change",
+        "humansBy": {
+          "private": "only you (not even the admin)",
+          "shared": "the organization's operators and admins, plus anyone using a teammate linked to it"
+        }
+      },
+      "owner": {
+        "downloadTitle": "Download",
+        "downloadBody": "The whole wiki in one ZIP file: wiki pages as markdown (opens in Obsidian too) and the extracted text of the uploaded sources.",
+        "download": "Download (ZIP)",
+        "deleteTitle": "Delete permanently",
+        "deleteBody": "The knowledge base is deleted with all its pages, sources, history and log. AI teammates lose access too.",
+        "deleteStart": "Delete knowledge base…",
+        "irreversible": "This cannot be undone.",
+        "typeName": "To confirm, type the knowledge base name: {name}",
+        "deleteConfirm": "Delete permanently",
+        "deleting": "Deleting…"
+      },
+      "agent": {
+        "title": "Wikis and rights",
+        "help": "Can read: the teammate searches and quotes the wiki. Can submit: it may put material in the inbox but writes no pages. Can write: it writes and edits pages — with approval or directly.",
+        "intro": "Which wikis this teammate may read, submit to or write, and what it should collect there. Other people's private knowledge bases are not shown here.",
+        "empty": "No knowledge base available. You can create one in the Knowledge base menu.",
+        "own": "Own knowledge base",
+        "pages": "{count} pages",
+        "access": "Access",
+        "accessHelp": "None: the teammate can't even see it. Can read: searches and quotes. Can submit to inbox: sends material for a writing teammate to process. Can write the wiki: writes pages.",
+        "mode": "Write mode",
+        "modeHelp": "With approval: every change goes to the wiki owner for approval and stays hidden until then. Directly: appears immediately (archiving someone else's page still needs approval).",
+        "writeWarning": "Wiki quality depends on the AI teammate's model. Only give write access to teammates that run on a high-quality AI model; for the others, submitting is enough.",
+        "collect": "What should it collect in this wiki?",
+        "collectHelp": "A sentence or two for the teammate: what knowledge to put here from conversations and processed material.",
+        "collectPlaceholder": {
+          "general": "e.g. Product information, decisions and FAQs from the uploaded material",
+          "health-journal": "e.g. Lab results, diagnoses and medications from the uploaded records"
+        },
+        "adminOnly": "Rights on shared knowledge bases are set by the admin.",
+        "privateOwnerOnly": "This is someone else's private knowledge base; only its owner can change it.",
+        "saved": "Saved. Takes effect after publishing.",
+        "publishNote": "The change takes effect with the teammate's next publish (versioned and logged).",
+        "publishLink": "Publish",
+        "openWiki": "Open wiki →",
+        "kindHint": {
+          "own": "This teammate's own knowledge base. Operators, admins and anyone who can use the teammate see it.",
+          "agent": "Another teammate's own knowledge base. Operators, admins and anyone who can use that teammate see it.",
+          "catalog": "The organization's shared catalog. Operators, admins and users of the teammates linked to it see it.",
+          "shared": "Shared knowledge base: operators, admins and users of the teammates linked to it see it. An admin can make it private on the wiki's Settings tab.",
+          "private": "Private: only you see it, not even the admin. The teammate can only reach it when you are using it."
+        }
+      },
+      "settings": {
+        "visibilityTitle": "Who can see it?",
+        "nowPrivate": "Private: only you see it. The admin only sees that it exists and how big it is. AI teammates can only reach it when you are using them.",
+        "nowShared": {
+          "shared": "Shared: the organization's operators and admins see it, plus anyone using a teammate linked to it.",
+          "agent": "The teammate's own knowledge base: the organization's operators and admins see it, plus anyone who can use the teammate.",
+          "catalog": "The organization's shared catalog: the organization's operators and admins see it, plus anyone using a teammate linked to it."
+        },
+        "notChangeable": "The visibility of this knowledge base cannot be changed. For a private one, create a new knowledge base with \"Only I can see it\".",
+        "makeSharedAdminOnly": "Only an admin can share it, because only admins can create shared knowledge bases.",
+        "makePrivate": "Make it private",
+        "makeShared": "Share with the organization",
+        "consequences": {
+          "private1": "The knowledge base becomes yours: nobody else can open it, not even the admin.",
+          "private2": "Other users' teammates lose access immediately. Pending wiki changes are rejected and their inbox items wait again.",
+          "private3": "Anything that already left it (earlier answers, teammate memory, logs) stays there. The change only protects from now on.",
+          "shared1": "The organization's operators and admins will see the full content, including the sources.",
+          "shared2": "Other users reach it after the teammates are published again. From then on the admin manages access.",
+          "shared3": "Pending wiki changes are rejected and their inbox items wait again."
+        },
+        "understood": "I understand and want this.",
+        "confirmPrivate": "Yes, make it private",
+        "confirmShared": "Yes, share it",
+        "rulesTitle": "Wiki rules (WIKI.md)",
+        "rulesHelp": "Every AI teammate reads this text before writing to the wiki: which pages to create, how to name them and what to watch out for.",
+        "rulesIntro": "The template is only the starting text. Rewrite it here to fit your needs, or switch to another template in one click. Existing pages do not change.",
+        "templateLabel": "Template",
+        "current": "current",
+        "applyWarning": "Applying a template overwrites the rules text below; your own edits are lost. The wiki pages stay.",
+        "applyTemplate": "Switch to this template",
+        "resetToTemplate": "Restore the template text",
+        "templateApplied": "Template applied.",
+        "editorLabel": "Rules text",
+        "customized": "with your edits",
+        "rulesSaved": "Saved. Teammates follow it from their next wiki write."
+      },
+      "review": {
+        "loading": "Loading the wiki change…",
+        "unavailable": "We can't show the details of this wiki change (it may already be decided, or you are not the wiki owner).",
+        "headline": "{agent} would change {count, plural, one {# page} other {# pages}} in the \"{wiki}\" wiki.",
+        "details": "Open details and differences",
+        "dialogTitle": "Approve wiki change",
+        "sources": "Sources",
+        "noSources": "No source given.",
+        "changes": "Differences per page",
+        "validation": "Checks",
+        "validationOk": "The automatic check found no problems.",
+        "error": "Error",
+        "warning": "Warning",
+        "blocking": "The wiki has changed since, so this change can't be applied as is. Reject it and ask the teammate to write it again.",
+        "othersPage": "Another author's page",
+        "othersPageNote": "Highlighted: archiving or moving a page written by another teammate or a person — this always needs approval.",
+        "archivedBody": "The page will be archived: removed from the wiki and search; its history is kept.",
+        "unchangedLines": "… {count} unchanged lines …",
+        "pageSources": "Sources:",
+        "issues": {
+          "broken_link": "The page links to a page that doesn't exist yet.",
+          "sensitive_data": "The page contains text that looks sensitive (e.g. a card number or password).",
+          "frontmatter_in_body": "The page started with a technical header; it was ignored.",
+          "missing_source": "The page cites no source.",
+          "unknown_source": "The page cites a source that is not in this knowledge base.",
+          "missing_source_date": "The source page is missing the document's date.",
+          "page_too_large": "The page is too long.",
+          "invalid_path": "The page path is not valid.",
+          "reserved_path": "This page is managed by the system and cannot be written.",
+          "invalid_type": "Unknown page type.",
+          "missing_field": "The title or summary is missing.",
+          "empty_page": "The page is empty.",
+          "duplicate_path": "The same page appears more than once in the change.",
+          "page_not_found": "The page to change does not exist.",
+          "path_taken": "There is already a page at the new location.",
+          "section_not_found": "The section to change was not found on the page.",
+          "empty_patch": "The change contains no edits."
+        },
+        "approve": "Approve",
+        "reject": "Reject",
+        "kind": {
+          "new": "new",
+          "modified": "changed",
+          "archived": "archived",
+          "moved": "moved"
+        }
+      }
+    },
     "shell": {
       "appName": "E-AI",
       "appSubtitle": "Control plane",
@@ -255,6 +784,7 @@
       "staff": "Catalog",
       "staff_skills": "Skills",
       "staff_knowledge": "Knowledge base",
+      "staff_warehouse": "Data warehouse",
       "settings": "Settings",
       "settings_get-started": "AI client",
       "admin": "Administration",
@@ -268,6 +798,7 @@
       "admin_platform-iam": "Platform · IAM",
       "admin_platform-contact": "Platform · Contact inbox",
       "admin_platform-settings": "Platform · Settings",
+      "promises": "Promises",
       "admin_ai-client-policy": "Hermes company controls"
     },
     "pending": {
@@ -293,7 +824,9 @@
         "active": "active",
         "suspended": "suspended",
         "retired": "retired"
-      }
+      },
+      "halfFinished": "Half-finished",
+      "halfFinishedHint": "Hiring was left unfinished — click to continue where you left off."
     },
     "dashboard": {
       "eyebrow": "Home",
@@ -340,9 +873,9 @@
         }
     },
     "agentNew": {
-      "eyebrow": "New agent",
-      "title": "Create a teammate",
-      "body": "It starts as a draft. Then you can add tools, skills, and connections."
+      "eyebrow": "New teammate",
+      "title": "Hire a new teammate",
+      "body": "A few simple questions and your new AI colleague is ready. Every step saves automatically; at the end, try them out and put them to work."
     },
     "agentDetail": {
       "eyebrow": "Agent",
@@ -352,6 +885,7 @@
       "navHeading": "Settings",
       "projectMemory": "Project memory",
       "sections": {
+        "igeretek": "Promises",
         "elesites": "Go live",
         "elesitesDesc": "Which definition is live, and whether unpublished changes remain.",
         "profil": "Name and responsibility",
@@ -362,7 +896,7 @@
         "kapcsolatok": "Connectors",
         "kapcsolatokDesc": "APIs, mail, Drive, and other external systems — in read or write mode.",
         "tudasbazis": "Knowledge base",
-        "tudasbazisDesc": "Documents and catalog this teammate works from.",
+        "tudasbazisDesc": "Documents, catalog and data warehouse this teammate works from.",
         "eszkozok": "Tools",
         "eszkozokDesc": "Which platform tools the published definition may use.",
         "skillek": "Skills",
@@ -370,7 +904,9 @@
         "memoriairas": "Writes",
         "memoriairasDesc": "Which writes need a person to approve. Browse project memory below. This does not open trained rules.",
         "hozzaferes": "Access",
-        "hozzaferesDesc": "Who can start a chat or ticket with this teammate."
+        "hozzaferesDesc": "Who can start a chat or ticket with this teammate.",
+        "miniappok": "Mini apps",
+        "miniappokDesc": "Browser pages (reports) this teammate built: open, versions, sharing, guide."
       },
       "hermesControlTitle": "Hermes capability ceiling"
     },
@@ -433,6 +969,7 @@
       "handoffProject": "Project: {name}",
       "handoffGeneralProject": "General",
       "handoffWorkFile": "open in Projects",
+      "handoffMiniApp": "open mini app",
       "handoffStatus_open": "New",
       "handoffStatus_accepted": "Yours",
       "handoffStatusHint_open": "You have not accepted this yet.",
@@ -525,6 +1062,7 @@
       "saveMemory": "Save memory",
       "saveChanges": "Save changes",
       "deleteMemory": "Delete",
+      "deleteMemoryTitle": "Delete memory item",
       "deleteMemoryConfirm": "Delete this memory item? “{title}” — it will no longer appear in search or the agent’s memory.",
       "memoryDeleted": "Memory item deleted.",
       "noAgentMemory": "No teammate — project memory lives per teammate.",
@@ -610,8 +1148,8 @@
       "mcpIntro": "MCP introduction",
       "models": "Allowed models",
       "modelsTitle": "Allowed models",
-      "modelsBody": "Choose which AI models teammates may use. Only ticked models can be selected on a teammate’s settings, and only these are tried if a provider goes down.",
-      "modelsEmpty": "No model is allowed yet, so teammates cannot answer. Tick at least one.",
+      "modelsBody": "This list applies only in Hermes company control: teammates run on these company models, and the key stays on the platform. Only ticked models can be selected on a teammate’s settings, and only these are tried if a provider goes down. A personal Claude, ChatGPT or Grok login keeps the model in that client.",
+      "modelsEmpty": "No company model is allowed yet. In Hermes company control, teammates will not get a model reply. Tick at least one, and add the matching key.",
       "modelsEnabled": "Model allowed.",
       "modelsDisabled": "Model turned off.",
       "modelsCustomTitle": "Add another model",
@@ -621,9 +1159,10 @@
       "modelsNeedAdmin": "Admin access is required to change this.",
       "modelsLoadFailed": "Could not load the allowed models.",
       "modelsSaveFailed": "Could not save the allowed models.",
+      "companyKeys": "Company model keys",
       "openrouter": "Company model key",
       "openrouterTitle": "Company OpenRouter key",
-      "openrouterBody": "This key pays for the company’s model usage. Teammates do not need a key on their own computer — calls go through the platform.",
+      "openrouterBody": "This key pays for the company’s OpenRouter model usage. Teammates do not need a key on their own computer — calls go through the platform.",
       "openrouterConfigured": "Set up",
       "openrouterMissing": "Not set",
       "openrouterField": "OpenRouter key",
@@ -636,10 +1175,42 @@
       "openrouterSaveFailed": "Could not save the key.",
       "openrouterLoadFailed": "Could not check whether the key is set.",
       "openrouterNeedAdmin": "Only an administrator can add this key.",
+      "geminiTitle": "Company Gemini key",
+      "geminiBody": "This key pays for the company’s Google Gemini usage. Teammates do not need a key on their own computer — calls go through the platform.",
+      "geminiConfigured": "Set up",
+      "geminiMissing": "Not set",
+      "geminiField": "Gemini key",
+      "geminiPlaceholder": "AQ.…",
+      "geminiSave": "Save key",
+      "geminiReplace": "Replace key",
+      "geminiCancel": "Cancel",
+      "geminiSaved": "Key saved. From the next Gemini call, teammates use the company account.",
+      "geminiInvalid": "This does not look like a Google Gemini key. Google AI Studio keys start with AQ. or AIza.",
+      "geminiSaveFailed": "Could not save the key.",
+      "geminiLoadFailed": "Could not check whether the key is set.",
+      "geminiNeedAdmin": "Only an administrator can add this key.",
       "language": "Language",
+      "miniApps": "Mini apps",
+      "warehouse": "Data warehouse",
       "languageTitle": "Workspace language",
       "languageBody": "Skill descriptions and other human-readable text are written in this language. JSON keys stay in English.",
       "languageSaved": "Workspace language is now: {label}.",
+      "agents": "AI teammates",
+      "autonomyTitle": "Maximum independence",
+      "autonomyBody": "Nobody can make AI teammates more independent than this — neither when hiring nor on the detail page. If you tighten it, teammates already set up also ask for approval under the stricter rule.",
+      "autonomySaved": "From now on, at most this level can be chosen: {label}.",
+      "autonomyCeiling": {
+        "trainee": "They ask for approval before every write or send.",
+        "trusted": "They write memory on their own; mail, files and company systems only with approval.",
+        "autonomous": "No company limit: the teammate's own setting decides. Mandatory gates stay in place."
+      },
+      "hireDraftTitle": "Daily limit for “Describe it” suggestions",
+      "hireDraftBody": "When hiring a new teammate, the company AI model fills in the draft from a sentence or two. This many suggestions can be requested per day for the whole company (from midnight UTC). 0 switches suggestions off; samples and the blank page stay available.",
+      "hireDraftField": "Suggestions per day",
+      "hireDraftSave": "Save",
+      "hireDraftSaved": "The daily limit is now {limit} suggestions.",
+      "hireDraftSavedOff": "Suggestions switched off.",
+      "hireDraftInvalid": "Enter a whole number between 0 and {max}.",
       "mcpIntroTitle": "MCP introduction",
       "mcpIntroBody": "This text appears in the MCP initialize instruction and in the platform.whoami response. Describe the company the AI is joining, and how it should treat published teammate agents.",
       "mcpIntroPlaceholder": "Example: Ostorosbor Zrt. is a Hungarian winery. Teammates are published AI agents — CRM, sales, knowledge base.",
@@ -814,7 +1385,7 @@
     "hermesEntAdminTitle": "What the admin and IT do",
     "hermesEntAdminNote": "Your company admin and IT prepare this: they set the company model key and install the company Hermes settings on your computer. If that has not happened yet, ask them before you start.",
     "hermesEntKeyTitle": "Add the company model key",
-    "hermesEntKeyBody": "Bots use the OpenRouter key stored on the platform; no key goes onto employee computers. Add it under Settings → OpenRouter.",
+    "hermesEntKeyBody": "Bots use the company model key stored on the platform (OpenRouter or Gemini); no key goes onto employee computers. Add it under Settings → Company model keys.",
     "hermesEntKeyOk": "The company model key is set.",
     "hermesEntKeyMissing": "No company model key yet. Until there is one, Bots get no model responses.",
     "hermesEntKeyOpen": "Open settings",
@@ -1005,6 +1576,8 @@
     "driveFullWriteDesc": "Write every manageable file — admin permission only.",
     "oauthScopes": "Google did not grant the requested service permission — the response only includes earlier access (e.g. Drive). Try Connect again, and allow Gmail access on the consent screen. If Gmail and Drive share the same Google OAuth app, split them into separate clients (Platform → Settings).",
     "oauthUnrequested": "The OAuth response does not include the requested service permission. Try again, or disconnect the other Google connection if they share the same OAuth app.",
+    "oauthPrivacyNotice": "By linking your Google account you allow AI workers to access your Google data with the permissions shown. You can disconnect at any time; the stored access token is then deleted.",
+    "oauthPrivacyLink": "Privacy Policy",
     "usageCapableOne": "{list} has the required tool permission.",
     "usageCapableMany": "{list} have the required tool permission.",
     "usageCapableCount": "{count} active teammates have the required tool permission.",
@@ -1168,66 +1741,348 @@
   },
   "AgentCreate": {
     "steps": {
+      "start": {
+        "label": "Getting started",
+        "hint": "Where do you start from?"
+      },
       "identity": {
-        "label": "Basics",
-        "hint": "Name, responsibility, role"
+        "label": "Who are they?",
+        "hint": "Name, introduction, picture"
       },
-      "tools": {
-        "label": "Tools",
-        "hint": "What it may call"
+      "duties": {
+        "label": "What do they do?",
+        "hint": "Duties in plain sentences"
       },
-      "skills": {
-        "label": "Skills",
-        "hint": "Assigned from the catalog"
+      "access": {
+        "label": "What can they access?",
+        "hint": "Mail, documents, systems"
       },
-      "connections": {
-        "label": "Connections",
-        "hint": "External systems"
+      "knowledge": {
+        "label": "What should they know?",
+        "hint": "Documents they work from"
       },
-      "done": {
-        "label": "Done",
-        "hint": "Publish and activate"
+      "autonomy": {
+        "label": "How independent?",
+        "hint": "When to ask first"
+      },
+      "team": {
+        "label": "Who works with them?",
+        "hint": "Who can use them"
+      },
+      "advanced": {
+        "label": "Advanced",
+        "hint": "AI model, desktop client, folders"
+      },
+      "launch": {
+        "label": "Trial run and put to work",
+        "hint": "Try it and start"
       }
     },
+    "optional": "Optional",
     "back": "Back",
     "next": "Continue",
-    "creating": "Creating…",
-    "createAndContinue": "Create and continue",
-    "nameRequired": "Enter a name, a responsibility, and a role description.",
-    "clonePartial": "The teammate was created, but copying was incomplete: {warnings}",
-    "cloneTools": "tools: {error}",
-    "cloneSkill": "skill: {error}",
+    "skipOrNext": "Continue (optional)",
+    "creating": "Hiring…",
+    "createAndContinue": "Hire and continue",
+    "loading": "Loading…",
+    "saving": "Saving…",
+    "saveFailed": "Could not save. Please try again.",
+    "identityRequired": "Enter a name and one sentence on when to turn to them.",
+    "dutiesRequired": "Add at least one duty.",
+    "clonePartial": "The teammate was created, but not every setting was copied: {warnings}",
+    "cloneTools": "access: {error}",
+    "cloneSkill": "learned method: {error}",
     "cloneConnector": "connection ({name}): {error}",
-    "alreadyCreated": "The teammate already exists as a draft. You can review the basics here; later steps add tools, skills, and connections.",
-    "cloneTitle": "Copy from an existing teammate",
-    "cloneBody": "Pick an agent as a template — role, tools, skills, and connections are copied. You only need to enter the new name.",
-    "cloneSelect": "Template agent",
-    "cloneNone": "None — empty form",
-    "cloneLoading": "Loading template…",
-    "cloneLoaded": "“{name}” template loaded — enter the new name, then continue.",
-    "cloneCopied": "Tools, skills, and connections are copied when the teammate is created.",
+    "cloneApprovals": "independence: {error}",
+    "cloneModel": "AI model: {error}",
+    "cloneAccess": "access ({name}): {error}",
+    "cloneAvatar": "profile picture: {error}",
+    "expertToggle": "Expert view",
+    "expertHelp": "Shows the teammate's full settings form from their profile page on every step — for admins who want to set everything one by one.",
+    "lessMotion": "Less animation",
+    "openDetailSection": "Same on the teammate's profile page →",
     "name": "Name",
-    "scope": "Responsibility (when to call this teammate)",
-    "scopePlaceholder": "Marketing, SEO, content. Sales leads → Gábor.",
-    "role": "Role",
-    "namePlaceholder": "Wiki agent",
-    "rolePlaceholder": "You are the internal knowledge assistant. Answer only from approved documents, in English, with source citations.",
-    "identityHint": "Continue creates the teammate as a draft. After that you can add tools, skills, and connections — if you need to define a new one along the way, it opens in a new window.",
-    "newConnector": "New connection in Connectors",
-    "newConnectorHint": "If a tool has no connector yet, create it here.",
-    "newSkill": "New skill in the catalog",
-    "newSkillHint": "Import or create a skill in the app — assign it here after approval.",
-    "defineConnector": "Define a new connection",
-    "defineConnectorHint": "Draft connector in the connector wizard, in a new window.",
-    "linkedAccounts": "Linked accounts",
-    "linkedAccountsHint": "Connect your own Gmail / Drive if the teammate uses a delegated account.",
-    "draftReady": "{name} draft is ready.",
-    "draftReadyFallback": "The teammate",
-    "openAgent": "Open agent →",
-    "externalTitle": "Something else come to mind?",
-    "externalBody": "It opens in a new browser window — this wizard stays here. If you created something there, refresh the list.",
+    "namePlaceholder": "e.g. Vera from customer care",
+    "intro": "One-sentence introduction — when should people turn to them?",
+    "introHelp": "Colleagues (and other AI teammates) use this to decide when to give them work. Describe in one sentence what they are for.",
+    "introPlaceholder": "Turn to them when a customer writes to the web shop or a complaint comes in.",
+    "avatarTitle": "Profile picture",
+    "avatarAuto": "They get a face based on their name automatically — upload your own picture if you like.",
+    "avatarUpload": "Upload picture",
+    "avatarReplace": "Another picture",
+    "avatarRemove": "Remove own picture",
+    "avatarNotImage": "This is not an image — choose a JPG, PNG or WEBP file.",
+    "avatarFailed": "The picture could not be processed. Try another one.",
+    "toneTitle": "Tone",
+    "toneHelp": "How they talk to colleagues. You can change it any time.",
+    "tone": {
+      "informal": "Informal",
+      "formal": "Formal",
+      "short": "Brief",
+      "detailed": "Detailed",
+      "lang": {
+        "match": "In the asker's language",
+        "hu": "In Hungarian",
+        "en": "In English"
+      }
+    },
+    "toneManualRole": "The job description was written by hand, so tone changes only apply if you rebuild it from cards on the “What do they do?” step.",
+    "roleManualTitle": "The job description was written by hand as text",
+    "roleManualEdit": "Edit as text",
+    "roleManualRebuild": "Rebuild from cards",
+    "dutiesTitle": "Duties",
+    "dutiesBody": "Describe in plain sentences what they should do. 3–6 duties are usually enough.",
+    "dutyPlaceholder": "e.g. Answers customer questions",
+    "addCard": "Add",
+    "examples": "Examples — click to add:",
+    "dontsTitle": "What NOT to do",
+    "dontsBody": "Lines they must never cross. Optional, but it helps a lot.",
+    "dontPlaceholder": "e.g. Never promises refunds",
+    "roleRaw": "Job description as text",
+    "roleRawHelp": "The AI teammate reads this text before every task. It is built from the cards automatically; if you rewrite it here, the cards no longer overwrite it.",
+    "rolePreview": "How the job description is built",
+    "rolePreviewHint": "From the cards and the tone — they read this before every task.",
+    "createHint": "The “Hire” button saves the teammate. They do not start working yet — only at the end, when you put them to work.",
+    "cardEditAria": "Text of card {index}",
+    "cardRemoveAria": "Remove card {index}",
+    "cardsFull": "At most {max} cards can be added.",
+    "inline": {
+      "title": "Missing something?",
+      "body": "Create it right here in a pop-up window — this wizard stays open and the list refreshes when you close it.",
+      "newSystem": "Connect a new company system",
+      "newMethod": "Teach a new method",
+      "accounts": "Connect your own accounts (Gmail, Drive)"
+    },
+    "inlineDialogHint": "Changes are saved immediately. Close the window when you are done.",
+    "inlineDialogClose": "Done, close",
+    "externalTitle": "Thought of something meanwhile?",
+    "externalBody": "Opens in a new browser window — this wizard stays here. If you created something there, refresh the list.",
     "refreshing": "Refreshing…",
-    "refreshList": "Refresh list"
+    "refreshList": "Refresh list",
+    "knowledgeEmpty": "No documents yet. They answer from these and show their sources — add policies, price lists, FAQs. Without documents their answers stay generic.",
+    "autonomy": {
+      "sliderAria": "Level of independence",
+      "default": "default",
+      "custom": "Custom setting: writes are set one by one (see Details). Choosing a level overwrites it.",
+      "alwaysGates": "Approvals required by company policy (e.g. actions marked dangerous) stay in place on every level.",
+      "locked": "Locked",
+      "lockedHint": "Your company's settings do not allow this level.",
+      "ceilingNote": "Your company's settings allow at most the “{level}” level. An administrator can change this in Settings.",
+      "ceilingClamped": "Writes set to be more independent than this still ask for approval.",
+      "levels": {
+        "trainee": {
+          "title": "Trainee",
+          "body": "Shows everything before writing or sending. Every write needs human approval.",
+          "short": "Trainee"
+        },
+        "trusted": {
+          "title": "Trusted colleague",
+          "body": "Writes own notes and memory alone; mail, files and company systems with approval.",
+          "short": "Trusted colleague"
+        },
+        "autonomous": {
+          "title": "Independent",
+          "body": "Asks for approval only at gates required by company policy.",
+          "short": "Independent"
+        },
+        "custom": {
+          "title": "Custom",
+          "body": "Writes set one by one.",
+          "short": "Custom independence"
+        }
+      },
+      "detailsTitle": "Details",
+      "detailsHint": "Per write type, and who approves",
+      "driveTitle": "Where to save finished work?",
+      "driveHint": "Google Drive folder for finished documents"
+    },
+    "team": {
+      "options": {
+        "me": {
+          "title": "Only me",
+          "body": "You and the admins can see them. The safest way to start."
+        },
+        "team": {
+          "title": "The whole team",
+          "body": "All {count} colleagues can use them in chat and tasks."
+        },
+        "selected": {
+          "title": "Selected colleagues",
+          "body": "Choose person by person who can view or use them."
+        }
+      },
+      "onlyYou": "Nobody but you and the admins will see them.",
+      "nobodyElse": "There are only admins in the organization right now — they all can see them.",
+      "revokeTitle": "Revoke access?",
+      "revokeBody": "{count} colleague(s) will lose access to this teammate.",
+      "revokeConfirm": "Revoke"
+    },
+    "advanced": {
+      "modelTitle": "Thinking engine",
+      "modelHint": "Which AI model works behind them — the company setting by default",
+      "hermesTitle": "Desktop client limits",
+      "hermesHint": "What they may do in the desktop AI client on a computer",
+      "localRootsTitle": "Local folders",
+      "localRootsHint": "For developer teammates: which folders they may work in on the computer"
+    },
+    "launch": {
+      "testTitle": "Try them with these questions",
+      "testSafe": "On Trainee level they ask before every write or send — so trying them out is safe, nothing goes out without your approval.",
+      "testCareful": "Note: on this level of independence they can write without approval. Consider switching to Trainee for testing.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "retired": "This teammate has retired and cannot be put back to work.",
+      "readyBody": "If everything looks good, put them to work: from then on colleagues can work with them in chat and tasks.",
+      "updateBody": "They are working, but you changed something since. Apply the changes so colleagues work with the new settings.",
+      "cta": "Put to work",
+      "update": "Apply changes",
+      "launching": "Putting to work…",
+      "liveTitle": "{name} is now at work!",
+      "liveBody": "Write to them in your own AI client (e.g. Claude, ChatGPT, Codex), or give them a task.",
+      "chatNow": "Write to them now"
+    },
+    "openAgent": "Teammate profile →",
+    "card": {
+      "unnamed": "Unnamed teammate",
+      "statusLive": "At work",
+      "statusNotYet": "Not working yet",
+      "duties": "{count, plural, one {# duty} other {# duties}}",
+      "access": "{count, plural, one {# access} other {# accesses}}",
+      "methods": "{count, plural, one {# learned method} other {# learned methods}}",
+      "knowledge": "{count, plural, one {# document} other {# documents}}"
+    },
+    "readiness": {
+      "title": "Ready for work",
+      "short": "Ready for work: {percent}%",
+      "complete": "All set — ready for work!",
+      "missing": {
+        "name": "No name yet",
+        "intro": "No introduction — colleagues won't know when to turn to them",
+        "duty": "No duties yet",
+        "access": "No access to anything — they can only chat",
+        "knowledge": "No documents yet — answers will be generic",
+        "team": "Nobody but you can see them",
+        "launch": "Not at work yet"
+      }
+    },
+    "milestones": {
+      "draft": "Suggestion ready — review it and change anything you like.",
+      "created": "{name} hired! Now choose what they can access.",
+      "access": "First access granted — {name} can already work.",
+      "launched": "{name} is at work. Congratulations! 🎉"
+    },
+    "tips": {
+      "start": "Quickest: describe in a sentence or two what they should do — you can fully rewrite the suggestion on the next steps.",
+      "identity": "A good name is short and telling, e.g. “Invoice Ivy”. Colleagues use the introduction to decide when to ask them.",
+      "duties": "One card = one duty. Write it the way you would tell a new colleague.",
+      "access": "Only switch on what they really need. “Read” is enough to start — you can allow writing later.",
+      "knowledge": "The more precise the documents, the more precise the answers. Policies, price lists and FAQs work best.",
+      "autonomy": "Start as Trainee: they ask before every write. Once you trust them, give more independence.",
+      "team": "To start, it is enough if only you can see them. Once it works, share with the team in one click.",
+      "advanced": "Feel free to skip this step — the defaults suit most teammates.",
+      "launch": "After putting them to work, try the suggested questions. If something is off, come back and change it any time."
+    },
+    "start": {
+      "recommended": "recommended",
+      "describe": {
+        "title": "Describe it in a sentence or two",
+        "body": "Tell us what they should do and the company AI prepares a suggestion — you can change everything.",
+        "label": "What should the new teammate do?",
+        "placeholder": "Answer the web shop's customer emails, and tell me when a complaint comes in.",
+        "hint": "The suggestion only fills in the next steps — it switches nothing on and does not start working by itself.",
+        "required": "Write at least one sentence.",
+        "cta": "Suggest",
+        "drafting": "Preparing a suggestion…",
+        "remaining": "{count} suggestions left today.",
+        "useSample": "Start from: {name}",
+        "browseSamples": "Samples",
+        "blank": "Blank page",
+        "failure": {
+          "budget_exhausted": "Your company's suggestions for today are used up. You can ask again tomorrow — until then, start from a sample or a blank page.",
+          "disabled": "Your company has switched suggestions off. Start from a sample or a blank page.",
+          "no_model": "Your company has no AI model switched on yet, so we cannot write a suggestion now. Start from a sample or a blank page.",
+          "provider_unavailable": "The AI is not reachable right now. Try again in a minute, or start from a sample.",
+          "invalid_response": "We could not turn this into a usable suggestion. Rephrase it a little, or start from a sample.",
+          "error": "Could not request a suggestion. Try again, or start from a sample."
+        }
+      },
+      "sample": {
+        "title": "Pick a sample",
+        "body": "A ready starting point for common roles."
+      },
+      "clone": {
+        "title": "Copy an existing teammate",
+        "body": "Duties, access, independence and team — without passwords or personal accounts.",
+        "select": "Who do you copy?",
+        "none": "Choose a teammate…",
+        "loading": "Loading…",
+        "loaded": "Settings of “{name}” loaded — enter the new name on the next step.",
+        "copied": "Access, learned methods, independence, AI model and team are copied when hiring. Documents and memory are not copied."
+      },
+      "blank": {
+        "title": "Blank page",
+        "body": "You set everything yourself, from scratch."
+      }
+    },
+    "deck": {
+      "toolsTitle": "What can they use?",
+      "toolsHelp": "Per card choose: off, read only, or write too. “Write too” always includes reading. Every click is saved immediately.",
+      "levels": {
+        "off": "Off",
+        "read": "Read",
+        "write": "Write too"
+      },
+      "partial": "Partly on (set one by one). Choosing a level overwrites it.",
+      "needsAccount": {
+        "gmail": "Gmail account needs to be connected",
+        "drive": "Google Drive needs to be connected"
+      },
+      "cards": {
+        "mail": {
+          "title": "Mail",
+          "read": "Searches and reads emails",
+          "write": "Writes replies, sends mail, labels"
+        },
+        "documents": {
+          "title": "Documents",
+          "read": "Searches and reads files on Drive",
+          "write": "Creates and edits files and folders"
+        },
+        "sheets": {
+          "title": "Spreadsheets",
+          "read": "",
+          "write": "Writes cells in spreadsheets"
+        },
+        "company": {
+          "title": "Company systems",
+          "read": "Looks up data in company systems",
+          "write": "Writes or changes data in company systems"
+        },
+        "knowledge": {
+          "title": "Knowledge base",
+          "read": "Searches documents, shows sources",
+          "write": "Uploads new material, writes wiki pages"
+        },
+        "compute": {
+          "title": "Calculations",
+          "read": "Makes calculations and reports",
+          "write": ""
+        }
+      },
+      "systemsTitle": "Company system connections",
+      "systemsHelp": "Systems already connected at your company (e.g. CRM, invoicing). Choose which they may use, and whether they may only read or also write.",
+      "systemsEmpty": "No company system connected yet. Add one below under “Missing something?”.",
+      "modeRead": "read",
+      "modeWrite": "write too",
+      "addRead": "+ For reading",
+      "addWrite": "+ For writing too",
+      "remove": "Take away",
+      "methodsTitle": "Learned methods",
+      "methodsHelp": "Ready-made ways of working (e.g. “How we answer complaints”). Once taught, they work by these.",
+      "methodsEmpty": "No methods to teach at the company yet.",
+      "teach": "Teach",
+      "forget": "Unlearn"
+    }
   },
   "AgentPublish": {
     "cardLive": "Available on MCP",
@@ -1288,8 +2143,8 @@
   },
   "AgentModelConfig": {
     "title": "Reasoning engine",
-    "help": "Choose which AI model powers this teammate. The list is the company’s allowed models. If you leave it unset, the first allowed model runs.",
-    "emptyPolicy": "No model is allowed yet, so teammates cannot answer. An admin can allow some under Settings → Allowed models.",
+    "help": "Choose which company AI model powers this teammate in Hermes company control. The list is the company’s allowed models. If you leave it unset, the first allowed model runs.",
+    "emptyPolicy": "No company model is allowed yet, so in Hermes company control teammates will not get a model reply. An admin can allow some under Settings → Allowed models.",
     "primary": "Primary model — used by default",
     "pickModel": "Choose a model…",
     "primaryDisabled": "This model is no longer allowed — pick another, or a backup will be used.",
@@ -1323,6 +2178,30 @@
     }
   },
   "SkillCatalog": {
+    "share": {
+      "button": "Share",
+      "buttonHint": "Superadmin only: make this skill available to every tenant, or copy it into another tenant.",
+      "eyebrow": "Share skill",
+      "intro": "Sharing creates an independent copy of the skill's current active version. The original stays here unchanged and remains editable; the copy can be changed or deleted separately at its destination.",
+      "noActive": "This skill has no approved (active) version yet, so it cannot be shared. Approve a version first.",
+      "platformTitle": "Make available to every tenant",
+      "platformBody": "The skill appears as a “Published” skill in every tenant. Tenant admins can assign it to their agents but cannot edit it. Note: every tenant will see the full skill text — it must not contain company-specific or confidential data.",
+      "platformAction": "Publish platform-wide",
+      "platformAlready": "This skill is already available platform-wide.",
+      "tenantTitle": "Copy into another tenant",
+      "tenantBody": "The skill becomes the selected tenant's own skill with an active version: its admin can assign it to an agent right away and evolve it independently.",
+      "tenantSelect": "Target tenant",
+      "tenantPlaceholder": "Choose a tenant…",
+      "tenantAction": "Copy",
+      "tenantsLoading": "Loading tenants…",
+      "noTenants": "There is no other active tenant.",
+      "confirmPlatformTitle": "Publish platform-wide?",
+      "confirmPlatformBody": "The skill “{name}” will be visible and assignable in every tenant.",
+      "confirmTenantTitle": "Copy this skill?",
+      "confirmTenantBody": "A copy of “{name}” will appear in the catalog of tenant “{tenant}”.",
+      "donePlatform": "Done: the skill is now available in every tenant.",
+      "doneTenant": "Done: the skill was copied to {tenant}."
+    },
     "crash": "The catalog failed to render: {message}",
     "close": "Close",
     "unknownError": "Unknown error.",
@@ -1361,6 +2240,9 @@
     "attachmentKept": "Attachment — the submitted file is kept",
     "noAttachment": "No attachment.",
     "proposalAgent": "Agent: {name}. Cannot be changed on approval.",
+    "proposalRevision": "This is a new version of an existing skill: on approval the agents using it get the new text, and the old version can be restored in the admin area.",
+    "proposalTriggers": "When to use it (trigger keywords)",
+    "proposalNoTriggers": "None given.",
     "save": "Save",
     "saving": "Saving…",
     "approve": "Approve",
@@ -1407,7 +2289,7 @@
     "filesForSkill": "Files for this skill ({count})",
     "filesReadHint": "The agent only reads them when it needs them during work.",
     "inactive": "inactive",
-    "producer": "producer",
+    "producer": "skill creator",
     "versionCount": "{count} versions",
     "signedSuffix": " · signed",
     "open": "Open",
@@ -1446,11 +2328,12 @@
     "rollback": "Roll back",
     "editMeta": "Edit name, type, and description",
     "editMetaHint": "These apply to the whole skill — they do not create a new version.",
-    "dangerZone": "Danger zone — deactivation removes it from agents and makes the skill inactive. Deletion is permanent and only possible with no assignments.",
+    "dangerZone": "Danger zone — deactivation removes it from agents and makes the skill inactive. Deletion is permanent: the skill disappears with all its versions and is removed from every agent.",
     "deactivated": "“{name}” deactivated — removed from agents, cannot be assigned.",
     "deactivate": "Deactivate",
     "deleteSkillTitle": "Delete skill",
-    "deleteSkillBody": "Delete the “{name}” skill and all of its versions? Only possible with no assignments.",
+    "deleteSkillBody": "Delete the “{name}” skill and all of its versions? This cannot be undone.",
+    "deleteSkillBodyInUse": "The “{name}” skill is currently used by {count, plural, one {# agent} other {# agents}}: {agents}. Deleting it removes it with all its versions and takes it away from these agents too — they won't have it on their next task. This cannot be undone. Delete it?",
     "deleted": "“{name}” deleted from the catalog.",
     "llmAdvice": "LLM advice",
     "reviewing": "Review…",
@@ -1527,7 +2410,15 @@
     "displayNameCleared": "Display name cleared — the select shows the technical name.",
     "producerOn": "This is now the producer skill. Only an admin can assign it to an agent and turn it on.",
     "producerOff": "The producer flag was removed. Already submitted proposals stay in the queue.",
-    "producerHint": "Producer skill. The flag identifies it, not the name. An operator cannot put it on an agent.",
+    "producerHint": "Give this skill the skill-creation role",
+    "producerPurpose": "When this skill is assigned to an agent and enabled, the agent can create new skills from conversations. Skills submitted by an administrator are available immediately; submissions by other team members require administrator approval.",
+    "producerReadOnlyHint": "This skill has the skill-creation role. Your organization’s administrator manages its assignment to agents and enables it.",
+    "producerAgentEnabled": "This skill is enabled and allows new skills to be created from conversations. Skills submitted by an administrator are available immediately; submissions by other team members require administrator approval.",
+    "producerAgentDisabled": "This skill is disabled. To create new skills from conversations using this skill, ask your organization’s administrator to turn it on with Enable.",
+    "producerSectionTitle": "Create skills from conversations",
+    "producerPublishedTitle": "Platform-published skill creator",
+    "producerPublishedHint": "The platform provides the skill-creation role; it cannot be changed here. Your organization’s administrator can assign and enable this skill in the agent’s Skills panel.",
+    "producerSystemHint": "This system skill cannot be used to create new skills from conversations.",
     "level0Description": "Description (Level-0 index)",
     "level0Placeholder": "Short description — shown in the skill picker / catalog before load",
     "cannotBeEmpty": " — cannot be empty",
@@ -1913,6 +2804,11 @@
     "pathTemplateHint": "Gmail, Google Drive and other ready-made services — set up in a few clicks.",
     "pathOwn": "Your own or another system",
     "pathOwnHint": "Not in the list? We connect it through the system's API.",
+    "pathMcp": "External MCP server",
+    "pathMcpHint": "For example, connect a project tracker or document search service.",
+    "mcpSetupStep": "MCP setup",
+    "mcpSetupTitle": "Set up an external MCP server",
+    "mcpSetupBody": "Enter the server address and sign-in method. After saving, you can review and approve its tools.",
     "ownHowTitle": "What should we build the connection from?",
     "connectionName": "Connection name",
     "connectionNameHint": "This is how it will appear in the list, e.g. “Invoicing system”.",
@@ -1938,6 +2834,8 @@
     "intro": "MCP is a standard connector that lets many services (project trackers, ticketing, document stores) offer their tools to the AI. Attach one here without writing code: enter the address, review and approve its tools, then assign it to a teammate under Connections. Credentials stay on the platform; every call is logged.",
     "empty": "No MCP server attached yet. Examples: a project tracker MCP URL (e.g. https://mcp.atlassian.com/v1/mcp) or a document-search service. A platform admin must allow the provider first.",
     "createTitle": "Attach an MCP server",
+    "addAnother": "Connect another MCP server",
+    "refresh": "Refresh",
     "namePlaceholder": "Name, e.g. Project tracker",
     "urlPlaceholder": "Server URL, e.g. https://mcp.example.com/mcp",
     "allowedHosts": "Allowed providers: {hosts}",
@@ -2018,6 +2916,102 @@
     }
   },
   "ClientPolicy": {
+    "filter": {
+      "title": "Privacy filter",
+      "intro": "Before a request reaches the AI model, the company server can check it for personal or confidential data (card numbers, social security numbers, email addresses). The filter protects data but makes work harder: the model sees placeholders instead of real values and some requests are not sent. Turn it on only where people really handle sensitive data (e.g. finance, HR, customer service).",
+      "modeLegend": "Mode",
+      "recommended": "(recommended)",
+      "modes": {
+        "off": {
+          "title": "Off",
+          "help": "Requests are not checked. Nothing slows down work, but there are no privacy signals either."
+        },
+        "observe": {
+          "title": "Observe only",
+          "help": "Every request goes out unchanged. If sensitive data is found, the log records which kind and how many (never the data itself)."
+        },
+        "enforce": {
+          "title": "On",
+          "help": "Per data type: replaces it with a placeholder, allows company models only, or does not send the request. Use only when justified."
+        }
+      },
+      "enforceWarning": "When the filter is on, the model sees placeholders (e.g. [[PHONE_1]]) which we turn back into the real values in the answer. If a data type is set to “Block the request”, the user cannot continue that conversation until they remove the data or start a new conversation.",
+      "categoriesTitle": "What should happen with each data type?",
+      "categoriesHelp": "Applies to every message: the user's text, attached file content and tool results.",
+      "categoriesInactive": "These settings only take effect when the filter is on. In “Observe only” mode the log and the test show what would happen.",
+      "limits": "The filter looks for known patterns. A person's name is only recognised when it appears together with an email address (e.g. “John Smith '<'john@company.com'>'”), and after that anywhere in the conversation. Company names are not recognised on this path yet.",
+      "levels": {
+        "block": "Block the request",
+        "local_only": "Company model only",
+        "tokenize": "Send with placeholder",
+        "warn": "Allow, but log",
+        "off": "Ignore"
+      },
+      "levelHelp": {
+        "block": "If the request contains this data, it is not sent and the user gets a clear message about what to remove.",
+        "local_only": "Only the company's self-hosted AI model may receive it. If none is configured, the request is not sent.",
+        "tokenize": "The model sees a placeholder; the real value is restored in the answer and in data passed to tools.",
+        "warn": "The request goes out unchanged; the log records that such data was sent.",
+        "off": "This data type is not watched. (Card numbers and IBANs going out are still logged.)"
+      },
+      "categories": {
+        "person": {
+          "label": "Person name",
+          "example": "e.g. John Smith"
+        },
+        "email": {
+          "label": "Email address",
+          "example": "e.g. john.smith@company.com"
+        },
+        "phone": {
+          "label": "Phone number",
+          "example": "e.g. +36 30 123 4567"
+        },
+        "account": {
+          "label": "Bank account number",
+          "example": "e.g. 11773016-11111018"
+        },
+        "taj": {
+          "label": "Social security (TAJ) number",
+          "example": "e.g. 123-456-789"
+        },
+        "adoszam": {
+          "label": "Tax number",
+          "example": "e.g. 12345678-1-23"
+        },
+        "pan": {
+          "label": "Card number",
+          "example": "e.g. 4111 1111 1111 1111 (no placeholder: we never store card numbers)"
+        },
+        "iban": {
+          "label": "IBAN",
+          "example": "e.g. HU42 1177 3016 1111 1018 0000 0000"
+        },
+        "secret_key": {
+          "label": "Keys and passwords",
+          "example": "e.g. api_key: sk-…, Bearer eyJ…, PEM key. A download-link ?token= query is not a secret; documentation example keys are not treated as secrets either."
+        }
+      },
+      "tryTitle": "Try it: what would the model see?",
+      "tryHelp": "Paste a sample text. We show what would happen with the settings above, even unsaved. The text is not stored or logged.",
+      "tryLabel": "Sample text",
+      "tryPlaceholder": "e.g. Call John Smith (john.smith@company.com, +36 30 123 4567), his card is 4111 1111 1111 1111.",
+      "tryButton": "What would the model see?",
+      "trying": "Checking…",
+      "tryFailed": "The test failed. Please try again.",
+      "outcomes": {
+        "off": "The filter is off: the text goes to the model unchanged.",
+        "observed": "Observe only: the text goes out unchanged, the data types found are logged.",
+        "sent": "The request goes out with placeholders in place of the recognised data.",
+        "private_only": "The request could only go to the company's own AI model. If none is configured, the user sees this message:",
+        "blocked": "The request would not be sent."
+      },
+      "userSees": "The user would see:",
+      "nothingFound": "No sensitive data found.",
+      "does": "→ {action}",
+      "wouldDo": "when on: {action}",
+      "modelSees": "The model would receive:"
+    },
     "unclassifiedTitle": "Unclassified tools",
     "unclassifiedHelp": "The Bot tried to use these tools, but the company list does not know them yet, so they did not run. Assign each to a capability (its configured level then decides), or block it permanently.",
     "unclassifiedEmpty": "All tools are classified. If the Bot tries an unknown tool, it will show up here.",
@@ -2090,6 +3084,7 @@
       "free": "Free (developer)"
     },
     "capabilities": {
+      "content_filter_mode": "Privacy filter",
       "code_execution": "Code execution",
       "local_files": "Local files",
       "browser": "Browser and computer use",
@@ -2101,7 +3096,6 @@
       "human_approval": "Human approval",
       "audit_depth": "Audit detail",
       "external_services": "External cloud services",
-      "content_filter_company": "Data protection: Company name",
       "content_filter_person": "Data protection: Person name",
       "content_filter_email": "Data protection: Email address",
       "content_filter_phone": "Data protection: Phone number",
@@ -2176,7 +3170,6 @@
       "warn": "The request may proceed; detection is audited.",
       "off": "This category filter does not restrict outgoing content."
     },
-    "filterLimits": "Data protection: this version detects known patterns and restores email and person names learned from email headers. Other detected types are blocked instead of tokenized. Automatic company-name and arbitrary person-name detection is not connected yet.",
     "noFileHelp": "Local files cannot be read or written.",
     "noApprovalHelp": "This setting requires no additional approval; other operation limits apply.",
     "noExternalHelp": "Hermes's own cloud services (image generation, text to speech, video, Hermes account connections) are blocked because they would send data out without company audit and filtering."

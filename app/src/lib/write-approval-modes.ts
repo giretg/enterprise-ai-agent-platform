@@ -9,9 +9,15 @@
 
 export const WRITE_APPROVAL_MODES = ['approval', 'direct'] as const
 export type WriteApprovalMode = (typeof WRITE_APPROVAL_MODES)[number]
-export type WriteKind = 'memory' | 'httpApi' | 'gmail' | 'drive'
+/** Az Agent táblán élő módok. */
+export type AgentWriteKind = 'memory' | 'httpApi' | 'gmail' | 'drive'
+/**
+ * #942 D1: a `wiki` mód nem az Agent táblán, hanem a cél-wiki
+ * `AgentConnector.wikiWriteMode`-ján él — ezért nincs az `AgentWriteApprovalModes`-ban.
+ */
+export type WriteKind = AgentWriteKind | 'wiki'
 
-export type AgentWriteApprovalModes = Record<WriteKind, WriteApprovalMode>
+export type AgentWriteApprovalModes = Record<AgentWriteKind, WriteApprovalMode>
 
 export const DEFAULT_WRITE_APPROVAL_MODES: AgentWriteApprovalModes = {
   memory: 'approval',
@@ -28,6 +34,9 @@ const GMAIL_WRITE_TOOLS = new Set([
   'gmail_modify_labels',
   'gmail_trash',
 ])
+const WIKI_WRITE_TOOLS = new Set(['kb_wiki_write', 'kb_wiki_revert'])
+/** #978 D2: a visszaállítás a wiki közvetlen írási módjától függetlenül mindig jóváhagyásra vár. */
+const ALWAYS_APPROVAL_TOOLS = new Set(['kb_wiki_revert'])
 const DRIVE_WRITE_TOOLS = new Set([
   'google_drive_create_folder',
   'google_drive_upload_file',
@@ -44,16 +53,22 @@ export function writeKindForTool(toolName: string): WriteKind | null {
   if (HTTP_WRITE_TOOLS.has(toolName)) return 'httpApi'
   if (GMAIL_WRITE_TOOLS.has(toolName)) return 'gmail'
   if (DRIVE_WRITE_TOOLS.has(toolName)) return 'drive'
+  if (WIKI_WRITE_TOOLS.has(toolName)) return 'wiki'
   return null
 }
 
-/** Hiányzó / ismeretlen mód = jóváhagyás kell (fail-closed). */
+/**
+ * Hiányzó / ismeretlen mód = jóváhagyás kell (fail-closed). A `wiki` kind a
+ * cél-kapcsolat módját nézi (`wikiTarget.wikiWriteMode`), az agent-szintű módokat nem.
+ */
 export function skipsWriteApproval(
   toolName: string,
   modes: AgentWriteApprovalModes | null | undefined,
+  wikiTarget?: { wikiWriteMode?: unknown } | null,
 ): boolean {
   const kind = writeKindForTool(toolName)
-  if (!kind) return false
+  if (!kind || ALWAYS_APPROVAL_TOOLS.has(toolName)) return false
+  if (kind === 'wiki') return wikiTarget?.wikiWriteMode === 'direct'
   return modes?.[kind] === 'direct'
 }
 

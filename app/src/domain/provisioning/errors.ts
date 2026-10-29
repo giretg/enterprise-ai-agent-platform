@@ -12,6 +12,7 @@ export type ProvisioningErrorCode =
   | 'DRAFT_NOT_APPROVED'
   | 'SANDBOX_TEST_FAILED'
   | 'ACTIVATION_AUTH_TEST_FAILED'
+  | 'EGRESS_HOST_REJECTED' // aktiváláskor a konnektor kimenő címe nem vehető fel az allowlistre (pl. privát IP)
   | 'ACTIVATION_KEYLESS_UNCONFIRMED'
   | 'SECRET_ALIAS_NOT_TRUSTED' // csak connector-owned vagy tenant-scope-ban engedélyezett külső alias
   | 'SECRET_ALIAS_MISSING'

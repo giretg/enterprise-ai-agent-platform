@@ -92,3 +92,19 @@ _Avoid_: platform-fiók, alapértelmezett fiók, account scope
 **Felhasználói belépés (grant)**:
 Egy tenant-felhasználó saját hitelesítése egy delegált konnektorhoz (pl. a saját Google-fiókjával). Ezzel a felhasználó jogosultsága érvényesül: csak akkor ér el adatot, ha a saját fiókjának is van hozzáférése a kötött cégfiókhoz.
 _Avoid_: tenant-token, közös fiók
+
+## AI-adattárház
+
+**Adattárház**:
+A cég saját, elkülönített adatterülete (v1: külön PostgreSQL-séma), ahová Excel-táblák töltődnek, és ahonnan az AI munkatársak strukturált lekérdezéssel olvasnak.
+_Avoid_: adatbázis-hozzáférés, SQL-konzol
+
+**Importterv**:
+Deklaratív javaslat (`warehouse.import_plan/v1`): melyik munkalap, melyik oszlop melyik mezőbe, milyen típussal és üzleti jelentéssel. Az AI javasolja, a platform ellenőrzi és hajtja végre.
+_Avoid_: import-szkript, generált kód
+
+**Importrecept**:
+Egy már közzétett importterv a fájl szerkezeti ujjlenyomatához kötve; az ugyanilyen szerkezetű következő fájl AI nélkül töltődik be vele.
+
+**Kivétel (adattárház)**:
+Emberi döntésre váró tétel: bizonytalan / nem talált kapcsolat, hibás érték, ismétlődő azonosító. Bizonytalan egyezésből soha nem lesz magától kapcsolat.

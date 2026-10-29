@@ -19,6 +19,7 @@ import {
   resolveModelGatewayJwtKey,
   saveModelGatewayJwtKey,
 } from '@/lib/model-gateway-jwt-key'
+import { loadGeminiTenantKey, parseGeminiApiKey, saveGeminiTenantKey } from '@/lib/gemini-tenant-key'
 import { loadOpenRouterTenantKey, parseOpenRouterApiKey, saveOpenRouterTenantKey } from '@/lib/openrouter-tenant-key'
 import { fail, ok } from '@/lib/result'
 import { repositories } from '@/repositories/postgres'
@@ -64,6 +65,50 @@ export async function setOpenRouterApiKey(input: unknown) {
       actorId: ctx.user.id,
       agentVersion: null,
       action: 'model.openrouter_key.set',
+      targetType: 'model_policy',
+      targetId: ctx.activeTenantId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { configured: true },
+      tenantId: ctx.activeTenantId,
+    })
+    revalidatePath('/control-plane/settings')
+    return ok({ configured: true })
+  } catch (e) {
+    return actionFail(e, 'save_failed')
+  }
+}
+
+/** Csak azt mondja el, van-e tenant Gemini-kulcs — a nyers értéket soha nem adja vissza. */
+export async function getGeminiKeyStatus() {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const key = await loadGeminiTenantKey(ctx.activeTenantId)
+    return ok({ configured: Boolean(key) })
+  } catch (e) {
+    return actionFail(e, 'load_failed')
+  }
+}
+
+export async function setGeminiApiKey(input: unknown) {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const parsed = z.object({ apiKey: z.string() }).safeParse(input)
+    if (!parsed.success) return fail('invalid_key')
+    let apiKey: string
+    try {
+      apiKey = parseGeminiApiKey(parsed.data.apiKey)
+    } catch {
+      return fail('invalid_key')
+    }
+    await saveGeminiTenantKey(ctx.activeTenantId, apiKey)
+    await services.audit.append({
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'model.gemini_key.set',
       targetType: 'model_policy',
       targetId: ctx.activeTenantId,
       modelUsed: null,

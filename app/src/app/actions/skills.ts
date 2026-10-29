@@ -17,6 +17,7 @@ import {
   setProducesSkills,
 } from '@/repositories/postgres/conversation-skill-repository'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { writeAudit } from '@/lib/audit/types'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
   SKILL_DESCRIPTION_MAX,
@@ -134,6 +135,8 @@ export interface AgentSkillRow {
   version: number
   riskTier: SkillRiskTier
   kind: SkillKind
+  /** Gyártó skill: beszélgetésből skill beküldés ehhez az agenthez. */
+  producesSkills: boolean
   requires: Array<{ toolName: string; reason: string }>
   readiness: SkillReadiness
   /** A skill deklarált paraméterei (#199) — a feladat-indító űrlap mezői. */
@@ -164,6 +167,7 @@ export async function getAgentSkillsAction(
         version: r.version,
         riskTier: r.riskTier,
         kind: r.kind,
+        producesSkills: r.producesSkills,
         requires: r.requires,
         readiness: r.readiness,
         parameters: r.content.parameters.map((p) => ({
@@ -987,12 +991,114 @@ export async function deactivateSkillAction(
   }
 }
 
-export async function deleteSkillAction(skillId: string): Promise<ActionResult<null>> {
+// ── Superadmin: megosztás platform-szintre / másik tenantba ────────────────────
+
+export interface SkillShareTenant {
+  id: string
+  name: string
+}
+
+function isSuperadmin(ctx: TenantAuthContext): boolean {
+  return Boolean(ctx.platformRoles?.includes('superadmin'))
+}
+
+/** A megosztás célpontjai: aktív tenantok az aktuális kivételével. Csak superadmin. */
+export async function listSkillShareTenantsAction(): Promise<ActionResult<SkillShareTenant[]>> {
   try {
     const ctx = await requireTenantRole('admin')
-    await services.skills.deleteSkill({ skillId, actor: actorFrom(ctx) })
+    if (!isSuperadmin(ctx)) return fail('Ehhez superadmin jog kell.')
+    const tenants = await services.tenants.listTenants({ status: 'active' })
+    return ok(
+      tenants
+        .filter((t) => t.id !== ctx.activeTenantId)
+        .map((t) => ({ id: t.id, name: t.displayName }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'hu')),
+    )
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+const shareSchema = z.object({
+  skillId: z.string().uuid(),
+  target: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('platform') }),
+    z.object({ kind: z.literal('tenant'), tenantId: z.string().uuid() }),
+  ]),
+})
+
+/**
+ * Skill megosztása superadminként: platform-szintű kiadott skill, vagy egy másik
+ * tenant saját skillje lesz belőle (független másolat). Tenant-határt lép át,
+ * ezért mindig auditáljuk a forrás- és a cél-tenantban is.
+ */
+export async function shareSkillAction(
+  input: z.input<typeof shareSchema>,
+): Promise<ActionResult<{ skillId: string }>> {
+  try {
+    const parsed = shareSchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    if (!isSuperadmin(ctx)) return fail('Skillt megosztani csak superadmin tud.')
+    if (parsed.target.kind === 'tenant') {
+      const targetId = parsed.target.tenantId
+      const tenants = await services.tenants.listTenants({ status: 'active' })
+      if (!tenants.some((t) => t.id === targetId)) {
+        return fail('A cél-tenant nem található vagy nem aktív.')
+      }
+    }
+    const res = await services.skills.shareSkill({
+      skillId: parsed.skillId,
+      target: parsed.target,
+      actor: actorFrom(ctx),
+    })
+    const metadata = {
+      sourceSkillId: parsed.skillId,
+      sourceTenantId: ctx.activeTenantId,
+      target: parsed.target.kind,
+      targetTenantId: parsed.target.kind === 'tenant' ? parsed.target.tenantId : null,
+    }
+    for (const tenantId of new Set([
+      ctx.activeTenantId,
+      parsed.target.kind === 'tenant' ? parsed.target.tenantId : ctx.activeTenantId,
+    ])) {
+      await writeAudit(repositories.audit, {
+        actorType: 'human',
+        actorId: ctx.user.id,
+        action: 'skill.share',
+        targetType: 'skill',
+        targetId: res.skillId,
+        policyDecision: 'allowed',
+        metadata,
+        tenantId,
+      })
+    }
     revalidatePath('/control-plane/skills')
-    return ok(null)
+    return ok({ skillId: res.skillId })
+  } catch (err) {
+    if (isUniqueViolation(err)) return fail('Ezen a helyen már van ilyen nevű skill.')
+    return fail(messageFrom(err))
+  }
+}
+
+export async function getSkillUsageAction(
+  skillId: string,
+): Promise<ActionResult<Array<{ id: string; name: string }>>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    return ok(await services.skills.getSkillUsage({ skillId, actor: actorFrom(ctx) }))
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+export async function deleteSkillAction(
+  skillId: string,
+): Promise<ActionResult<{ detachedAgentCount: number }>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const res = await services.skills.deleteSkill({ skillId, actor: actorFrom(ctx) })
+    revalidatePath('/control-plane/skills')
+    return ok(res)
   } catch (err) {
     return fail(messageFrom(err))
   }

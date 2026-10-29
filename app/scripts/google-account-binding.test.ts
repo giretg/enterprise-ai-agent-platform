@@ -109,6 +109,32 @@ async function main() {
     assert.equal(checkGoogleAccountAllowed('google-analytics', ga, '/v1beta/properties/42:runReport').allowed, true)
     assert.equal(checkGoogleAccountAllowed('google-analytics', ga, '/v1beta/properties/43:runReport').allowed, false)
     assert.equal(checkGoogleAccountAllowed('google-analytics', ga, '/v1beta/properties/0/metadata').allowed, true)
+    // www.googleapis.com/{service}/v… előtag ne kerülje meg a kötést (Admin API / Ads).
+    assert.equal(
+      checkGoogleAccountAllowed('google-analytics', ga, '/analyticsadmin/v1beta/properties/43').allowed,
+      false,
+    )
+    assert.equal(
+      checkGoogleAccountAllowed('google-analytics', ga, '/analyticsadmin/v1beta/properties/42/dataStreams')
+        .allowed,
+      true,
+    )
+    assert.equal(
+      checkGoogleAccountAllowed(
+        'google-ads',
+        ads,
+        '/googleads/v25/customers/5555555555/googleAds:search',
+      ).allowed,
+      false,
+    )
+    assert.equal(
+      checkGoogleAccountAllowed(
+        'google-ads',
+        ads,
+        '/googleads/v25/customers/1234567890/googleAds:search',
+      ).allowed,
+      true,
+    )
 
     const sc = buildGoogleAccountBinding('google-search-console', { accountIds: ['https://www.example.com/'] })
     assert.equal(

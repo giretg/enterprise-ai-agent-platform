@@ -56,7 +56,7 @@ export function UpdateOutputFolderForm({
       <p className="text-sm text-ink-soft">
         {outputDriveFolderId
           ? `Output-mappa: ${outputDriveFolderId} — ide a munkatárs jóváhagyás nélkül tölt fel.`
-          : 'Nincs output-mappa — minden Drive-feltöltés jóváhagyást kér.'}
+          : 'Nincs output-mappa — a feladat adja meg a mappát (enélkül a Drive gyökerébe kerül); a jóváhagyást a Drive írási mód szabályozza.'}
       </p>
     )
   }
@@ -70,7 +70,7 @@ export function UpdateOutputFolderForm({
         setDone(
           nextId
             ? 'Mentve. Ebbe a mappába a munkatárs jóváhagyás nélkül tölt fel.'
-            : 'Törölve. Mostantól minden Drive-feltöltés jóváhagyást kér.',
+            : 'Törölve. A feltöltési jóváhagyást a Drive írási mód szabályozza.',
         )
         router.refresh()
       } else {
@@ -82,8 +82,9 @@ export function UpdateOutputFolderForm({
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink-soft">
-        Válassz egy Drive-mappát, ahová a munkatárs jóváhagyás nélkül is feltölthet. Ha üresen marad,
-        minden feltöltés jóváhagyást kér.
+        Válassz alapértelmezett Drive-mappát. Ide a munkatárs jóváhagyás nélkül tölthet fel. Ha nincs
+        kiválasztva, a feladat adja meg a mappát (enélkül a Drive gyökerébe kerül); a jóváhagyást a
+        fenti Drive írási mód szabályozza.
       </p>
 
       {folderId ? (
@@ -140,6 +141,13 @@ export function UpdateOutputFolderForm({
           </button>
         ) : null}
       </div>
+
+      {!drivePickerConfigured ? (
+        <p className="text-xs text-ink-soft">
+          A mappaválasztó azért inaktív, mert a Google Picker platformbeállítása hiányzik. A
+          rendszergazdának meg kell adnia a Picker API-kulcsot és az App ID-t.
+        </p>
+      ) : null}
 
       {!selectedGrantId ? (
         <p className="text-xs text-honey">
