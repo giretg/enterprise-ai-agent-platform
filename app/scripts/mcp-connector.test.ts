@@ -491,6 +491,25 @@ async function main() {
     const stuck = await mcpListTools({ serverUrl: SERVER_URL, allowedHosts: [HOST] }, { fetchImpl: stuckCursor, resolveHostIps: publicIp })
     assert.equal(stuck.length, 2) // 2. lap után a kurzor nem mozdult → lezár
     assert.equal(stuckCalls, 2)
+
+    // Körbeérő kurzor (A → B → A): a már elküldött kurzorra lezár, nem gyűjt duplikátumot a plafonig.
+    let cycleCalls = 0
+    const cyclingCursor = async (_url: string | URL, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(null, { status: 405 })
+      const message = JSON.parse(String(init.body)) as { id?: number; method: string }
+      if (message.id === undefined) return new Response(null, { status: 202 })
+      const result =
+        message.method === 'initialize'
+          ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'f', version: '1' } }
+          : (cycleCalls++, { tools: [{ name: `c${cycleCalls}`, inputSchema: { type: 'object' } }], nextCursor: cycleCalls % 2 ? 'A' : 'B' })
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const cycle = await mcpListTools({ serverUrl: SERVER_URL, allowedHosts: [HOST] }, { fetchImpl: cyclingCursor, resolveHostIps: publicIp })
+    assert.equal(cycle.length, 3) // A, B elküldve; a 3. lap újra A-t ad → lezár
+    assert.equal(cycleCalls, 3)
   })
 
   await check('401 → unauthorized; túl nagy válasz → too_large', async () => {
