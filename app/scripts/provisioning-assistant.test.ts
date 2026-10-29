@@ -459,13 +459,23 @@ function makeService(opts?: {
   isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
   resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
   resolvePlatformGoogleAdsDeveloperToken?: () => Promise<{ configured: boolean }>
+  /** A bérlő allowlist-bővítése elutasítja a címet (pl. privát IP). */
+  extendRejects?: boolean
 }) {
   const audit = opts?.audit ?? new FakeAudit()
   const drafts = opts?.drafts ?? new FakeDraftRepo()
+  // A bérlő allowlistje élő: az aktiválás bővítése ugyanebbe ír, mint a későbbi hívások.
+  const allowlist = [...(opts?.allowlist ?? ALLOWLIST)]
   const svc = new ProvisioningService({
     drafts,
     audit,
-    resolveEgressAllowlist: async () => opts?.allowlist ?? ALLOWLIST,
+    resolveEgressAllowlist: async () => [...allowlist],
+    extendEgressAllowlist: async (_tenantId, host) => {
+      if (opts?.extendRejects) return { ok: false, reason: 'forbidden_host' }
+      const added = !allowlist.includes(host)
+      if (added) allowlist.push(host)
+      return { ok: true, added, host }
+    },
     resolveBankPreset: async () => opts?.bankPreset ?? false,
     sandboxTester: opts?.tester ?? okTester,
     resolveAgentCapabilities: async () => opts?.agentCapabilities ?? [],
@@ -477,7 +487,7 @@ function makeService(opts?: {
     resolvePlatformGoogleOAuth: opts?.resolvePlatformGoogleOAuth,
     resolvePlatformGoogleAdsDeveloperToken: opts?.resolvePlatformGoogleAdsDeveloperToken,
   })
-  return { svc, audit, drafts }
+  return { svc, audit, drafts, allowlist }
 }
 
 /** Teljes happy-path az aktiválás előfeltételeinek beállításához. */
@@ -624,14 +634,6 @@ async function run() {
     assert.equal(res.lifecycleState, 'active')
     assert.ok(drafts.drafts.get(created.draftId)?.connector.activeSpecVersionId)
     assert.equal(audit.byAction('provisioning.connector.activate').length, 1)
-  })
-
-  await test('P5-neg: nem allowlistelt egress-hosttal a jóváhagyott draft sem aktiválható', async () => {
-    const { svc } = makeService({ allowlist: [] })
-    const created = await draftToActivatable(svc)
-    await expectError('DRAFT_VALIDATION_FAILED', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
-    )
   })
 
   await test('Katalógus-sablon: létrehozáskor a kapuk bezáródnak, üres allowlist mellett is', async () => {
@@ -783,6 +785,54 @@ async function run() {
     await expectError('DRAFT_NOT_APPROVED', () =>
       svc.activateConnector({ draftId: created.draftId, secretAlias: 'x' }, adminActor),
     )
+  })
+
+  // Aktiválás = jóváhagyás: a deklarált kimenő cím automatikusan bekerül a bérlő allowlistjére.
+  const NEW_HOST_CONFIG = {
+    ...cleanConfig(),
+    baseUrl: 'https://api.new-crm.example',
+    egressHosts: ['api.new-crm.example'],
+  }
+
+  await test('P5-auto: aktiváláskor a konnektor kimenő címe bekerül a bérlő allowlistjére', async () => {
+    const { svc, audit, allowlist } = makeService()
+    const created = await draftToActivatable(svc, adminActor, NEW_HOST_CONFIG)
+    assert.equal(allowlist.includes('api.new-crm.example'), false)
+    const res = await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'active')
+    assert.equal(allowlist.includes('api.new-crm.example'), true)
+    assert.equal(audit.byAction('connector.egress_allowlist.extend').length, 1)
+  })
+
+  await test('P5-auto: banki preset alatt az aktiválás nem bővíti magától az allowlistet', async () => {
+    const { svc, allowlist } = makeService({ bankPreset: true })
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig: NEW_HOST_CONFIG },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
+    )
+    assert.equal(allowlist.includes('api.new-crm.example'), false)
+  })
+
+  await test('P5-auto: tiltott kimenő cím → aktiválás EGRESS_HOST_REJECTED hibával megáll', async () => {
+    const { svc, allowlist } = makeService({ extendRejects: true })
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig: NEW_HOST_CONFIG },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await expectError('EGRESS_HOST_REJECTED', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
+    )
+    assert.equal(allowlist.includes('api.new-crm.example'), false)
   })
 
   await test('P5-neg: aktiválás kulcs/alias nélkül → ACTIVATION_KEYLESS_UNCONFIRMED', async () => {

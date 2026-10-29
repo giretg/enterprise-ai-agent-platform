@@ -145,6 +145,8 @@ const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
   connectorGrants: connectorGrantService,
   resolveEgressAllowlist,
+  extendEgressAllowlist: (tenantId, host, actorId, provenance) =>
+    platformSettingsService.extendEgressAllowlist(tenantId, host, actorId, provenance),
   resolveBankPreset,
   sandboxTester: new HttpSandboxConnectionTester({ resolveEgressAllowlist, resolveBankPreset }),
   resolvePlatformGoogleOAuth: async (service: 'gmail' | 'drive' | 'api' = 'gmail') => {
