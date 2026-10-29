@@ -190,7 +190,8 @@ export function createHandler(deps: ServerDeps) {
       send(res, status, body)
     }
 
-    if (path === '/healthz') return ok(200, { ok: true })
+    // A Cloud Run a `/healthz`-t magának foglalja — a `/health` éri el a workert.
+    if (path === '/health' || path === '/healthz') return ok(200, { ok: true })
 
     if (method === 'POST' && path === '/internal/step') {
       const token = bearer(req.headers.authorization)

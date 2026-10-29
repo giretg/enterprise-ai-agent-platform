@@ -47,7 +47,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         : {
             kind: 'cloud_tasks',
             project: required(env, 'GOOGLE_CLOUD_PROJECT'),
-            location: env.PLATFORM_CHAT_TASKS_LOCATION ?? 'europe-west4',
+            location: env.PLATFORM_CHAT_TASKS_LOCATION ?? 'europe-west3',
             queue: env.PLATFORM_CHAT_TASKS_QUEUE ?? 'platform-chat-steps',
             serviceAccountEmail: required(env, 'PLATFORM_CHAT_TASKS_SA'),
           },
