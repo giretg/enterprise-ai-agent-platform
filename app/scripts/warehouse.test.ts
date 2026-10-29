@@ -10,6 +10,7 @@ import {
   assertWarehouseUpload,
   readWorkbookGrid,
   WAREHOUSE_MAX_COLUMNS,
+  WAREHOUSE_MAX_MERGE_FILL_CELLS,
   WAREHOUSE_MAX_ROWS,
   WarehouseFileError,
   type SheetGrid,
@@ -150,11 +151,33 @@ async function main() {
     const result = applyMerges(grid)
     const elapsedMs = Date.now() - started
     assert.ok(result.rows.length <= WAREHOUSE_MAX_ROWS, `sorok száma korlátos (${result.rows.length} <= ${WAREHOUSE_MAX_ROWS})`)
-    assert.ok(result.truncatedRows || result.truncatedColumns, 'a levágást jelezni kell')
+    assert.ok(result.truncatedRows, 'a levágást jelezni kell')
     // Egyetlen sor sem lóghat túl a WAREHOUSE_MAX_COLUMNS oszlopon.
     assert.ok(result.rows.every((r) => r.cells.length <= WAREHOUSE_MAX_COLUMNS), 'oszlopszám korlátos')
     // A javítás nélkül ez percekig futna / OOM-olna; korláttal gyors.
     assert.ok(elapsedMs < 10_000, `gyorsan végez (${elapsedMs}ms)`)
+  })
+
+  await check('AC12d: a merge-kitöltés költségvetése munkafüzet-szintű (lapokon átívelő OOM-kapu)', () => {
+    // Egy rosszindulatú lap önmaga kimeríti a megosztott költségvetést; a hívó
+    // ugyanazt a budget-objektumot adja a következő lapnak, így az már nem tud
+    // újabb cellákat szintetizálni (50 lap × laponkénti plafon nem adódik össze).
+    const bigMerge = (): SheetGrid => ({
+      name: 'L', state: 'visible',
+      rows: Array.from({ length: 200 }, (_, i) => ({ rowNumber: i * 1_000 + 1, cells: ['x'] })),
+      merges: Array.from({ length: 200 }, (_, i) => `A${i * 1_000 + 1}:GR${i * 1_000 + 1_000}`),
+      formulaCells: {}, errorCells: 0, truncatedRows: false, truncatedColumns: false,
+    })
+    const budget = { cells: WAREHOUSE_MAX_MERGE_FILL_CELLS }
+    const first = applyMerges(bigMerge(), budget)
+    assert.ok(first.truncatedRows, 'az első lap kimeríti a költségvetést')
+    assert.equal(budget.cells, 0, 'a megosztott költségvetés elfogyott')
+    const secondInput = bigMerge()
+    const second = applyMerges(secondInput, budget)
+    // A második lap master-cellái megvannak, de kitöltött új cella nem keletkezhet.
+    const synthesized = second.rows.filter((r) => r.cells.some((c, i) => i > 0 && c !== null))
+    assert.equal(synthesized.length, 0, 'a második lapon nem keletkezik új kitöltött cella')
+    assert.ok(second.truncatedRows, 'a második lap levágását is jelezni kell')
   })
 
   await check('AC12c: valós összevont fejléc érintetlen (nincs regresszió)', () => {

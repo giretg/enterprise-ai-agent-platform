@@ -10,6 +10,13 @@ export const WAREHOUSE_MAX_FILE_BYTES = 10 * 1024 * 1024
 export const WAREHOUSE_MAX_SHEETS = 50
 export const WAREHOUSE_MAX_COLUMNS = 200
 export const WAREHOUSE_MAX_ROWS = 100_000
+/**
+ * Felső korlát az összevont tartományok által szintetizált cellák számára
+ * EGÉSZ munkafüzetre (nem laponként) — a `<mergeCell>` amplifikáció elleni
+ * memória-plafon. A nyers adatcellákat a fájlméret maga korlátozza; a merge-
+ * direktívák viszont kompaktak, ezért külön, megosztott költségvetés kell.
+ */
+export const WAREHOUSE_MAX_MERGE_FILL_CELLS = WAREHOUSE_MAX_ROWS * WAREHOUSE_MAX_COLUMNS
 
 export type SheetGrid = {
   name: string
@@ -110,6 +117,7 @@ export async function readWorkbookGrid(buffer: Buffer): Promise<WorkbookGrid> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const worksheets = workbook.worksheets as any[]
   const sheets: SheetGrid[] = []
+  const mergeFillBudget = { cells: WAREHOUSE_MAX_MERGE_FILL_CELLS }
   for (const ws of worksheets.slice(0, WAREHOUSE_MAX_SHEETS)) {
     const grid: SheetGrid = {
       name: String(ws.name ?? ''),
@@ -143,7 +151,9 @@ export async function readWorkbookGrid(buffer: Buffer): Promise<WorkbookGrid> {
       })
       grid.rows.push({ rowNumber, cells })
     })
-    sheets.push(applyMerges(grid))
+    // A merge-kitöltés költségvetése MEGOSZTOTT az összes lapon: 50 lap sem
+    // szintetizálhat együttvéve a plafonnál több cellát (lapokon átívelő OOM).
+    sheets.push(applyMerges(grid, mergeFillBudget))
   }
   return { sheets, truncatedSheets: worksheets.length > WAREHOUSE_MAX_SHEETS }
 }
@@ -154,15 +164,19 @@ export async function readWorkbookGrid(buffer: Buffer): Promise<WorkbookGrid> {
  * A kitöltés nem kerülheti meg a sor-/cella-plafont: a `<mergeCell>` listát a
  * csomagolt XLSX kompaktan tárolja, így pár ezer bejegyzés (a `merges` 5000-es
  * felső korlátja) milliárdnyi cellát szintetizálna — ami a közös, több-bérlős
- * processzben heap-OOM-ot okozna, és felülírná a `WAREHOUSE_MAX_ROWS` olvasási
- * korlátot, amit a `readWorkbookGrid` a nyers sorokra már betart. Ezért új sort
- * a plafonon túl nem hozunk létre, és a kitöltött cellák számát globális
- * költségvetés korlátozza; a levágást a `truncated*` jelzők mutatják.
+ * processzben heap-OOM-ot okozna. Két korlát véd:
+ *  1) a merge a `WAREHOUSE_MAX_ROWS` plafonon túl NEM hoz létre új sort (a nyers
+ *     sorokat a `readWorkbookGrid` külön, +50-es ráhagyással már korlátozza, így
+ *     a végeredmény e ráhagyáson felül nem nő);
+ *  2) a kitöltött cellák száma a `budget`-be ütközik, ami EGÉSZ munkafüzetre
+ *     megosztott (a hívó adja át lapról lapra), különben 50 lap külön-külön
+ *     kimeríthetné a plafont.
+ * Mindkét levágást a `truncatedRows` jelzi (a profiler a `truncated*` jelzőket
+ * egyetlen figyelmeztetéssé vonja össze).
  */
-export function applyMerges(grid: SheetGrid): SheetGrid {
+export function applyMerges(grid: SheetGrid, budget: { cells: number } = { cells: WAREHOUSE_MAX_MERGE_FILL_CELLS }): SheetGrid {
   if (grid.merges.length === 0) return grid
   const byRow = new Map(grid.rows.map((row) => [row.rowNumber, row]))
-  let fillBudget = WAREHOUSE_MAX_ROWS * WAREHOUSE_MAX_COLUMNS
   fill: for (const range of grid.merges) {
     const [a, b] = range.split(':')
     const start = a ? parseCellRef(a) : null
@@ -186,11 +200,11 @@ export function applyMerges(grid: SheetGrid): SheetGrid {
         byRow.set(r, row)
       }
       for (let c = start.col; c <= maxCol; c++) {
-        if (fillBudget <= 0) {
-          grid.truncatedColumns = true
+        if (budget.cells <= 0) {
+          grid.truncatedRows = true
           break fill
         }
-        fillBudget--
+        budget.cells--
         while (row.cells.length <= c) row.cells.push(null)
         if (row.cells[c] === null || row.cells[c] === undefined) row.cells[c] = master
       }
