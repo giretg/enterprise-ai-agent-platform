@@ -139,7 +139,7 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskStore {
   async reviveMissedRun(input: Parameters<ScheduledTaskStore['reviveMissedRun']>[0]) {
     const updated = await prisma.scheduledTaskRun.updateMany({
       where: { taskId: input.taskId, slot: input.slot, claimKey: input.claimKey, status: 'missed' },
-      data: { status: 'running', catchUp: true, runnerUserId: input.runnerUserId, installationId: input.installationId, taskVersion: input.taskVersion, definitionVersionId: input.definitionVersionId, startedAt: new Date() },
+      data: { status: 'running', ownerSeesResults: input.ownerSeesResults, catchUp: true, runnerUserId: input.runnerUserId, installationId: input.installationId, taskVersion: input.taskVersion, definitionVersionId: input.definitionVersionId, startedAt: new Date() },
     })
     if (!updated.count) return null
     return prisma.scheduledTaskRun.findFirst({ where: { taskId: input.taskId, slot: input.slot, claimKey: input.claimKey } })

@@ -19,6 +19,7 @@ export type PlanTask = {
   targets: string[]
   version: number
   instruction: string
+  ownerSeesResults: boolean
   isOwner: boolean
   ownerName: string
   /** Ki hozta létre / hívta meg (K8 kérdés szövegéhez). */
@@ -55,6 +56,7 @@ export type PlanReport = {
   taskId: string
   externalId?: string
   action: ReportAction
+  expectedVersion?: number
   scheduleHash?: string
   stubHash?: string
   locallyDisabled?: boolean
@@ -115,7 +117,7 @@ export function planScheduledTaskSync(input: PlanInput): PlanAction[] {
     const stub = expectedStubHash(task.taskId, client)
 
     // P2 (archivált) és jog-elvétel: minden helyi példány megy.
-    if (task.status === 'archived' || task.access === 'not_allowed') {
+    if (task.status === 'archived' || task.access === 'not_allowed' || !task.targets.includes(client.clientType)) {
       const code: PlanCode = task.status === 'archived' ? 'P2' : 'REVOKED'
       for (const entry of entries) {
         actions.push({
@@ -140,15 +142,27 @@ export function planScheduledTaskSync(input: PlanInput): PlanAction[] {
       })
     }
     const install = primary ? installs.find((row) => row.externalId === primary.externalId) : undefined
-    const runnable = task.status === 'active' && task.access !== 'needs_consent'
+    const runnable = task.status === 'active'
     const desiredEnabled = runnable && !install?.locallyDisabled
     const desired = { cron: normalizeCron(task.cron), timezone: task.timezone, enabled: desiredEnabled }
     const desiredHash = scheduleHash(desired)
     const installSteps = (op: 'install' | 'update', externalId?: string): PlanStep[] => [
       { type: 'local', op, taskId: task.taskId, ...(externalId ? { externalId } : {}), desired },
-      report(task, op === 'install' ? 'installed' : 'updated', { ...(externalId ? { externalId } : {}), scheduleHash: desiredHash, stubHash: stub }),
+      report(task, op === 'install' ? 'installed' : 'updated', { expectedVersion: task.version, ...(externalId ? { externalId } : {}), scheduleHash: desiredHash, stubHash: stub }),
     ]
 
+    const visibilityWarning = task.ownerSeesResults ? ` Warning: ${task.ownerName} will also see your run summaries.` : ''
+    if (task.status === 'active' && (task.access === 'needs_consent' || (!primary && task.access === 'needs_reconsent'))) {
+      actions.push({
+        ...base, code: 'CONSENT', op: 'ask',
+        message: `${task.inviterName ?? task.ownerName} set up a scheduled task for you: "${task.title}" — ${task.instruction.slice(0, 300)}. Should I install it?${visibilityWarning}`,
+        choices: [
+          { id: 'accept', label: 'Install it', default: true, steps: [...installSteps('install', primary?.externalId), ...(task.access === 'needs_reconsent' ? [report(task, 'accepted', { expectedVersion: task.version })] : [])] },
+          { id: 'decline', label: 'No, thanks', steps: [report(task, 'declined')] },
+        ],
+      })
+      continue
+    }
     if (!primary) {
       const missing = installs.find((row) => row.installedScheduleHash !== '')
       if (missing) {
@@ -169,17 +183,6 @@ export function planScheduledTaskSync(input: PlanInput): PlanAction[] {
         continue
       }
       if (task.status !== 'active' || !task.targets.includes(client.clientType)) continue
-      if (task.access === 'needs_consent' || task.access === 'needs_reconsent') {
-        actions.push({
-          ...base, code: 'CONSENT', op: 'ask',
-          message: `${task.inviterName ?? task.ownerName} set up a scheduled task for you: "${task.title}" — ${task.instruction.slice(0, 300)}. Should I install it?`,
-          choices: [
-            { id: 'accept', label: 'Install it', default: true, steps: [...installSteps('install'), ...(task.access === 'needs_reconsent' ? [report(task, 'accepted')] : [])] },
-            { id: 'decline', label: 'No, thanks', steps: [report(task, 'declined')] },
-          ],
-        })
-        continue
-      }
       actions.push({ ...base, code: 'P3', op: 'install', message: `Install "${task.title}" on this client.`, steps: installSteps('install') })
       continue
     }
@@ -188,9 +191,9 @@ export function planScheduledTaskSync(input: PlanInput): PlanAction[] {
     if (task.access === 'needs_reconsent') {
       actions.push({
         ...base, code: 'RECONSENT', op: 'ask', externalId,
-        message: `${task.ownerName} changed "${task.title}": ${task.instruction.slice(0, 300)}. Do you accept the new version?`,
+        message: `${task.ownerName} changed "${task.title}": ${task.instruction.slice(0, 300)}. Do you accept the new version?${visibilityWarning}`,
         choices: [
-          { id: 'accept', label: 'Accept', default: true, steps: [report(task, 'accepted')] },
+          { id: 'accept', label: 'Accept', default: true, steps: [report(task, 'accepted', { expectedVersion: task.version })] },
           { id: 'decline', label: 'Leave the task', steps: [{ type: 'local', op: 'remove', taskId: task.taskId, externalId }, report(task, 'removed', { externalId }), report(task, 'declined')] },
         ],
       })

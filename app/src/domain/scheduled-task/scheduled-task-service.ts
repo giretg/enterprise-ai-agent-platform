@@ -48,9 +48,9 @@ export interface ScheduledTaskStore {
   markInstallationsRemoved(input: { taskId: string; userId: string; clientType?: string; clientInstanceId?: string; externalId?: string; now: Date }): Promise<number>
   touchInstallations(ids: string[], data: { lastSeenAt: Date; lastSyncAt?: Date }): Promise<void>
   /** null = (taskId, slot, claimKey) már foglalt. */
-  insertRun(data: Pick<RunRecord, 'taskId' | 'slot' | 'installationId' | 'runnerUserId' | 'claimKey' | 'taskVersion' | 'definitionVersionId' | 'status' | 'catchUp'>): Promise<RunRecord | null>
+  insertRun(data: Pick<RunRecord, 'taskId' | 'slot' | 'installationId' | 'runnerUserId' | 'claimKey' | 'taskVersion' | 'definitionVersionId' | 'status' | 'catchUp' | 'ownerSeesResults'>): Promise<RunRecord | null>
   /** K12: az elmaradt (missed) sor pótlásra foglalása. */
-  reviveMissedRun(input: { taskId: string; slot: Date; claimKey: string; runnerUserId: string; installationId: string | null; taskVersion: number; definitionVersionId: string | null }): Promise<RunRecord | null>
+  reviveMissedRun(input: { taskId: string; slot: Date; claimKey: string; runnerUserId: string; installationId: string | null; taskVersion: number; definitionVersionId: string | null; ownerSeesResults: boolean }): Promise<RunRecord | null>
   findRun(runId: string): Promise<RunRecord | null>
   findRunsAtSlots(keys: Array<{ taskId: string; slot: Date; claimKey: string }>): Promise<RunRecord[]>
   finishRun(input: { runId: string; runnerUserId: string; status: 'succeeded' | 'failed'; summary: string | null; now: Date }): Promise<RunRecord | null>
@@ -313,13 +313,14 @@ export class ScheduledTaskService {
   }
 
   /** Elutasítás / kilépés (D6, K8); a kilépés a telepítéseit is eltávolítja. */
-  async respond(principal: ScheduledTaskPrincipal, input: { taskId: string; response: 'decline' | 'accept' }): Promise<Result<{ state: MemberRecord['state'] }>> {
+  async respond(principal: ScheduledTaskPrincipal, input: { taskId: string; response: 'decline' | 'accept'; expectedVersion?: number }): Promise<Result<{ state: MemberRecord['state'] }>> {
     const task = await this.deps.store.findTask(principal.tenantId, input.taskId)
     if (!task) return { ok: false, code: 'not_found' }
     const members = await this.deps.store.listMembers([task.id])
     const member = members.find((row) => row.userId === principal.userId)
     if (!member) return { ok: false, code: task.ownerUserId === principal.userId ? 'invalid_args' : 'not_found' }
     if (input.response === 'accept') {
+      if (input.expectedVersion !== task.version) return { ok: false, code: 'conflict' }
       if (member.state !== 'needs_reconsent' && !(member.state === 'active' && member.acceptedVersion !== task.version)) return { ok: false, code: 'invalid_args' }
       await this.deps.store.upsertMember(task.id, { userId: principal.userId, state: 'active', acceptedVersion: task.version, invitedById: member.invitedById })
       await this.record('scheduled_task.accept', principal, task, { version: task.version })
@@ -394,7 +395,7 @@ export class ScheduledTaskService {
   }
 
   runView(task: TaskRecord, run: RunRecord, viewerUserId?: string) {
-    const seesSummary = !viewerUserId || run.runnerUserId === viewerUserId || (task.ownerSeesResults && task.ownerUserId === viewerUserId)
+    const seesSummary = !viewerUserId || run.runnerUserId === viewerUserId || (task.ownerSeesResults && run.ownerSeesResults && task.ownerUserId === viewerUserId)
     return {
       runId: run.id,
       slot: run.slot.toISOString(),
@@ -445,7 +446,7 @@ export class ScheduledTaskService {
       if (task.status === 'archived' && !live.some((row) => row.userId === principal.userId)) continue
       const member = members.find((row) => row.taskId === task.id && row.userId === principal.userId)
       planTasks.push({
-        taskId: task.id, title: task.title, kind: task.kind, status: task.status, cron: task.cron, timezone: task.timezone,
+        taskId: task.id, title: task.title, kind: task.kind, ownerSeesResults: task.ownerSeesResults, status: task.status, cron: task.cron, timezone: task.timezone,
         targets: task.targets, version: task.version, instruction: task.instruction,
         isOwner: task.ownerUserId === principal.userId,
         ownerName: names.get(task.ownerUserId) ?? 'the owner',
@@ -536,7 +537,7 @@ export class ScheduledTaskService {
     if (access === null) return { ok: false, code: 'not_found' }
     const externalId = typeof report.externalId === 'string' ? report.externalId.trim().slice(0, 200) : ''
     if (action === 'accepted' || action === 'declined') {
-      const outcome = await this.respond(principal, { taskId: task.id, response: action === 'accepted' ? 'accept' : 'decline' })
+      const outcome = await this.respond(principal, { taskId: task.id, response: action === 'accepted' ? 'accept' : 'decline', expectedVersion: report.expectedVersion as number | undefined })
       return outcome.ok ? { ok: true } : { ok: false, code: outcome.code }
     }
     if (action === 'removed') {
@@ -546,9 +547,11 @@ export class ScheduledTaskService {
     }
     if (access === 'not_allowed') return { ok: false, code: 'not_allowed' }
     if (task.status === 'archived') return { ok: false, code: 'not_found' }
+    if (!task.targets.includes(client.clientType)) return { ok: false, code: 'not_allowed' }
     const hash = typeof report.scheduleHash === 'string' ? report.scheduleHash.slice(0, 64) : ''
     const stub = typeof report.stubHash === 'string' ? report.stubHash.slice(0, 64) : ''
     if (!externalId || !hash || !stub) return { ok: false, code: 'invalid_args' }
+    if (access === 'needs_consent' && report.expectedVersion !== task.version) return { ok: false, code: 'conflict' }
     // Egy (task, user, kliens) egy élő telepítés: a régi externalId-k lezárulnak (L7 újratelepítés).
     await this.deps.store.markInstallationsRemoved({ taskId: task.id, userId: principal.userId, clientType: client.clientType, clientInstanceId: client.clientInstanceId, now })
     await this.deps.store.upsertInstallation({
@@ -608,6 +611,7 @@ export class ScheduledTaskService {
     const { slot, graceMinutes } = computed
     const claimKey = task.kind === 'shared' ? principal.userId : ''
     const client = parseClient(input.installation)
+    if (client && !task.targets.includes(client.clientType)) return stop('deny', 'target_not_allowed', 'this client is no longer a target.', { steps: [{ type: 'local', op: 'remove' }] })
     const externalId = input.installation && typeof (input.installation as Record<string, unknown>).externalId === 'string'
       ? String((input.installation as Record<string, unknown>).externalId).slice(0, 200) : ''
     const installation = client ? await this.findOrRegisterInstallation(principal, task, client, externalId, now) : null
@@ -616,7 +620,7 @@ export class ScheduledTaskService {
     const late = now.getTime() - slot.getTime() > graceMinutes * 60_000
     // K12: a pótlás csak a türelmi időn túli (elmaradt) legutolsó alkalomra értelmes.
     const catchUp = input.catchUp === true && late
-    const runData = { taskId: task.id, slot, claimKey, runnerUserId: principal.userId, installationId: installation?.id ?? null, taskVersion: task.version, definitionVersionId: definition.definitionId }
+    const runData = { taskId: task.id, slot, claimKey, runnerUserId: principal.userId, installationId: installation?.id ?? null, taskVersion: task.version, definitionVersionId: definition.definitionId, ownerSeesResults: task.ownerSeesResults }
     let run: RunRecord | null
     if (late && !catchUp) {
       await this.deps.store.insertRun({ ...runData, status: 'missed', catchUp: false })
@@ -733,6 +737,10 @@ export class ScheduledTaskService {
         if (enabled && !live.some((row) => row.clientType === clientType)) pending.push({ taskId: task.id, title: task.title, reason: 'not_installed', clientType })
       }
       for (const row of live) {
+        if (!task.targets.includes(row.clientType)) {
+          pending.push({ taskId: task.id, title: task.title, reason: 'remove', clientType: row.clientType })
+          continue
+        }
         const desired = scheduleHash({ cron: task.cron, timezone: task.timezone, enabled: enabled && !row.locallyDisabled })
         if (row.installedScheduleHash !== desired) pending.push({ taskId: task.id, title: task.title, reason: 'changed_on_platform', clientType: row.clientType })
       }

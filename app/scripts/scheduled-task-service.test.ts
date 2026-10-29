@@ -90,7 +90,7 @@ class MemoryStore implements ScheduledTaskStore {
   async reviveMissedRun(input: Parameters<ScheduledTaskStore['reviveMissedRun']>[0]) {
     const run = this.runs.find((r) => r.taskId === input.taskId && r.slot.getTime() === input.slot.getTime() && r.claimKey === input.claimKey && r.status === 'missed')
     if (!run) return null
-    Object.assign(run, { status: 'running', catchUp: true, runnerUserId: input.runnerUserId, startedAt: now })
+    Object.assign(run, { ownerSeesResults: input.ownerSeesResults, status: 'running', catchUp: true, runnerUserId: input.runnerUserId, startedAt: now })
     return run
   }
   async findRun(runId: string) { return this.runs.find((r) => r.id === runId) ?? null }
@@ -158,7 +158,10 @@ async function main() {
     assert(created.ok)
     const start = await service.runStart(principal(PETER), { taskId: created.task.id })
     assert.equal((start as { code: string }).code, 'needs_consent')
-    const report = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: created.task.id, externalId: 'trig_p', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+    const stale = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: created.task.id, expectedVersion: 0, externalId: 'stale', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+    assert(stale.ok && stale.results[0].code === 'conflict')
+    assert.equal(store.members.find((m) => m.taskId === created.task.id)!.state, 'invited')
+    const report = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: created.task.id, expectedVersion: created.task.version, externalId: 'trig_p', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
     assert.deepEqual(report.ok && report.results.map((r) => r.ok), [true])
     assert.equal(store.members.find((m) => m.taskId === created.task.id)!.state, 'active')
   })
@@ -171,7 +174,7 @@ async function main() {
     assert.equal(first.instruction, base.instruction)
     assert.equal(first.definitionId, 'def-1')
     assert.match(first.guidance, new RegExp(`scheduledRunId "${first.runId}"`))
-    const second = await service.runStart(principal(ANNA), { taskId: personal.id, installation: { ...ROUTINE(ANNA), clientType: 'hermes', externalId: 'job_1' } })
+    const second = await service.runStart(principal(ANNA), { taskId: personal.id, installation: { ...ROUTINE(ANNA), externalId: 'job_1' } })
     assert.equal((second as { code: string }).code, 'already_claimed')
     const other = await service.runStart(principal(PETER), { taskId: personal.id })
     assert.equal((other as { code: string }).code, 'not_owner')
@@ -249,7 +252,7 @@ async function main() {
     assert(team.ok && shared.ok)
     assert.equal((await service.runStart(principal(PETER), { taskId: team.task.id }) as { code: string }).code, 'needs_consent')
     for (const [userId, taskId] of [[PETER, team.task.id], [CSILLA, team.task.id], [PETER, shared.task.id]]) {
-      const reported = await service.installReport(principal(userId), { client: ROUTINE(userId), reports: [{ taskId, externalId: `t_${userId}`, action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+      const reported = await service.installReport(principal(userId), { client: ROUTINE(userId), reports: [{ taskId, externalId: `t_${userId}`, expectedVersion: 1, action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
       assert(reported.ok && reported.results[0].ok)
     }
     const peter = await service.runStart(principal(PETER), { taskId: team.task.id })
@@ -273,8 +276,44 @@ async function main() {
     assert.equal((await service.runStart(principal(ANNA), { taskId: team.id })).ok, true)
     const briefing = await service.briefing(principal(PETER), AGENT)
     assert.ok(briefing?.pending.some((row) => row.taskId === team.id && row.reason === 'needs_reconsent'))
-    assert.equal((await service.respond(principal(PETER), { taskId: team.id, response: 'accept' })).ok, true)
+    assert.equal((await service.respond(principal(PETER), { taskId: team.id, expectedVersion: changed.task.version, response: 'accept' })).ok, true)
     assert.equal(store.members.find((m) => m.taskId === team.id && m.userId === PETER)!.acceptedVersion, changed.task.version)
+  })
+
+  await test('K13: sharing never exposes earlier private runs; consent is versioned', async () => {
+    now = new Date('2026-11-06T07:01:00Z')
+    const made = await service.create(principal(ANNA), { ...base, kind: 'shared', memberUserIds: [PETER] })
+    assert(made.ok)
+    const task = made.task
+    const installed = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: task.id, expectedVersion: 1, action: 'installed', externalId: 'private', scheduleHash: 'h', stubHash: 's' }] })
+    assert(installed.ok && installed.results[0].ok)
+    const started = await service.runStart(principal(PETER), { taskId: task.id })
+    assert(started.ok)
+    await service.runFinish(principal(PETER), { runId: started.runId, status: 'succeeded', summary: 'Private mailbox contents' })
+    const oldRun = store.runs.find((r) => r.id === started.runId)!
+    const changed = await service.update(principal(ANNA), { taskId: task.id, expectedVersion: 1, ownerSeesResults: true })
+    assert(changed.ok)
+    assert.equal(service.runView(changed.task, oldRun, ANNA).summary, undefined)
+    assert.equal((await service.respond(principal(PETER), { taskId: task.id, expectedVersion: 1, response: 'accept' }) as { code: string }).code, 'conflict')
+    const stale = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: task.id, expectedVersion: 1, action: 'accepted' }] })
+    assert(stale.ok && stale.results[0].code === 'conflict')
+    assert.equal((await service.respond(principal(PETER), { taskId: task.id, expectedVersion: changed.task.version, response: 'accept' })).ok, true)
+    now = new Date('2026-11-09T07:01:00Z')
+    const next = await service.runStart(principal(PETER), { taskId: task.id })
+    assert(next.ok)
+    await service.runFinish(principal(PETER), { runId: next.runId, status: 'succeeded', summary: 'Shared summary' })
+    assert.equal(service.runView(changed.task, store.runs.find((r) => r.id === next.runId)!, ANNA).summary, 'Shared summary')
+    assert.equal(service.runView(changed.task, oldRun, ANNA).summary, undefined)
+  })
+
+  await test('removed client target cannot register or claim a run', async () => {
+    const made = await service.create(principal(ANNA), { ...base, targets: ['hermes'] })
+    assert(made.ok)
+    const changed = await service.update(principal(ANNA), { taskId: made.task.id, expectedVersion: 1, targets: ['claude_routine'] })
+    assert(changed.ok)
+    const denied = await service.runStart(principal(ANNA), { taskId: made.task.id, installation: { clientType: 'hermes', clientInstanceId: 'laptop' } })
+    assert.equal((denied as { code: string }).code, 'target_not_allowed')
+    assert(!store.runs.some((r) => r.taskId === made.task.id))
   })
 
   await test('K14: agent operators are invited lazily; decline is final; revoked access stops runs', async () => {

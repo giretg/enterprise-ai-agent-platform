@@ -86,6 +86,7 @@ CREATE TABLE "scheduled_task_runs" (
     "task_version" INTEGER NOT NULL,
     "definition_version_id" UUID,
     "status" "ScheduledTaskRunStatus" NOT NULL,
+    "owner_sees_results" BOOLEAN NOT NULL DEFAULT false,
     "catch_up" BOOLEAN NOT NULL DEFAULT false,
     "summary" TEXT,
     "started_at" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

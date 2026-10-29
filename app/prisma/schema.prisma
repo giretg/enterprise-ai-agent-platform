@@ -1754,6 +1754,8 @@ model ScheduledTaskRun {
   taskVersion         Int                    @map("task_version")
   definitionVersionId String?                @map("definition_version_id") @db.Uuid
   status              ScheduledTaskRunStatus
+  /// A futás indításakor elfogadott megosztás; korábbi privát eredményt nem tesz láthatóvá.
+  ownerSeesResults    Boolean                @default(false) @map("owner_sees_results")
   catchUp             Boolean                @default(false) @map("catch_up")
   summary             String?                @db.Text
   startedAt           DateTime               @default(now()) @map("started_at") @db.Timestamptz

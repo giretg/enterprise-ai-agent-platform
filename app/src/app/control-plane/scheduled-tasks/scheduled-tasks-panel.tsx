@@ -227,7 +227,7 @@ function TaskCard({ task, options }: { task: ScheduledTaskRow; options: Schedule
   }
   const update = (patch: Partial<{ title: string; instruction: string; cron: string; timezone: string; status: 'active' | 'paused' | 'archived' }>, after?: () => void) =>
     run(() => updateScheduledTaskAction({ taskId: task.taskId, expectedVersion: task.version, ...patch }), after)
-  const respond = (response: 'accept' | 'decline') => run(() => respondScheduledTaskAction({ taskId: task.taskId, response }))
+  const respond = (response: 'accept' | 'decline') => run(() => respondScheduledTaskAction({ taskId: task.taskId, response, expectedVersion: task.version }))
 
   return (
     <article className="rounded-xl border border-ink/10 bg-white/50 p-4 text-sm">
@@ -245,13 +245,15 @@ function TaskCard({ task, options }: { task: ScheduledTaskRow; options: Schedule
             </>
           ) : null}
           {!task.isOwner && task.myState === 'needs_reconsent' ? <button type="button" className={primary} disabled={pending} onClick={() => respond('accept')}>{t('accept')}</button> : null}
-          {!task.isOwner && task.myState === 'invited' ? <button type="button" className={button} disabled={pending} onClick={() => respond('decline')}>{t('decline')}</button> : null}
+          {task.myState === 'invited' ? <button type="button" className={button} disabled={pending} onClick={() => respond('decline')}>{t('decline')}</button> : null}
           {!task.isOwner && (task.myState === 'active' || task.myState === 'needs_reconsent') ? <button type="button" className={button} disabled={pending} onClick={() => respond('decline')}>{t('leave')}</button> : null}
         </div>
       </div>
 
-      {!task.isOwner && task.myState === 'invited' ? <p className="mt-3 rounded-lg bg-honey/10 p-3">{t('invitedBanner', { owner: task.ownerName })}</p> : null}
+      {task.myState === 'invited' ? <p className="mt-3 rounded-lg bg-honey/10 p-3">{t('invitedBanner', { owner: task.ownerName })}</p> : null}
       {!task.isOwner && task.myState === 'needs_reconsent' ? <p className="mt-3 rounded-lg bg-honey/10 p-3">{t('reconsentBanner', { owner: task.ownerName })}</p> : null}
+
+      {task.ownerSeesResults && (task.myState === 'invited' || task.myState === 'needs_reconsent') ? <p className="mt-3 rounded-lg bg-honey/10 p-3">{t('resultsVisibilityWarning', { owner: task.ownerName })}</p> : null}
 
       <dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div><dt className="text-ink-faint">{t('columns.agent')}</dt><dd>{task.agentName}</dd></div>

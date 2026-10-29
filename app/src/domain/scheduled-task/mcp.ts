@@ -69,6 +69,7 @@ export const scheduledTaskSchemas: Record<ScheduledTaskToolName, z.ZodTypeAny> =
       taskId: uuid,
       externalId: z.string().max(200).optional(),
       action: z.enum(['installed', 'updated', 'removed', 'disabled', 'accepted', 'declined']),
+      expectedVersion: z.number().int().optional(),
       scheduleHash: z.string().max(64).optional(),
       stubHash: z.string().max(64).optional(),
       locallyDisabled: z.boolean().optional(),

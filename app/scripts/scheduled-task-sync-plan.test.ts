@@ -28,7 +28,7 @@ function task(overrides: Partial<PlanTask> = {}): PlanTask {
   return {
     taskId: TASK, title: 'Lejárt ajánlatok', kind: 'personal', status: 'active', cron: '0 8 * * 1-5', timezone: TZ,
     targets: ['claude_routine'], version: 3, instruction: 'Nézd át a lejárt ajánlatokat.', isOwner: true, ownerName: 'Anna',
-    inviterName: null, access: 'ok', liveInstallations: 2, memberCount: 0, ...overrides,
+    ownerSeesResults: false, inviterName: null, access: 'ok', liveInstallations: 2, memberCount: 0, ...overrides,
   }
 }
 const hash = (cron: string, enabled = true) => scheduleHash({ cron, timezone: TZ, enabled })
@@ -165,6 +165,19 @@ test('revoked access → remove; needs_reconsent → ask', () => {
 test('run-registered installation (unknown base) → platform state without question', () => {
   const [action] = plan([task({ cron: '0 9 * * 1-5' })], [inst({ installedScheduleHash: '' })], [inv()])
   assert.deepEqual([action.code, action.op], ['P1', 'update'])
+})
+
+test('consent enables task, names summary recipient and pins accepted version', () => {
+  const [action] = plan([task({ kind: 'shared', access: 'needs_consent', ownerSeesResults: true })], [], [])
+  assert.match(action.message, /Anna will also see your run summaries/)
+  const steps = action.choices!.find((c) => c.id === 'accept')!.steps
+  assert(steps.some((s) => s.type === 'local' && s.desired?.enabled === true))
+  assert(steps.some((s) => s.type === 'report' && s.report.expectedVersion === 3))
+  const [again] = plan([task({ kind: 'shared', access: 'needs_reconsent', ownerSeesResults: true })], [inst()], [inv()])
+  assert.match(again.message, /Anna will also see your run summaries/)
+})
+test('existing stubs are removed when client is no longer a target', () => {
+  assert.equal(plan([task({ targets: ['hermes'] })], [inst()], [inv()])[0].op, 'remove')
 })
 
 if (failures) {

@@ -365,6 +365,7 @@
       "timeline": "Eszközhívások ebben a futásban",
       "timelineEmpty": "Ehhez a futáshoz nincs összekötött eszközhívás.",
       "invitedBanner": "{owner} megosztott veled egy feladatot. Nyisd meg az AI-klienst a gépeden: magától felajánlja a telepítést — a telepítés az elfogadás.",
+      "resultsVisibilityWarning": "Figyelem: a futásaid összefoglalóit {owner} is látja.",
       "reconsentBanner": "{owner} módosította a feladatot. Amíg el nem fogadod, nálad nem fut.",
       "pause": "Szüneteltetés",
       "resume": "Folytatás",

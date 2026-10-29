@@ -365,6 +365,7 @@
       "timeline": "Tool calls in this run",
       "timelineEmpty": "No tool calls are linked to this run.",
       "invitedBanner": "{owner} shared a task with you. Open the AI client on your computer: it will offer to install it — installing it is your acceptance.",
+      "resultsVisibilityWarning": "Warning: {owner} will also see your run summaries.",
       "reconsentBanner": "{owner} changed the task. It does not run for you until you accept.",
       "pause": "Pause",
       "resume": "Resume",

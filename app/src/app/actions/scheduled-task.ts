@@ -234,7 +234,7 @@ export async function inviteScheduledTaskMembersAction(input: z.infer<typeof inv
   }
 }
 
-const respondSchema = z.object({ taskId: z.string().uuid(), response: z.enum(['accept', 'decline']) }).strict()
+const respondSchema = z.object({ taskId: z.string().uuid(), expectedVersion: z.number().int().optional(), response: z.enum(['accept', 'decline']) }).strict()
 
 export async function respondScheduledTaskAction(input: z.infer<typeof respondSchema>): Promise<ActionResult<{ state: string }>> {
   try {
