@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
 import { PgSchemaProvisioner } from '../src/domain/warehouse/provisioner'
 import { prismaWarehouseDatabase, warehouseSchemaName, type WarehouseDatabase } from '../src/domain/warehouse/sql'
+import * as store from '../src/domain/warehouse/store'
 import { WarehouseError, WarehouseService, type WarehouseActor } from '../src/domain/warehouse/warehouse-service'
 import { PostgresWarehouseRegistry } from '../src/repositories/postgres/warehouse-registry'
 import type { AuditAppendInput } from '../src/lib/audit/types'
@@ -269,6 +270,28 @@ async function main() {
     assert.equal((await service.commit(admin, { importId: append.import.id, previewHash: ap.import.previewHash!, approve: true })).replayed, true)
     assert.deepEqual((await service.query(viewer, { dataset: 'audit_append', aggregates: 'count:*' })).rows, [[4]])
     console.log('  OK  Audithiba után az append import sikeres marad, az ismétlés nem duplikál')
+
+    // CAS: késői awaiting_approval / preview nem billenti vissza published-ről (append duplikáció).
+    const schemaName = warehouseSchemaName(tenant.id)
+    assert.equal(
+      await db.run((sql) => store.updateImport(sql, schemaName, append.import.id, { state: 'awaiting_approval' }, { fromStates: ['previewed'] })),
+      false,
+    )
+    assert.equal(
+      await db.run((sql) =>
+        store.updateImport(
+          sql,
+          schemaName,
+          append.import.id,
+          { state: 'previewed', previewHash: ap.import.previewHash },
+          { fromStates: ['planned', 'previewed', 'awaiting_approval', 'failed'] },
+        ),
+      ),
+      false,
+    )
+    assert.equal((await service.getImport(viewer, append.import.id)).import.state, 'published')
+    assert.deepEqual((await service.query(viewer, { dataset: 'audit_append', aggregates: 'count:*' })).rows, [[4]])
+    console.log('  OK  Published import CAS-védett a késői állapot-visszaírás ellen')
 
     // A visszavonás visszahozza az előző import döntésre váró kivételeit.
     const originalExceptions = await service.listExceptions(viewer, { datasetKey: 'rendelesek' })
