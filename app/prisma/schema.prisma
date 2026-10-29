@@ -469,6 +469,7 @@ model Tenant {
   handoffs                   Handoff[]
   clientPolicies             ClientPolicy[]
   clientInstalls             ClientInstall[]
+  platformChatDailyUsage     PlatformChatDailyUsage[]
   clientMachineFloors        ClientMachineFloor[]
   aiInteractionEvents        AiInteractionEvent[]
   gatewaySurrogates          GatewaySurrogate[]
@@ -599,6 +600,8 @@ model Agent {
   miniAppGuide               String          @default("") @map("mini_app_guide")
   /// „Hová mit ments” tábla agentenkénti felülírása: { sor-kulcs: saját szabály }. Publikáláskor a snapshot.placementOverrides-ba fagy.
   placementOverrides         Json?           @map("placement_overrides")
+  /// Elérhető-e a beépített platform-chatben (#1004 D3); a tenant-kapcsoló is kell hozzá.
+  platformChatEnabled        Boolean         @default(true) @map("platform_chat_enabled")
   createdAt                  DateTime        @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime        @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?       @map("retired_at") @db.Timestamptz
@@ -1525,6 +1528,8 @@ model ClientInstall {
   policyVersion   String   @map("policy_version")
   guardVersion    String   @map("guard_version")
   hermesVersion   String   @map("hermes_version")
+  /// `hermes` = Guard heartbeat; `platform_chat` = szerveroldali platform-chat (#1004 WP-3), Guard-mezői üresek.
+  kind            String   @default("hermes")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1532,6 +1537,20 @@ model ClientInstall {
 
   @@unique([tenantId, userId, installId])
   @@map("client_installs")
+}
+
+/// Platform-chat napi modell-költés (#1004 D14): tenantonként és budapesti naponként, a gateway írja.
+model PlatformChatDailyUsage {
+  tenantId  String   @map("tenant_id") @db.Uuid
+  day       DateTime @db.Date
+  costUsd   Decimal  @default(0) @map("cost_usd") @db.Decimal(12, 6)
+  calls     Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([tenantId, day])
+  @@map("platform_chat_daily_usage")
 }
 
 /// A Guard által regisztrált Hermes-session; a Model Gateway csak ilyen sessionnek ad céges modellt.

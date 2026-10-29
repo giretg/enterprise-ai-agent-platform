@@ -76,4 +76,7 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/api/mini-apps/open/(.*)',
   '/api/mini-apps/content/(.*)',
   '/connectors/oauth/done',
+  // #1004 platform-chat worker: a chat-tokennel (Bearer) kér folytatási tokent, Clerk-süti nélkül.
+  // SZŰKEN ez a path — a `/api/chat/session` Clerk-sessiont kér (a böngészőből hívják).
+  '/api/chat/continuation',
 ] as const
