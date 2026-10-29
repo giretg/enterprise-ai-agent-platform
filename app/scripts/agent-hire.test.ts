@@ -173,6 +173,12 @@ check('kártyák tisztítása: üres és ismétlődő sor ki', () => {
   assert.deepEqual(normalizeHireCards(['  A  feladat ', '', 'a feladat', 'B']), ['A feladat', 'B'])
 })
 
+check('a hosszú kártya-szöveg nem vágódik le', () => {
+  const long = 'Részletes feladat: '.repeat(40).trim()
+  assert.ok(long.length > 300)
+  assert.deepEqual(normalizeHireCards([long]), [long])
+})
+
 check('a munkakör-szöveg a kártyákból és a hangnemből áll össze', () => {
   const role = composeRoleInstruction({
     name: 'Vera',
