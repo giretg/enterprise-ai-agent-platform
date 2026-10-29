@@ -148,11 +148,22 @@ export async function readWorkbookGrid(buffer: Buffer): Promise<WorkbookGrid> {
   return { sheets, truncatedSheets: worksheets.length > WAREHOUSE_MAX_SHEETS }
 }
 
-/** Az összevont tartomány minden cellája a bal felső (master) értéket kapja. */
+/**
+ * Az összevont tartomány minden cellája a bal felső (master) értéket kapja.
+ *
+ * A kitöltés nem kerülheti meg a sor-/cella-plafont: a `<mergeCell>` listát a
+ * csomagolt XLSX kompaktan tárolja, így pár ezer bejegyzés (a `merges` 5000-es
+ * felső korlátja) milliárdnyi cellát szintetizálna — ami a közös, több-bérlős
+ * processzben heap-OOM-ot okozna, és felülírná a `WAREHOUSE_MAX_ROWS` olvasási
+ * korlátot, amit a `readWorkbookGrid` a nyers sorokra már betart. Ezért új sort
+ * a plafonon túl nem hozunk létre, és a kitöltött cellák számát globális
+ * költségvetés korlátozza; a levágást a `truncated*` jelzők mutatják.
+ */
 export function applyMerges(grid: SheetGrid): SheetGrid {
   if (grid.merges.length === 0) return grid
   const byRow = new Map(grid.rows.map((row) => [row.rowNumber, row]))
-  for (const range of grid.merges) {
+  let fillBudget = WAREHOUSE_MAX_ROWS * WAREHOUSE_MAX_COLUMNS
+  fill: for (const range of grid.merges) {
     const [a, b] = range.split(':')
     const start = a ? parseCellRef(a) : null
     const end = b ? parseCellRef(b) : start
@@ -165,10 +176,21 @@ export function applyMerges(grid: SheetGrid): SheetGrid {
     for (let r = start.row; r <= maxRow; r++) {
       let row = byRow.get(r)
       if (!row) {
+        // A meglévő (nyers) sorok a plafonig kitölthetők, de új sort a merge
+        // nem fabrikálhat a korláton túl — különben a sorkorlát megkerülhető.
+        if (byRow.size >= WAREHOUSE_MAX_ROWS) {
+          grid.truncatedRows = true
+          continue
+        }
         row = { rowNumber: r, cells: [] }
         byRow.set(r, row)
       }
       for (let c = start.col; c <= maxCol; c++) {
+        if (fillBudget <= 0) {
+          grid.truncatedColumns = true
+          break fill
+        }
+        fillBudget--
         while (row.cells.length <= c) row.cells.push(null)
         if (row.cells[c] === null || row.cells[c] === undefined) row.cells[c] = master
       }
