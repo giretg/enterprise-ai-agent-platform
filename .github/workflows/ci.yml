@@ -106,6 +106,7 @@ jobs:
           npm run test:client-policy-tool-catalog
           npm run test:client-install
           npm run test:platform-chat
+          npm run test:public-chat
           npm run test:machine-floor
           npm run test:hermes-installer
           npm run test:model-gateway-token
@@ -265,6 +266,8 @@ jobs:
       # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
       - name: Mini app repository (Postgres)
         run: npm run test:mini-app-db
+      - name: Public chat on Postgres (#1016)
+        run: npm run test:public-chat-db
 
       - name: AI-adattárház (#984) valódi Postgresen
         run: npm run test:warehouse-db

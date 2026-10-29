@@ -6,6 +6,8 @@ import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { repositories } from '@/repositories/postgres'
 import { writeAudit } from '@/lib/audit/types'
 import { services } from '@/domain/gateway-services'
+import { publicChatMaintenanceDeps } from '@/auth/public-chat-deps'
+import { runPublicChatMaintenance } from '@/domain/public-chat/maintenance'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -41,6 +43,15 @@ export async function POST(request: Request): Promise<Response> {
       await services.miniApps.service.purgeExpiredArchives()
       // #978 §6: wiki-verziók napi ritkítása / törlése, régi change-setek tartalmának kiürítése.
       await services.wikiHistory.sweepRetention()
+      // #1016 D17/D20: nyilvános beszélgetések 30 napos törlése + megválaszolatlan kérdések napi csoportosítása.
+      const publicChat = await runPublicChatMaintenance(publicChatMaintenanceDeps())
+      await writeAudit(repositories.audit, {
+        actorType: 'system',
+        action: 'public_chat.retention_sweep',
+        targetType: 'public_chat_session',
+        policyDecision: 'allowed',
+        metadata: publicChat,
+      })
       return swept
     },
   )

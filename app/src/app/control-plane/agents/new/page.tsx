@@ -16,6 +16,8 @@ import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { getHireDraftQuota, getTenantAgentSettings } from '@/app/actions/tenant-agent-settings'
 import { CreateAgentWizard } from '@/components/agents/create-agent-wizard'
+import { AgentKindChooser } from '@/components/public-assistant/agent-kind-chooser'
+import { CreatePublicAssistantForm } from '@/components/public-assistant/create-public-assistant-form'
 import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
 import {
@@ -29,11 +31,32 @@ export const dynamic = 'force-dynamic'
 export default async function NewAgentPage({
   searchParams,
 }: {
-  searchParams: Promise<{ continue?: string; step?: string }>
+  searchParams: Promise<{ continue?: string; step?: string; type?: string; from?: string }>
 }) {
   const ctx = await requireTenantRole('admin')
   const params = await searchParams
   const continueId = params.continue?.trim() || null
+  if (!continueId && params.type === 'public') {
+    // #1016 D1: „Nyilvános asszisztens készítése ebből” — a forrás csak belső agent lehet.
+    const source = params.from
+      ? await prisma.agent.findFirst({
+          where: { id: params.from, tenantId: ctx.activeTenantId, kind: 'internal' },
+          select: { id: true, name: true },
+        }).catch(() => null)
+      : null
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-display text-3xl font-semibold">Új nyilvános asszisztens</h1>
+          <p className="mt-1 max-w-2xl text-sm text-ink-soft">
+            Ügyfélszolgálati chat a weboldaladra vagy egy megosztható linkre — a látogatóknak nem kell bejelentkezniük.
+          </p>
+        </div>
+        {source ? null : <AgentKindChooser selected="public" />}
+        <CreatePublicAssistantForm sourceAgent={source} />
+      </div>
+    )
+  }
   const [agentsRes, catalogRes, agentSettingsRes, quotaRes] = await Promise.all([
     listAgents({ limit: 100 }),
     listConnectorCatalog(),
@@ -41,7 +64,7 @@ export default async function NewAgentPage({
     continueId ? null : getHireDraftQuota(),
   ])
   const cloneableAgents = (agentsRes.success ? agentsRes.data : [])
-    .filter((agent) => agent.id !== continueId)
+    .filter((agent) => agent.id !== continueId && agent.kind !== 'public')
     .map((agent) => ({ id: agent.id, name: agent.name }))
   const catalog = catalogRes.success ? catalogRes.data : []
 
@@ -126,6 +149,7 @@ export default async function NewAgentPage({
         <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
         <p className="mt-1 max-w-2xl text-sm text-ink-soft">{t('body')}</p>
       </div>
+      {continueId ? null : <AgentKindChooser selected="internal" />}
       <CreateAgentWizard
         cloneableAgents={cloneableAgents}
         initialStep={isCreateAgentWizardStepId(params.step) ? params.step : undefined}

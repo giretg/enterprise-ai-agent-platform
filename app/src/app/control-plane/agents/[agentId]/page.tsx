@@ -62,6 +62,7 @@ import { getAgentWarehouseAccessAction } from '@/app/actions/warehouse'
 import { AgentWarehouseAccessCard } from '@/components/warehouse/warehouse-access-panels'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { Card } from '@/components/ui/shell'
+import { PublicAssistantPage } from './public-assistant-page'
 
 export const dynamic = 'force-dynamic'
 
@@ -82,7 +83,7 @@ export default async function AgentDetailPage({
   searchParams,
 }: {
   params: Promise<{ agentId: string }>
-  searchParams: Promise<{ section?: string; promisePage?: string }>
+  searchParams: Promise<{ section?: string; promisePage?: string; tab?: string }>
 }) {
   const { agentId } = await params
   const query = await searchParams
@@ -95,6 +96,12 @@ export default async function AgentDetailPage({
   } catch (error) {
     if (error instanceof TenantAuthError) notFound()
     throw error
+  }
+
+  // #1016: nyilvános asszisztensnek saját oldala van (a belső beállítások rá nem vonatkoznak).
+  const kindRow = await prisma.agent.findFirst({ where: { id: agentId, tenantId: ctx.activeTenantId }, select: { kind: true } })
+  if (kindRow?.kind === 'public') {
+    return <PublicAssistantPage agentId={agentId} tenantId={ctx.activeTenantId} role={ctx.activeTenantRole} tab={query.tab} />
   }
 
   const [
@@ -415,6 +422,15 @@ export default async function AgentDetailPage({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
             <AgentIdCopyButton agentId={agent.id} />
+            {canManage ? (
+              <Link
+                href={`/control-plane/agents/new?type=public&from=${agent.id}`}
+                className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:border-coral/50"
+                title="Új, nyilvános ügyfélszolgálati asszisztens a szerepleírás alapján — memóriát, eszközt és tudásbázist nem másol."
+              >
+                Nyilvános asszisztens készítése ebből
+              </Link>
+            ) : null}
             {canManage && publishRes.success && publishRes.data.stale ? (
               <PublishStaleDraftButton
                 agentId={agent.id}

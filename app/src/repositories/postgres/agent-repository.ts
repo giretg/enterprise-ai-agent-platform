@@ -188,6 +188,7 @@ export class PostgresAgentRepository implements AgentRepository {
   async activate(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
+    if (agent.kind === 'public') throw new Error('A nyilvános asszisztens nem aktiválható belső munkatársként.')
     if (!agent.currentDefinitionVersionId) {
       throw new Error('Előbb tedd közzé a definíciót, aztán aktiválhatod.')
     }
@@ -211,6 +212,7 @@ export class PostgresAgentRepository implements AgentRepository {
   async resume(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
+    if (agent.kind === 'public') throw new Error('A nyilvános asszisztens nem aktiválható belső munkatársként.')
     assertTransition(agent.status, 'active')
     return prisma.agent.update({
       where: { id: agentId },

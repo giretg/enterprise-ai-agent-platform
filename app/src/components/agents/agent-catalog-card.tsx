@@ -23,6 +23,8 @@ export type AgentCatalogCardModel = {
   unpublished: boolean
   currentDefinitionVersionId?: string | null
   platformChatEnabled?: boolean
+  /** #1016: `public` = nyilvános ügyfélszolgálati asszisztens (saját oldal, nincs varázsló/platform-chat). */
+  kind?: string
 }
 
 /**
@@ -44,7 +46,8 @@ export async function AgentCatalogCard({
   const persona = personaFor(agent.name)
   const statusLabel = isAgentStatusKey(agent.status) ? t(`status.${agent.status}`) : agent.status
   const currentDefinitionVersionId = agent.currentDefinitionVersionId ?? null
-  const halfFinished = isHalfFinishedAgent({
+  const isPublic = agent.kind === 'public'
+  const halfFinished = !isPublic && isHalfFinishedAgent({
     status: agent.status,
     currentDefinitionVersionId,
   })
@@ -54,7 +57,7 @@ export async function AgentCatalogCard({
       : agent.unpublished
         ? `/control-plane/agents/${agent.id}?section=elesites`
         : `/control-plane/agents/${agent.id}`
-  const showStartChat = canStartPlatformChat({
+  const showStartChat = !isPublic && canStartPlatformChat({
     tenantEnabled: tenantChatEnabled,
     platformChatEnabled: agent.platformChatEnabled !== false,
     status: agent.status,
@@ -75,7 +78,14 @@ export async function AgentCatalogCard({
             <h2 className="font-display text-lg font-semibold tracking-tight">
               {persona.nickname || agent.name}
             </h2>
-            {halfFinished ? (
+            {isPublic ? (
+              <span
+                title="Bárki beszélhet vele a weboldalon vagy linken, bejelentkezés nélkül."
+                className="rounded-full border border-sage/40 bg-sage/15 px-2.5 py-0.5 text-xs font-semibold text-ink"
+              >
+                Nyilvános asszisztens
+              </span>
+            ) : halfFinished ? (
               <span
                 title={t('halfFinishedHint')}
                 className="rounded-full border border-sky/50 bg-sky/15 px-2.5 py-0.5 text-xs font-semibold text-ink"
@@ -94,7 +104,7 @@ export async function AgentCatalogCard({
           {agent.description ? (
             <p className="mt-1 text-sm text-ink">{agent.description}</p>
           ) : null}
-          <p className="mt-1 text-sm text-ink-soft">{statusLabel}</p>
+          {isPublic ? null : <p className="mt-1 text-sm text-ink-soft">{statusLabel}</p>}
         </div>
       </Link>
       {showStartChat ? (
