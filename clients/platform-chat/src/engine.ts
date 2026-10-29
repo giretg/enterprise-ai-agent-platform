@@ -59,7 +59,8 @@ export const MESSAGES = {
 const sha = (...parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex')
 
 /** OpenAI-függvénynév: `[a-zA-Z0-9_-]{1,64}` — a pontot dupla aláhúzásra cseréljük. */
-export const toFunctionName = (tool: string) => tool.replace(/\./g, '__').slice(0, 64)
+/** A modell-szolgáltató a függvénynevet `^[a-zA-Z0-9_-]{1,64}$` mintához köti — a visszajátszott hívásokra is. */
+export const toFunctionName = (tool: string) => tool.replace(/\./g, '__').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
 
 const nowOf = (deps: EngineDeps) => (deps.now ?? (() => new Date()))()
 
@@ -263,7 +264,7 @@ export async function buildMessages(deps: EngineDeps, conversation: Conversation
         role: 'assistant',
         content: out.content || null,
         ...(out.toolCalls.length
-          ? { tool_calls: out.toolCalls.map((c) => ({ id: c.id, type: 'function' as const, function: { name: c.name, arguments: c.arguments } })) }
+          ? { tool_calls: out.toolCalls.map((c) => ({ id: c.id, type: 'function' as const, function: { name: toFunctionName(c.name), arguments: c.arguments } })) }
           : {}),
       })
     } else {
