@@ -29,6 +29,18 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'promise.register',
   'promise.complete',
   'promise.cancel',
+  // #640 ütemezett feladat
+  'scheduled_task.create',
+  'scheduled_task.update',
+  'scheduled_task.invite',
+  'scheduled_task.accept',
+  'scheduled_task.decline',
+  'scheduled_task.leave',
+  'scheduled_task.install_report',
+  'scheduled_task.run_start',
+  'scheduled_task.run_finish',
+  'scheduled_task.run_tool_call',
+  'scheduled_task.run_link_rejected',
 
   'user.authz.deny',
   'user.invite.issue',

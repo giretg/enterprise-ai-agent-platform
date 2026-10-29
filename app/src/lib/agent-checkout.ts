@@ -58,6 +58,14 @@ const HERMES_BASE_TOOLS = [
   'platform.promise.list',
   'platform.promise.complete',
   'platform.promise.cancel',
+  'platform.scheduled_task.list',
+  'platform.scheduled_task.get',
+  'platform.scheduled_task.create',
+  'platform.scheduled_task.update',
+  'platform.scheduled_task.sync',
+  'platform.scheduled_task.install_report',
+  'platform.scheduled_task.run_start',
+  'platform.scheduled_task.run_finish',
   'platform.projects.list',
   'platform.projects.create',
   'platform.project_memory.read',
@@ -552,6 +560,8 @@ export function renderAgentBriefing(input: {
     '- Current focus: the `focus` field in platform.agent.get_definition — always in full, before the memory list. Only one active focus per agent and project: platform.project_memory.write with kind "focus" replaces it.',
     '- Session log: append-only work journal with kind "session_log" (what you did, outcome, where artifacts live, next step). Never replace old session logs.',
     '- Work files (plans, notes, open tasks): platform.work_file.* under a projectKey.',
+    // #640 §5.4: statikus bekezdés, nem feladatlista — a teendőt a get_definition scheduledTasks blokkja adja.
+    '- Scheduled tasks live on the platform. If platform.agent.get_definition → scheduledTasks.pending names your client type, call platform.scheduled_task.sync, carry out the plan, ask the user its questions, then platform.scheduled_task.install_report. When the user asks for recurring work, first platform.scheduled_task.create, then install the recipe. Never edit a platform stub by hand.',
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   )
 

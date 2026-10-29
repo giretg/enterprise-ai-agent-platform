@@ -53,6 +53,7 @@ import {
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
 import { CUSTOMER_PROMISE_TOOLS, invokeCustomerPromise } from '../src/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_TOOLS } from '../src/domain/scheduled-task/mcp'
 import { CustomerPromiseService, type CustomerPromiseStore } from '../src/domain/customer-promise/customer-promise-service'
 import { MCP_WORK_FILE_LIST_TOOL, PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '../src/domain/mini-app/mcp'
@@ -560,6 +561,41 @@ function writerDeps(extra: { requestStateKey?: string; driveCalls?: unknown[] } 
 }
 
 async function main() {
+  await check('#640 scheduledRunId is stripped and linked; scheduled_task tools dispatch; S1 block on get_definition', async () => {
+    const { deps } = writerDeps()
+    const links: Array<{ runId: string; toolName: string }> = []
+    const seenArgs: Array<Record<string, unknown>> = []
+    const scheduledCalls: Array<{ toolName: string; args: Record<string, unknown> }> = []
+    deps.linkScheduledRun = async ({ runId, toolName }) => { links.push({ runId, toolName }) }
+    deps.invokeEnterpriseTool = async (input) => {
+      seenArgs.push(input.args)
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    }
+    deps.invokeScheduledTask = async (input) => {
+      scheduledCalls.push({ toolName: input.toolName, args: input.args })
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    }
+    deps.readScheduledTaskBriefing = async () => ({ syncRevision: 'r1', pending: [{ taskId: 't1', title: 'Heti riport', reason: 'not_installed', clientType: 'claude_routine' }], missed: [] })
+    async function call(tool: string, args: Record<string, unknown>, headers: Record<string, string> = {}) {
+      const response = await post('acme', { jsonrpc: '2.0', id: 640, method: 'tools/call', params: { name: tool, arguments: args } }, { authorization: `Bearer ${TOKEN}`, ...headers }, deps)
+      assert.equal(response.status, 200)
+      const body = await readJson(response) as { result: { content: Array<{ text: string }> } }
+      return JSON.parse(body.result.content[0].text)
+    }
+    const RUN = '64064064-0640-4640-8640-640640640640'
+    await call(GOOGLE_DRIVE_SEARCH_TOOL, { definitionId: DEFINITION_ID, query: 'x', scheduledRunId: RUN })
+    assert.equal('scheduledRunId' in seenArgs[0], false)
+    await call(GOOGLE_DRIVE_SEARCH_TOOL, { definitionId: DEFINITION_ID, query: 'y' }, { 'x-scheduled-run-id': RUN })
+    assert.deepEqual(links, [{ runId: RUN, toolName: GOOGLE_DRIVE_SEARCH_TOOL }, { runId: RUN, toolName: GOOGLE_DRIVE_SEARCH_TOOL }])
+    await call('platform.scheduled_task.run_start', { taskId: RUN, scheduledRunId: RUN })
+    assert.equal(links.length, 2, 'scheduled_task tools are not linked to a run')
+    assert.equal(scheduledCalls[0].toolName, 'platform.scheduled_task.run_start')
+    const definition = await call(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.equal(definition.scheduledTasks.pending[0].reason, 'not_installed')
+    deps.readScheduledTaskBriefing = async () => { throw new Error('relation "scheduled_tasks" does not exist') }
+    assert.equal((await call(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })).scheduledTasks, undefined)
+  })
+
   await check('promise HTTP tools enforce grants, ownership, tenant and argument boundaries', async () => {
     const { deps, audit } = writerDeps()
     const rows: import('../src/domain/customer-promise/customer-promise-service').CustomerPromiseRecord[] = []
@@ -893,6 +929,7 @@ async function main() {
       MCP_SKILL_SUBMIT_TOOL,
       ...PROJECT_WORK_TOOLS.slice(0, -2),
       ...CUSTOMER_PROMISE_TOOLS,
+      ...SCHEDULED_TASK_TOOLS,
       ...PROJECT_WORK_TOOLS.slice(-2),
       ...WAREHOUSE_TOOLS,
       ...MINI_APP_TOOLS,

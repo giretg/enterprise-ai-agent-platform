@@ -14,6 +14,7 @@ import type {
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 import { CUSTOMER_PROMISE_TOOLS } from '@/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_TOOLS } from '@/domain/scheduled-task/mcp'
 import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '@/domain/mini-app/mcp'
 import { WAREHOUSE_TOOLS } from '@/domain/warehouse/mcp'
@@ -43,6 +44,7 @@ export const MCP_PLATFORM_TOOLS = [
   MCP_SKILL_SUBMIT_TOOL,
   ...PROJECT_WORK_TOOLS,
   ...CUSTOMER_PROMISE_TOOLS,
+  ...SCHEDULED_TASK_TOOLS,
   ...MINI_APP_TOOLS,
   ...WAREHOUSE_TOOLS,
   MCP_GATEWAY_OPERATION_GET_TOOL,

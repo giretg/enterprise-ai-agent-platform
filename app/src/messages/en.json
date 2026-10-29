@@ -238,6 +238,158 @@
     "failBody": "You can close this tab and retry the connection in your AI client."
   },
   "ControlPlane": {
+    "scheduledTasks": {
+      "title": "Scheduled tasks",
+      "body": "Recurring work that an AI coworker does on your own computer or in the cloud — for example every weekday morning. The platform only records and coordinates it; your AI client runs it.",
+      "helpLabel": "How does it work?",
+      "help": "Here you set what the coworker should do and when. The AI client on your computer (e.g. Claude) offers to install it the next time you open it; from then on its own scheduler starts it. Even if it is installed in two places, it runs only once per scheduled time.",
+      "empty": "No scheduled tasks yet. Create one here, or ask the AI coworker on your own computer: \"summarize my emails every morning\".",
+      "error": "Scheduled tasks could not be loaded or saved right now. Please try again.",
+      "new": "New scheduled task",
+      "closeForm": "Cancel",
+      "showArchived": "Include archived",
+      "hideArchived": "Hide archived",
+      "kindQuestion": "Who is the task for?",
+      "kinds": {
+        "personal": {
+          "name": "Just for me",
+          "body": "Runs in your name, on your computer or in your cloud.",
+          "example": "Example: \"Summarize my emails in the morning.\"",
+          "who": "You"
+        },
+        "team": {
+          "name": "For the team — runs once, someone runs it",
+          "body": "Shared work that has to be done once per scheduled time. It runs in the name and with the rights of whoever has their computer on.",
+          "example": "Example: \"At 8, sort last night's emails in the support inbox.\"",
+          "who": "Whoever on the team has their computer on"
+        },
+        "shared": {
+          "name": "Everyone gets their own",
+          "body": "One task, but it runs separately for every member, on their own data.",
+          "example": "Example: \"Review my emails in the morning\" — one person writes it, everyone gets it.",
+          "who": "Everyone in their own name ({count} members)"
+        }
+      },
+      "teamWarning": "This coworker also uses the runner's own accounts (e.g. their own email address). A team task always runs for whoever has their computer on, so the result may come from a different account each day. If it should run on everyone's own data, choose \"Everyone gets their own\".",
+      "switchToShared": "Switch to: Everyone gets their own",
+      "agent": "Coworker",
+      "noAgents": "There is no coworker you can run. Ask an admin for access.",
+      "taskTitle": "Short name",
+      "taskTitlePlaceholder": "e.g. Review expired offers",
+      "instruction": "What should it do every time?",
+      "instructionPlaceholder": "e.g. Review expired offers in the CRM and list whom to call.",
+      "when": "When should it run?",
+      "presets": {
+        "weekdays8": "Weekdays 8:00",
+        "daily8": "Daily 8:00",
+        "monday9": "Mondays 9:00",
+        "hourly": "Hourly"
+      },
+      "cron": "Schedule (cron, advanced)",
+      "timezone": "Time zone",
+      "runsPerDay": "About {count} runs per day.",
+      "scheduleErrors": {
+        "invalid_args": "I don't understand this schedule. Pick one of the buttons above, or enter a 5-field cron (minute hour day month weekday).",
+        "schedule_too_frequent": "It can run at most every 15 minutes. For more frequent watching this is not the right tool.",
+        "schedule_never_runs": "This schedule would never run."
+      },
+      "where": "Where should it run?",
+      "targets": {
+        "claude_routine": "In the cloud (Claude Code) — runs even when your computer is off",
+        "claude_desktop": "On your laptop (Claude Desktop) — while it is on",
+        "codex": "Codex app",
+        "goose": "Goose",
+        "hermes": "Hermes",
+        "other": "Another AI client (manual setup)"
+      },
+      "targetShort": {
+        "claude_routine": "Cloud (Claude Code)",
+        "claude_desktop": "Laptop (Claude Desktop)",
+        "codex": "Codex",
+        "goose": "Goose",
+        "hermes": "Hermes",
+        "other": "Other client"
+      },
+      "forWhom": "In whose name?",
+      "forMe": "Me",
+      "forOtherNote": "Your colleague has to accept it: it does not run until they install it on their own computer.",
+      "audience": "Who are the members?",
+      "audienceSelected": "Selected colleagues",
+      "audienceOperators": "Everyone who can use {agent} (currently {count} people)",
+      "ownerSeesResults": "I want to see the summaries of the members' runs",
+      "ownerSeesResultsHint": "Members see this when they accept (\"you also see the run summaries\"). By default you only see the status: succeeded, failed or missed.",
+      "create": "Create",
+      "created": "Done. The AI client on your computer offers to install it the next time you open it.",
+      "columns": {
+        "what": "What it does",
+        "agent": "Coworker",
+        "who": "In whose name",
+        "when": "When",
+        "where": "Where it runs",
+        "lastRun": "Last run",
+        "actions": "Actions"
+      },
+      "statuses": {
+        "active": "Active",
+        "paused": "Paused",
+        "archived": "Archived"
+      },
+      "installStates": {
+        "waiting": "Waiting to be installed",
+        "waitingHint": "Open the AI client on your computer and it will offer it.",
+        "installed": "Installed",
+        "needs_update": "Needs an update on the computer",
+        "locally_disabled": "Turned off on this computer",
+        "multiple": "Installed in several places — only one runs",
+        "declined": "Declined"
+      },
+      "memberStates": {
+        "invited": "Waiting to be installed",
+        "active": "Installed",
+        "needs_reconsent": "Waiting for acceptance",
+        "declined": "Declined",
+        "left": "Left",
+        "activeNotInstalled": "Accepted, not installed yet"
+      },
+      "runStatuses": {
+        "running": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "missed": "Missed",
+        "not_reported": "Did not report back"
+      },
+      "missedHint": "The computer was probably off.",
+      "catchUp": "caught up",
+      "ranBy": "run by {name}",
+      "noRuns": "Has not run yet.",
+      "timeline": "Tool calls in this run",
+      "timelineEmpty": "No tool calls are linked to this run.",
+      "invitedBanner": "{owner} shared a task with you. Open the AI client on your computer: it will offer to install it — installing it is your acceptance.",
+      "resultsVisibilityWarning": "Warning: {owner} will also see your run summaries.",
+      "reconsentBanner": "{owner} changed the task. It does not run for you until you accept.",
+      "pause": "Pause",
+      "resume": "Resume",
+      "archive": "Archive",
+      "archiveConfirm": "Archive this task? It disappears from the computers at the next sync.",
+      "edit": "Edit",
+      "save": "Save",
+      "cancel": "Cancel",
+      "accept": "Accept",
+      "decline": "Decline",
+      "leave": "Leave",
+      "members": "Members",
+      "invite": "Invite",
+      "invitePick": "Whom do you invite?",
+      "editReconsentNote": "If you change the instruction, members have to accept again; until then it does not run for them. Changing the time does not need that.",
+      "conflict": "Someone else changed it in the meantime. Refresh the page and try again.",
+      "codes": {
+        "not_owner": "Only the task owner can change this.",
+        "agent_access_denied": "You cannot run this coworker.",
+        "agent_unavailable": "This coworker is not available right now.",
+        "limit_exceeded": "You reached the maximum of 50 scheduled tasks.",
+        "not_allowed": "You are not allowed to do this."
+      }
+    },
     "promises": {
       "pageEmpty": "There are no more commitments on this page. Go back to the previous page.",
       "pagination": "Pagination",
@@ -785,6 +937,7 @@
       "staff_skills": "Skills",
       "staff_knowledge": "Knowledge base",
       "staff_warehouse": "Data warehouse",
+      "staff_scheduled-tasks": "Scheduled tasks",
       "settings": "Settings",
       "settings_get-started": "AI client",
       "admin": "Administration",

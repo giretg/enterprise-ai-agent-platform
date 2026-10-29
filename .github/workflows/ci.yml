@@ -92,6 +92,8 @@ jobs:
           npm run test:agent-hire
           npm run test:project-work
           npm run test:handoff
+          npm run test:scheduled-task-sync-plan
+          npm run test:scheduled-task-service
           npm run test:mini-app
           npm run test:warehouse
           npm run test:work-file-output
