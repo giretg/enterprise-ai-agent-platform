@@ -5,7 +5,17 @@
  * Futtatás: npm run test:warehouse
  */
 import assert from 'node:assert/strict'
-import { assertWarehouseUpload, readWorkbookGrid, WarehouseFileError, WAREHOUSE_MAX_FILE_BYTES } from '../src/domain/warehouse/excel-reader'
+import {
+  applyMerges,
+  assertWarehouseUpload,
+  readWorkbookGrid,
+  WAREHOUSE_MAX_COLUMNS,
+  WAREHOUSE_MAX_FILE_BYTES,
+  WAREHOUSE_MAX_MERGE_FILL_CELLS,
+  WAREHOUSE_MAX_ROWS,
+  WarehouseFileError,
+  type SheetGrid,
+} from '../src/domain/warehouse/excel-reader'
 import { checkPlan, parseImportPlan, type CatalogDataset } from '../src/domain/warehouse/plan'
 import { profileWorkbook } from '../src/domain/warehouse/profiler'
 import { buildQuerySpec, compileQuery, QueryError } from '../src/domain/warehouse/query'
@@ -118,6 +128,86 @@ async function main() {
     assert.throws(() => assertWarehouseUpload(bomb, 'bomba.xlsx'), (e: unknown) => e instanceof WarehouseFileError && e.code === 'unsafe_archive')
     assert.throws(() => assertWarehouseUpload(Buffer.from('a,b\n1,2'), 'x.csv'), (e: unknown) => e instanceof WarehouseFileError && e.code === 'unsupported_format')
     assert.throws(() => assertWarehouseUpload(Buffer.alloc(11 * 1024 * 1024), 'x.xlsx'), (e: unknown) => e instanceof WarehouseFileError && e.code === 'file_too_large')
+  })
+
+  await check('AC12b: összevont tartományok nem kerülik meg a sor-/cella-plafont (OOM-kapu)', () => {
+    // Néhány kompakt <mergeCell> (a valós fájlban pár száz bájt) óriási, millió
+    // soros tartományokat jelölhet. A kitöltés nem fabrikálhat korlátlanul sort
+    // (heap-OOM a közös processzben), és be kell tartania a WAREHOUSE_MAX_ROWS-t.
+    // Minden merge bal-felső (master) cellája létező, nem üres sor (a csomagolt
+    // fájlban soronként 1 cella) — a merge ebből „terjeszti ki” a GR-ig (200
+    // oszlop) és 1000 soron át a mintát. 5000 ilyen blokk fedezetlenül ~5M sort
+    // és ~1e9 cellát allokálna.
+    const merges: string[] = []
+    const seeded: SheetGrid['rows'] = []
+    for (let i = 0; i < 5_000; i++) {
+      const top = i * 1_000 + 1
+      seeded.push({ rowNumber: top, cells: ['x'] })
+      merges.push(`A${top}:GR${top + 999}`)
+    }
+    const grid: SheetGrid = {
+      name: 'Rosszindulatú',
+      state: 'visible',
+      rows: seeded,
+      merges,
+      formulaCells: {},
+      errorCells: 0,
+      truncatedRows: false,
+      truncatedColumns: false,
+    }
+    const started = Date.now()
+    const result = applyMerges(grid)
+    const elapsedMs = Date.now() - started
+    assert.ok(result.rows.length <= WAREHOUSE_MAX_ROWS, `sorok száma korlátos (${result.rows.length} <= ${WAREHOUSE_MAX_ROWS})`)
+    assert.ok(result.truncatedRows, 'a levágást jelezni kell')
+    // Egyetlen sor sem lóghat túl a WAREHOUSE_MAX_COLUMNS oszlopon.
+    assert.ok(result.rows.every((r) => r.cells.length <= WAREHOUSE_MAX_COLUMNS), 'oszlopszám korlátos')
+    // A javítás nélkül ez percekig futna / OOM-olna; korláttal gyors.
+    assert.ok(elapsedMs < 10_000, `gyorsan végez (${elapsedMs}ms)`)
+  })
+
+  await check('AC12d: a merge-kitöltés költségvetése munkafüzet-szintű (lapokon átívelő OOM-kapu)', () => {
+    // Egy rosszindulatú lap önmaga kimeríti a megosztott költségvetést; a hívó
+    // ugyanazt a budget-objektumot adja a következő lapnak, így az már nem tud
+    // újabb cellákat szintetizálni (50 lap × laponkénti plafon nem adódik össze).
+    const bigMerge = (): SheetGrid => ({
+      name: 'L', state: 'visible',
+      rows: Array.from({ length: 200 }, (_, i) => ({ rowNumber: i * 1_000 + 1, cells: ['x'] })),
+      merges: Array.from({ length: 200 }, (_, i) => `A${i * 1_000 + 1}:GR${i * 1_000 + 1_000}`),
+      formulaCells: {}, errorCells: 0, truncatedRows: false, truncatedColumns: false,
+    })
+    const budget = { cells: WAREHOUSE_MAX_MERGE_FILL_CELLS }
+    const first = applyMerges(bigMerge(), budget)
+    assert.ok(first.truncatedRows, 'az első lap kimeríti a költségvetést')
+    assert.equal(budget.cells, 0, 'a megosztott költségvetés elfogyott')
+    const secondInput = bigMerge()
+    const second = applyMerges(secondInput, budget)
+    // A második lap master-cellái megvannak, de kitöltött új cella nem keletkezhet.
+    const synthesized = second.rows.filter((r) => r.cells.some((c, i) => i > 0 && c !== null))
+    assert.equal(synthesized.length, 0, 'a második lapon nem keletkezik új kitöltött cella')
+    assert.ok(second.truncatedRows, 'a második lap levágását is jelezni kell')
+  })
+
+  await check('AC12c: valós összevont fejléc érintetlen (nincs regresszió)', () => {
+    const grid: SheetGrid = {
+      name: 'Rendelések',
+      state: 'visible',
+      rows: [
+        { rowNumber: 1, cells: ['Rendelés', null, 'Ügyfél'] },
+        { rowNumber: 2, cells: ['Szám', 'Dátum', 'Név'] },
+      ],
+      merges: ['A1:B1'],
+      formulaCells: {},
+      errorCells: 0,
+      truncatedRows: false,
+      truncatedColumns: false,
+    }
+    const result = applyMerges(grid)
+    assert.equal(result.truncatedRows, false)
+    const header = result.rows.find((r) => r.rowNumber === 1)!
+    // A master érték (A1) átterjed az összevont B1-re.
+    assert.equal(header.cells[0], 'Rendelés')
+    assert.equal(header.cells[1], 'Rendelés')
   })
 
   const ordersPlan = {
