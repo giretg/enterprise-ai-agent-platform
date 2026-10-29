@@ -49,6 +49,7 @@
     "test:client-policy": "tsx scripts/client-policy-resolve.test.ts",
     "test:client-policy-tool-catalog": "tsx scripts/client-policy-tool-catalog.test.ts",
     "test:client-install": "tsx scripts/client-install.test.ts",
+    "test:platform-chat": "tsx scripts/platform-chat.test.ts",
     "test:machine-floor": "tsx scripts/machine-floor.test.ts",
     "test:hermes-installer": "tsx scripts/hermes-installer.test.ts",
     "test:model-gateway-proxy": "tsx scripts/model-gateway-proxy.test.ts",

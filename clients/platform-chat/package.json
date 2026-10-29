@@ -1,0 +1,28 @@
+{
+  "name": "platform-chat-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Beépített platform-chat worker (#1004): szigorúan külső MCP-kliens, Cloud Run, scale-to-zero.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "dev": "PLATFORM_CHAT_QUEUE=inline node --import tsx --watch src/main.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/engine.test.ts && tsx test/auth.test.ts && tsx test/server.test.ts && tsx test/platform-client.test.ts && tsx scripts/check-import-boundary.ts",
+    "test:pg": "tsx test/pg-store.it.ts",
+    "test:import-boundary": "tsx scripts/check-import-boundary.ts"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.1",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/pg": "^8",
+    "typescript": "^5"
+  }
+}

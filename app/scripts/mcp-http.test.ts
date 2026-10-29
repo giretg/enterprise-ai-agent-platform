@@ -4,6 +4,7 @@
  */
 import { WAREHOUSE_TOOLS } from '../src/domain/warehouse/mcp'
 import assert from 'node:assert/strict'
+import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
 import type {
   PlatformMembership,
   Tenant,
@@ -2591,6 +2592,41 @@ async function main() {
       if (previousApp === undefined) delete process.env.NEXT_PUBLIC_APP_URL
       else process.env.NEXT_PUBLIC_APP_URL = previousApp
     }
+  })
+
+  await check('#1004 platform-chat token: tools/call a Clerk OAuth nélkül, client=platform_chat audit; folytatási token csak a saját agentjével', async () => {
+    const { deps: base, audit } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+    const chatKey = 'p'.repeat(40)
+    const now = new Date()
+    const browser = signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, chatKey, now).token
+    const turn = signChatToken({ aud: CHAT_TURN_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false, turnId: 't1', agentId: AGENT_ID }, chatKey, now).token
+    const deps: McpRuntimeDeps = {
+      ...base,
+      verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+      users: { ...base.users, findById: async () => user() },
+    }
+    const call = (token: string, headers: Record<string, string> = {}) =>
+      post('acme', { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } }, { authorization: `Bearer ${token}`, ...headers }, deps)
+    const res = await call(browser)
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    assert.equal((JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { agents: Array<{ agentId: string }> }).agents[0]?.agentId, AGENT_ID)
+    const row = audit.find((a) => a.action === 'mcp.tools.call')
+    assert.equal((row?.metadata as Record<string, unknown> | undefined)?.client, 'platform_chat')
+    assert.equal((await call(turn)).status, 403) // agent-fejléc nélkül
+    assert.equal((await call(turn, { 'x-excellence-agent-id': FOREIGN_AGENT_ID })).status, 403)
+    assert.equal((await call(turn, { 'x-excellence-agent-id': AGENT_ID })).status, 200)
+    assert.equal((await call(signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, 'x'.repeat(40), now).token)).status, 401)
+    // A worker állapotmentesen (initialize nélkül) listáz: 2026-07-28 envelope a `_meta`-ban.
+    const meta = {
+      'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientInfo': { name: 'excellence-platform-chat', version: '1.0.0' },
+      'io.modelcontextprotocol/clientCapabilities': { elicitation: { form: {} } },
+    }
+    const list = await post('acme', { jsonrpc: '2.0', id: 10, method: 'tools/list', params: { _meta: meta } }, { authorization: `Bearer ${turn}`, 'x-excellence-agent-id': AGENT_ID, 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, deps)
+    assert.equal(list.status, 200)
+    const tools = ((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []
+    assert.ok(tools.some((t) => t.name === MCP_AGENTS_LIST_TOOL))
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

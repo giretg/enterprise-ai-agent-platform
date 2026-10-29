@@ -182,5 +182,12 @@ check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer)
   assertProtected('/api/client-policy/machine-floor')
 })
 
+check('#1004 a platform-chat folytatási token publikus (chat-token Bearer), a session-végpont védett', () => {
+  assertPublic('/api/chat/continuation')
+  assertProtected('/api/chat/session')
+  assertProtected('/api/chat/continuation/admin')
+  assertProtected('/chat')
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

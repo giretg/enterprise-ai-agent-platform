@@ -213,6 +213,7 @@ import {
 } from '@/domain/mini-app/mcp'
 import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { MINI_APP_VIEWER_HTML, miniAppViewerResourceMeta } from '@/domain/mini-app/viewer'
+import { chatTokenKeyFromEnv, verifyChatToken } from '@/domain/platform-chat/chat-token'
 import {
   isWarehouseTool,
   WAREHOUSE_READ_ONLY_TOOLS,
@@ -350,6 +351,11 @@ export async function verifyClerkOAuthToken(bearerToken: string): Promise<Verifi
   }
 }
 
+/** #1004: a beépített platform-chat first-party tokenje (mindkét audience). */
+export function productionChatTokenVerifier(bearerToken: string) {
+  return verifyChatToken(bearerToken, chatTokenKeyFromEnv(), Math.floor(Date.now() / 1000))
+}
+
 export async function canViewAgent(input: {
   tenantId: string
   userId: string
@@ -376,6 +382,7 @@ async function toPublishedListItem(agent: {
   description: string | null
   roleInstruction: string
   currentDefinitionVersionId: string | null
+  platformChatEnabled?: boolean
 }): Promise<McpAgentListItem> {
   const current = agent.currentDefinitionVersionId
     ? await repositories.agentDefinitions.findById(agent.currentDefinitionVersionId)
@@ -390,6 +397,7 @@ async function toPublishedListItem(agent: {
     roleInstructionPreview: previewRoleInstruction(roleInstruction),
     currentDefinitionId: agent.currentDefinitionVersionId,
     currentVersion: current?.version ?? null,
+    platformChatEnabled: agent.platformChatEnabled ?? true,
   }
 }
 
@@ -398,6 +406,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
     isClerkConfigured: isClerkEnabled,
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
+    verifyChatToken: productionChatTokenVerifier,
     users: repositories.users,
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
@@ -2293,6 +2302,8 @@ export async function handleMcpRequest(
   const origin = deps.resolveOrigin(request)
   const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
     if (!bearerToken) return undefined
+    const chat = deps.verifyChatToken?.(bearerToken)
+    if (chat) return { token: bearerToken, clientId: 'platform_chat', scopes: [], extra: { userId: chat.sub } }
     const verified = await deps.verifyOAuthToken(bearerToken)
     if (!verified) {
       // withMcpAuth(required) 401s here and never calls inner / resolveMcpPrincipal.
@@ -2317,12 +2328,26 @@ export async function handleMcpRequest(
       }
       return forbiddenResponse(resolved)
     }
+    const agentHeader = req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null
+    const principal = resolved.principal
+    // #1004 §7: a folytatási token csak a saját fordulója agentjéhez köthető.
+    if (principal.boundAgentId && agentHeader !== principal.boundAgentId) {
+      return forbiddenResponse({ ok: false, code: 'not_a_member', message: 'Access denied' })
+    }
+    const requestContext = getMcpRequestContext(req.headers)
     const handler = await createMcpResourceHandler(
-      resolved.principal,
+      principal,
       // #666: per-request audit-hatókör — sessionId + kliens minden sor metadata-jába.
-      { ...deps, audit: scopeMcpAuditSink(deps.audit, getMcpRequestContext(req.headers)) },
+      // A platform-chat jelölés a tokenből jön, nem a (hamisítható) user-agentből.
+      {
+        ...deps,
+        audit: scopeMcpAuditSink(
+          deps.audit,
+          principal.client ? { ...requestContext, clientName: principal.client } : requestContext,
+        ),
+      },
       origin,
-      req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
+      agentHeader,
       req.headers.get(MCP_SCHEDULED_RUN_HEADER)?.trim() || null,
     )
     return handler(req)

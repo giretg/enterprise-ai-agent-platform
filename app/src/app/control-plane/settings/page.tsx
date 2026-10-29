@@ -16,10 +16,13 @@ import { OpenRouterKeyPanel } from './openrouter-key-panel'
 import { TenantAgentSettingsPanel } from './tenant-agent-settings-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
+import { getPlatformChatSettingsAction } from '@/app/actions/platform-chat'
+import { PlatformChatSettingsPanel } from './platform-chat-settings-panel'
 
-export default async function TenantSettingsPage() {
+export default async function TenantSettingsPage({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
   await requireTenantRole('admin')
-  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings, warehouseAccess] = await Promise.all([
+  const { section } = await searchParams
+  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings, warehouseAccess, platformChat] = await Promise.all([
     getTenantLanguage(),
     getTenantMcpIntro(),
     getTenantModelPolicy(),
@@ -28,6 +31,7 @@ export default async function TenantSettingsPage() {
     getTenantAgentSettings(),
     getMiniAppSettingsAction(),
     getWarehouseAgentAccessAction(),
+    getPlatformChatSettingsAction(),
   ])
   const t = await getTranslations('ControlPlane.settings')
 
@@ -40,6 +44,7 @@ export default async function TenantSettingsPage() {
       </div>
       <SettingsSectionShell
         ariaLabel={t('aria')}
+        initialId={section}
         sections={[
           {
             id: 'mcp-intro',
@@ -75,6 +80,15 @@ export default async function TenantSettingsPage() {
                   <p className="text-sm text-coral-deep">{t('geminiLoadFailed')}</p>
                 )}
               </div>
+            ),
+          },
+          {
+            id: 'platform-chat',
+            label: 'Beszélgetés a platformon',
+            content: platformChat.success ? (
+              <PlatformChatSettingsPanel initial={platformChat.data} canEdit />
+            ) : (
+              <p className="text-sm text-coral-deep">{platformChat.error}</p>
             ),
           },
           {
