@@ -121,6 +121,9 @@ async function main() {
     assert.match(String(second.at(-1)?.content), /Q3 riport/)
     assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
     assert.ok(h.store.events.some((e) => e.type === 'tool' && e.payload.name === 'google_drive.search'))
+    // a visszajátszott assistant tool_call is a modell-oldali (pont nélküli) nevet viszi — különben 400 a szolgáltatótól
+    const replayed = second.find((m) => m.role === 'assistant') as { tool_calls?: Array<{ function: { name: string } }> }
+    assert.equal(replayed.tool_calls?.[0].function.name, 'google_drive__search')
   })
 
   await check('újraküldés (worker elhal): a kész lépés nem fut újra, az író tool azonos idempotencia-kulcsot kap', async () => {
