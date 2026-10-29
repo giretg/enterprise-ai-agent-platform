@@ -466,10 +466,13 @@ async function main() {
     assert.equal(denied.code, 'warehouse_permission_denied')
     const badPlan = await call('operator', 'warehouse.submit_import_plan', { definitionId: DEF, importId: DEF, plan: 'nem json' })
     assert.equal(badPlan.code, 'invalid_plan')
+    assert.equal((await call('viewer', 'warehouse.discard_import', { definitionId: DEF, importId: DEF })).code, 'warehouse_permission_denied')
+    assert.equal((await call('operator', 'warehouse.discard_import', { definitionId: DEF, importId: DEF })).code, 'import_not_found')
     // Agentenkénti szint: csak szűkít, az ember szerepétől függetlenül.
     agentAccess = 'read'
     const readOnlyImport = await call('admin', 'warehouse.prepare_import', { definitionId: DEF, fileName: 'a.xlsx', fileBase64: 'AA==' })
     assert.equal(readOnlyImport.code, 'warehouse_agent_read_only')
+    assert.equal((await call('admin', 'warehouse.discard_import', { definitionId: DEF, importId: DEF })).code, 'warehouse_agent_read_only')
     assert.equal((await call('admin', 'warehouse.list_datasets', { definitionId: DEF })).ok, true)
     agentAccess = 'off'
     const off = await call('admin', 'warehouse.list_datasets', { definitionId: DEF })
