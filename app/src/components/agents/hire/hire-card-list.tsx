@@ -72,7 +72,7 @@ export function HireCardList({
                 onChange={(event) => update(index, event.target.value)}
                 onBlur={() => onChange(normalizeHireCards(cards))}
                 aria-label={t('cardEditAria', { index: index + 1 })}
-                className="min-h-[2rem] flex-1 resize-y bg-transparent text-sm text-ink outline-none"
+                className="min-h-[2rem] flex-1 resize-y bg-transparent text-sm text-ink outline-none [field-sizing:content]"
               />
               <button
                 type="button"
