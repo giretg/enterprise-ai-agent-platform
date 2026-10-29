@@ -64,6 +64,16 @@ env:
     value: "https://openrouter.ai/api/v1"
   - variable: OPENROUTER_APP_TITLE
     value: "Enterprise AI Agent Platform"
+  # #1004 platform-chat: a worker (Cloud Run) címe és a vele közös chat-token titok.
+  # Az App Hosting EZT a gyökér-fájlt olvassa, nem az app/apphosting.yaml-t.
+  - variable: PLATFORM_CHAT_WORKER_URL
+    value: "https://platform-chat-j7drz42rma-ez.a.run.app"
+    availability:
+      - RUNTIME
+  - variable: PLATFORM_CHAT_TOKEN_SECRET
+    secret: PLATFORM_CHAT_TOKEN_SECRET
+    availability:
+      - RUNTIME
   - variable: CLERK_SECRET_KEY
     secret: CLERK_SECRET_KEY
   - variable: CLERK_WEBHOOK_SIGNING_SECRET
