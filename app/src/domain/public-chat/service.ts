@@ -53,6 +53,7 @@ export type SessionRow = {
 }
 
 export interface PublicChatStore {
+  withTurnLock<T>(tenantId: string, run: () => Promise<T>): Promise<T | null>
   findAssistantBySlug(slug: string): Promise<AssistantRow | null>
   findSession(id: string): Promise<SessionRow | null>
   countRecentSessionsByIp(ipHash: string, since: Date): Promise<number>
@@ -240,109 +241,121 @@ export async function handlePublicChat(
     return { status: 200, body: { ok: true, deleted } }
   }
 
-  const existing = sessionId ? await deps.store.findSession(sessionId) : null
-  const session = existing && sessionUsable(existing, row.agentId, visitorId, isTest, now) ? existing : null
+  const run = async (): Promise<PublicChatResponse> => {
+    const existing = sessionId ? await deps.store.findSession(sessionId) : null
+    const session = existing && sessionUsable(existing, row.agentId, visitorId, isTest, now) ? existing : null
 
-  if (op === 'history') {
-    return {
-      status: 200,
-      body: session ? { sessionId: session.id, messages: session.messages } : { sessionId: null, messages: [] },
-    }
-  }
-
-  // --- send ---
-  const message = typeof b.message === 'string' ? b.message.trim() : ''
-  if (!message || message.length > MAX_VISITOR_MESSAGE_CHARS) return { status: 400, body: { error: 'bad_request' } }
-  const ctx = normalizeVisitorContext(b.context)
-  if (!ctx.ok) return { status: 400, body: { error: 'bad_request', message: 'A kontextus túl nagy (legfeljebb 8 kB).' } }
-
-  let active = session
-  if (!active) {
-    const ipHash = hashIp(deps.secret, input.ip)
-    if (!isTest) {
-      if (deps.verifyTurnstile && !(await deps.verifyTurnstile(typeof b.turnstileToken === 'string' ? b.turnstileToken : '', input.ip))) {
-        return { status: 403, body: { error: 'bot_check_failed', message: 'Nem sikerült ellenőrizni, hogy ember vagy. Frissítsd az oldalt, és próbáld újra.' } }
-      }
-      if (ipHash && (await deps.store.countRecentSessionsByIp(ipHash, new Date(now.getTime() - 3_600_000))) >= NEW_SESSIONS_PER_IP_HOUR) {
-        return { status: 429, body: { error: 'rate_limited', message: 'Túl sok új beszélgetés indult innen. Próbáld újra egy óra múlva.' } }
+    if (op === 'history') {
+      return {
+        status: 200,
+        body: session ? { sessionId: session.id, messages: session.messages } : { sessionId: null, messages: [] },
       }
     }
-    active = await deps.store.createSession({
-      tenantId: row.tenantId,
-      agentId: row.agentId,
-      visitorId,
-      isTest,
-      context: ctx.value,
-      ipHash,
+
+    // --- send ---
+    const message = typeof b.message === 'string' ? b.message.trim() : ''
+    if (!message || message.length > MAX_VISITOR_MESSAGE_CHARS) return { status: 400, body: { error: 'bad_request' } }
+    const ctx = normalizeVisitorContext(b.context)
+    if (!ctx.ok) return { status: 400, body: { error: 'bad_request', message: 'A kontextus túl nagy (legfeljebb 8 kB).' } }
+
+    let active = session
+    if (!active) {
+      const ipHash = hashIp(deps.secret, input.ip)
+      if (!isTest) {
+        if (deps.verifyTurnstile && !(await deps.verifyTurnstile(typeof b.turnstileToken === 'string' ? b.turnstileToken : '', input.ip))) {
+          return { status: 403, body: { error: 'bot_check_failed', message: 'Nem sikerült ellenőrizni, hogy ember vagy. Frissítsd az oldalt, és próbáld újra.' } }
+        }
+        if (ipHash && (await deps.store.countRecentSessionsByIp(ipHash, new Date(now.getTime() - 3_600_000))) >= NEW_SESSIONS_PER_IP_HOUR) {
+          return { status: 429, body: { error: 'rate_limited', message: 'Túl sok új beszélgetés indult innen. Próbáld újra egy óra múlva.' } }
+        }
+      }
+      active = await deps.store.createSession({
+        tenantId: row.tenantId,
+        agentId: row.agentId,
+        visitorId,
+        isTest,
+        context: ctx.value,
+        ipHash,
+        now,
+      })
+    }
+
+    const visitorTurns = active.messages.filter((m) => m.role === 'user').length
+    if (visitorTurns >= config.sessionMessageLimit) {
+      return {
+        status: 429,
+        body: {
+          error: 'session_limit',
+          sessionId: active.id,
+          message: config.supportEmail
+            ? `Ebben a beszélgetésben elértük az üzenetkorlátot. Kezdj újat, vagy írj nekünk: ${config.supportEmail}`
+            : 'Ebben a beszélgetésben elértük az üzenetkorlátot. Kezdj új beszélgetést.',
+        },
+      }
+    }
+
+    const day = platformChatBudgetDay(now)
+    if ((await deps.store.spendOn({ tenantId: row.tenantId, day })) >= config.dailyBudgetUsd) {
+      await writeAudit(deps.audit, {
+        actorType: 'system',
+        action: 'public_chat.budget_exhausted',
+        targetType: 'agent',
+        targetId: row.agentId,
+        policyDecision: 'denied',
+        metadata: { day, budgetUsd: config.dailyBudgetUsd },
+        tenantId: row.tenantId,
+      })
+      return { status: 503, body: { ...unavailableBody(config, 'Az asszisztens mára elérte a keretét, holnap újra elérhető.'), sessionId: active.id } }
+    }
+
+    const sessionRef = active
+    const modelDeps = deps.turnDeps({
+      tenantId: row.tenantId, agentId: row.agentId, sessionId: sessionRef.id, isTest, config,
+      transcript: () => [...sessionRef.messages, { role: 'user', content: message, at: now.toISOString() }],
+    })
+    let turn: Awaited<ReturnType<typeof runPublicTurn>>
+    try {
+      turn = await runPublicTurn(
+        {
+          ...modelDeps,
+          callModel: async (input) => {
+            const reply = await modelDeps.callModel(input)
+            // A már sikeres modellkör költsége későbbi eszköz-/modellhiba esetén is megmarad.
+            if (!isTest && reply.costUsd > 0) await deps.store.addSpend({ tenantId: row.tenantId, day, costUsd: reply.costUsd })
+            return reply
+          },
+        },
+        { config, context: sessionRef.context ?? ctx.value, history: sessionRef.messages, userMessage: message },
+      )
+    } catch (error) {
+      deps.onError?.(error)
+      return {
+        status: 503,
+        body: { ...unavailableBody(config, 'Most nem tudok válaszolni, kérlek, próbáld újra egy perc múlva.'), sessionId: sessionRef.id },
+      }
+    }
+    const at = now.toISOString()
+    const messages: TranscriptEntry[] = [
+      ...sessionRef.messages,
+      { role: 'user', content: message, at },
+      { role: 'assistant', content: turn.reply, at: new Date().toISOString() },
+    ]
+    await deps.store.saveTurn({
+      sessionId: sessionRef.id,
+      messages,
+      ...(turn.handoff && turn.handoffContact && turn.handoffSummary
+        ? { handoff: { kind: turn.handoff === 'emailed' ? 'forwarded' : 'callback_requested', contact: turn.handoffContact, summary: turn.handoffSummary } }
+        : {}),
       now,
     })
+    return { status: 200, body: { sessionId: sessionRef.id, reply: turn.reply, handoff: turn.handoff } }
+  }
+  if (op !== 'send') return run()
+  return (await deps.store.withTurnLock(row.tenantId, run)) ?? {
+    status: 429,
+    body: { error: 'rate_limited', message: 'Az asszisztens éppen válaszol. Próbáld újra egy kicsit később.' },
   }
 
-  const visitorTurns = active.messages.filter((m) => m.role === 'user').length
-  if (visitorTurns >= config.sessionMessageLimit) {
-    return {
-      status: 429,
-      body: {
-        error: 'session_limit',
-        sessionId: active.id,
-        message: config.supportEmail
-          ? `Ebben a beszélgetésben elértük az üzenetkorlátot. Kezdj újat, vagy írj nekünk: ${config.supportEmail}`
-          : 'Ebben a beszélgetésben elértük az üzenetkorlátot. Kezdj új beszélgetést.',
-      },
-    }
-  }
-
-  const day = platformChatBudgetDay(now)
-  if ((await deps.store.spendOn({ tenantId: row.tenantId, day })) >= config.dailyBudgetUsd) {
-    await writeAudit(deps.audit, {
-      actorType: 'system',
-      action: 'public_chat.budget_exhausted',
-      targetType: 'agent',
-      targetId: row.agentId,
-      policyDecision: 'denied',
-      metadata: { day, budgetUsd: config.dailyBudgetUsd },
-      tenantId: row.tenantId,
-    })
-    return { status: 503, body: { ...unavailableBody(config, 'Az asszisztens mára elérte a keretét, holnap újra elérhető.'), sessionId: active.id } }
-  }
-
-  const sessionRef = active
-  let turn: Awaited<ReturnType<typeof runPublicTurn>>
-  try {
-    turn = await runPublicTurn(
-    deps.turnDeps({
-      tenantId: row.tenantId,
-      agentId: row.agentId,
-      sessionId: sessionRef.id,
-      isTest,
-      config,
-      transcript: () => [...sessionRef.messages, { role: 'user', content: message, at: now.toISOString() }],
-    }),
-    { config, context: sessionRef.context ?? ctx.value, history: sessionRef.messages, userMessage: message },
-    )
-  } catch (error) {
-    deps.onError?.(error)
-    return {
-      status: 503,
-      body: { ...unavailableBody(config, 'Most nem tudok válaszolni, kérlek, próbáld újra egy perc múlva.'), sessionId: sessionRef.id },
-    }
-  }
-  if (turn.costUsd > 0) await deps.store.addSpend({ tenantId: row.tenantId, day, costUsd: turn.costUsd })
-  const at = now.toISOString()
-  const messages: TranscriptEntry[] = [
-    ...sessionRef.messages,
-    { role: 'user', content: message, at },
-    { role: 'assistant', content: turn.reply, at: new Date().toISOString() },
-  ]
-  await deps.store.saveTurn({
-    sessionId: sessionRef.id,
-    messages,
-    ...(turn.handoff && turn.handoffContact && turn.handoffSummary
-      ? { handoff: { kind: turn.handoff === 'emailed' ? 'forwarded' : 'callback_requested', contact: turn.handoffContact, summary: turn.handoffSummary } }
-      : {}),
-    now,
-  })
-  return { status: 200, body: { sessionId: sessionRef.id, reply: turn.reply, handoff: turn.handoff } }
 }
 
 function originHost(value: unknown): string | null {

@@ -105,30 +105,30 @@ export function PublicAssistantEditor({
           <h2 className="font-display text-lg font-semibold">Megjelenés</h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className={label}>Név</label>
-              <input className={input} value={config.displayName} maxLength={60} disabled={disabled} onChange={(e) => update('displayName', e.target.value)} />
+              <label htmlFor="public-assistant-field-1" className={label}>Név</label>
+              <input id="public-assistant-field-1" className={input} value={config.displayName} maxLength={60} disabled={disabled} onChange={(e) => update('displayName', e.target.value)} />
             </div>
             <div>
-              <label className={label}>Szín</label>
+              <label htmlFor="public-assistant-field-2" className={label}>Szín</label>
               <div className="mt-1 flex items-center gap-2">
-                <input type="color" value={config.color} disabled={disabled} onChange={(e) => update('color', e.target.value)} className="h-9 w-12 rounded border border-line" />
+                <input id="public-assistant-field-2" type="color" value={config.color} disabled={disabled} onChange={(e) => update('color', e.target.value)} className="h-9 w-12 rounded border border-line" />
                 <span className={hint}>{config.color}</span>
               </div>
             </div>
           </div>
           <div>
-            <label className={label}>Profilkép címe (nem kötelező)</label>
+            <label htmlFor="public-assistant-field-3" className={label}>Profilkép címe (nem kötelező)</label>
             <p className={hint}>Egy https:// kezdetű képcím, pl. a cég logója.</p>
-            <input className={input} value={config.avatarUrl ?? ''} disabled={disabled} placeholder="https://…" onChange={(e) => update('avatarUrl', e.target.value.trim() || null)} />
+            <input id="public-assistant-field-3" className={input} value={config.avatarUrl ?? ''} disabled={disabled} placeholder="https://…" onChange={(e) => update('avatarUrl', e.target.value.trim() || null)} />
           </div>
           <div>
-            <label className={label}>Üdvözlő üzenet</label>
-            <textarea className={input} rows={2} maxLength={500} value={config.welcome} disabled={disabled} onChange={(e) => update('welcome', e.target.value)} />
+            <label htmlFor="public-assistant-field-4" className={label}>Üdvözlő üzenet</label>
+            <textarea id="public-assistant-field-4" className={input} rows={2} maxLength={500} value={config.welcome} disabled={disabled} onChange={(e) => update('welcome', e.target.value)} />
           </div>
           <div>
-            <label className={label}>Javasolt első kérdések</label>
+            <label htmlFor="public-assistant-field-5" className={label}>Javasolt első kérdések</label>
             <p className={hint}>Soronként egy, legfeljebb négy. A látogató egy kattintással elküldheti.</p>
-            <textarea
+            <textarea id="public-assistant-field-5"
               className={input}
               rows={3}
               value={config.suggestions.join('\n')}
@@ -146,17 +146,17 @@ export function PublicAssistantEditor({
             <pre className="mt-2 whitespace-pre-wrap rounded-lg border border-line bg-night-2 p-3 text-xs text-ink-soft">{PUBLIC_BEHAVIOR_PREFIX}</pre>
           </div>
           <div>
-            <label className={label}>A cég és a témák</label>
+            <label htmlFor="public-assistant-field-6" className={label}>A cég és a témák</label>
             <p className={hint}>Mit csinál a cég, miben segíthet az asszisztens, mire ne válaszoljon. Ez a fix szabályok után következik.</p>
-            <textarea className={input} rows={6} maxLength={4000} value={config.topicGuide} disabled={disabled} onChange={(e) => update('topicGuide', e.target.value)} />
+            <textarea id="public-assistant-field-6" className={input} rows={6} maxLength={4000} value={config.topicGuide} disabled={disabled} onChange={(e) => update('topicGuide', e.target.value)} />
           </div>
           <div>
-            <label className={label}>Tudnivalók</label>
+            <label htmlFor="public-assistant-field-7" className={label}>Tudnivalók</label>
             <p className={hint}>
               Rövid, mindig igaz tények: nyitvatartás, cím, elérhetőség, szállítási idő. Csak munkatárs írhatja — a
               látogatói beszélgetésből semmi nem kerül ide.
             </p>
-            <textarea className={input} rows={5} maxLength={8000} value={config.knownFacts} disabled={disabled} onChange={(e) => update('knownFacts', e.target.value)} />
+            <textarea id="public-assistant-field-7" className={input} rows={5} maxLength={8000} value={config.knownFacts} disabled={disabled} onChange={(e) => update('knownFacts', e.target.value)} />
           </div>
           <div>
             <p className={label}>Bekötött nyilvános tudásbázis</p>
@@ -190,13 +190,13 @@ export function PublicAssistantEditor({
             listában „Visszahívást kér” jelöléssel jelenik meg.
           </p>
           <div>
-            <label className={label}>Ügyfélszolgálati e-mail cím</label>
-            <input className={input} type="email" value={config.supportEmail ?? ''} disabled={disabled} placeholder="ugyfelszolgalat@ceg.hu" onChange={(e) => update('supportEmail', e.target.value.trim() || null)} />
+            <label htmlFor="public-assistant-field-8" className={label}>Ügyfélszolgálati e-mail cím</label>
+            <input id="public-assistant-field-8" className={input} type="email" value={config.supportEmail ?? ''} disabled={disabled} placeholder="ugyfelszolgalat@ceg.hu" onChange={(e) => update('supportEmail', e.target.value.trim() || null)} />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className={label}>Melyik Gmail-fiókból menjen?</label>
-              <select
+              <label htmlFor="public-assistant-field-9" className={label}>Melyik Gmail-fiókból menjen?</label>
+              <select id="public-assistant-field-9"
                 className={input}
                 disabled={disabled}
                 value={config.forwardConnectorId ?? ''}
@@ -217,8 +217,8 @@ export function PublicAssistantEditor({
             </div>
             {sender && sender.senders.length > 1 ? (
               <div>
-                <label className={label}>Fiók</label>
-                <select className={input} disabled={disabled} value={config.forwardSenderUserId ?? ''} onChange={(e) => update('forwardSenderUserId', e.target.value || null)}>
+                <label htmlFor="public-assistant-field-10" className={label}>Fiók</label>
+                <select id="public-assistant-field-10" className={input} disabled={disabled} value={config.forwardSenderUserId ?? ''} onChange={(e) => update('forwardSenderUserId', e.target.value || null)}>
                   {sender.senders.map((s) => (
                     <option key={s.userId} value={s.userId}>
                       {s.label}
@@ -234,20 +234,20 @@ export function PublicAssistantEditor({
           <h2 className="font-display text-lg font-semibold">Korlátok és modell</h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className={label}>Üzenet / beszélgetés</label>
+              <label htmlFor="public-assistant-field-11" className={label}>Üzenet / beszélgetés</label>
               <p className={hint}>Ennyi kérdést tehet fel egy látogató egy beszélgetésben.</p>
-              <input className={input} type="number" min={1} max={200} value={config.sessionMessageLimit} disabled={disabled} onChange={(e) => update('sessionMessageLimit', Math.max(1, Math.min(200, Number(e.target.value) || 1)))} />
+              <input id="public-assistant-field-11" className={input} type="number" min={1} max={200} value={config.sessionMessageLimit} disabled={disabled} onChange={(e) => update('sessionMessageLimit', Math.max(1, Math.min(200, Number(e.target.value) || 1)))} />
             </div>
             <div>
-              <label className={label}>Napi keret (USD)</label>
+              <label htmlFor="public-assistant-field-12" className={label}>Napi keret (USD)</label>
               <p className={hint}>Ha a cég nyilvános chatjei aznap elérik, a látogató „most nem elérhető” üzenetet lát.</p>
-              <input className={input} type="number" min={0.5} step={0.5} max={1000} value={config.dailyBudgetUsd} disabled={disabled} onChange={(e) => update('dailyBudgetUsd', Math.max(0.5, Math.min(1000, Number(e.target.value) || 0.5)))} />
+              <input id="public-assistant-field-12" className={input} type="number" min={0.5} step={0.5} max={1000} value={config.dailyBudgetUsd} disabled={disabled} onChange={(e) => update('dailyBudgetUsd', Math.max(0.5, Math.min(1000, Number(e.target.value) || 0.5)))} />
             </div>
           </div>
           <div>
-            <label className={label}>Modell</label>
+            <label htmlFor="public-assistant-field-13" className={label}>Modell</label>
             <p className={hint}>Alapból egy olcsó, gyors modell fut; ha az nem elérhető, a megszokott tartalék-lánc lép be.</p>
-            <select
+            <select id="public-assistant-field-13"
               className={input}
               disabled={disabled}
               value={config.model ? `${config.model.provider}/${config.model.model}` : ''}
@@ -265,9 +265,9 @@ export function PublicAssistantEditor({
             </select>
           </div>
           <div>
-            <label className={label}>Adatkezelési tájékoztató linkje</label>
+            <label htmlFor="public-assistant-field-14" className={label}>Adatkezelési tájékoztató linkje</label>
             <p className={hint}>Az első üzenet előtt a látogató egy rövid tájékoztatót és ezt a linket látja.</p>
-            <input className={input} value={config.privacyUrl ?? ''} disabled={disabled} placeholder="https://ceg.hu/adatvedelem" onChange={(e) => update('privacyUrl', e.target.value.trim() || null)} />
+            <input id="public-assistant-field-14" className={input} value={config.privacyUrl ?? ''} disabled={disabled} placeholder="https://ceg.hu/adatvedelem" onChange={(e) => update('privacyUrl', e.target.value.trim() || null)} />
           </div>
         </section>
 

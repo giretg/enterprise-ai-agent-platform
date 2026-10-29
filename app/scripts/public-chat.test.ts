@@ -5,8 +5,10 @@
  * Futtatás: npm run test:public-chat
  */
 import assert from 'node:assert/strict'
+import { runInNewContext } from 'node:vm'
 import {
   defaultPublicAssistantConfig,
+  publicView,
   frameAncestorsFor,
   normalizeWidgetDomain,
   PUBLIC_BEHAVIOR_PREFIX,
@@ -97,6 +99,7 @@ function turnDeps(script: ModelReply[], log: string[] = []): PublicTurnDeps & { 
 function makeStore(row: Partial<AssistantRow> = {}) {
   const sessions = new Map<string, SessionRow>()
   const signals: Array<{ source: string; question: string }> = []
+  let locked = false
   let spent = 0
   let seq = 0
   const assistant: AssistantRow = {
@@ -116,6 +119,11 @@ function makeStore(row: Partial<AssistantRow> = {}) {
     signals,
     loaded: [],
     spentRef: () => spent,
+    async withTurnLock(_tenantId, run) {
+      if (locked) return null
+      locked = true
+      try { return await run() } finally { locked = false }
+    },
     async findAssistantBySlug(slug) {
       return slug === assistant.slug ? assistant : null
     },
@@ -179,6 +187,87 @@ const send = (d: PublicChatDeps, body: Record<string, unknown>) =>
 
 async function main() {
   console.log('public-chat')
+
+  await check('párhuzamos forduló nem indít újabb modellt és nem írja felül az előzményt', async () => {
+    const store = makeStore()
+    let release!: () => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const entered = new Promise<void>((resolve) => { started = resolve })
+    const d = deps(store, { turnDeps: () => ({ ...turnDeps([]), callModel: async () => {
+      started(); await gate; return reply('kész')
+    } }) })
+    const first = send(d, {})
+    await entered
+    assert.equal((await send(d, {})).status, 429)
+    release()
+    assert.equal((await first).status, 200)
+    assert.equal(store.sessions.size, 1)
+    assert.equal([...store.sessions.values()][0].messages.length, 2)
+  })
+
+  await check('későbbi modellhiba sem veszíti el a már felmerült költséget; teszt nem éles analitika', async () => {
+    const store = makeStore()
+    let calls = 0
+    const d = deps(store, { turnDeps: () => ({ ...turnDeps([]), callModel: async () => {
+      if (++calls > 1) throw new Error('provider down')
+      return reply(null, [call('1', FLAG_TOOL, { question: 'x' })], 0.12)
+    } }) })
+    assert.equal((await send(d, {})).status, 503)
+    assert.equal(store.spentRef(), 0.12)
+    const testStore = makeStore()
+    const token = issueTestToken(SECRET, AGENT, NOW)
+    assert.equal((await send(deps(testStore, {}, [reply('teszt', [], 0.5)]), { testToken: token })).status, 200)
+    assert.equal(testStore.spentRef(), 0)
+  })
+
+  await check('a második botellenőrzés is feloldódik új beszélgetéskor', async () => {
+    const html = renderPublicChatPage({ state: { state: 'ready', tenantId: TENANT, view: publicView(config()), isTest: false, messageLimit: 20 }, slug: 'bolt', nonce: 'test', testToken: null, turnstileSiteKey: 'key' })
+    const source = html.slice(html.indexOf('function turnstile(){'), html.indexOf('function ask(text)'))
+    let callback!: (token: string) => void
+    let removed = 0
+    const context = {
+      B: { turnstileSiteKey: 'key' }, session: null, tsToken: null, tsId: null,
+      window: { turnstile: {
+        render: (_selector: string, options: { callback: typeof callback }) => { callback = options.callback; return 'widget' },
+        execute: () => callback('verified'), remove: () => { removed++ },
+      } },
+    }
+    const checkBot = runInNewContext(source + ';turnstile', context) as () => Promise<string>
+    assert.equal(await checkBot(), 'verified')
+    context.tsToken = null
+    assert.equal(await checkBot(), 'verified')
+    assert.equal(removed, 1)
+  })
+
+  await check('a törlés hibája megőrzi a helyi munkamenetet és nem jelez sikert', async () => {
+    const html = renderPublicChatPage({ state: { state: 'ready', tenantId: TENANT, view: publicView(config()), isTest: false, messageLimit: 20 }, slug: 'bolt', nonce: 'test', testToken: null, turnstileSiteKey: null })
+    const source = html.slice(html.indexOf('bDel.onclick=function'), html.indexOf("window.addEventListener('message'"))
+    const notes: string[] = []
+    const context = { bDel: {} as { onclick: () => Promise<void> }, confirm: () => true,
+      api: async () => ({ error: 'rate_limited' }), visitor: VISITOR, session: 'keep-me', set: () => assert.fail('must keep session'),
+      intro: () => assert.fail('must keep history'), log: { append: (text: string) => notes.push(text) },
+      el: (_tag: string, _class: string, text: string) => text, T: { err: 'error', deleted: 'deleted' },
+    }
+    runInNewContext(source, context)
+    await context.bDel.onclick()
+    assert.equal(context.session, 'keep-me')
+    assert.deepEqual(notes, ['error'])
+  })
+
+  await check('a HTTP-végpont bájtban korlátozza és megszakítja a túl nagy kérés olvasását', async () => {
+    process.env.DATABASE_URL ??= 'postgresql://stub:stub@127.0.0.1:5432/stub'
+    const { POST } = await import('../src/app/api/public-chat/[slug]/route')
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('á'.repeat(20_000))) },
+      cancel() { cancelled = true },
+    })
+    const request = new Request('https://example.com/api/public-chat/bolt', { method: 'POST', body, duplex: 'half' } as RequestInit)
+    assert.equal((await POST(request, { params: Promise.resolve({ slug: 'bolt' }) })).status, 413)
+    assert.equal(cancelled, true)
+    assert.equal((await POST(new Request(request.url, { method: 'POST', body: '{invalid' }), { params: Promise.resolve({ slug: 'bolt' }) })).status, 400)
+  })
 
   // --- Izoláció (NFR) ---
   await check('a prompt csak a D8 előtagot és a publikált profil mezőit tartalmazza', () => {

@@ -98,14 +98,14 @@ function el(t,c,txt){var e=document.createElement(t);if(c)e.className=c;if(txt!=
 var head=el('header'),av=el('img'),nm=el('div','name'),bNew=el('button',null,T.fresh),bDel=el('button',null,T.del);
 av.alt='';head.append(av,nm);if(B.isTest)head.append(el('span','badge',T.test));head.append(bNew,bDel);
 var log=el('div');log.id='log';var form=el('form'),ta=el('textarea'),send=el('button',null,T.send);
-ta.rows=1;ta.maxLength=B.maxChars;ta.placeholder=T.ph;send.type='submit';form.append(ta,send);app.append(head,log,form);
+ta.setAttribute('aria-label',T.ph);log.setAttribute('role','log');ta.rows=1;ta.maxLength=B.maxChars;ta.placeholder=T.ph;send.type='submit';form.append(ta,send);app.append(head,log,form);
 function paint(){document.documentElement.style.setProperty('--c',V.color);nm.textContent=V.displayName;av.style.display=V.avatarUrl?'':'none';if(V.avatarUrl)av.src=V.avatarUrl;document.title=V.displayName}
 function scroll(){log.scrollTop=log.scrollHeight}
 function add(role,text){var m=el('div','msg '+(role==='user'?'me':'bot'),text);log.append(m);scroll();return m}
 function intro(){log.textContent='';var n=el('div','note',T.privacy+' ');if(V.privacyUrl){var a=el('a',null,T.policy);a.href=V.privacyUrl;a.target='_blank';a.rel='noopener';n.append(a)}log.append(n);if(V.welcome)add('assistant',V.welcome);if(V.suggestions&&V.suggestions.length){var c=el('div','chips');V.suggestions.forEach(function(s){var b=el('button',null,s);b.type='button';b.onclick=function(){c.remove();ask(s)};c.append(b)});log.append(c)}}
 function api(body){body.testToken=B.testToken||undefined;return fetch('/api/public-chat/'+encodeURIComponent(B.slug),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){j.__status=r.status;return j})})}
 function turnstile(){if(!B.turnstileSiteKey||session)return Promise.resolve(null);if(tsToken)return Promise.resolve(tsToken);
-return new Promise(function(res){var tries=0;(function wait(){if(window.turnstile){if(tsId===null)tsId=window.turnstile.render('#ts',{sitekey:B.turnstileSiteKey,execution:'execute',appearance:'interaction-only',callback:function(t){tsToken=t;res(t)},'error-callback':function(){res(null)}});window.turnstile.execute('#ts')}else if(tries++<50)setTimeout(wait,100);else res(null)})()})}
+return new Promise(function(res){var tries=0;(function wait(){if(window.turnstile){if(tsId!==null)window.turnstile.remove(tsId);tsId=window.turnstile.render('#ts',{sitekey:B.turnstileSiteKey,execution:'execute',appearance:'interaction-only',callback:function(t){tsToken=t;res(t)},'error-callback':function(){res(null)}});window.turnstile.execute('#ts')}else if(tries++<50)setTimeout(wait,100);else res(null)})()})}
 function ask(text){text=(text||'').trim();if(!text||busy)return;busy=true;send.disabled=true;add('user',text);var t=add('assistant',T.typing);t.classList.add('typing');
 turnstile().then(function(tok){return api({op:'send',visitorId:visitor,sessionId:session||undefined,message:text,context:context||undefined,turnstileToken:tok||undefined})}).then(function(j){
 t.remove();if(j.sessionId){session=j.sessionId;set('session',session)}tsToken=null;
@@ -113,7 +113,7 @@ add('assistant',j.reply||j.message||T.err);if(j.handoff)log.append(el('div','not
 form.onsubmit=function(e){e.preventDefault();var v=ta.value;ta.value='';ask(v)};
 ta.onkeydown=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();form.requestSubmit()}};
 bNew.onclick=function(){session=null;set('session',null);intro()};
-bDel.onclick=function(){if(!confirm(T.delQ))return;api({op:'delete',visitorId:visitor}).finally(function(){session=null;set('session',null);intro();log.append(el('div','note',T.deleted))})};
+bDel.onclick=function(){if(!confirm(T.delQ))return;return api({op:'delete',visitorId:visitor}).then(function(j){if(!j.ok)throw new Error('delete');session=null;set('session',null);intro();log.append(el('div','note',T.deleted))}).catch(function(){log.append(el('div','note',T.err))})};
 window.addEventListener('message',function(e){var d=e.data;if(!d||typeof d!=='object')return;
 if(d.type==='excellence-chat:context'&&d.context&&typeof d.context==='object'){context=d.context}
 if(d.type==='excellence-chat:preview'&&e.origin===location.origin&&B.isTest&&d.view){V=Object.assign({},V,d.view);paint();if(!session)intro()}});

@@ -30,6 +30,14 @@ function toSession(row: {
 const day = (value: string) => new Date(`${value}T00:00:00Z`)
 
 export const publicChatStore: PublicChatStore = {
+  // ponytail: tenantonként egy forduló; nagyobb forgalomnál atomi költségfoglalásra váltható.
+  // A DB-zár minden példányra érvényes, a foglalt tenantot várakozás nélkül elutasítjuk.
+  async withTurnLock(tenantId, run) {
+    return prisma.$transaction(async (tx) => {
+      const [row] = await tx.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_xact_lock(777, hashtext(${tenantId})) AS locked`
+      return row.locked ? run() : null
+    }, { timeout: 300_000 })
+  },
   async findAssistantBySlug(slug) {
     const row = await prisma.publicAssistant.findUnique({
       where: { slug },

@@ -42,6 +42,15 @@ async function main() {
   const send = (body: Record<string, unknown>) =>
     handlePublicChat(deps, { slug, body: { op: 'send', visitorId: VISITOR, message: 'Van parkoló?', ...body }, ip: '10.0.0.1', origin: null })
   try {
+    const lock = await publicChatStore.withTurnLock(tenant.id, async () => {
+      assert.equal(await publicChatStore.withTurnLock(tenant.id, async () => 'unexpected'), null)
+      return 'held'
+    })
+    assert.equal(lock, 'held')
+    await assert.rejects(publicChatStore.withTurnLock(tenant.id, async () => { throw new Error('lock test') }))
+    assert.equal(await publicChatStore.withTurnLock(tenant.id, async () => 'released'), 'released')
+    console.log('  OK  DB-zár kizárja a párhuzamos fordulót, hiba után felszabadul')
+
     const first = await send({ context: { page: 'kapcsolat' } })
     assert.equal(first.status, 200, JSON.stringify(first.body))
     const sessionId = String(first.body.sessionId)
@@ -57,7 +66,7 @@ async function main() {
     assert.equal(second.status, 200)
     const usage = await prisma.publicChatDailyUsage.findFirstOrThrow({ where: { tenantId: tenant.id } })
     assert.equal(Number(usage.costUsd), 1)
-    assert.equal(usage.calls, 2)
+    assert.equal(usage.calls, 4)
     const exhausted = await send({ sessionId })
     assert.equal(exhausted.status, 503)
     console.log('  OK  napi keret könyvelve (upsert), kimerülés után 503')
