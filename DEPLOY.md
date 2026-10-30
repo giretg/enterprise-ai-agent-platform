@@ -176,6 +176,11 @@ a tokent a handler ellenőrzi. A handler 5000-es kötegekben töröl, amíg van 
 hívás, hogy a Cloud Run timeout előtt végezzen). A járat `ai_audit.retention_sweep`
 AuditLog-sort ír (hány sort törölt, `complete`). A DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
 
+Ugyanez a napi hívás nézi meg az **önfrissítő kapcsolatok** partner-API-leírását is (a 20 óránál
+régebben ellenőrzötteket, legfeljebb 50-et, 25 mp-es kerettel). Tisztán új, csak olvasási
+változás magától élesedik, ha a szervezet és a kapcsolat is engedi; minden más javaslatként
+emberi jóváhagyásra vár. Összesítő audit-sor: `connector.self_update.scheduled_sync`.
+
 ## 4. Clerk webhook regisztrálás
 
 Az éles domain: `https://ai.excellencepay.com`. A Clerk Dashboard-on:

@@ -4,6 +4,7 @@ import type { AutoApprovePolicy, CapabilityDiff, UsageRef } from '@/domain/conne
 import type { CapabilitySet } from '@/domain/connector-self-update/capability-set'
 import {
   SelfUpdateError,
+  type DueSpecSync,
   type SelfUpdatingConnectorRepository,
   type SelfUpdatingContext,
   type SelfUpdatingSpecSource,
@@ -243,7 +244,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     diffFromVersionId: string | null
     diffSummary: CapabilityDiff
     fetchedAt: Date
-    actorId: string
+    actorId: string | null
   }): Promise<SelfUpdatingSpecVersion> {
     const row = await prisma.$transaction(async (tx) => {
       const connector = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' }, select: { id: true } })
@@ -275,7 +276,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
   }
 
   async activateVersion(input: {
-    connectorId: string; tenantId: string; versionId: string; actorId: string
+    connectorId: string; tenantId: string; versionId: string; actorId: string | null
     approvedById: string | null; approvedAt: Date
     auditMetadata?: Record<string, unknown>
   }) {
@@ -400,5 +401,21 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
 
   async touchSynced(sourceId: string, at: Date) {
     await prisma.connectorSpecSource.update({ where: { id: sourceId }, data: { lastSyncedAt: at } })
+  }
+
+  async listDueForSync(input: { syncedBefore: Date; limit: number }): Promise<DueSpecSync[]> {
+    const rows = await prisma.connectorSpecSource.findMany({
+      where: {
+        urlApprovedAt: { not: null },
+        trustedAt: { not: null },
+        OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: input.syncedBefore } }],
+        connector: { connectorMode: 'self_updating', lifecycleState: 'active', activeSpecVersionId: { not: null } },
+      },
+      // A legrégebben ellenőrzött előre — ha a keret kevés, a következő nap a többit viszi.
+      orderBy: { lastSyncedAt: { sort: 'asc', nulls: 'first' } },
+      take: input.limit,
+      select: { connectorId: true, tenantId: true },
+    })
+    return rows.map((row) => ({ connectorId: row.connectorId, tenantId: row.tenantId }))
   }
 }
