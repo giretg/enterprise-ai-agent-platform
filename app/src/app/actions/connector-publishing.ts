@@ -17,6 +17,8 @@ export async function listConnectorAgentsForPublishing(input: { connectorId: str
         tenantId: user.activeTenantId,
         kind: 'internal',
         status: { not: 'retired' },
+        // Only re-publish: never make a not-yet-published draft live from a connector modal.
+        currentDefinitionVersionId: { not: null },
         agentConnectors: {
           some: {
             connectorId,

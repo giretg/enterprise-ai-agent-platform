@@ -1,11 +1,10 @@
 'use client'
 
-import { approveMcpTools } from '@/lib/connector-update-publishing'
-
 import { useEffect, useRef, useState, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { Card } from '@/components/ui/shell'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
+import { approveMcpTools } from '@/lib/connector-update-publishing'
 import {
   archiveMcpConnector,
   createMcpConnector,

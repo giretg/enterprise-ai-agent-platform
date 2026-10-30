@@ -1,13 +1,12 @@
 'use client'
 
-import { approveSelfUpdatingVersion, rollbackSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
-
 import { useCallback, useEffect, useState, useTransition, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card, IconButton } from '@/components/ui/shell'
 import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
+import { approveSelfUpdatingVersion, rollbackSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
 import { decommissionActiveConnector, deleteArchivedConnector } from '@/app/actions/provisioning'
 import {
   approveSelfUpdatingSource,

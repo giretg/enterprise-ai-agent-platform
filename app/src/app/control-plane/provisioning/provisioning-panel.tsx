@@ -1,7 +1,5 @@
 'use client'
 
-import { activateConnector, approveSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
-
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
@@ -43,6 +41,7 @@ import {
   type McpConnectorsData,
 } from './mcp-connectors-panel'
 import { listTenants } from '@/app/actions/tenant'
+import { activateConnector, approveSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   approveSelfUpdatingSource,

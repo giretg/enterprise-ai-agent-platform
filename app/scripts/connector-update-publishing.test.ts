@@ -110,6 +110,7 @@ async function main() {
   assert.equal(query.where.tenantId, 'tenant-a')
   assert.equal(query.where.kind, 'internal')
   assert.equal(query.where.status.not, 'retired')
+  assert.equal(query.where.currentDefinitionVersionId.not, null, 'Never-published agents are not offered')
   assert.equal(query.where.agentConnectors.some.connectorId, input.connectorId)
   assert.equal(query.where.agentConnectors.some.connector.lifecycleState, 'active')
   assert.equal(query.where.agentConnectors.some.connector.tenantId, 'tenant-a')
