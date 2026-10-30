@@ -1,7 +1,7 @@
-import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
-import { NextResponse } from 'next/server'
+import { clerkMiddleware, createRouteMatcher, type ClerkMiddlewareAuth } from '@clerk/nextjs/server'
+import { NextResponse, type NextFetchEvent, type NextRequest } from 'next/server'
 import createIntlMiddleware from 'next-intl/middleware'
-import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
+import { hasClerkKeys, isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
 import { embedHrefForPanel } from '@/lib/control-plane-embed'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
 import { isPublicBrandingPath } from '@/lib/auth/public-branding'
@@ -51,7 +51,8 @@ function finishResponse(req: Request, res: NextResponse): NextResponse {
   return res
 }
 
-export const proxy = clerkMiddleware(async (auth, req) => {
+/** `auth` null, ha nincs Clerk-kulcs (a `clerkMiddleware` ilyenkor meg sem hívható). */
+async function handleRequest(req: NextRequest, auth: ClerkMiddlewareAuth | null) {
   const { pathname } = req.nextUrl
 
   // #426: a Clerk dev-instance URL-ben szállított munkamenetét a Googlebot
@@ -95,7 +96,7 @@ export const proxy = clerkMiddleware(async (auth, req) => {
     }
   }
 
-  if (!isClerkEnabled()) {
+  if (!auth || !isClerkEnabled()) {
     if (!isDevAuthAllowed()) {
       return finishResponse(
         req,
@@ -114,7 +115,17 @@ export const proxy = clerkMiddleware(async (auth, req) => {
     return finishResponse(req, intlMiddleware(req))
   }
   return finishResponse(req, NextResponse.next())
-})
+}
+
+const clerkProxy = clerkMiddleware((auth, req) => handleRequest(req, auth))
+
+export function proxy(req: NextRequest, event: NextFetchEvent) {
+  // @clerk/nextjs 7: kulcsok nélkül a `clerkMiddleware` minden kérésre dob („Clerk keys
+  // are missing"), így Clerk nélküli dev-módban (DevAuthProvider) a teljes app 500-at adna.
+  // Kulcsok mellett (AUTH_DISABLED=true esetén is) marad a Clerk-middleware.
+  if (hasClerkKeys()) return clerkProxy(req, event)
+  return handleRequest(req, null)
+}
 
 export const config = {
   matcher: [
