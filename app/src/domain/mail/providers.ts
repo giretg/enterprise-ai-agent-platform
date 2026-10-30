@@ -554,5 +554,3 @@ export async function executeMailTool(input: {
   }
   throw new Error(`unsupported mail tool: ${toolName}`)
 }
-
-export type { ReplyContext }
