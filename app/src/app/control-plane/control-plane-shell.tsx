@@ -78,6 +78,8 @@ export function ControlPlaneShell({
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}
+      // A chat teljes magasságot kap (fix fejléc, alul a kérdezőmező), mint a chat-appokban.
+      layout={pathname?.startsWith('/control-plane/chat') ? 'rail' : 'default'}
       headerExtra={
         headerReady ? (
           <div className="flex items-center gap-1.5 sm:gap-2">

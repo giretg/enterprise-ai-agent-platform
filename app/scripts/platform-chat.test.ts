@@ -23,6 +23,7 @@ import {
 } from '../src/domain/platform-chat/gateway'
 import { issueGatewayToken, type GatewayTokenDeps } from '../src/domain/model-gateway-token/gateway-token'
 import { resolveMcpPrincipal, type McpPrincipalDeps } from '../src/auth/mcp-principal'
+import { stashPendingPrompt, takePendingPrompt } from '../src/components/platform-chat/pending-prompt'
 import {
   platformChatBudgetDay,
   readPlatformChatSettings,
@@ -335,6 +336,42 @@ async function main() {
     assert.match(chatPage, /parsePlatformChatAgentParam/)
     assert.match(chatUi, /initialAgentId/)
     assert.match(chatUi, /pickPlatformChatAgentId/)
+  })
+
+  await check('Áttekintés: kérdezőmező indítja a chatet, a kérdés sessionStorage-ben utazik (nem URL-ben)', () => {
+    const root = resolve(import.meta.dirname, '..')
+    const read = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
+    const dashboard = read('src/app/control-plane/dashboard/page.tsx')
+    const launcher = read('src/components/platform-chat/dashboard-chat-launcher.tsx')
+    const chatUi = read('src/components/platform-chat/platform-chat.tsx')
+    assert.match(dashboard, /<DashboardChatLauncher/)
+    assert.match(dashboard, /canStartPlatformChat/)
+    assert.match(launcher, /stashPendingPrompt/)
+    assert.doesNotMatch(launcher, /[?&]q=/)
+    assert.match(chatUi, /takePendingPrompt/)
+  })
+
+  await check('átadott kérdés: egyszer olvasható, lejár, hibás tartalmat eldob', () => {
+    const store = new Map<string, string>()
+    const g = globalThis as { sessionStorage?: unknown }
+    g.sessionStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    }
+    try {
+      stashPendingPrompt({ agentId: AGENT, text: 'Szia!' })
+      assert.deepEqual(takePendingPrompt(), { agentId: AGENT, text: 'Szia!' })
+      assert.equal(takePendingPrompt(), null)
+      store.set('platform-chat:pending', JSON.stringify({ agentId: AGENT, text: 'régi', at: Date.now() - 120_000 }))
+      assert.equal(takePendingPrompt(), null)
+      store.set('platform-chat:pending', JSON.stringify({ agentId: AGENT, text: '   ', at: Date.now() }))
+      assert.equal(takePendingPrompt(), null)
+      store.set('platform-chat:pending', '{nem json')
+      assert.equal(takePendingPrompt(), null)
+    } finally {
+      delete g.sessionStorage
+    }
   })
 
   if (failures) {

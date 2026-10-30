@@ -992,6 +992,18 @@
       "tasksAll": "Összes teendő →",
       "agentsTitle": "Munkatársak",
       "agentsAll": "Összes munkatárs →",
+      "chat": {
+        "title": "Kérdezz egy munkatársat",
+        "history": "Korábbi beszélgetések →",
+        "inputLabel": "Kérdés a munkatársnak",
+        "placeholder": "Kérdezd {name} munkatársat…",
+        "pickerHint": "Kinek szól a kérdés?",
+        "openChat": "Chat megnyitása",
+        "send": "Küldés (Enter)",
+        "example1": "Miben tudsz nekem segíteni?",
+        "example2": "Foglald össze, mi vár ma rám",
+        "example3": "Segíts megfogalmazni egy e-mailt"
+      },
       "onboarding": {
           "title": "Használatba vétel",
           "progress": "{done}/{total} kész",

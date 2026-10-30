@@ -20,7 +20,7 @@ export default async function PlatformChatPage({
   // Üres állapot (§2): kulcs nélkül csak az admin kap „Kulcs beállítása” gombot.
   const keyMissingForAdmin = isAdmin && !(await loadOpenRouterTenantKey(ctx.activeTenantId))?.trim()
   return (
-    <div className="space-y-3">
+    <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="sr-only">Beszélgetés a munkatársakkal</h1>
       <PlatformChat
         isAdmin={isAdmin}

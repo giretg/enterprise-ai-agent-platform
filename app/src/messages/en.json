@@ -992,6 +992,18 @@
       "tasksAll": "All to-dos →",
       "agentsTitle": "Teammates",
       "agentsAll": "All teammates →",
+      "chat": {
+        "title": "Ask a teammate",
+        "history": "Past conversations →",
+        "inputLabel": "Question for the teammate",
+        "placeholder": "Ask {name}…",
+        "pickerHint": "Who is the question for?",
+        "openChat": "Open chat",
+        "send": "Send (Enter)",
+        "example1": "What can you help me with?",
+        "example2": "Summarise what's waiting for me today",
+        "example3": "Help me draft an email"
+      },
       "onboarding": {
           "title": "Getting set up",
           "progress": "{done}/{total} done",
