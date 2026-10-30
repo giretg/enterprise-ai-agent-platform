@@ -40,6 +40,10 @@ export type PendingApproval = {
 export type TurnContext = {
   definition: string
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>
+  /** #1022: mindig betöltött mag-eszközök (az eszköz-index ezeket nem sorolja fel). */
+  core?: string[]
+  /** #1022: a `tools[]`-ben teljes sémával küldött eszközök; hiányzik = régi kontextus, minden betöltött. */
+  loaded?: string[]
 }
 
 export type Turn = {
@@ -111,6 +115,8 @@ export interface Store {
   /** null = már fut egy forduló ebben a beszélgetésben (§5.2/6). */
   createTurn(input: { conversationId: string; tenantId: string; userId: string; agentId: string }): Promise<Turn | null>
   getTurn(id: string): Promise<Turn | null>
+  /** A beszélgetés legutóbbi, kontextussal rendelkező korábbi fordulójának kontextusa (#1022 ragadós betöltés). */
+  lastTurnContext(conversationId: string, excludeTurnId: string): Promise<TurnContext | null>
   activeTurn(conversationId: string): Promise<Turn | null>
   updateTurn(id: string, patch: Partial<Pick<Turn, 'status' | 'stepCount' | 'tokenUsage' | 'error' | 'continuationToken' | 'context' | 'pendingApproval' | 'finishedAt'>>): Promise<void>
   /** Feltételes állapotváltás (pl. cancel csak aktív fordulón). */

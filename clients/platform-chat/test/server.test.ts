@@ -45,6 +45,7 @@ async function main() {
     databaseUrl: '',
     queue: { kind: 'inline' },
     storage: { kind: 'local', dir },
+    coreTools: [],
     limits: { maxSteps: 25, maxTurnSeconds: 2400, maxAttemptsPerStep: 3, historyMessages: 30, toolResultChars: 1000 },
   }
   const store = new MemoryStore()

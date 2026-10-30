@@ -26,6 +26,21 @@ feladat); a „Jóváhagyom / Elvetem” új lépést indít. 15 perc után a k�
 listáján marad, a forduló zárószöveggel lezárul. Korlátok: 25 lépés, 40 perc, lépésenként 3 próba,
 ismétlődő-hurok (azonos tool + argumentum 3×) → leállás.
 
+## Halasztott eszköz-betöltés (#1022)
+
+A modell nem kapja meg minden lépésben az összes MCP-eszköz teljes sémáját:
+
+- **Mag** (`tools[]`, teljes sémával): `PLATFORM_CHAT_CORE_TOOLS` (vesszővel elválasztva; alapértelmezés
+  `platform.project_memory.read,kb_search,web_search`) ∪ a definíció opcionális `preloadTools` listája.
+- **Eszköz-index** (system prompt, a definíció/memória előtt): minden más eszköz neve + egysoros leírása,
+  csoportosítva, kódpont-sorrendben. Csak a mag-listától függ, így fordulók között is bájt-azonos (prompt-cache).
+- **`tool_describe(names[])`**: harness-eszköz, a worker helyben válaszol (nem MCP-hívás). A kért eszközök a
+  `turns.context.loaded` halmazba kerülnek, és a következő lépéstől a `tools[]` részei. A modell a saját
+  nevükön hívja őket — az idempotencia-kulcs, a jóváhagyás (MRTR) és az audit változatlan.
+- **Ragadós**: a beszélgetés következő fordulója az előző forduló betöltött halmazával indul.
+- **Be nem töltött eszköz hívása**: a worker betölti a sémát, és rövid hibával visszadobja („hívd újra”);
+  ez a lépés nem számít az ismétlődő-hurok őrbe.
+
 A stream (`GET /turns/:id/events`) a `turn_events` táblát pollozza, `Last-Event-ID`-vel folytatható,
 és a forduló végén vagy 2 perc csend után zár (nyitva felejtett kapcsolat nem számlázódik).
 

@@ -1,3 +1,5 @@
+import { DEFAULT_CORE_TOOLS } from './tool-loading.ts'
+
 /** A worker konfigurációja env-ből. A platformot CSAK a publikus URL-jén éri el (§3, D7). */
 export type Config = {
   port: number
@@ -11,6 +13,8 @@ export type Config = {
     | { kind: 'inline' }
     | { kind: 'cloud_tasks'; project: string; location: string; queue: string; serviceAccountEmail: string }
   storage: { kind: 'gcs'; bucket: string } | { kind: 'local'; dir: string }
+  /** #1022: alapból teljes sémával betöltött eszközök; a többi az eszköz-indexből `tool_describe`-bal tölthető be. */
+  coreTools: string[]
   limits: {
     maxSteps: number
     maxTurnSeconds: number
@@ -54,6 +58,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     storage: env.PLATFORM_CHAT_ATTACHMENTS_BUCKET
       ? { kind: 'gcs', bucket: env.PLATFORM_CHAT_ATTACHMENTS_BUCKET }
       : { kind: 'local', dir: env.PLATFORM_CHAT_LOCAL_STORAGE_DIR ?? '.platform-chat-attachments' },
+    coreTools: env.PLATFORM_CHAT_CORE_TOOLS !== undefined
+      ? env.PLATFORM_CHAT_CORE_TOOLS.split(',').map((n) => n.trim()).filter(Boolean)
+      : [...DEFAULT_CORE_TOOLS],
     limits: {
       maxSteps: int(env.PLATFORM_CHAT_MAX_STEPS, 25),
       // A platform folytatási tokenje 45 percig él — ennél hosszabb forduló nem lehet.
