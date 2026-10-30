@@ -307,6 +307,61 @@ async function main() {
     assert.equal(sent.messageId, 'msg_abc')
   })
 
+  await check('mail_send: idegen írási capability (http_api_request) nem nyit Gmail-küldést', async () => {
+    const authorize = (tools: string[]) =>
+      authorizeToolCall(
+        { findConnector: async () => gmailConnector, findActiveGrant: async () => grant(), findActiveGrants: async () => [grant()] },
+        {
+          principal,
+          definition: definition([{ connectorId: GMAIL_ID, type: 'gmail', accessMode: 'write', name: 'Gmail' }], tools),
+          toolName: MAIL_SEND_TOOL,
+          args: { to: 'a@b.hu', subject: 'x', body: 'y' },
+        },
+      )
+    const viaHttp = await authorize(['http_api_request', 'mail_mark'])
+    assert.equal(viaHttp.allowed, false)
+    if (!viaHttp.allowed) assert.equal(viaHttp.reason, 'capability_not_allowed')
+    const viaGmail = await authorize(['gmail_send'])
+    assert.equal(viaGmail.allowed, true)
+  })
+
+  await check('mail_search account=all: egy hibás fiók nem viszi el a többit', async () => {
+    const agentmail: LiveConnectorRow = {
+      id: AGENTMAIL_ID,
+      tenantId: TENANT_ID,
+      type: 'http_api',
+      authMode: 'service',
+      lifecycleState: 'active',
+      name: 'AgentMail · szamlazas@ceg.hu',
+      config: { provider: 'agentmail', baseUrl: 'https://api.agentmail.eu/inboxes/inb_1', auth: { scheme: 'bearer' } },
+    }
+    const def = definition(
+      [
+        { connectorId: GMAIL_ID, type: 'gmail', accessMode: 'write', name: 'Gmail' },
+        { connectorId: AGENTMAIL_ID, type: 'http_api', accessMode: 'write', name: 'AgentMail · szamlazas@ceg.hu' },
+      ],
+      [MAIL_SEARCH_TOOL],
+    )
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps(),
+        loadDefinition: async () => def,
+        findConnector: async (id) => (id === AGENTMAIL_ID ? agentmail : gmailConnector),
+        findActiveGrant: async ({ connectorId }) => (connectorId === GMAIL_ID ? grant() : null),
+        findActiveGrants: async ({ connectorId }) => (connectorId === GMAIL_ID ? [grant()] : []),
+        executeMailTool: async ({ account, connector }) => {
+          if (connector.id === AGENTMAIL_ID) throw new Error('agentmail down')
+          return { messages: [{ account, messageId: 'g-1' }] }
+        },
+      },
+      { principal, toolName: MAIL_SEARCH_TOOL, args: { definitionId: DEFINITION_ID, query: 'NAV', account: 'all' } },
+    )
+    assert.equal(result.isError, undefined)
+    const payload = parsePayload(result)
+    assert.equal((payload.messages as unknown[]).length, 1)
+    assert.deepEqual(payload.failedAccounts, ['szamlazas@ceg.hu'])
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt megbukott`)
     process.exit(1)

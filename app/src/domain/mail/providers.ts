@@ -4,9 +4,6 @@
  */
 import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import {
-  sendMicrosoftMail,
-} from '@/domain/connector-grant/microsoft-mail-client'
-import {
   HttpApiClient,
   parseHttpApiConfig,
   resolveConnectorApiKey,
@@ -18,15 +15,13 @@ import {
   composeFromReply,
   composeNew,
   gmailSearchQuery,
+  isRecord,
+  searchQueryFromArgs,
   type MailCompose,
   type MailMessage,
   type MailProvider,
   type MailSearchQuery,
 } from './mail'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
 
 function str(value: unknown): string {
   if (typeof value === 'string') return value
@@ -46,6 +41,10 @@ function str(value: unknown): string {
 function labelsOf(value: unknown): string[] {
   if (!Array.isArray(value)) return typeof value === 'string' && value ? [value] : []
   return value.map((row) => (typeof row === 'string' ? row : str(row))).filter(Boolean)
+}
+
+function addressList(value: string | undefined): string[] {
+  return (value ?? '').split(',').map((part) => part.trim()).filter(Boolean)
 }
 
 function unsupported(action: string, kind: string): never {
@@ -198,6 +197,8 @@ async function agentMailClient(connector: LiveConnectorRow, accessToken?: string
   return new HttpApiClient(config, apiKey ?? '')
 }
 
+const AGENTMAIL_SCAN_LIMIT = 100
+
 function agentMailProvider(connector: LiveConnectorRow, accessToken: string | undefined, account: string): MailProvider {
   const client = () => agentMailClient(connector, accessToken)
   const listBody = (body: unknown): unknown[] => {
@@ -221,12 +222,16 @@ function agentMailProvider(connector: LiveConnectorRow, accessToken: string | un
     async search(query) {
       const http = await client()
       const labels = [query.unread ? 'unread' : '', query.label ?? ''].filter(Boolean).join(',')
+      // Az AgentMail listában nincs szöveges keresés: szöveges szűrőnél nagyobb lapot kérünk és helyben szűrünk.
+      const textFilter = Boolean(query.query || query.from || query.to || query.subject)
       const result = await http.request({
         method: 'GET',
         path: '/messages',
         query: {
-          limit: query.maxResults ?? 20,
+          limit: textFilter ? AGENTMAIL_SCAN_LIMIT : query.maxResults ?? 20,
           ...(labels ? { labels } : {}),
+          ...(query.after ? { after: query.after } : {}),
+          ...(query.before ? { before: query.before } : {}),
         },
       })
       const messages = listBody(result.body).map((row) => agentMailMessage(account, row)).filter((row): row is MailMessage => Boolean(row))
@@ -250,11 +255,9 @@ function agentMailProvider(connector: LiveConnectorRow, accessToken: string | un
       const messages = rows.map((row) => agentMailMessage(account, row)).filter((row): row is MailMessage => Boolean(row))
       return { threadId, messages }
     },
-    async getAttachment(messageId, attachmentId) {
-      const message = await this.getMessage(messageId)
-      const hit = message.attachments?.find((row) => row.attachmentId === attachmentId)
-      if (!hit) throw new Error('attachment not found')
-      return { fileName: hit.fileName, mimeType: hit.mimeType, text: message.body }
+    async getAttachment() {
+      // ponytail: az AgentMail csatolmány letöltési linket ad (más host) — külön, egress-ellenőrzött lépés kell hozzá.
+      unsupported('get_attachment', 'AgentMail')
     },
     async send(input) {
       const http = await client()
@@ -265,8 +268,9 @@ function agentMailProvider(connector: LiveConnectorRow, accessToken: string | un
           body: {
             text: input.body,
             ...(input.replyAll ? { reply_all: true } : {}),
-            ...(input.cc ? { cc: input.cc.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
-            ...(input.bcc ? { bcc: input.bcc.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
+            ...(input.to ? { to: addressList(input.to) } : {}),
+            ...(input.cc ? { cc: addressList(input.cc) } : {}),
+            ...(input.bcc ? { bcc: addressList(input.bcc) } : {}),
           },
         })
         const id = isRecord(result.body) ? str(result.body.message_id ?? result.body.id) : ''
@@ -276,11 +280,11 @@ function agentMailProvider(connector: LiveConnectorRow, accessToken: string | un
         method: 'POST',
         path: '/messages/send',
         body: {
-          to: (input.to ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+          to: addressList(input.to),
           subject: input.subject,
           text: input.body,
-          ...(input.cc ? { cc: input.cc.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
-          ...(input.bcc ? { bcc: input.bcc.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
+          ...(input.cc ? { cc: addressList(input.cc) } : {}),
+          ...(input.bcc ? { bcc: addressList(input.bcc) } : {}),
         },
       })
       const id = isRecord(result.body) ? str(result.body.message_id ?? result.body.id) : ''
@@ -309,12 +313,11 @@ function graphMessage(account: string, raw: unknown): MailMessage | null {
   if (!isRecord(raw)) return null
   const messageId = str(raw.id)
   if (!messageId) return null
-  const from = isRecord(raw.from) ? str(raw.from) : str(raw.from)
   return {
     account,
     messageId,
     threadId: str(raw.conversationId) || messageId,
-    from,
+    from: str(raw.from),
     to: graphRecipients(raw.toRecipients),
     cc: graphRecipients(raw.ccRecipients),
     subject: str(raw.subject),
@@ -357,6 +360,26 @@ async function graphFetch(
   return body
 }
 
+function isoDay(value: string | undefined): string | undefined {
+  return value?.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+}
+
+function graphRecipientList(value: string | undefined): Array<{ emailAddress: { address: string } }> {
+  return addressList(value).map((entry) => ({
+    emailAddress: { address: entry.match(/<([^>]+)>/)?.[1]?.trim() ?? entry },
+  }))
+}
+
+/** Graph message-objektum: csak a megadott mezők, hogy válasznál ne írjuk felül az eredeti címzetteket. */
+function graphCompose(input: MailCompose, withSubject: boolean): Record<string, unknown> {
+  return {
+    ...(withSubject ? { subject: input.subject } : {}),
+    ...(input.to ? { toRecipients: graphRecipientList(input.to) } : {}),
+    ...(input.cc ? { ccRecipients: graphRecipientList(input.cc) } : {}),
+    ...(input.bcc ? { bccRecipients: graphRecipientList(input.bcc) } : {}),
+  }
+}
+
 function microsoftProvider(accessToken: string, account: string, fetchImpl: typeof fetch = fetch): MailProvider {
   return {
     async search(query) {
@@ -366,9 +389,28 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
         '$select',
         'id,conversationId,from,toRecipients,ccRecipients,subject,receivedDateTime,bodyPreview,isRead,hasAttachments,categories',
       )
-      const search = [query.query, query.subject, query.from ? `from:${query.from}` : ''].filter(Boolean).join(' ')
-      if (search) params.set('$search', `"${search.replace(/"/g, '')}"`)
-      else if (query.unread) params.set('$filter', 'isRead eq false')
+      const after = isoDay(query.after)
+      const before = isoDay(query.before)
+      const kql = [
+        query.query,
+        query.subject ? `subject:${query.subject}` : '',
+        query.from ? `from:${query.from}` : '',
+        query.to ? `to:${query.to}` : '',
+      ].filter(Boolean)
+      // A Graph a $search mellett nem enged $filtert: szövegnél a dátum a KQL-be, az olvasatlan/címke helyben szűrődik.
+      if (kql.length) {
+        if (after) kql.push(`received>=${after}`)
+        if (before) kql.push(`received<${before}`)
+        params.set('$search', `"${kql.join(' ').replace(/"/g, '')}"`)
+      } else {
+        const filter = [
+          query.unread ? 'isRead eq false' : '',
+          after ? `receivedDateTime ge ${after}T00:00:00Z` : '',
+          before ? `receivedDateTime lt ${before}T00:00:00Z` : '',
+          query.label ? `categories/any(c:c eq '${query.label.replace(/'/g, "''")}')` : '',
+        ].filter(Boolean)
+        if (filter.length) params.set('$filter', filter.join(' and '))
+      }
       const raw = await graphFetch(accessToken, `/messages?${params.toString()}`, undefined, fetchImpl)
       if (isRecord(raw) && raw.stub === true) {
         return [{
@@ -386,7 +428,10 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
         }]
       }
       const rows = isRecord(raw) && Array.isArray(raw.value) ? raw.value : []
-      return rows.map((row) => graphMessage(account, row)).filter((row): row is MailMessage => Boolean(row))
+      return rows
+        .map((row) => graphMessage(account, row))
+        .filter((row): row is MailMessage => Boolean(row))
+        .filter((row) => matchesQuery(row, { unread: query.unread, label: query.label }))
     },
     async getMessage(id) {
       const raw = await graphFetch(
@@ -432,38 +477,57 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
       return { fileName, mimeType, contentBase64: content }
     },
     async send(input) {
+      if (input.draftId) {
+        await graphFetch(accessToken, `/messages/${encodeURIComponent(input.draftId)}/send`, { method: 'POST' }, fetchImpl)
+        return { messageId: input.draftId }
+      }
       if (input.replyToMessageId) {
+        const message = graphCompose(input, Boolean(input.subject))
         await graphFetch(
           accessToken,
           `/messages/${encodeURIComponent(input.replyToMessageId)}/${input.replyAll ? 'replyAll' : 'reply'}`,
-          { method: 'POST', body: JSON.stringify({ comment: input.body }) },
+          {
+            method: 'POST',
+            body: JSON.stringify({ comment: input.body, ...(Object.keys(message).length ? { message } : {}) }),
+          },
           fetchImpl,
         )
         return { messageId: input.replyToMessageId, threadId: input.threadId }
       }
-      await sendMicrosoftMail(accessToken, {
-        to: input.to ?? '',
-        subject: input.subject,
-        body: input.body,
-      }, fetchImpl)
-      return { messageId: 'sent' }
-    },
-    async createDraft(input) {
-      const raw = await graphFetch(
+      await graphFetch(
         accessToken,
-        '/messages',
+        '/sendMail',
         {
           method: 'POST',
           body: JSON.stringify({
-            subject: input.subject,
-            body: { contentType: 'Text', content: input.body },
-            toRecipients: (input.to ?? '').split(',').filter(Boolean).map((address) => ({
-              emailAddress: { address: address.trim() },
-            })),
+            message: { ...graphCompose(input, true), body: { contentType: 'Text', content: input.body } },
+            saveToSentItems: true,
           }),
         },
         fetchImpl,
       )
+      return { messageId: 'sent' }
+    },
+    async createDraft(input) {
+      const raw = input.replyToMessageId
+        ? await graphFetch(
+            accessToken,
+            `/messages/${encodeURIComponent(input.replyToMessageId)}/${input.replyAll ? 'createReplyAll' : 'createReply'}`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ comment: input.body, message: graphCompose(input, Boolean(input.subject)) }),
+            },
+            fetchImpl,
+          )
+        : await graphFetch(
+            accessToken,
+            '/messages',
+            {
+              method: 'POST',
+              body: JSON.stringify({ ...graphCompose(input, true), body: { contentType: 'Text', content: input.body } }),
+            },
+            fetchImpl,
+          )
       const id = isRecord(raw) ? str(raw.id) : ''
       return { draftId: id || 'draft' }
     },
@@ -473,10 +537,22 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
       const patch: Record<string, unknown> = {}
       if (input.read) patch.isRead = true
       if (input.unread) patch.isRead = false
+      if (input.label) {
+        // A Graph a teljes kategória-listát írja felül → a meglévőkhöz fűzzük.
+        const current = await this.getMessage(id)
+        const categories = current.labels.filter((label) => label !== 'unread')
+        patch.categories = categories.includes(input.label) ? categories : [...categories, input.label]
+      }
       if (Object.keys(patch).length > 0) {
         await graphFetch(accessToken, `/messages/${encodeURIComponent(id)}`, {
           method: 'PATCH',
           body: JSON.stringify(patch),
+        }, fetchImpl)
+      }
+      if (input.archive) {
+        await graphFetch(accessToken, `/messages/${encodeURIComponent(id)}/move`, {
+          method: 'POST',
+          body: JSON.stringify({ destinationId: 'archive' }),
         }, fetchImpl)
       }
       return { ok: true }
@@ -512,19 +588,9 @@ export async function executeMailTool(input: {
   account: string
 }): Promise<unknown> {
   const provider = mailProviderFor(input.connector, input.accessToken, input.account)
-  const { toolName, args, account } = input
+  const { toolName, args } = input
   if (toolName === 'mail_search') {
-    return { messages: await provider.search({
-      query: typeof args.query === 'string' ? args.query : undefined,
-      from: typeof args.from === 'string' ? args.from : undefined,
-      to: typeof args.to === 'string' ? args.to : undefined,
-      subject: typeof args.subject === 'string' ? args.subject : undefined,
-      unread: args.unread === true,
-      after: typeof args.after === 'string' ? args.after : undefined,
-      before: typeof args.before === 'string' ? args.before : undefined,
-      label: typeof args.label === 'string' ? args.label : undefined,
-      maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined,
-    }) }
+    return { messages: await provider.search(searchQueryFromArgs(args)) }
   }
   if (toolName === 'mail_get_message') {
     return provider.getMessage(String(args.id ?? args.messageId ?? ''))

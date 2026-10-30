@@ -107,7 +107,7 @@ export type MailProvider = {
   mark(input: MailMark): Promise<{ ok: true }>
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
@@ -138,7 +138,7 @@ export function mergeAddresses(lists: string[], exclude: Set<string>): string {
   return out.join(', ')
 }
 
-/** Válasz mezői: szál, Re: tárgy, címzettek. A Gmail-handler is ezt hívja. */
+/** Válasz mezői: szál, Re: tárgy, címzettek (a mail_* Gmail-ága). */
 export function composeFromReply(
   original: ReplyContext,
   ownAddress: string | undefined,
@@ -237,8 +237,8 @@ function kindOf(connector: LiveConnectorRow): MailboxKind | null {
   return null
 }
 
-function addressOfConnector(connector: LiveConnectorRow, kind: MailboxKind): string | null {
-  return mailboxConnectorInfo(connector)?.address ?? emailIn(connector.name) ?? (kind === 'google' ? null : emailIn(connector.name))
+function addressOfConnector(connector: LiveConnectorRow): string | null {
+  return mailboxConnectorInfo(connector)?.address ?? emailIn(connector.name)
 }
 
 export async function listMailAccounts(input: {
@@ -292,7 +292,7 @@ export async function listMailAccounts(input: {
       }
       continue
     }
-    const address = addressOfConnector(live, kind)
+    const address = addressOfConnector(live)
     accounts.push({
       account: address || row.name?.trim() || live.id,
       address,

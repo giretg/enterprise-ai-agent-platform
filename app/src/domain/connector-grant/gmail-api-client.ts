@@ -450,7 +450,10 @@ export class GmailApiClient {
       return { fileName: 'stub.txt', mimeType: 'text/plain', text: 'stub attachment' }
     }
     const message = await this.getMessage({ id: params.messageId })
-    const meta = message.attachments.find((row) => row.attachmentId === params.attachmentId)
+    // A Gmail attachmentId lekérésenként változhat — egyetlen csatolmánynál az a meta.
+    const meta =
+      message.attachments.find((row) => row.attachmentId === params.attachmentId) ??
+      (message.attachments.length === 1 ? message.attachments[0] : undefined)
     const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(params.messageId)}/attachments/${encodeURIComponent(params.attachmentId)}`
     const res = await fetchWithBackoff('gmail.get_attachment', url, {
       headers: { authorization: `Bearer ${this.accessToken}` },

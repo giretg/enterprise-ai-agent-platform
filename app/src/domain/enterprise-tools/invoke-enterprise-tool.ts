@@ -56,6 +56,7 @@ import {
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseMailTool,
+  isEnterpriseMailWriteTool,
   MAIL_CREATE_DRAFT_TOOL,
   MAIL_LIST_ACCOUNTS_TOOL,
   MAIL_SEARCH_TOOL,
@@ -421,6 +422,24 @@ export function isOutputFolderWrite(input: {
 
 type DirectWriteBypass = 'agent_output_folder' | 'agent_write_mode'
 
+/** #1030: a megadott `account` (cím vagy becenév) melyik konnektorra mutat; nincs egyértelmű találat → null. */
+async function mailAccountConnectorId(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+  definition: AgentDefinition,
+  account: string,
+): Promise<string | null> {
+  const accounts = await listMailAccounts({
+    definition,
+    findConnector: deps.findConnector,
+    findActiveGrants: (row) => grantsFor(deps, row),
+    userId: principal.userId,
+    tenantId: principal.tenantId,
+  })
+  const resolved = resolveMailAccounts(accounts, account, {})
+  return resolved.ok ? (resolved.accounts[0]?.connectorId ?? null) : null
+}
+
 /**
  * #1029: AgentMail-küldés az agent saját címéről → aláírás a levél végére. A cél
  * konnektor: connectorId / connectorName, ennek hiányában az egyetlen kötött HTTP
@@ -428,19 +447,19 @@ type DirectWriteBypass = 'agent_output_folder' | 'agent_write_mode'
  */
 async function withPrimaryMailboxSignature(
   deps: EnterpriseToolDeps,
-  tenantId: string,
+  principal: ToolCallPrincipal,
   definition: AgentDefinition,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const tenantId = principal.tenantId
   if ((toolName === MAIL_SEND_TOOL || toolName === MAIL_CREATE_DRAFT_TOOL) && deps.findAgentMailSignature) {
     const mailbox = await deps.findAgentMailSignature({ agentId: definition.agentId, tenantId }).catch(() => null)
     const signature = mailbox?.signature?.trim()
     const body = typeof args.body === 'string' ? args.body : ''
     if (!signature || !body) return args
     const account = typeof args.account === 'string' ? args.account.trim().toLowerCase() : ''
-    const primaryName = mailbox?.connectorName.trim().toLowerCase() ?? ''
-    const fromPrimary = !account || account === 'all' || primaryName.includes(account) || account === mailbox?.connectorId
+    const fromPrimary = !account || (await mailAccountConnectorId(deps, principal, definition, account)) === mailbox?.connectorId
     return fromPrimary ? { ...args, body: appendTextSignature(body, signature) } : args
   }
   if (toolName !== HTTP_API_REQUEST_TOOL || !deps.findAgentMailSignature) return args
@@ -496,9 +515,11 @@ async function tryDirectWrite(
         tenantId: principal.tenantId,
       })
     : null
+  // #1030: a mail_* módja a postafiók típusától függ — itt csak az dől el, érdemes-e megnézni.
+  const mailWrite = isEnterpriseMailWriteTool(toolName)
   const bypass: DirectWriteBypass | null = outputFolder
     ? 'agent_output_folder'
-    : skipsWriteApproval(toolName, modes)
+    : (mailWrite ? skipsWriteApproval(toolName, modes, null, 'gmail') || skipsWriteApproval(toolName, modes, null, 'http_api') : skipsWriteApproval(toolName, modes))
       ? 'agent_write_mode'
       : null
   if (!bypass) return null
@@ -527,6 +548,7 @@ async function tryDirectWrite(
   const connector = authorized.connector
   // #1028: az admin kikényszerítette a jóváhagyást — az agent írási módja nem kerülheti meg.
   if (bypass === 'agent_write_mode' && tenantMailboxForcesApproval(connector)) return null
+  if (mailWrite && !skipsWriteApproval(toolName, modes, null, connector.type)) return null
   const authFailedCode =
     connector.type === 'gmail'
       ? 'gmail_auth_failed'
@@ -715,7 +737,7 @@ export async function invokeEnterpriseTool(
       return errorResult('tool_not_configured')
     }
     // #1029: az aláírás a jóváhagyás ELŐTT kerül a levélbe, így a jóváhagyó a végleges szöveget látja.
-    const writeArgs = await withPrimaryMailboxSignature(deps, principal.tenantId, definition, toolName, args)
+    const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, args)
     const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs })
     if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args: writeArgs, origin, confirm })
@@ -1004,6 +1026,7 @@ async function invokeMailRead(
       return errorResult(resolved.reason, resolved.accounts.length ? { accounts: resolved.accounts } : undefined)
     }
     const messages: unknown[] = []
+    const failedAccounts: string[] = []
     for (const account of resolved.accounts) {
       const one = await authorizeToolCall(deps, {
         principal,
@@ -1011,21 +1034,31 @@ async function invokeMailRead(
         toolName,
         args: { ...parsedArgs, account: account.account },
       })
-      if (!one.allowed) continue
+      if (!one.allowed) {
+        failedAccounts.push(account.account)
+        continue
+      }
       let accessToken: string | undefined
       try {
         accessToken = await resolveGrantToken(deps, principal, one.connector, one)
       } catch {
+        failedAccounts.push(account.account)
         continue
       }
       const execute = deps.executeMailTool ?? executeMailTool
-      const result = await execute({
-        toolName,
-        args: parsedArgs,
-        connector: one.connector,
-        accessToken,
-        account: account.account,
-      })
+      let result: unknown
+      try {
+        result = await execute({
+          toolName,
+          args: parsedArgs,
+          connector: one.connector,
+          accessToken,
+          account: account.account,
+        })
+      } catch {
+        failedAccounts.push(account.account)
+        continue
+      }
       const rows = result && typeof result === 'object' && Array.isArray((result as { messages?: unknown[] }).messages)
         ? (result as { messages: unknown[] }).messages
         : []
@@ -1037,9 +1070,10 @@ async function invokeMailRead(
       definitionId,
       agentId: definition.agentId,
       ok: true,
-      metadata: { account: 'all', count: messages.length },
+      metadata: { account: 'all', count: messages.length, failedAccounts: failedAccounts.length },
     })
-    return textResult({ messages })
+    // A modell lássa, melyik postafiókban nem tudott keresni — ne higgye, hogy ott nincs találat.
+    return textResult(failedAccounts.length ? { messages, failedAccounts } : { messages })
   }
   if (!authorized.allowed) {
     await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)

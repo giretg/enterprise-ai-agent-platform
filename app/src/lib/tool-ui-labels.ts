@@ -298,7 +298,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   mail_search: {
     label: 'Keresek a leveleid között…',
-    description: 'Keresés az elérhető postafiókokban (feladó, tárgy, dátum, olvasatlan). account: "all" = minden fiók.',
+    description: 'Keresés az elérhető postafiókokban (feladó, tárgy, dátum, olvasatlan) — egyben vagy az összesben.',
   },
   mail_get_message: {
     label: 'Levél megnyitása',
@@ -314,7 +314,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   mail_send: {
     label: 'Levelet írok…',
-    description: 'Új levél vagy válasz a kiválasztott postafiókból — emberi jóváhagyás után.',
+    description: 'Új levél vagy válasz a kiválasztott postafiókból; ha be van kapcsolva, előbb jóváhagyást kér.',
   },
   mail_create_draft: {
     label: 'Piszkozat',
@@ -322,7 +322,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   mail_mark: {
     label: 'Olvasott / archiválás',
-    description: 'Olvasottnak jelölés, archiválás vagy címke — jóváhagyás után.',
+    description: 'Olvasottnak jelölés, archiválás vagy címke; ha be van kapcsolva, előbb jóváhagyást kér.',
   },
   gmail_search: {
     label: 'Levélkeresés',

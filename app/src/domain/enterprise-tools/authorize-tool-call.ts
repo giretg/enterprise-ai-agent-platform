@@ -254,36 +254,34 @@ function pickBinding(
   }
 }
 
-const MAIL_READ_CAPABILITIES = [
-  MAIL_LIST_ACCOUNTS_TOOL,
-  MAIL_SEARCH_TOOL,
-  MAIL_GET_MESSAGE_TOOL,
-  MAIL_GET_THREAD_TOOL,
-  MAIL_GET_ATTACHMENT_TOOL,
-  GMAIL_SEARCH_TOOL,
-  GMAIL_GET_MESSAGE_TOOL,
-  GMAIL_GET_THREAD_TOOL,
-  HTTP_API_GET_TOOL,
-  HTTP_API_GET_ALL_TOOL,
-]
+/**
+ * #1030: a mail_* eszköz a saját capabilityjével, vagy a postafiók típusának megfelelő
+ * régi eszközével hívható (gmail_* a Google-, http_api_* az AgentMail/M365-postafióknál).
+ * Másik eszköz (pl. CRM-célú http_api_request) nem nyit levélküldést.
+ */
+const MAIL_LEGACY_CAPABILITIES: Record<string, { gmail: string; httpApi: string[] }> = {
+  [MAIL_LIST_ACCOUNTS_TOOL]: { gmail: GMAIL_SEARCH_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_SEARCH_TOOL]: { gmail: GMAIL_SEARCH_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_MESSAGE_TOOL]: { gmail: GMAIL_GET_MESSAGE_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_THREAD_TOOL]: { gmail: GMAIL_GET_THREAD_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_ATTACHMENT_TOOL]: { gmail: GMAIL_GET_MESSAGE_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_SEND_TOOL]: { gmail: GMAIL_SEND_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+  [MAIL_CREATE_DRAFT_TOOL]: { gmail: GMAIL_CREATE_DRAFT_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+  [MAIL_MARK_TOOL]: { gmail: GMAIL_MODIFY_LABELS_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+}
 
-const MAIL_WRITE_CAPABILITIES = [
-  MAIL_SEND_TOOL,
-  MAIL_CREATE_DRAFT_TOOL,
-  MAIL_MARK_TOOL,
-  GMAIL_SEND_TOOL,
-  GMAIL_CREATE_DRAFT_TOOL,
-  GMAIL_MODIFY_LABELS_TOOL,
-  HTTP_API_REQUEST_TOOL,
-]
-
-function gmailScopeTool(toolName: string): string {
-  if (toolName === MAIL_SEND_TOOL) return GMAIL_SEND_TOOL
-  if (toolName === MAIL_CREATE_DRAFT_TOOL) return GMAIL_CREATE_DRAFT_TOOL
-  if (toolName === MAIL_MARK_TOOL) return GMAIL_MODIFY_LABELS_TOOL
-  if (toolName === MAIL_GET_MESSAGE_TOOL) return GMAIL_GET_MESSAGE_TOOL
-  if (toolName === MAIL_GET_THREAD_TOOL) return GMAIL_GET_THREAD_TOOL
-  return GMAIL_SEARCH_TOOL
+function mailCapabilityAllowed(
+  definition: AgentDefinition,
+  toolName: string,
+  kind: 'gmail' | 'httpApi' | 'any',
+): boolean {
+  const legacy = MAIL_LEGACY_CAPABILITIES[toolName]
+  const accepted = [
+    toolName,
+    ...(legacy && kind !== 'httpApi' ? [legacy.gmail] : []),
+    ...(legacy && kind !== 'gmail' ? legacy.httpApi : []),
+  ]
+  return definition.snapshot.capabilities.some((row) => row.allowed && accepted.includes(row.toolName))
 }
 
 async function authorizeMailTool(
@@ -291,11 +289,9 @@ async function authorizeMailTool(
   input: AuthorizeToolCallInput,
 ): Promise<AuthorizeToolCallResult> {
   const write = isEnterpriseMailWriteTool(input.toolName)
-  const accepted = write ? MAIL_WRITE_CAPABILITIES : MAIL_READ_CAPABILITIES
-  const capability = input.definition.snapshot.capabilities.find(
-    (row) => accepted.includes(row.toolName) && row.allowed,
-  )
-  if (!capability) return { allowed: false, reason: 'capability_not_allowed' }
+  if (!mailCapabilityAllowed(input.definition, input.toolName, 'any')) {
+    return { allowed: false, reason: 'capability_not_allowed' }
+  }
 
   const primaryConnectorId = deps.findPrimaryMailboxConnectorId
     ? await deps.findPrimaryMailboxConnectorId({
@@ -329,6 +325,9 @@ async function authorizeMailTool(
   }
   const picked = resolved.accounts[0]
   if (!picked) return { allowed: false, reason: 'missing_mailbox' }
+  if (!mailCapabilityAllowed(input.definition, input.toolName, picked.kind === 'google' ? 'gmail' : 'httpApi')) {
+    return { allowed: false, reason: 'capability_not_allowed' }
+  }
   return authorizeLoadedConnector(deps, input, picked.connectorId, picked.grantId)
 }
 
@@ -343,7 +342,7 @@ async function authorizeLoadedConnector(
   if (connector.tenantId !== input.principal.tenantId) return { allowed: false, reason: 'tenant_isolation' }
   if (connector.lifecycleState !== 'active') return { allowed: false, reason: 'connector_not_active' }
 
-  const scopeTool = isEnterpriseMailTool(input.toolName) ? gmailScopeTool(input.toolName) : input.toolName
+  const scopeTool = MAIL_LEGACY_CAPABILITIES[input.toolName]?.gmail ?? input.toolName
 
   if (tenantMailboxOf(connector)) {
     const grant = deps.findActiveTenantGrant
