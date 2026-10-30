@@ -377,6 +377,7 @@ const sharedToolLookups = {
   },
   // #717: briefing, KB-találat, http_api hintek — ugyanaz a feloldás.
   resolveTenantLanguage,
+  markGrantExpired: connectorGrantService.markGrantExpired.bind(connectorGrantService),
   async resolveAccessToken(params: {
     connector: { id: string }
     grantId: string

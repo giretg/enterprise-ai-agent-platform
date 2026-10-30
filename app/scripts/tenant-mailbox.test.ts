@@ -3,6 +3,8 @@
  * Futtatás: npm run test:tenant-mailbox
  */
 import assert from 'node:assert/strict'
+import { GmailApiAuthError } from '../src/domain/connector-grant/gmail-api-client'
+import { expireRejectedTenantMailbox } from '../src/domain/connector-grant/tenant-mailbox-failure'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -224,6 +226,37 @@ async function main() {
     assert.equal(payload.message, tenantMailboxDisconnectedMessage(ADDRESS))
     assert.equal(payload.authorizationUrl, undefined)
     assert.equal(authStarted, false)
+  })
+
+  await check('provider revocation expires the mailbox immediately; 403 keeps the grant', async () => {
+    for (const toolName of ['gmail_search', 'gmail_send']) {
+      let expired = 0
+      const def = definition('write', [toolName])
+      for (const status of [403, 401]) {
+        const result = await invokeEnterpriseTool(invokeDeps({
+          async findConnector() { return mailboxConnector({ requireApproval: false }) },
+          async enqueueWrite() { throw new Error('must execute directly') },
+          async findAgentWriteModes() { return { memory: 'approval', httpApi: 'approval', gmail: 'direct', drive: 'approval' } },
+          async markGrantExpired(input) {
+            assert.equal(input.grantId, GRANT_ID)
+            expired++
+          },
+          async executeGmailTool() { throw new GmailApiAuthError('revoked', status) },
+        }, def), { principal, toolName, args: { definitionId: DEFINITION_ID, query: 'x', to: 'a@example.com', subject: 'x', body: 'x', idempotencyKey: `revoke-${status}` } })
+        const payload = JSON.parse(result.content[0].text)
+        assert.equal(expired, status === 401 ? 1 : 0, JSON.stringify({toolName, status, payload}))
+        if (status === 401) {
+          assert.equal(payload.code, TENANT_MAILBOX_DISCONNECTED)
+          assert.equal(payload.authorizationUrl, undefined)
+        }
+      }
+    }
+    let expired = 0
+    assert.equal(await expireRejectedTenantMailbox({ async markGrantExpired() { expired++ } }, {
+      connector: mailboxConnector({ source: 'microsoft' }), grantId: GRANT_ID,
+      tenantId: TENANT_ID, userId: principal.userId, outcome: { ok: false, status: 401 },
+    }), true)
+    assert.equal(expired, 1)
   })
 
   await check('tool call audit carries the mailbox address and the initiating user', async () => {

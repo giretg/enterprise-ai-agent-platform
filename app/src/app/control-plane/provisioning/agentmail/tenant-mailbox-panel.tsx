@@ -165,11 +165,13 @@ function ConnectForm({ microsoftBases }: { microsoftBases: TenantMailboxOverview
 }
 
 function AccessToggle({
+  agentName,
   value,
   readOnly,
   disabled,
   onChange,
 }: {
+  agentName: string
   value: Access
   readOnly: boolean
   disabled: boolean
@@ -183,11 +185,11 @@ function AccessToggle({
       label: 'Küldhet',
       hint: readOnly
         ? 'Ez a postafiók csak olvasásra van bekötve.'
-        : 'Olvas, és a postafiók nevében küldhet — jóváhagyás után.',
+        : 'Olvas, és a postafiók nevében küldhet. A jóváhagyás a postafiók és az agent beállításaitól függ.',
     },
   ]
   return (
-    <div role="radiogroup" className="inline-flex rounded-lg border border-ink/15 bg-paper p-0.5">
+    <div role="group" aria-label={`${agentName} postafiók-hozzáférése`} className="inline-flex rounded-lg border border-ink/15 bg-paper p-0.5">
       {options.map((option) => {
         const active = option.value === value
         const blocked = option.value === 'write' && readOnly
@@ -195,8 +197,7 @@ function AccessToggle({
           <button
             key={option.value}
             type="button"
-            role="radio"
-            aria-checked={active}
+            aria-pressed={active}
             title={option.hint}
             disabled={disabled || blocked}
             onClick={() => !active && onChange(option.value)}
@@ -339,6 +340,7 @@ function MailboxCard({
             <li key={agent.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
               <span className="text-sm text-ink">{agent.name}</span>
               <AccessToggle
+                agentName={agent.name}
                 value={accessByAgent.get(agent.id) ?? 'none'}
                 readOnly={mailbox.readOnly}
                 disabled={pendingAgent !== null}

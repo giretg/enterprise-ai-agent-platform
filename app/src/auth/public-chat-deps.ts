@@ -1,3 +1,4 @@
+import { expireRejectedTenantMailbox } from '@/domain/connector-grant/tenant-mailbox-failure'
 /**
  * #1016: a nyilvános chat éles függőségei — modell, nyilvános KB, továbbítás, Turnstile, rate-limit.
  */
@@ -124,10 +125,17 @@ async function forwardToSupport(input: {
       transcriptText(input.transcript),
     ].join('\n')
     let messageId: string | null = null
-    if (mailbox?.source === 'microsoft') {
-      await sendMicrosoftMail(token, { to: config.supportEmail, subject, body })
-    } else {
-      messageId = (await new GmailApiClient(token).send({ to: config.supportEmail, subject, body })).messageId
+    try {
+      if (mailbox?.source === 'microsoft') {
+        await sendMicrosoftMail(token, { to: config.supportEmail, subject, body })
+      } else {
+        messageId = (await new GmailApiClient(token).send({ to: config.supportEmail, subject, body })).messageId
+      }
+    } catch (error) {
+      await expireRejectedTenantMailbox({ markGrantExpired: services.connectorGrants.markGrantExpired.bind(services.connectorGrants) }, {
+        connector, grantId: grant.id, userId: grant.userId ?? '', tenantId: input.tenantId, outcome: error,
+      })
+      throw error
     }
     await writeAudit(repositories.audit, {
       actorType: 'agent',

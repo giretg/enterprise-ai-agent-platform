@@ -808,7 +808,7 @@ export class ProvisioningService {
   // ── §8.6 assignConnectorToAgent (EMBERI admin-aktus — agent NEM hívhatja) ──
 
   async assignConnectorToAgent(
-    input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode; apiKey?: string },
+    input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode; apiKey?: string; mailboxConfirmed?: boolean },
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string }> {
     await this.requireHumanAdmin(actor, 'assignConnectorToAgent')
@@ -819,6 +819,12 @@ export class ProvisioningService {
       throw new ProvisioningError(
         'CONNECTOR_NOT_ACTIVE',
         'only an active connector can be assigned to an agent',
+      )
+    }
+    if (tenantMailboxOf({ authMode: connector.authMode ?? '', config: connector.config }) && !input.mailboxConfirmed) {
+      throw new ProvisioningError(
+        'PROVISIONING_INVALID_INPUT',
+        'A közös postafiókot a Postafiókok oldalon rendeld hozzá az agenthez, a hozzáférési figyelmeztetés elfogadásával.',
       )
     }
     if (

@@ -20,5 +20,6 @@ export async function sendMicrosoftMail(
       saveToSentItems: true,
     }),
   })
+  if (res.status === 401) throw Object.assign(new Error('Microsoft mailbox authentication failed'), { status: res.status })
   if (!res.ok) throw new Error(`microsoft_send_failed: HTTP ${res.status}`)
 }

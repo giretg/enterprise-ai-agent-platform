@@ -1,3 +1,4 @@
+import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
@@ -150,7 +151,7 @@ export type WriteConfirmInput = {
 
 export type HttpApiActingUser = { id: string; email: string; tenantId: string | null } | null
 
-export type EnterpriseToolDeps = AuthorizeToolCallDeps &
+export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -499,6 +500,10 @@ async function tryDirectWrite(
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
     })
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&
       result !== null &&
@@ -532,6 +537,10 @@ async function tryDirectWrite(
     })
     return textResult(result, upstreamFailure)
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const mapped = mapToolError(error, connector.type)
     const extra = { ...mapped.extra, ...driveUploadLogMeta(toolName, parsedArgs) }
     const auditDetails = Object.keys(extra).length ? extra : undefined
@@ -766,6 +775,10 @@ export async function invokeEnterpriseTool(
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
     })
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&
       result !== null &&
@@ -798,6 +811,10 @@ export async function invokeEnterpriseTool(
     })
     return textResult(result, upstreamFailure)
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const mapped = mapToolError(error, connector.type)
     const mappedExtra = {
       ...mapped.extra,

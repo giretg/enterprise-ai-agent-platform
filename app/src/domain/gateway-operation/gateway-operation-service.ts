@@ -1,3 +1,4 @@
+import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
@@ -77,7 +78,7 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
+export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -1071,6 +1072,7 @@ async function executeApprovedOperation(
           args,
           accessToken ?? '',
         )
+    if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: result })) return fail(TENANT_MAILBOX_DISCONNECTED)
     const updated = await deps.operations.update(operation.id, {
       status: 'succeeded',
       resultJson: result,
@@ -1111,6 +1113,7 @@ async function executeApprovedOperation(
     })
     return updated ?? { ...operation, status: 'succeeded', resultJson: result, errorCode: null }
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: error })) return fail(TENANT_MAILBOX_DISCONNECTED)
     return fail(mapWriteError(error))
   }
 }

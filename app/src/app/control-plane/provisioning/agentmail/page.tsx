@@ -35,7 +35,7 @@ export default async function MailboxesPage({
         <p className="mt-1 max-w-2xl text-sm text-ink-soft">
           Postafiók az agenteknek, két módon: egy meglévő közös céges cím bekötése (Google vagy Microsoft), vagy
           saját, új cím az agentnek (AgentMail). Egyik sem a munkatársak saját postafiókja — arra a Gmail kapcsolat
-          való. Kimenő levél csak jóváhagyás után megy ki.
+          való. A közös postafiók és az agent beállításai határozzák meg, kell-e jóváhagyás a küldéshez.
         </p>
       </header>
       {mailboxes.success ? (

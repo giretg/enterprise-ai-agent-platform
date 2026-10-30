@@ -156,7 +156,11 @@ function googleMailboxConfig(mailbox: TenantMailboxConfig): Record<string, unkno
     {},
     { templateKey: descriptor.key, templateOrigin: 'builtin' },
   )
-  return { ...config, mailbox }
+  return {
+    ...config,
+    oauth: { ...config.oauth, userInfoUrl: 'https://gmail.googleapis.com/gmail/v1/users/me/profile', accountEmailField: 'emailAddress' },
+    mailbox,
+  }
 }
 
 const startSchema = z.object({
@@ -313,6 +317,7 @@ export async function assignTenantMailboxAction(input: unknown) {
             connectorId: parsed.connectorId,
             agentId: parsed.agentId,
             accessMode: parsed.access,
+            mailboxConfirmed: parsed.confirmed,
           })
     if (!res.success) return res
     await audit(user, 'connector.mailbox.assign', parsed.connectorId, {

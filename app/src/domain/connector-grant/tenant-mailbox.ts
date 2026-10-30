@@ -20,7 +20,7 @@ export const TENANT_MAILBOX_DISCONNECTED = 'tenant_mailbox_disconnected'
 export const TENANT_MAILBOX_READ_ONLY = 'tenant_mailbox_read_only'
 
 export const TENANT_MAILBOX_ASSIGN_WARNING =
-  'Az agent minden használója olvashatja ennek a postafióknak a leveleit, és az agent a postafiók nevében küldhet (jóváhagyással).'
+  'Az agent minden használója olvashatja ennek a postafióknak a leveleit, és az agent a postafiók nevében küldhet. A jóváhagyás szükségességét a postafiók és az agent beállításai határozzák meg.'
 
 const MICROSOFT_READ_SCOPES = ['offline_access', 'User.Read', 'Mail.Read']
 const MICROSOFT_SEND_SCOPE = 'Mail.Send'
