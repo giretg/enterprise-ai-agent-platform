@@ -7,7 +7,6 @@ import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import {
-  activateConnector,
   assignConnectorToAgent,
   createConnectorFromTemplateAction,
   createConnectorDraft,
@@ -42,16 +41,15 @@ import {
   type McpConnectorsData,
 } from './mcp-connectors-panel'
 import { listTenants } from '@/app/actions/tenant'
+import { activateConnector, approveSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   approveSelfUpdatingSource,
-  approveSelfUpdatingVersion,
   createSelfUpdatingConnector,
   createSelfUpdatingConnectorsFromCatalog,
   listSelfUpdatingConnectors,
   previewSelfUpdatingCatalog,
   setTenantSelfUpdatingAutoApprove,
-  syncSelfUpdatingConnector,
   trustSelfUpdatingPartner,
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'

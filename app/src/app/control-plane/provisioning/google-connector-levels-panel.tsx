@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { updateGoogleAccountBinding } from '@/app/actions/provisioning'
+import { updateGoogleAccountBinding } from '@/lib/connector-update-publishing'
 import {
   formatGoogleAccountId,
   splitGoogleAccountIds,
