@@ -418,6 +418,18 @@ async function main() {
     assert.match(last.content, /Nem elérhető eszköz: nincs_ilyen/)
   })
 
+  await check('#1022 minden halasztott eszköz betöltve: a tool_describe a tools[]-ben marad (visszajátszás, index)', async () => {
+    const h = harness({
+      llm: [callTool('tool_describe', { names: ['google_drive.search'] }, 'd1'), say('Kész.')],
+      tool: [],
+    }, { coreTools: ['kb_search'], tools: [deferred.tools[0], DRIVE_TOOLS[0]] })
+    const c = await h.conversation()
+    assert.ok((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })).ok)
+    await h.drain()
+    assert.deepEqual(names(h.llmTools[1]), ['google_drive__search', 'kb_search', 'tool_describe'])
+    assert.equal(systemOf(h.llmMessages[0]), systemOf(h.llmMessages[1]))
+  })
+
   await check('#1022 régi (loaded nélküli) kontextus: minden eszköz betöltött, nincs index és tool_describe', async () => {
     const context = { definition: '', tools: DRIVE_TOOLS }
     assert.deepEqual(names(toolDefinitions(context)), ['google_drive__search', 'google_drive_create_folder', 'platform__agent__publish'] /* kódpont: '.' < '_' */)

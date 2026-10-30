@@ -24,7 +24,7 @@ import {
   DEFAULT_CORE_TOOLS,
   describeTools,
   findTool,
-  hasDeferred,
+  hasIndex,
   initialLoading,
   isLoaded,
   toFunctionName,
@@ -304,7 +304,7 @@ export function toolDefinitions(context: TurnContext) {
         parameters: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} },
       },
     }))
-  return hasDeferred(context) ? [...loaded, TOOL_DESCRIBE_DEFINITION] : loaded
+  return hasIndex(context) ? [...loaded, TOOL_DESCRIBE_DEFINITION] : loaded
 }
 
 async function loadContext(deps: EngineDeps, turn: Turn, conversation: Conversation): Promise<TurnContext> {

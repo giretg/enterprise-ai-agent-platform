@@ -80,8 +80,15 @@ export function isLoaded(context: TurnContext, name: string): boolean {
   return !context.loaded || context.loaded.includes(name)
 }
 
-export function hasDeferred(context: TurnContext): boolean {
-  return context.tools.some((t) => !isLoaded(context, t.name))
+/**
+ * Van-e eszköz-index (és vele `tool_describe`): csak a mag-listától függ, a betöltött halmaztól nem. Így a
+ * `tool_describe` akkor is a `tools[]`-ben marad, ha már minden be van töltve — a fordulóban korábban kiadott
+ * `tool_describe`-hívások visszajátszásához definiált függvény kell, és az index is erre hivatkozik.
+ */
+export function hasIndex(context: TurnContext): boolean {
+  if (!context.loaded) return false
+  const core = new Set(context.core ?? [])
+  return context.tools.some((t) => !core.has(t.name))
 }
 
 /** Eszköz keresése eredeti vagy modell-oldali (függvény-) néven. */
@@ -94,10 +101,9 @@ export function findTool(context: TurnContext, name: string): Tool | undefined {
  * függ (a betöltött halmaztól nem), így fordulón belül és fordulók között is bájt-azonos — a prompt-cache tart.
  */
 export function toolIndex(context: TurnContext): string {
-  if (!context.loaded) return ''
+  if (!hasIndex(context)) return ''
   const core = new Set(context.core ?? [])
   const deferred = context.tools.filter((t) => !core.has(t.name))
-  if (deferred.length === 0) return ''
   const groups = new Map<string, Tool[]>()
   for (const t of deferred) groups.set(toolGroup(t.name), [...(groups.get(toolGroup(t.name)) ?? []), t])
   const order = [...GROUPS.map(([label]) => label), OTHER_GROUP]
