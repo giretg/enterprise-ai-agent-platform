@@ -192,6 +192,15 @@ export function createPgStore(pool: pg.Pool): Store {
       const r = await one(`SELECT * FROM platform_chat.turns WHERE id = $1`, [id])
       return r ? turnOf(r) : null
     },
+    async lastTurnContext(conversationId, excludeTurnId) {
+      const r = await one(
+        `SELECT context FROM platform_chat.turns
+          WHERE conversation_id = $1 AND id <> $2 AND context IS NOT NULL
+          ORDER BY created_at DESC LIMIT 1`,
+        [conversationId, excludeTurnId],
+      )
+      return r ? (r.context as Turn['context']) : null
+    },
     async activeTurn(conversationId) {
       const r = await one(
         `SELECT * FROM platform_chat.turns WHERE conversation_id = $1 AND status IN ('queued','running','awaiting_approval') LIMIT 1`,

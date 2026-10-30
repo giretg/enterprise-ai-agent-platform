@@ -19,6 +19,21 @@ import {
   type TurnContext,
 } from './store.ts'
 import type { Config } from './config.ts'
+import {
+  byName,
+  DEFAULT_CORE_TOOLS,
+  describeTools,
+  findTool,
+  hasDeferred,
+  initialLoading,
+  isLoaded,
+  toFunctionName,
+  TOOL_DESCRIBE,
+  TOOL_DESCRIBE_DEFINITION,
+  toolIndex,
+} from './tool-loading.ts'
+
+export { toFunctionName }
 
 export const APPROVAL_TTL_MS = 15 * 60_000
 const FLUSH_MS = 250
@@ -43,6 +58,8 @@ export type EngineDeps = {
   platformOrigin: string
   /** Kép-csatolmány → data URL a modellnek (null = nem küldhető). */
   loadImage?: (attachment: Attachment) => Promise<string | null>
+  /** #1022: alapból teljes sémával betöltött eszközök (alapértelmezés: `DEFAULT_CORE_TOOLS`). */
+  coreTools?: readonly string[]
   now?: () => Date
 }
 
@@ -57,10 +74,6 @@ export const MESSAGES = {
 } as const
 
 const sha = (...parts: unknown[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex')
-
-/** OpenAI-függvénynév: `[a-zA-Z0-9_-]{1,64}` — a pontot dupla aláhúzásra cseréljük. */
-/** A modell-szolgáltató a függvénynevet `^[a-zA-Z0-9_-]{1,64}$` mintához köti — a visszajátszott hívásokra is. */
-export const toFunctionName = (tool: string) => tool.replace(/\./g, '__').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
 
 const nowOf = (deps: EngineDeps) => (deps.now ?? (() => new Date()))()
 
@@ -217,6 +230,7 @@ export function planNext(done: Step[]): Plan {
 }
 
 function systemPrompt(conversation: Conversation, context: TurnContext): string {
+  const index = toolIndex(context)
   return [
     `Ez egy beszélgetés a(z) ${conversation.tenantSlug} cég Excellence AI platformján, a beépített chatben. ` +
       'Te a lent leírt AI munkatárs vagy; a felhasználó közvetlenül veled beszél.',
@@ -224,6 +238,8 @@ function systemPrompt(conversation: Conversation, context: TurnContext): string 
     '- A céges eszközök hívásakor add meg a definíció definitionId-ját.',
     '- Írás előtt nem kell külön engedélyt kérned szövegben: a rendszer jóváhagyó kártyát mutat a felhasználónak. ' +
       'Ha a felhasználó elveti, vedd tudomásul, és ne próbáld újra ugyanazt.',
+    // Az index a definíció (memória) előtt: az index agent-szinten stabil, a memória változhat (prompt-cache).
+    ...(index ? ['', index] : []),
     '',
     '--- A MUNKATÁRS DEFINÍCIÓJA ÉS MEMÓRIÁJA (platform.agent.get_definition) ---',
     context.definition.slice(0, DEFINITION_MAX_CHARS),
@@ -275,25 +291,34 @@ export async function buildMessages(deps: EngineDeps, conversation: Conversation
   return messages
 }
 
-function toolDefinitions(context: TurnContext) {
-  return context.tools.map((t) => ({
-    type: 'function',
-    function: {
-      name: toFunctionName(t.name),
-      description: (t.description ?? '').slice(0, 1024),
-      parameters: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} },
-    },
-  }))
+/** Csak a betöltött eszközök teljes sémája, név szerint rendezve (bájt-azonos `tools[]`), a végén a `tool_describe`. */
+export function toolDefinitions(context: TurnContext) {
+  const loaded = context.tools
+    .filter((t) => isLoaded(context, t.name))
+    .sort(byName)
+    .map((t) => ({
+      type: 'function',
+      function: {
+        name: toFunctionName(t.name),
+        description: (t.description ?? '').slice(0, 1024),
+        parameters: t.inputSchema && typeof t.inputSchema === 'object' ? t.inputSchema : { type: 'object', properties: {} },
+      },
+    }))
+  return hasDeferred(context) ? [...loaded, TOOL_DESCRIBE_DEFINITION] : loaded
 }
 
 async function loadContext(deps: EngineDeps, turn: Turn, conversation: Conversation): Promise<TurnContext> {
   if (turn.context) return turn.context
   const access = { token: turn.continuationToken!, tenantSlug: conversation.tenantSlug, agentId: turn.agentId, sessionId: conversation.id }
-  const [definition, tools] = await Promise.all([deps.platform.getDefinition(access), deps.platform.listTools(access)])
-  const context: TurnContext = {
-    definition,
-    tools: tools.filter((t) => !EXCLUDED_TOOLS.has(t.name)).map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
-  }
+  const [definition, tools, previous] = await Promise.all([
+    deps.platform.getDefinition(access),
+    deps.platform.listTools(access),
+    deps.store.lastTurnContext(conversation.id, turn.id),
+  ])
+  const available = tools.filter((t) => !EXCLUDED_TOOLS.has(t.name)).map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
+  // Ragadós betöltés: az előző fordulóban betöltött eszközök a beszélgetésben betöltve maradnak.
+  const loading = initialLoading(available, { core: deps.coreTools ?? DEFAULT_CORE_TOOLS, definition, sticky: previous?.loaded ?? [] })
+  const context: TurnContext = { definition, tools: available, ...loading }
   await deps.store.updateTurn(turn.id, { context })
   return context
 }
@@ -351,6 +376,7 @@ async function runLlm(deps: EngineDeps, turn: Turn, conversation: Conversation, 
     costUsd: (turn.tokenUsage.costUsd ?? 0) + (result.usage?.costUsd ?? 0),
   }
   const byFunction = new Map(context.tools.map((t) => [toFunctionName(t.name), t.name]))
+  byFunction.set(TOOL_DESCRIBE, TOOL_DESCRIBE)
   const toolCalls = result.blockReason ? [] : result.toolCalls.map((c) => ({ ...c, name: byFunction.get(c.name) ?? c.name }))
   await deps.store.finishStep(turn.id, seq, 'done', { content: result.content, toolCalls } satisfies LlmStepOutput)
   await deps.store.updateTurn(turn.id, { stepCount: seq + 1, tokenUsage: usage })
@@ -372,8 +398,31 @@ function hasIdempotencyParam(context: TurnContext, tool: string): boolean {
   return !!schema?.properties && 'idempotencyKey' in schema.properties
 }
 
+/** Harness-lépés (#1022): helyben fut, nincs MCP-hívás, nincs idempotencia-kulcs, nincs jóváhagyás. */
+async function finishLocalStep(deps: EngineDeps, turn: Turn, seq: number, inputHash: string, output: ToolStepOutput, context: TurnContext) {
+  await deps.store.beginStep({ turnId: turn.id, seq, kind: 'tool', inputHash, idempotencyKey: null })
+  // Előbb a kontextus: ha a lépés lezárása előtt elhal a worker, az újrafutás ugyanazt az állapotot adja.
+  await deps.store.updateTurn(turn.id, { context })
+  await deps.store.finishStep(turn.id, seq, 'done', output)
+  await deps.store.updateTurn(turn.id, { stepCount: seq + 1 })
+  await deps.queue.enqueue({ turnId: turn.id, seq: seq + 1 })
+}
+
 async function runTool(deps: EngineDeps, turn: Turn, conversation: Conversation, seq: number, done: Step[], call: LlmStepOutput['toolCalls'][number]) {
   const context = await loadContext(deps, turn, conversation)
+  // Be nem töltött eszköz hívása: a séma most betöltődik, a modell egy rövid hibával újrahívja. A lépés
+  // saját hash-t kap, így nem számít bele az ismétlődő-hurok őrbe.
+  const target = call.name === TOOL_DESCRIBE ? undefined : findTool(context, call.name)
+  if (target && !isLoaded(context, target.name)) {
+    const loaded = [...(context.loaded ?? []), target.name].sort()
+    await finishLocalStep(deps, turn, seq, sha('autoload', call.name, call.arguments), {
+      callId: call.id,
+      name: call.name,
+      text: `Error: a(z) ${toFunctionName(target.name)} eszköz sémája eddig nem volt nálad; most betöltöttem. Hívd újra a pontos paraméterekkel.`,
+      isError: true,
+    }, { ...context, loaded })
+    return
+  }
   let args: Record<string, unknown>
   try {
     const parsed: unknown = JSON.parse(call.arguments || '{}')
@@ -389,6 +438,11 @@ async function runTool(deps: EngineDeps, turn: Turn, conversation: Conversation,
   const lastTools = done.filter((s) => s.kind === 'tool').slice(-2)
   if (lastTools.length === 2 && lastTools.every((s) => s.inputHash === inputHash)) {
     await fail(deps, turn, MESSAGES.loop, 'loop')
+    return
+  }
+  if (call.name === TOOL_DESCRIBE) {
+    const result = describeTools(context, args)
+    await finishLocalStep(deps, turn, seq, inputHash, { callId: call.id, name: call.name, text: result.text, isError: result.isError }, { ...context, loaded: result.loaded })
     return
   }
   const idempotencyKey = sha(turn.id, seq, call.name).slice(0, 48)

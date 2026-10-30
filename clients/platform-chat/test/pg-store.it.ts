@@ -45,6 +45,7 @@ const deps: EngineDeps = {
   queue: { enqueue: async (t) => void queued.push(t) },
   limits: { maxSteps: 25, maxTurnSeconds: 2400, maxAttemptsPerStep: 3, historyMessages: 30, toolResultChars: 1000 },
   platformOrigin: 'https://app.example.com',
+  coreTools: ['google_drive_create_folder'],
 }
 const drain = async () => {
   while (queued.length) await runStep(deps, queued.shift()!)
@@ -68,6 +69,9 @@ try {
   const messages = await store.listMessages(c.id)
   assert.deepEqual(messages.map((m) => m.role), ['user', 'assistant'])
   assert.match(messages[1].content, /Kész a költségvetési mappa/)
+  // #1022 ragadós betöltés: a következő forduló az előző kontextusát látja, a sajátját nem
+  assert.deepEqual((await store.lastTurnContext(c.id, randomUUID()))?.loaded, ['google_drive_create_folder'])
+  assert.equal(await store.lastTurnContext(c.id, r.turn.id), null)
 
   const events = await store.eventsAfter(r.turn.id, 0)
   assert.deepEqual(events.map((e) => e.seq), events.map((_, i) => i + 1)) // monoton, hézag nélkül
