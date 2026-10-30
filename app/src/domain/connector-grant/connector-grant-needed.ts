@@ -50,6 +50,10 @@ export type OAuthReturnTo =
       /** MCP-kliensből indított consent — platform-login nélkül a done page-re. */
       kind: 'mcp'
     }
+  | {
+      /** #1028: tenant-postafiók bekötése az admin Postafiókok oldaláról. */
+      kind: 'mailboxes'
+    }
 
 export type ConnectorGrantNeededCard = {
   connectorId: string
@@ -156,6 +160,9 @@ export function oauthReturnPath(
   if (returnTo.kind === 'mcp') {
     return withQuery(MCP_OAUTH_DONE_PATH, result?.error ? { error: result.error } : { connected: '1' })
   }
+  if (returnTo.kind === 'mailboxes') {
+    return withQuery(TENANT_MAILBOXES_PATH, result?.error ? { error: result.error } : { connected: '1' })
+  }
 
   // A feltételes ágak együtt union típust kapnak (az egymás ágában nem létező
   // kulcsok opcionálisak lennének), miközben a query builder csak tényleges
@@ -207,7 +214,7 @@ function withQuery(pathname: string, extra: Record<string, string>): string {
 export function isSafeOAuthReturnTo(value: unknown): value is OAuthReturnTo {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const rec = value as Record<string, unknown>
-  if (rec.kind === 'mcp') return true
+  if (rec.kind === 'mcp' || rec.kind === 'mailboxes') return true
   if (rec.kind !== 'conversation' && rec.kind !== 'ticket') return false
   if (typeof rec.id !== 'string' || !isUuid(rec.id)) return false
   if (rec.agentId !== undefined && (typeof rec.agentId !== 'string' || !isUuid(rec.agentId))) {
@@ -222,6 +229,8 @@ function isUuid(value: string): boolean {
     value,
   )
 }
+
+export const TENANT_MAILBOXES_PATH = '/control-plane/provisioning/agentmail'
 
 export const CONNECTOR_GRANT_NEEDED_CHAT_PROMPT =
   'A felhasználó megadta a kért fiók-hozzáférést (OAuth). ' +

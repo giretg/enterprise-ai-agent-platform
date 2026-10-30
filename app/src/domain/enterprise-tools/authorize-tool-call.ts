@@ -10,6 +10,10 @@ import {
   resolveLinkedAccountGrant,
   type LinkedAccountChoice,
 } from '@/domain/connector-grant/linked-account'
+import {
+  TENANT_MAILBOX_DISCONNECTED,
+  tenantMailboxOf,
+} from '@/domain/connector-grant/tenant-mailbox'
 import { effectiveWikiAccess, wikiAccessAllows, isKnowledgeBaseVisibleTo, scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { asUuid } from './tool-error-messages'
 import {
@@ -68,6 +72,8 @@ export type AuthorizeToolCallDenied = {
   connectorChoices?: HttpApiConnectorChoice[]
   /** Több kapcsolt fiók esetén, ha az `account` argumentum hiányzik vagy ismeretlen. */
   accountChoices?: LinkedAccountChoice[]
+  /** #1028: megszakadt tenant-postafiók címe a usernek szóló üzenethez. */
+  mailboxAddress?: string | null
 }
 
 export type AuthorizeToolCallAllowed = {
@@ -103,6 +109,8 @@ export type AuthorizeToolCallDeps = {
     connectorId: string
     userId: string
   }) => Promise<LiveGrantRow[]>
+  /** #1028: tenant-postafiók aktív grantje (a hívó usertől független). */
+  findActiveTenantGrant?: (input: { tenantId: string; connectorId: string }) => Promise<LiveGrantRow | null>
 }
 
 async function loadActiveGrants(
@@ -220,7 +228,11 @@ function pickBinding(
     }
   }
 
-  return { reason: 'connector_id_required' }
+  // #1028: pl. saját Gmail + közös postafiók — a modell a nevek közül választ (connectorName).
+  return {
+    reason: 'connector_id_required',
+    connectorChoices: connectorChoicesFromCandidates(definition, candidates),
+  }
 }
 
 export async function authorizeToolCall(
@@ -318,6 +330,39 @@ export async function authorizeToolCall(
       connector,
       grantId: null,
       tokenRef: null,
+    }
+  }
+
+  // #1028: tenant-postafiók — a token a tenanté, a hívó user grantjeihez nem nyúlunk.
+  if (tenantMailboxOf(connector)) {
+    const grant = deps.findActiveTenantGrant
+      ? await deps.findActiveTenantGrant({ tenantId: input.principal.tenantId, connectorId: connector.id })
+      : null
+    if (!grant) {
+      return {
+        allowed: false,
+        reason: TENANT_MAILBOX_DISCONNECTED,
+        connectorId: connector.id,
+        mailboxAddress: tenantMailboxOf(connector)?.address ?? null,
+      }
+    }
+    if (
+      !isDelegatedToolAllowedByScopes({
+        connectorType: connector.type,
+        toolName: input.toolName,
+        args: input.args,
+        scopes: parseDelegatedGrantScopes(grant.scopes),
+      })
+    ) {
+      return { allowed: false, reason: delegatedScopeDeniedReason(connector.type), connectorId: connector.id }
+    }
+    return {
+      allowed: true,
+      connectorId: connector.id,
+      connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      grant,
     }
   }
 

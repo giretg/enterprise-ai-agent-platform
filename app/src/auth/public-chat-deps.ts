@@ -1,7 +1,10 @@
+import { expireRejectedTenantMailbox } from '@/domain/connector-grant/tenant-mailbox-failure'
 /**
  * #1016: a nyilvános chat éles függőségei — modell, nyilvános KB, továbbítás, Turnstile, rate-limit.
  */
 import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
+import { sendMicrosoftMail } from '@/domain/connector-grant/microsoft-mail-client'
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { services } from '@/domain/gateway-services'
 import { envProviderRegistry } from '@/domain/model-gateway/proxy'
 import { createPublicModelCaller } from '@/domain/public-chat/model-client'
@@ -76,7 +79,10 @@ function transcriptText(entries: TranscriptEntry[]): string {
   return entries.map((e) => `${e.role === 'user' ? 'Látogató' : 'Asszisztens'}: ${e.content}`).join('\n\n')
 }
 
-/** D12: rögzített címzettnek, a tenant Gmail-connectorán át; ha nem megy, „Visszahívást kér” jegy. */
+/**
+ * D12: rögzített címzettnek, a tenant Gmail-connectorán át; ha nem megy, „Visszahívást kér” jegy.
+ * #1028: tenant-postafiókból (Gmail vagy Microsoft 365) küldő user nélkül is megy.
+ */
 async function forwardToSupport(input: {
   tenantId: string
   agentId: string
@@ -87,35 +93,50 @@ async function forwardToSupport(input: {
   isTest: boolean
 }): Promise<'emailed' | 'callback_requested'> {
   const { config } = input
-  if (!config.supportEmail || !config.forwardConnectorId || !config.forwardSenderUserId) return 'callback_requested'
+  if (!config.supportEmail || !config.forwardConnectorId) return 'callback_requested'
   try {
     const connector = await repositories.connectors.findById(config.forwardConnectorId, input.tenantId)
-    if (!connector || connector.type !== 'gmail' || connector.lifecycleState !== 'active') return 'callback_requested'
-    const grant = await prisma.connectorGrant.findFirst({
-      where: { tenantId: input.tenantId, connectorId: connector.id, userId: config.forwardSenderUserId, status: 'active' },
-      orderBy: { grantedAt: 'desc' },
-    })
+    if (!connector || connector.lifecycleState !== 'active') return 'callback_requested'
+    const mailbox = tenantMailboxOf(connector)
+    if (mailbox?.readOnly) return 'callback_requested'
+    if (!mailbox && (connector.type !== 'gmail' || !config.forwardSenderUserId)) return 'callback_requested'
+    const grant = mailbox
+      ? await repositories.connectorGrants.findActiveTenantGrant({ tenantId: input.tenantId, connectorId: connector.id })
+      : await prisma.connectorGrant.findFirst({
+          where: { tenantId: input.tenantId, connectorId: connector.id, userId: config.forwardSenderUserId, status: 'active' },
+          orderBy: { grantedAt: 'desc' },
+        })
     if (!grant) return 'callback_requested'
     const token = await services.connectorGrants.resolveAccessToken({
       connector,
       grantId: grant.id,
       tokenRef: grant.tokenRef,
-      actingUserId: grant.userId,
+      actingUserId: grant.userId ?? '',
       tenantId: input.tenantId,
     })
-    const sent = await new GmailApiClient(token).send({
-      to: config.supportEmail,
-      subject: `${input.isTest ? '[TESZT] ' : ''}[${config.displayName}] Továbbított kérdés a weboldalról`,
-      body: [
-        'A nyilvános asszisztens egy látogató kérését továbbította.',
-        '',
-        `Elérhetőség (a látogató adta meg, nem ellenőrzött): ${input.contact}`,
-        `Összefoglaló: ${input.summary}`,
-        '',
-        '--- Beszélgetés ---',
-        transcriptText(input.transcript),
-      ].join('\n'),
-    })
+    const subject = `${input.isTest ? '[TESZT] ' : ''}[${config.displayName}] Továbbított kérdés a weboldalról`
+    const body = [
+      'A nyilvános asszisztens egy látogató kérését továbbította.',
+      '',
+      `Elérhetőség (a látogató adta meg, nem ellenőrzött): ${input.contact}`,
+      `Összefoglaló: ${input.summary}`,
+      '',
+      '--- Beszélgetés ---',
+      transcriptText(input.transcript),
+    ].join('\n')
+    let messageId: string | null = null
+    try {
+      if (mailbox?.source === 'microsoft') {
+        await sendMicrosoftMail(token, { to: config.supportEmail, subject, body })
+      } else {
+        messageId = (await new GmailApiClient(token).send({ to: config.supportEmail, subject, body })).messageId
+      }
+    } catch (error) {
+      await expireRejectedTenantMailbox({ markGrantExpired: services.connectorGrants.markGrantExpired.bind(services.connectorGrants) }, {
+        connector, grantId: grant.id, userId: grant.userId ?? '', tenantId: input.tenantId, outcome: error,
+      })
+      throw error
+    }
     await writeAudit(repositories.audit, {
       actorType: 'agent',
       actorId: input.agentId,
@@ -123,7 +144,7 @@ async function forwardToSupport(input: {
       targetType: 'connector',
       targetId: connector.id,
       policyDecision: 'allowed',
-      metadata: { messageId: sent.messageId, to: config.supportEmail },
+      metadata: { messageId, to: config.supportEmail, ...(mailbox ? { mailbox: grant.accountLabel } : {}) },
       tenantId: input.tenantId,
     })
     return 'emailed'

@@ -111,6 +111,12 @@ check('required MCP/tool/operation action names are registered', () => {
   }
 })
 
+check('tenant mailbox actions are registered, including actions behind the admin audit helper', () => {
+  for (const suffix of ['connect', 'disconnect', 'assign', 'approval', 'broken']) {
+    assertAuditActionRegistered(`connector.mailbox.${suffix}`)
+  }
+})
+
 const FLOAT_FIXTURE = {
   seq: BigInt(42),
   prevHash: '2:aaaa',

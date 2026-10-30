@@ -7,6 +7,7 @@ import { services } from '@/domain/gateway-services'
 import { readPublicAssistantConfig, readWidgetDomains, SESSION_RETENTION_DAYS } from '@/domain/public-chat/config'
 import { issueTestToken } from '@/domain/public-chat/service'
 import type { TranscriptEntry } from '@/domain/public-chat/runtime'
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { prisma } from '@/lib/db'
 import { platformChatBudgetDay } from '@/lib/platform-chat-settings'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
@@ -88,20 +89,36 @@ export async function PublicAssistantPage({
     const [policy, gmailConnectors, publicKbs] = await Promise.all([
       services.platformSettings.getModelPolicy(tenantId),
       prisma.connector.findMany({
-        where: { tenantId, type: 'gmail', lifecycleState: 'active' },
+        where: {
+          tenantId,
+          lifecycleState: 'active',
+          // #1028: a Microsoft 365 tenant-postafiók http_api típusú, a configja jelöli.
+          OR: [{ type: 'gmail' }, { type: 'http_api', config: { path: ['mailbox', 'source'], equals: 'microsoft' } }],
+        },
         select: {
           id: true,
           name: true,
+          type: true,
+          authMode: true,
+          config: true,
           grants: { where: { status: 'active' }, select: { userId: true, accountLabel: true, user: { select: { name: true, email: true } } } },
         },
       }),
       prisma.connector.findMany({ where: { tenantId, type: 'knowledge_base', publicKb: true }, select: { id: true, name: true } }),
     ])
-    const forwardOptions: ForwardOption[] = gmailConnectors.map((c) => ({
-      connectorId: c.id,
-      connectorName: c.name,
-      senders: c.grants.map((g) => ({ userId: g.userId, label: g.accountLabel ?? g.user.email ?? g.user.name ?? g.userId })),
-    }))
+    const forwardOptions: ForwardOption[] = gmailConnectors.flatMap((c): ForwardOption[] => {
+      const mailbox = tenantMailboxOf(c)
+      if (mailbox) {
+        return mailbox.readOnly
+          ? []
+          : [{ connectorId: c.id, connectorName: c.name, senders: [], tenantMailbox: { connected: c.grants.length > 0 } }]
+      }
+      if (c.type !== 'gmail') return []
+      const senders = c.grants.flatMap((g) =>
+        g.userId && g.user ? [{ userId: g.userId, label: g.accountLabel ?? g.user.email ?? g.user.name ?? g.userId }] : [],
+      )
+      return [{ connectorId: c.id, connectorName: c.name, senders }]
+    })
     const kbLabel = (kb: { id: string; name: string }) =>
       kb.name === `kb:public:${agentId}` ? 'Az asszisztens saját nyilvános tudásbázisa' : kb.name.replace(/^kb:public:.*/, 'Másik asszisztens nyilvános tudásbázisa')
     body = (

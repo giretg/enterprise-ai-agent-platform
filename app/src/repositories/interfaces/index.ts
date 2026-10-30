@@ -316,6 +316,20 @@ export interface ConnectorGrantRepository {
   findById(id: string): Promise<ConnectorGrant | null>
   updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
   updateNickname(id: string, nickname: string | null): Promise<ConnectorGrant>
+  /** #1028: a konnektor tenant-postafiók grantje (aktív). */
+  findActiveTenantGrant(params: { tenantId: string; connectorId: string }): Promise<ConnectorGrant | null>
+  /** #1028: a konnektor legutóbbi tenant-grantje, státusztól függetlenül. */
+  findLatestTenantGrant(params: { tenantId: string; connectorId: string }): Promise<ConnectorGrant | null>
+  /** #1028: tenant-grant létrehozása vagy újracsatlakoztatása (konnektoronként egy). */
+  upsertTenantGrant(data: {
+    tenantId: string
+    connectorId: string
+    scopes: Prisma.JsonValue
+    tokenRef: string
+    accountLabel: string | null
+    expiresAt?: Date | null
+    metadata: Prisma.InputJsonValue
+  }): Promise<ConnectorGrant>
 }
 
 export type ConnectorDraftWithConnector = ConnectorDraft & {
@@ -437,6 +451,9 @@ export interface ConnectorDraftRepository {
     tenantId: string
     lifecycleState: string
     secretAlias: string | null
+    /** #1028: a tenant-postafiók jelöléséhez (csak-olvasás kényszer). */
+    authMode?: string
+    config?: unknown
   } | null>
   /** Üzemi kész: aktivált + (önfrissítőnél) jóváhagyott link/bizalom + valid snapshot. */
   isAssignableToAgent(connectorId: string): Promise<boolean>

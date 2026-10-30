@@ -1,3 +1,4 @@
+import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
@@ -25,6 +26,11 @@ import type { McpCallResult } from '@/domain/connector/mcp-client'
 import { mcpResultForModel } from '@/domain/connector/mcp-tools'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
 import { HttpApiError } from '@/domain/connector/http-api-client'
+import {
+  TENANT_MAILBOX_DISCONNECTED,
+  connectorUsesGrantToken,
+  tenantMailboxOf,
+} from '@/domain/connector-grant/tenant-mailbox'
 import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   authorizeToolCall,
@@ -72,7 +78,7 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
+export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -996,9 +1002,11 @@ async function executeApprovedOperation(
     return updated ?? { ...operation, status: 'succeeded', resultJson, errorCode: null }
   }
 
-  const delegated = authorized.connector.authMode === 'user_delegated'
+  // #1028: tenant-postafióknál a grant a tenanté, nem a kérelmezőé.
+  const delegated = connectorUsesGrantToken(authorized.connector)
+  const mailbox = tenantMailboxOf(authorized.connector)
   const grant = delegated ? authorized.grant ?? null : null
-  if (delegated && !grant) return fail('connector_grant_missing')
+  if (delegated && !grant) return fail(mailbox ? TENANT_MAILBOX_DISCONNECTED : 'connector_grant_missing')
 
   if (grant && isEnterpriseDriveWriteTool(operation.toolName)) {
     try {
@@ -1025,6 +1033,7 @@ async function executeApprovedOperation(
         tenantId: operation.tenantId,
       })
     } catch {
+      if (mailbox) return fail(TENANT_MAILBOX_DISCONNECTED)
       return fail(
         authorized.connector.type === 'http_api'
           ? 'http_api_error'
@@ -1063,6 +1072,7 @@ async function executeApprovedOperation(
           args,
           accessToken ?? '',
         )
+    if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: result })) return fail(TENANT_MAILBOX_DISCONNECTED)
     const updated = await deps.operations.update(operation.id, {
       status: 'succeeded',
       resultJson: result,
@@ -1084,6 +1094,7 @@ async function executeApprovedOperation(
       connectorId: authorized.connectorId,
       tenantId: operation.tenantId,
       ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
+      ...(mailbox ? { mailbox: grant?.accountLabel ?? mailbox.address ?? null, requestedBy: operation.principalUserId } : {}),
     }
     console.info('gateway.operation.succeeded', payload)
     await writeAudit(deps.audit, {
@@ -1102,6 +1113,7 @@ async function executeApprovedOperation(
     })
     return updated ?? { ...operation, status: 'succeeded', resultJson: result, errorCode: null }
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: error })) return fail(TENANT_MAILBOX_DISCONNECTED)
     return fail(mapWriteError(error))
   }
 }

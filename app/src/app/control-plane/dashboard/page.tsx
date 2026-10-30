@@ -17,6 +17,7 @@ import {
   onboardingSteps,
   type OnboardingStepKey,
 } from '@/lib/overview-onboarding'
+import { listBrokenTenantMailboxes } from '@/lib/tenant-mailbox-status'
 import { repositories } from '@/repositories/postgres'
 import { operationErrorLabel } from '../operations/labels'
 import { HandoffsPanel } from '../operations/handoffs-panel'
@@ -38,7 +39,7 @@ export default async function DashboardPage() {
   const userId = ctx.user.id
   const isAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin')
   const canCreateAgent = isAdmin
-  const [agentsRes, listed, inbox, mcpUse, connectors, members, tenant] = await Promise.all([
+  const [agentsRes, listed, inbox, mcpUse, connectors, members, tenant, brokenMailboxes] = await Promise.all([
     listAgentsForCatalog({ limit: 100 }),
     listPendingGatewayOperationsAction(),
     listHandoffInboxAction(),
@@ -57,6 +58,8 @@ export default async function DashboardPage() {
           .then((rows) => rows.filter((m) => m.status === 'active'))
       : [],
     repositories.tenants.findById(tenantId),
+    // #1028: megszakadt közös postafiók — csak az admin tudja újracsatlakoztatni.
+    isAdmin ? listBrokenTenantMailboxes(tenantId) : [],
   ])
   const agents = agentsRes.success ? agentsRes.data : []
   const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
@@ -102,6 +105,19 @@ export default async function DashboardPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
       </div>
+
+      {brokenMailboxes.map((mailbox) => (
+        <p
+          key={mailbox.connectorId}
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-coral/40 bg-coral/10 p-4 text-sm text-coral-deep"
+        >
+          <span>{t('mailboxBroken', { address: mailbox.address ?? '—' })}</span>
+          <Link href="/control-plane/provisioning/agentmail" className="font-semibold hover:underline">
+            {t('mailboxBrokenAction')}
+          </Link>
+        </p>
+      ))}
 
       {chatAgents.length > 0 ? <DashboardChatLauncher agents={chatAgents} /> : null}
 

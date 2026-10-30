@@ -581,6 +581,7 @@ export async function assignConnectorToAgent(input: {
   accessMode?: 'read' | 'write'
   apiKey?: string
   reason?: string
+  mailboxConfirmed?: boolean
 }) {
   try {
     const user = await requireTenantRole('admin')
@@ -590,6 +591,7 @@ export async function assignConnectorToAgent(input: {
         agentId: z.string().min(1),
         accessMode: z.enum(['read', 'write']).default('read'),
         apiKey: z.string().optional(),
+        mailboxConfirmed: z.boolean().optional(),
       })
       .parse(input)
     const connector = await prisma.connector.findFirst({

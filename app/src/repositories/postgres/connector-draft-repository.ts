@@ -285,6 +285,8 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         tenantId: true,
         lifecycleState: true,
         secretAlias: true,
+        authMode: true,
+        config: true,
       },
     })
     if (!row) return null
@@ -293,6 +295,8 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       tenantId: row.tenantId,
       lifecycleState: row.lifecycleState,
       secretAlias: row.secretAlias,
+      authMode: row.authMode,
+      config: row.config,
     }
   }
 

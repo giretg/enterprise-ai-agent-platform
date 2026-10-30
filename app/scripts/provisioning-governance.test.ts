@@ -216,6 +216,16 @@ async function main() {
     assert.equal(res.agentId, AGENT_A)
   })
 
+  await test('tenant mailbox assignment requires confirmation at the shared service boundary', async () => {
+    const svc = makeService({ drafts: fakeDrafts({ findConnectorById: async () => ({
+      ...connectorRow(TENANT_A), authMode: 'service',
+      config: { mailbox: { source: 'google', readOnly: false } },
+    }) }) })
+    const input = { connectorId: CONNECTOR_A, agentId: AGENT_A, accessMode: 'read' as const }
+    await expectCode('PROVISIONING_INVALID_INPUT', () => svc.assignConnectorToAgent(input, actorA))
+    assert.equal((await svc.assignConnectorToAgent({ ...input, mailboxConfirmed: true }, actorA)).agentId, AGENT_A)
+  })
+
   await test('G9 unassign idegen-tenant connectorról → CONNECTOR_NOT_FOUND_OR_FORBIDDEN', async () => {
     const svc = makeService({
       drafts: fakeDrafts({ findConnectorById: async () => connectorRow(TENANT_B) }),

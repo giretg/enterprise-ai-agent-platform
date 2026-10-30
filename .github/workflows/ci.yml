@@ -118,6 +118,7 @@ jobs:
           npm run test:model-gateway-content-filter
           npm run test:ai-audit
           npm run test:enterprise-tools
+          npm run test:tenant-mailbox
           npm run test:http-api
           npm run test:write-approval-modes
           npm run test:write-approval-ui
@@ -268,6 +269,9 @@ jobs:
         run: npm run test:mini-app-db
       - name: Public chat on Postgres (#1016)
         run: npm run test:public-chat-db
+      # #1028: tenant-postafiók grant (tulajdonos-típus CHECK, egyedi index, újracsatlakoztatás).
+      - name: Tenant mailbox grants (Postgres)
+        run: npm run test:tenant-mailbox-db
 
       - name: AI-adattárház (#984) valódi Postgresen
         run: npm run test:warehouse-db

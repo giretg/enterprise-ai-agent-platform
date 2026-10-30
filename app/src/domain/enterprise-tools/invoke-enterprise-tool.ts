@@ -1,3 +1,4 @@
+import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
@@ -78,6 +79,13 @@ import {
 import type { SandboxRunResult } from '@/domain/code-sandbox/code-sandbox-service'
 import { CodeSandboxDeniedError } from '@/domain/code-sandbox/code-sandbox-service'
 import {
+  TENANT_MAILBOX_DISCONNECTED,
+  connectorUsesGrantToken,
+  tenantMailboxDisconnectedMessage,
+  tenantMailboxForcesApproval,
+  tenantMailboxOf,
+} from '@/domain/connector-grant/tenant-mailbox'
+import {
   resolvePinnedSkillScript,
   resolveSandboxWorkInputs,
   sandboxWorkFilePrefix,
@@ -143,7 +151,7 @@ export type WriteConfirmInput = {
 
 export type HttpApiActingUser = { id: string; email: string; tenantId: string | null } | null
 
-export type EnterpriseToolDeps = AuthorizeToolCallDeps &
+export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -351,6 +359,35 @@ async function resolveDelegatedToken(
   })
 }
 
+/** #1028: user- vagy tenant-grant tokenje; sima service-konnektornál nincs. */
+async function resolveGrantToken(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+  connector: LiveConnectorRow,
+  authorized: { grantId?: string | null; tokenRef?: string | null },
+): Promise<string | undefined> {
+  if (!connectorUsesGrantToken(connector)) return undefined
+  return resolveDelegatedToken(deps, principal, connector, authorized.grantId, authorized.tokenRef)
+}
+
+/** #1028: megszakadt tenant-postafióknál a user ne OAuth-linket kapjon, hanem „szólj az adminnak”. */
+function tenantMailboxErrorExtra(
+  reason: string,
+  address: string | null | undefined,
+): Record<string, unknown> {
+  if (reason !== TENANT_MAILBOX_DISCONNECTED) return {}
+  return { message: tenantMailboxDisconnectedMessage(address), ...(address ? { mailbox: address } : {}) }
+}
+
+/** #1028: audit-metaadat — a postafiók címe minden tenant-postafiók hívásnál. */
+function mailboxAuditMeta(
+  connector: LiveConnectorRow,
+  grant: { accountLabel?: string | null } | null | undefined,
+): Record<string, unknown> {
+  if (!tenantMailboxOf(connector)) return {}
+  return { mailbox: grant?.accountLabel ?? tenantMailboxOf(connector)?.address ?? null }
+}
+
 /**
  * Tiszta write-gate döntés (#661): az agent saját output-mappájába töltve nincs
  * jóváhagyás, minden más Drive-írás approval-köteles. Hiányzó/üres
@@ -427,21 +464,27 @@ async function tryDirectWrite(
       ...extra,
       ...(authorized.connectorChoices?.length ? { connectors: authorized.connectorChoices } : {}),
       ...(authorized.accountChoices?.length ? { accounts: authorized.accountChoices } : {}),
+      ...tenantMailboxErrorExtra(authorized.reason, authorized.mailboxAddress),
     })
   }
   const connector = authorized.connector
+  // #1028: az admin kikényszerítette a jóváhagyást — az agent írási módja nem kerülheti meg.
+  if (bypass === 'agent_write_mode' && tenantMailboxForcesApproval(connector)) return null
   const authFailedCode =
     connector.type === 'gmail'
       ? 'gmail_auth_failed'
       : connector.type === 'http_api'
         ? 'http_api_error'
         : 'google_drive_auth_failed'
+  const mailboxMeta = mailboxAuditMeta(connector, authorized.grant)
   let accessToken: string | undefined
   try {
-    if (connector.authMode === 'user_delegated') {
-      accessToken = await resolveDelegatedToken(deps, principal, connector, authorized.grantId, authorized.tokenRef)
-    }
+    accessToken = await resolveGrantToken(deps, principal, connector, authorized)
   } catch {
+    if (tenantMailboxOf(connector)) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     await auditDenied(deps, principal, toolName, authFailedCode, definitionId, definition.agentId)
     return errorResult(authFailedCode)
   }
@@ -457,6 +500,10 @@ async function tryDirectWrite(
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
     })
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&
       result !== null &&
@@ -470,6 +517,7 @@ async function tryDirectWrite(
       definitionId,
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
+      ...mailboxMeta,
       approvalBypass: bypass,
     }
     console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
@@ -489,6 +537,10 @@ async function tryDirectWrite(
     })
     return textResult(result, upstreamFailure)
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const mapped = mapToolError(error, connector.type)
     const extra = { ...mapped.extra, ...driveUploadLogMeta(toolName, parsedArgs) }
     const auditDetails = Object.keys(extra).length ? extra : undefined
@@ -655,6 +707,7 @@ export async function invokeEnterpriseTool(
         ? { connectors: authorized.connectorChoices }
         : {}),
       ...(authorized.accountChoices?.length ? { accounts: authorized.accountChoices } : {}),
+      ...tenantMailboxErrorExtra(authorized.reason, authorized.mailboxAddress),
     })
   }
 
@@ -666,18 +719,15 @@ export async function invokeEnterpriseTool(
         ? 'http_api_error'
         : 'google_drive_auth_failed'
 
+  const mailboxMeta = mailboxAuditMeta(connector, authorized.grant)
   let accessToken: string | undefined
   try {
-    if (connector.authMode === 'user_delegated') {
-      accessToken = await resolveDelegatedToken(
-        deps,
-        principal,
-        connector,
-        authorized.grantId,
-        authorized.tokenRef,
-      )
-    }
+    accessToken = await resolveGrantToken(deps, principal, connector, authorized)
   } catch {
+    if (tenantMailboxOf(connector)) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const extra = await authorizationLinkFields(deps.startAuthorization, {
       reason: authFailedCode,
       connectorId: authorized.connectorId,
@@ -725,6 +775,10 @@ export async function invokeEnterpriseTool(
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
     })
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const upstreamFailure =
       isEnterpriseHttpTool(toolName) &&
       result !== null &&
@@ -738,6 +792,7 @@ export async function invokeEnterpriseTool(
       definitionId,
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
+      ...mailboxMeta,
     }
     console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
@@ -756,6 +811,10 @@ export async function invokeEnterpriseTool(
     })
     return textResult(result, upstreamFailure)
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
     const mapped = mapToolError(error, connector.type)
     const mappedExtra = {
       ...mapped.extra,
@@ -769,6 +828,7 @@ export async function invokeEnterpriseTool(
       definitionId,
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
+      ...mailboxMeta,
       errorCode: mapped.code,
       ...auditDetails,
     }
@@ -1074,9 +1134,9 @@ async function invokeMcpTool(
   }
 
   let accessToken: string | undefined
-  if (connector.authMode === 'user_delegated') {
+  if (connectorUsesGrantToken(connector)) {
     try {
-      accessToken = await resolveDelegatedToken(deps, principal, connector, authorized.grantId, authorized.tokenRef)
+      accessToken = await resolveGrantToken(deps, principal, connector, authorized)
     } catch {
       return deny('mcp_auth_failed', await linkFields('mcp_auth_failed', connector.id))
     }

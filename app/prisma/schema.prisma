@@ -247,6 +247,12 @@ enum ConnectorAuthMode {
   agent_owned
 }
 
+/// #1028: ki birtokolja a grantet — egy ember (saját fiók) vagy a tenant (közös postafiók).
+enum ConnectorGrantOwnerType {
+  user
+  tenant
+}
+
 enum ConnectorGrantStatus {
   active
   revoked
@@ -924,7 +930,9 @@ model ConnectorGrant {
   id              String               @id @default(uuid()) @db.Uuid
   tenantId        String               @map("tenant_id") @db.Uuid
   connectorId     String               @map("connector_id") @db.Uuid
-  userId          String               @map("user_id") @db.Uuid
+  /// #1028: `ownerType = tenant` esetén kötelezően NULL (DB check constraint).
+  userId          String?                 @map("user_id") @db.Uuid
+  ownerType       ConnectorGrantOwnerType @default(user) @map("owner_type")
   status          ConnectorGrantStatus @default(active)
   scopes          Json                 @default("[]")
   tokenRef        String               @unique @map("token_ref")
@@ -938,7 +946,7 @@ model ConnectorGrant {
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, connectorId, userId, status])
   @@map("connector_grants")

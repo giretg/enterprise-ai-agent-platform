@@ -33,6 +33,7 @@ export type ProvisioningErrorCode =
   | 'PLATFORM_CONNECTOR_FORBIDDEN' // platform-owned connector lifecycle: csak superadmin
   | 'CONNECTOR_NOT_ASSIGNABLE' // self_updating: nincs aktív/valid capability snapshot
   | 'DRAFT_ALREADY_ACTIVATED' // hard-delete: csak sosem aktivált draftra
+  | 'TENANT_MAILBOX_READ_ONLY' // #1028: csak olvasásra bekötött közös postafiók nem kaphat írási kötést
 
 export class ProvisioningError extends Error {
   constructor(
