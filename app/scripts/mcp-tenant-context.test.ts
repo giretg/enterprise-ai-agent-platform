@@ -88,7 +88,7 @@ check('buildMcpServerInstructions includes org intro and coworkers', () => {
   assert.match(text, /several linkedAccounts for a connector/)
   assert.match(text, /injects CRM\/API trace headers/)
   assert.match(text, /X-Agent-Id/)
-  assert.match(text, /gmail_send/)
+  assert.match(text, /mail_send/)
   assert.match(text, /never answer that email sending is unavailable/)
   assert.match(text, /WHERE TO SAVE WHAT/)
   assert.match(text, /platform\.skills\.submit/)

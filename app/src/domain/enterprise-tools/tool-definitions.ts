@@ -21,6 +21,16 @@ export const HTTP_API_GET_TOOL = 'http_api_get'
 export const HTTP_API_GET_ALL_TOOL = 'http_api_get_all'
 export const HTTP_API_REQUEST_TOOL = 'http_api_request'
 
+/** #1030: provider-független levelezés (AgentMail, Gmail, Microsoft 365). */
+export const MAIL_LIST_ACCOUNTS_TOOL = 'mail_list_accounts'
+export const MAIL_SEARCH_TOOL = 'mail_search'
+export const MAIL_GET_MESSAGE_TOOL = 'mail_get_message'
+export const MAIL_GET_THREAD_TOOL = 'mail_get_thread'
+export const MAIL_GET_ATTACHMENT_TOOL = 'mail_get_attachment'
+export const MAIL_SEND_TOOL = 'mail_send'
+export const MAIL_CREATE_DRAFT_TOOL = 'mail_create_draft'
+export const MAIL_MARK_TOOL = 'mail_mark'
+
 export const ENTERPRISE_DRIVE_WRITE_TOOLS = [
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
@@ -58,6 +68,17 @@ export const ENTERPRISE_HTTP_TOOLS = [
   ...ENTERPRISE_HTTP_WRITE_TOOLS,
 ] as const
 
+export const ENTERPRISE_MAIL_WRITE_TOOLS = [MAIL_SEND_TOOL, MAIL_CREATE_DRAFT_TOOL, MAIL_MARK_TOOL] as const
+
+export const ENTERPRISE_MAIL_TOOLS = [
+  MAIL_LIST_ACCOUNTS_TOOL,
+  MAIL_SEARCH_TOOL,
+  MAIL_GET_MESSAGE_TOOL,
+  MAIL_GET_THREAD_TOOL,
+  MAIL_GET_ATTACHMENT_TOOL,
+  ...ENTERPRISE_MAIL_WRITE_TOOLS,
+] as const
+
 export const KB_SEARCH_TOOL = 'kb_search'
 export const KB_LIST_INDEX_TOOL = 'kb_list_index'
 export const KB_GET_PAGE_TOOL = 'kb_get_page'
@@ -91,12 +112,14 @@ export const ENTERPRISE_MCP_TOOLS = [MCP_LIST_TOOLS_TOOL, MCP_CALL_TOOL] as cons
 
 export const ENTERPRISE_WRITE_TOOLS = [
   ...ENTERPRISE_DRIVE_WRITE_TOOLS,
+  ...ENTERPRISE_MAIL_WRITE_TOOLS,
   ...ENTERPRISE_GMAIL_WRITE_TOOLS,
   ...ENTERPRISE_HTTP_WRITE_TOOLS,
 ] as const
 
 export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_DRIVE_TOOLS,
+  ...ENTERPRISE_MAIL_TOOLS,
   ...ENTERPRISE_GMAIL_TOOLS,
   ...ENTERPRISE_HTTP_TOOLS,
   ...ENTERPRISE_KB_TOOLS,
@@ -116,6 +139,11 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   GMAIL_GET_THREAD_TOOL,
   GMAIL_LIST_LABELS_TOOL,
   GMAIL_LIST_DRAFTS_TOOL,
+  MAIL_LIST_ACCOUNTS_TOOL,
+  MAIL_SEARCH_TOOL,
+  MAIL_GET_MESSAGE_TOOL,
+  MAIL_GET_THREAD_TOOL,
+  MAIL_GET_ATTACHMENT_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_GET_ALL_TOOL,
   KB_SEARCH_TOOL,
@@ -132,6 +160,8 @@ export type EnterpriseGmailTool = (typeof ENTERPRISE_GMAIL_TOOLS)[number]
 export type EnterpriseGmailWriteTool = (typeof ENTERPRISE_GMAIL_WRITE_TOOLS)[number]
 export type EnterpriseHttpWriteTool = (typeof ENTERPRISE_HTTP_WRITE_TOOLS)[number]
 export type EnterpriseHttpTool = (typeof ENTERPRISE_HTTP_TOOLS)[number]
+export type EnterpriseMailWriteTool = (typeof ENTERPRISE_MAIL_WRITE_TOOLS)[number]
+export type EnterpriseMailTool = (typeof ENTERPRISE_MAIL_TOOLS)[number]
 export type EnterpriseKbTool = (typeof ENTERPRISE_KB_TOOLS)[number]
 export type EnterpriseSandboxTool = (typeof ENTERPRISE_SANDBOX_TOOLS)[number]
 export type EnterpriseMcpTool = (typeof ENTERPRISE_MCP_TOOLS)[number]
@@ -144,6 +174,8 @@ const ENTERPRISE_GMAIL_TOOL_SET = new Set<string>(ENTERPRISE_GMAIL_TOOLS)
 const ENTERPRISE_GMAIL_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_GMAIL_WRITE_TOOLS)
 const ENTERPRISE_HTTP_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_TOOLS)
 const ENTERPRISE_HTTP_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_HTTP_WRITE_TOOLS)
+const ENTERPRISE_MAIL_TOOL_SET = new Set<string>(ENTERPRISE_MAIL_TOOLS)
+const ENTERPRISE_MAIL_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_MAIL_WRITE_TOOLS)
 const ENTERPRISE_KB_TOOL_SET = new Set<string>(ENTERPRISE_KB_TOOLS)
 const ENTERPRISE_SANDBOX_TOOL_SET = new Set<string>(ENTERPRISE_SANDBOX_TOOLS)
 const ENTERPRISE_WRITE_TOOL_SET = new Set<string>(ENTERPRISE_WRITE_TOOLS)
@@ -172,6 +204,14 @@ export function isEnterpriseHttpTool(toolName: string): toolName is EnterpriseHt
 
 export function isEnterpriseHttpWriteTool(toolName: string): toolName is EnterpriseHttpWriteTool {
   return ENTERPRISE_HTTP_WRITE_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseMailTool(toolName: string): toolName is EnterpriseMailTool {
+  return ENTERPRISE_MAIL_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseMailWriteTool(toolName: string): toolName is EnterpriseMailWriteTool {
+  return ENTERPRISE_MAIL_WRITE_TOOL_SET.has(toolName)
 }
 
 export function isEnterpriseKbTool(toolName: string): toolName is EnterpriseKbTool {
@@ -230,6 +270,13 @@ const optionalLinkedAccount = z
   .optional()
   .describe(
     'Nickname or email of the linked account from platform.whoami linkedAccounts (e.g. magán, céges). Required when the user has more than one account for this connector (Gmail, Drive, Calendar, or other delegated HTTP APIs).',
+  )
+const optionalMailAccount = z
+  .string()
+  .max(80)
+  .optional()
+  .describe(
+    'Mailbox address or nickname from mail_list_accounts. Omit to use the agent\'s own address. Pass "all" on mail_search to search every reachable mailbox.',
   )
 const scalarMap = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
 const callerHeaders = z
@@ -525,6 +572,126 @@ export const GMAIL_MCP_INPUT_SCHEMAS = {
   [GMAIL_CREATE_DRAFT_TOOL]: gmailCreateDraftObject,
   [GMAIL_MODIFY_LABELS_TOOL]: gmailModifyLabelsObject,
   [GMAIL_TRASH_TOOL]: gmailTrashObject,
+} as const
+
+export const mailListAccountsInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+  })
+  .passthrough()
+
+export const mailSearchInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    account: optionalMailAccount,
+    query: z.string().max(500).optional().describe('Free-text search (sender, subject, body)'),
+    from: z.string().max(200).optional(),
+    to: z.string().max(200).optional(),
+    subject: z.string().max(200).optional(),
+    unread: z.boolean().optional(),
+    after: z.string().max(40).optional().describe('ISO date (inclusive), e.g. 2026-01-01'),
+    before: z.string().max(40).optional().describe('ISO date (exclusive)'),
+    label: z.string().max(100).optional(),
+    maxResults: z.number().int().min(1).max(50).optional(),
+  })
+  .passthrough()
+
+export const mailGetMessageInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    account: optionalMailAccount,
+    id: z.string().min(1).max(200).describe('messageId from mail_search'),
+  })
+  .passthrough()
+
+export const mailGetThreadInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    account: optionalMailAccount,
+    threadId: z.string().min(1).max(200),
+  })
+  .passthrough()
+
+export const mailGetAttachmentInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    account: optionalMailAccount,
+    messageId: z.string().min(1).max(200),
+    attachmentId: z.string().min(1).max(200).describe('From mail_get_message attachments[]'),
+  })
+  .passthrough()
+
+const mailComposeFields = {
+  definitionId,
+  agentId: optionalAgentId,
+  account: optionalMailAccount,
+  to: emailList('Recipients. Omit when replying — defaults to the original sender (all participants with replyAll)'),
+  cc: emailList('Cc'),
+  bcc: emailList('Bcc'),
+  subject: z.string().max(1000).optional().describe('Required for a new message; omit when replying ("Re: <original>")'),
+  body: z.string().max(100_000).optional().describe('Plain-text message body'),
+  replyToMessageId: z
+    .string()
+    .max(200)
+    .optional()
+    .describe('messageId from mail_search/mail_get_message — keeps the reply in the same thread'),
+  replyAll: z.boolean().optional(),
+  idempotencyKey: z.string().min(1).max(200),
+}
+
+const mailSendObject = z
+  .object({
+    ...mailComposeFields,
+    draftId: z.string().max(200).optional().describe('Send an existing draft instead of composing'),
+  })
+  .passthrough()
+
+export const mailSendInputSchema = mailSendObject.superRefine((args, ctx) => {
+  if (args.draftId) return
+  const issue = composeIssue(args)
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
+})
+
+const mailCreateDraftObject = z.object(mailComposeFields).passthrough()
+
+export const mailCreateDraftInputSchema = mailCreateDraftObject.superRefine((args, ctx) => {
+  const issue = composeIssue(args)
+  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
+})
+
+const mailMarkObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    account: optionalMailAccount,
+    messageId: z.string().max(200).optional(),
+    threadId: z.string().max(200).optional(),
+    read: z.boolean().optional().describe('Mark read'),
+    unread: z.boolean().optional().describe('Mark unread'),
+    archive: z.boolean().optional(),
+    label: z.string().max(200).optional().describe('Add this label / folder (provider-specific id or name)'),
+    idempotencyKey: z.string().min(1).max(200),
+  })
+  .passthrough()
+
+export const mailMarkInputSchema = mailMarkObject.superRefine((args, ctx) => {
+  if (Boolean(args.messageId) === Boolean(args.threadId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass exactly one of messageId or threadId' })
+  }
+  if (args.read !== true && args.unread !== true && args.archive !== true && !args.label?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'pass read, unread, archive, or label' })
+  }
+})
+
+export const MAIL_MCP_INPUT_SCHEMAS = {
+  [MAIL_SEND_TOOL]: mailSendObject,
+  [MAIL_CREATE_DRAFT_TOOL]: mailCreateDraftObject,
+  [MAIL_MARK_TOOL]: mailMarkObject,
 } as const
 
 export const httpApiGetInputSchema = z
@@ -945,6 +1112,14 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (toolName === GMAIL_CREATE_DRAFT_TOOL) return gmailCreateDraftInputSchema
   if (toolName === GMAIL_MODIFY_LABELS_TOOL) return gmailModifyLabelsInputSchema
   if (toolName === GMAIL_TRASH_TOOL) return gmailTrashInputSchema
+  if (toolName === MAIL_LIST_ACCOUNTS_TOOL) return mailListAccountsInputSchema
+  if (toolName === MAIL_SEARCH_TOOL) return mailSearchInputSchema
+  if (toolName === MAIL_GET_MESSAGE_TOOL) return mailGetMessageInputSchema
+  if (toolName === MAIL_GET_THREAD_TOOL) return mailGetThreadInputSchema
+  if (toolName === MAIL_GET_ATTACHMENT_TOOL) return mailGetAttachmentInputSchema
+  if (toolName === MAIL_SEND_TOOL) return mailSendInputSchema
+  if (toolName === MAIL_CREATE_DRAFT_TOOL) return mailCreateDraftInputSchema
+  if (toolName === MAIL_MARK_TOOL) return mailMarkInputSchema
   if (toolName === HTTP_API_GET_ALL_TOOL) return httpApiGetAllInputSchema
   if (toolName === HTTP_API_REQUEST_TOOL) return httpApiRequestInputSchema
   if (toolName === HTTP_API_GET_TOOL) return httpApiGetInputSchema

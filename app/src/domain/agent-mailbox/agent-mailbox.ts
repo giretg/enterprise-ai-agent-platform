@@ -92,12 +92,9 @@ function mailboxLabel(row: { connectorName: string; kind: MailboxKind; address: 
   return row.address ? `\`${row.address}\` (${mailboxKindLabel(row.kind)})` : `${row.connectorName} (${mailboxKindLabel(row.kind)})`
 }
 
-function sendHint(row: { connectorName: string; connectorId: string; kind: MailboxKind }): string {
-  if (row.kind === 'agentmail') {
-    return `send with http_api_request POST /messages/send (reply: POST /messages/{message_id}/reply), connectorName "${row.connectorName}"`
-  }
-  if (row.kind === 'microsoft') return `send with http_api_request POST /v1.0/me/sendMail, connectorId ${row.connectorId}`
-  return `send with gmail_send, connectorId ${row.connectorId}`
+function sendHint(row: { connectorName: string; connectorId: string; kind: MailboxKind; address: string | null }): string {
+  const account = row.address || row.connectorName
+  return `send with mail_send, account "${account}" (mail_* tools; gmail_* still work for Gmail)`
 }
 
 /** A briefing „Your e-mail identity” blokkja; null, ha az agentnek nincs postafiókja. */

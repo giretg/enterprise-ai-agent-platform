@@ -14,6 +14,7 @@ import {
 import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
 import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
 import { executeGmailTool } from '@/domain/enterprise-tools/handlers/gmail'
+import { executeMailTool } from '@/domain/mail/providers'
 import {
   checkMcpCallGate,
   executeMcpTool as defaultExecuteMcpTool,
@@ -49,6 +50,7 @@ import {
   isEnterpriseDriveWriteTool,
   isEnterpriseGmailWriteTool,
   isEnterpriseHttpWriteTool,
+  isEnterpriseMailWriteTool,
   isEnterpriseWriteTool,
   KB_WIKI_WRITE_TOOL,
   kbWikiWriteOperationArgsSchema,
@@ -118,6 +120,7 @@ export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCall
     args: Record<string, unknown>,
     accessToken: string,
   ) => Promise<unknown>
+  executeMailTool?: typeof executeMailTool
   executeHttpApiTool?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -1051,7 +1054,17 @@ async function executeApprovedOperation(
   }
 
   try {
-    const result = isEnterpriseHttpWriteTool(operation.toolName)
+    const result = isEnterpriseMailWriteTool(operation.toolName)
+      ? await (deps.executeMailTool ?? executeMailTool)({
+          toolName: operation.toolName,
+          args,
+          connector: authorized.connector,
+          accessToken,
+          account: typeof args.account === 'string' && args.account.trim()
+            ? args.account.trim()
+            : authorized.connector.name || authorized.connector.id,
+        })
+      : isEnterpriseHttpWriteTool(operation.toolName)
       ? await (deps.executeHttpApiTool ?? executeHttpApiTool)(
           operation.toolName,
           args,

@@ -26,8 +26,27 @@ export type CapabilityDeckCard = {
 export const CAPABILITY_DECK: readonly CapabilityDeckCard[] = [
   {
     id: 'mail',
-    readTools: ['gmail_search', 'gmail_get_message', 'gmail_get_thread', 'gmail_list_labels', 'gmail_list_drafts'],
-    writeTools: ['gmail_create_draft', 'gmail_send', 'gmail_modify_labels', 'gmail_trash'],
+    readTools: [
+      'mail_list_accounts',
+      'mail_search',
+      'mail_get_message',
+      'mail_get_thread',
+      'mail_get_attachment',
+      'gmail_search',
+      'gmail_get_message',
+      'gmail_get_thread',
+      'gmail_list_labels',
+      'gmail_list_drafts',
+    ],
+    writeTools: [
+      'mail_send',
+      'mail_create_draft',
+      'mail_mark',
+      'gmail_create_draft',
+      'gmail_send',
+      'gmail_modify_labels',
+      'gmail_trash',
+    ],
     needsAccount: 'gmail',
   },
   {

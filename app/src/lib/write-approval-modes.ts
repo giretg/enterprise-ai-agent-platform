@@ -34,6 +34,11 @@ const GMAIL_WRITE_TOOLS = new Set([
   'gmail_modify_labels',
   'gmail_trash',
 ])
+/**
+ * #1030: a mail_* írás a kiválasztott postafiók típusának módját követi — Gmail → gmail,
+ * AgentMail / Microsoft 365 (http_api konnektor) → httpApi. Postafiók nélkül: jóváhagyás.
+ */
+const MAIL_WRITE_TOOLS = new Set(['mail_send', 'mail_create_draft', 'mail_mark'])
 const WIKI_WRITE_TOOLS = new Set(['kb_wiki_write', 'kb_wiki_revert'])
 /** #978 D2: a visszaállítás a wiki közvetlen írási módjától függetlenül mindig jóváhagyásra vár. */
 const ALWAYS_APPROVAL_TOOLS = new Set(['kb_wiki_revert'])
@@ -48,10 +53,14 @@ export function isWriteApprovalMode(value: unknown): value is WriteApprovalMode 
   return value === 'approval' || value === 'direct'
 }
 
-export function writeKindForTool(toolName: string): WriteKind | null {
+export function writeKindForTool(toolName: string, mailConnectorType?: string): WriteKind | null {
   if (toolName === 'platform.project_memory.write') return 'memory'
   if (HTTP_WRITE_TOOLS.has(toolName)) return 'httpApi'
   if (GMAIL_WRITE_TOOLS.has(toolName)) return 'gmail'
+  if (MAIL_WRITE_TOOLS.has(toolName)) {
+    if (!mailConnectorType) return null
+    return mailConnectorType === 'gmail' ? 'gmail' : 'httpApi'
+  }
   if (DRIVE_WRITE_TOOLS.has(toolName)) return 'drive'
   if (WIKI_WRITE_TOOLS.has(toolName)) return 'wiki'
   return null
@@ -65,8 +74,9 @@ export function skipsWriteApproval(
   toolName: string,
   modes: AgentWriteApprovalModes | null | undefined,
   wikiTarget?: { wikiWriteMode?: unknown } | null,
+  mailConnectorType?: string,
 ): boolean {
-  const kind = writeKindForTool(toolName)
+  const kind = writeKindForTool(toolName, mailConnectorType)
   if (!kind || ALWAYS_APPROVAL_TOOLS.has(toolName)) return false
   if (kind === 'wiki') return wikiTarget?.wikiWriteMode === 'direct'
   return modes?.[kind] === 'direct'

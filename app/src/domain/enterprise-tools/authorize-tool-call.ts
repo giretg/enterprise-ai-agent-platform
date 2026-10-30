@@ -17,6 +17,12 @@ import {
 import { effectiveWikiAccess, wikiAccessAllows, isKnowledgeBaseVisibleTo, scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { asUuid } from './tool-error-messages'
 import {
+  GMAIL_CREATE_DRAFT_TOOL,
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_MODIFY_LABELS_TOOL,
+  GMAIL_SEARCH_TOOL,
+  GMAIL_SEND_TOOL,
   HTTP_API_GET_ALL_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
@@ -26,7 +32,18 @@ import {
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
   KB_WIKI_WRITE_TOOL,
+  MAIL_CREATE_DRAFT_TOOL,
+  MAIL_GET_ATTACHMENT_TOOL,
+  MAIL_GET_MESSAGE_TOOL,
+  MAIL_GET_THREAD_TOOL,
+  MAIL_LIST_ACCOUNTS_TOOL,
+  MAIL_MARK_TOOL,
+  MAIL_SEARCH_TOOL,
+  MAIL_SEND_TOOL,
+  isEnterpriseMailTool,
+  isEnterpriseMailWriteTool,
 } from './tool-definitions'
+import { listMailAccounts, resolveMailAccounts } from '@/domain/mail/mail'
 
 const KB_READ_TOOLS = [KB_GET_DOCUMENT_TOOL, KB_GET_PAGE_TOOL, KB_LIST_INDEX_TOOL, KB_SEARCH_TOOL]
 
@@ -111,6 +128,8 @@ export type AuthorizeToolCallDeps = {
   }) => Promise<LiveGrantRow[]>
   /** #1028: tenant-postafiók aktív grantje (a hívó usertől független). */
   findActiveTenantGrant?: (input: { tenantId: string; connectorId: string }) => Promise<LiveGrantRow | null>
+  /** #1030: az agent saját postafiókja — a mail_* alapértelmezett fiókja. */
+  findPrimaryMailboxConnectorId?: (input: { agentId: string; tenantId: string }) => Promise<string | null>
 }
 
 async function loadActiveGrants(
@@ -235,10 +254,189 @@ function pickBinding(
   }
 }
 
+/**
+ * #1030: a mail_* eszköz a saját capabilityjével, vagy a postafiók típusának megfelelő
+ * régi eszközével hívható (gmail_* a Google-, http_api_* az AgentMail/M365-postafióknál).
+ * Másik eszköz (pl. CRM-célú http_api_request) nem nyit levélküldést.
+ */
+const MAIL_LEGACY_CAPABILITIES: Record<string, { gmail: string; httpApi: string[] }> = {
+  [MAIL_LIST_ACCOUNTS_TOOL]: { gmail: GMAIL_SEARCH_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_SEARCH_TOOL]: { gmail: GMAIL_SEARCH_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_MESSAGE_TOOL]: { gmail: GMAIL_GET_MESSAGE_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_THREAD_TOOL]: { gmail: GMAIL_GET_THREAD_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_ATTACHMENT_TOOL]: { gmail: GMAIL_GET_MESSAGE_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_SEND_TOOL]: { gmail: GMAIL_SEND_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+  [MAIL_CREATE_DRAFT_TOOL]: { gmail: GMAIL_CREATE_DRAFT_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+  [MAIL_MARK_TOOL]: { gmail: GMAIL_MODIFY_LABELS_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+}
+
+function mailCapabilityAllowed(
+  definition: AgentDefinition,
+  toolName: string,
+  kind: 'gmail' | 'httpApi' | 'any',
+): boolean {
+  const legacy = MAIL_LEGACY_CAPABILITIES[toolName]
+  const accepted = [
+    toolName,
+    ...(legacy && kind !== 'httpApi' ? [legacy.gmail] : []),
+    ...(legacy && kind !== 'gmail' ? legacy.httpApi : []),
+  ]
+  return definition.snapshot.capabilities.some((row) => row.allowed && accepted.includes(row.toolName))
+}
+
+async function authorizeMailTool(
+  deps: AuthorizeToolCallDeps,
+  input: AuthorizeToolCallInput,
+): Promise<AuthorizeToolCallResult> {
+  const write = isEnterpriseMailWriteTool(input.toolName)
+  if (!mailCapabilityAllowed(input.definition, input.toolName, 'any')) {
+    return { allowed: false, reason: 'capability_not_allowed' }
+  }
+
+  const primaryConnectorId = deps.findPrimaryMailboxConnectorId
+    ? await deps.findPrimaryMailboxConnectorId({
+        agentId: input.definition.agentId,
+        tenantId: input.principal.tenantId,
+      })
+    : null
+  const accounts = await listMailAccounts({
+    definition: input.definition,
+    primaryConnectorId,
+    findConnector: deps.findConnector,
+    findActiveGrants: (row) => loadActiveGrants(deps, row),
+    userId: input.principal.userId,
+    tenantId: input.principal.tenantId,
+  })
+  if (input.toolName === MAIL_LIST_ACCOUNTS_TOOL) {
+    if (accounts.length === 0) return { allowed: false, reason: 'missing_mailbox' }
+    return authorizeLoadedConnector(deps, input, accounts[0].connectorId, accounts[0].grantId)
+  }
+  const resolved = resolveMailAccounts(accounts, input.args.account, {
+    allAllowed: input.toolName === MAIL_SEARCH_TOOL,
+    write,
+    primaryConnectorId,
+  })
+  if (!resolved.ok) {
+    return {
+      allowed: false,
+      reason: resolved.reason,
+      ...(resolved.accounts.length > 0 ? { accountChoices: resolved.accounts } : {}),
+    }
+  }
+  const picked = resolved.accounts[0]
+  if (!picked) return { allowed: false, reason: 'missing_mailbox' }
+  if (!mailCapabilityAllowed(input.definition, input.toolName, picked.kind === 'google' ? 'gmail' : 'httpApi')) {
+    return { allowed: false, reason: 'capability_not_allowed' }
+  }
+  return authorizeLoadedConnector(deps, input, picked.connectorId, picked.grantId)
+}
+
+async function authorizeLoadedConnector(
+  deps: AuthorizeToolCallDeps,
+  input: AuthorizeToolCallInput,
+  connectorId: string,
+  preferredGrantId?: string,
+): Promise<AuthorizeToolCallResult> {
+  const connector = await deps.findConnector(connectorId)
+  if (!connector) return { allowed: false, reason: 'connector_not_active' }
+  if (connector.tenantId !== input.principal.tenantId) return { allowed: false, reason: 'tenant_isolation' }
+  if (connector.lifecycleState !== 'active') return { allowed: false, reason: 'connector_not_active' }
+
+  const scopeTool = MAIL_LEGACY_CAPABILITIES[input.toolName]?.gmail ?? input.toolName
+
+  if (tenantMailboxOf(connector)) {
+    const grant = deps.findActiveTenantGrant
+      ? await deps.findActiveTenantGrant({ tenantId: input.principal.tenantId, connectorId: connector.id })
+      : null
+    if (!grant) {
+      return {
+        allowed: false,
+        reason: TENANT_MAILBOX_DISCONNECTED,
+        connectorId: connector.id,
+        mailboxAddress: tenantMailboxOf(connector)?.address ?? null,
+      }
+    }
+    if (
+      !isDelegatedToolAllowedByScopes({
+        connectorType: connector.type,
+        toolName: scopeTool,
+        args: input.args,
+        scopes: parseDelegatedGrantScopes(grant.scopes),
+      })
+    ) {
+      return { allowed: false, reason: delegatedScopeDeniedReason(connector.type), connectorId: connector.id }
+    }
+    return {
+      allowed: true,
+      connectorId: connector.id,
+      connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      grant,
+    }
+  }
+
+  const delegated = connector.authMode === 'user_delegated'
+  if (!delegated) {
+    if (connector.type !== 'http_api' && connector.type !== 'mcp' && connector.type !== 'gmail') {
+      return { allowed: false, reason: 'acting_user_required' }
+    }
+    return { allowed: true, connectorId: connector.id, connector }
+  }
+
+  const grants = await loadActiveGrants(deps, {
+    tenantId: input.principal.tenantId,
+    connectorId: connector.id,
+    userId: input.principal.userId,
+  })
+  const preferred = preferredGrantId ? grants.find((row) => row.id === preferredGrantId) : undefined
+  const pickedGrant = preferred
+    ? { ok: true as const, grant: preferred }
+    : resolveLinkedAccountGrant(
+        grants.map((grant) => ({
+          ...grant,
+          accountLabel: grant.accountLabel ?? null,
+          nickname: grant.nickname ?? null,
+        })),
+        input.args.account,
+      )
+  if (!pickedGrant.ok) {
+    return {
+      allowed: false,
+      reason: pickedGrant.reason,
+      connectorId: connector.id,
+      ...(pickedGrant.accounts.length > 0 ? { accountChoices: pickedGrant.accounts } : {}),
+    }
+  }
+  const grant = grants.find((row) => row.id === pickedGrant.grant.id) ?? pickedGrant.grant
+  if (
+    !isDelegatedToolAllowedByScopes({
+      connectorType: connector.type,
+      toolName: scopeTool,
+      args: input.args,
+      scopes: parseDelegatedGrantScopes(grant.scopes),
+    })
+  ) {
+    return { allowed: false, reason: delegatedScopeDeniedReason(connector.type), connectorId: connector.id }
+  }
+  return {
+    allowed: true,
+    connectorId: connector.id,
+    connector,
+    grantId: grant.id,
+    tokenRef: grant.tokenRef,
+    grant,
+  }
+}
+
 export async function authorizeToolCall(
   deps: AuthorizeToolCallDeps,
   input: AuthorizeToolCallInput,
 ): Promise<AuthorizeToolCallResult> {
+  if (isEnterpriseMailTool(input.toolName)) {
+    return authorizeMailTool(deps, input)
+  }
+
   const requirement = TOOL_REQUIREMENTS[input.toolName]
   if (!requirement) {
     return { allowed: false, reason: 'tool_not_configured' }

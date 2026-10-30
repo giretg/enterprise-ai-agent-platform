@@ -655,6 +655,10 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     const primary = (await loadAgentMailIdentity(tenantId, agentId))?.primary
     return primary ? { connectorId: primary.connectorId, connectorName: primary.connectorName, signature: primary.signature } : null
   },
+  findPrimaryMailboxConnectorId: async ({ agentId, tenantId }) => {
+    const primary = (await loadAgentMailIdentity(tenantId, agentId))?.primary
+    return primary?.connectorId ?? null
+  },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx, wikiService),

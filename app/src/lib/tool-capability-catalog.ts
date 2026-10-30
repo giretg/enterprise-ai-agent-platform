@@ -18,6 +18,14 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
   {
     label: 'Gmail',
     tools: [
+      'mail_list_accounts',
+      'mail_search',
+      'mail_get_message',
+      'mail_get_thread',
+      'mail_get_attachment',
+      'mail_send',
+      'mail_create_draft',
+      'mail_mark',
       'gmail_search',
       'gmail_get_message',
       'gmail_get_thread',

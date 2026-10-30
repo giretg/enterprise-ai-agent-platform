@@ -291,7 +291,39 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Pillanatkép készítése a sandbox aktuális állapotáról.',
   },
 
-  // Email (Gmail)
+  // Email (egységes mail_* + Gmail)
+  mail_list_accounts: {
+    label: 'Postafiókok',
+    description: 'Az agent által elérhető postafiókok: cím, típus, olvasás/írás, saját cím-e.',
+  },
+  mail_search: {
+    label: 'Keresek a leveleid között…',
+    description: 'Keresés az elérhető postafiókokban (feladó, tárgy, dátum, olvasatlan) — egyben vagy az összesben.',
+  },
+  mail_get_message: {
+    label: 'Levél megnyitása',
+    description: 'Egy levél teljes tartalma és csatolmány-listája, postafiók-típustól függetlenül.',
+  },
+  mail_get_thread: {
+    label: 'Levélváltás megnyitása',
+    description: 'Egy levélváltás összes levele időrendben.',
+  },
+  mail_get_attachment: {
+    label: 'Csatolmány',
+    description: 'Levélcsatolmány tartalma (szöveg, ha olvasható, különben fájl).',
+  },
+  mail_send: {
+    label: 'Levelet írok…',
+    description: 'Új levél vagy válasz a kiválasztott postafiókból; ha be van kapcsolva, előbb jóváhagyást kér.',
+  },
+  mail_create_draft: {
+    label: 'Piszkozat',
+    description: 'Piszkozat mentése küldés nélkül, ahol a szolgáltató támogatja.',
+  },
+  mail_mark: {
+    label: 'Olvasott / archiválás',
+    description: 'Olvasottnak jelölés, archiválás vagy címke; ha be van kapcsolva, előbb jóváhagyást kér.',
+  },
   gmail_search: {
     label: 'Levélkeresés',
     description: 'Gmail keresés Gmail keresőszintaxissal (pl. is:unread newer_than:1d).',

@@ -19,6 +19,9 @@ const allDirect = {
 
 assert.equal(writeKindForTool('http_api_request'), 'httpApi')
 assert.equal(writeKindForTool('gmail_send'), 'gmail')
+assert.equal(writeKindForTool('mail_send'), null)
+assert.equal(writeKindForTool('mail_send', 'gmail'), 'gmail')
+assert.equal(writeKindForTool('mail_mark', 'http_api'), 'httpApi')
 assert.equal(writeKindForTool('google_drive_upload_file'), 'drive')
 assert.equal(writeKindForTool('google_drive_update_file'), 'drive')
 assert.equal(writeKindForTool('google_sheets_write_range'), 'drive')
@@ -33,6 +36,10 @@ assert.equal(skipsWriteApproval('google_drive_create_folder', allDirect), true)
 assert.equal(skipsWriteApproval('google_drive_update_file', { ...DEFAULT_WRITE_APPROVAL_MODES, drive: 'direct' }), true)
 assert.equal(skipsWriteApproval('http_api_get', allDirect), false)
 assert.equal(skipsWriteApproval('http_api_request', null), false)
+// #1030: AgentMail/M365 (http_api) küldés nem kerülheti meg a httpApi jóváhagyást a gmail móddal.
+assert.equal(skipsWriteApproval('mail_send', { ...DEFAULT_WRITE_APPROVAL_MODES, gmail: 'direct' }, null, 'http_api'), false)
+assert.equal(skipsWriteApproval('mail_send', { ...DEFAULT_WRITE_APPROVAL_MODES, gmail: 'direct' }, null, 'gmail'), true)
+assert.equal(skipsWriteApproval('mail_send', allDirect), false)
 
 assert.deepEqual(modesFromAgentRow({}), DEFAULT_WRITE_APPROVAL_MODES)
 assert.equal(modesFromAgentRow({ httpApiWriteMode: 'direct' }).httpApi, 'direct')

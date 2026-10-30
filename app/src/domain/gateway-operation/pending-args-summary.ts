@@ -115,10 +115,14 @@ export function pendingOperationHeadline(
   if (toolName === 'google_drive_update_file') {
     return `Google Drive fájl felülírása: ${str(args.fileId) || '—'}`
   }
-  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
-    if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft' || toolName === 'mail_send' || toolName === 'mail_create_draft') {
+    const from = str(args.account)
+    if (str(args.draftId)) {
+      return from ? `Piszkozat elküldése innen: ${from}` : `Gmail piszkozat elküldése: ${str(args.draftId)}`
+    }
+    const kind = str(args.replyToMessageId) ? 'válasz' : 'új levél'
     const parts = [
-      str(args.replyToMessageId) ? `Gmail válasz` : 'Gmail új levél',
+      from ? `Levél innen: ${from}` : toolName.startsWith('mail_') ? `Levél (${kind})` : `Gmail ${kind}`,
       str(args.subject) ? `tárgy: ${str(args.subject)}` : '',
     ].filter(Boolean)
     return parts.join(', ')
@@ -154,8 +158,19 @@ export function pendingArgsSummary(
     return lines.join('\n')
   }
 
-  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
-    return gmailComposeLines(args).join('\n')
+  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft' || toolName === 'mail_send' || toolName === 'mail_create_draft') {
+    const lines = gmailComposeLines(args)
+    if (str(args.account)) lines.unshift(`from: ${str(args.account)}`)
+    else if (toolName.startsWith('mail_')) lines.unshift('from: az agent saját postafiókja')
+    return lines.join('\n')
+  }
+  if (toolName === 'mail_mark') {
+    const lines = gmailItemLines(args)
+    if (args.read === true) lines.push('read')
+    if (args.unread === true) lines.push('unread')
+    if (args.archive === true) lines.push('archive')
+    if (str(args.label)) lines.push(`label: ${str(args.label)}`)
+    return lines.join('\n')
   }
   if (toolName === 'gmail_modify_labels') {
     const lines = gmailItemLines(args)

@@ -130,6 +130,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'connector.self_update.version.reject',
   'connector.self_update.version.rollback',
   'connector.self_update.api_key.rotate',
+  'connector.self_update.scheduled_sync',
   // #395 MCP-connector
   'mcp.connector.create',
   'mcp.connector.archive',

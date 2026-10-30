@@ -37,6 +37,8 @@ import { isWikiAccessLevel, type WikiAccessLevel } from '@/lib/wiki-access'
 import { writeAudit } from '@/lib/audit/types'
 import { snapshotLocalRoots } from '@/lib/agent-local-roots'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
+import { mailboxConnectorInfo } from '@/domain/agent-mailbox/agent-mailbox'
+import { isMicrosoft365Connector } from '@/domain/connector-grant/tenant-mailbox'
 import {
   parseHttpApiConfig,
   summarizeHttpApiEndpoints,
@@ -222,6 +224,7 @@ async function resolveHttpApiConnectorMeta(
   connectors: Pick<ConnectorRepository, 'findById'>,
   connectorId: string,
   tenantId: string,
+  hideRawMailboxEndpoints: boolean,
 ): Promise<{ endpoints?: HttpApiEndpointSummary[]; description?: string | null } | undefined> {
   try {
     const resolved = await connectors.findById(connectorId, tenantId)
@@ -237,6 +240,15 @@ async function resolveHttpApiConnectorMeta(
     const accountNote = parsed.googleAccount
       ? describeGoogleAccountBinding(parsed.googleAccount.provider, parsed.googleAccount.binding)
       : null
+    const mailbox = mailboxConnectorInfo(resolved) || isMicrosoft365Connector(resolved)
+    if (hideRawMailboxEndpoints && mailbox) {
+      return {
+        description:
+          [baseDescription, accountNote, 'Use mail_* tools (mail_search, mail_get_message, mail_send) for this mailbox — do not call http_api_* on it.']
+            .filter(Boolean)
+            .join(' ') || null,
+      }
+    }
     const description = [baseDescription, accountNote].filter(Boolean).join(' ') || null
     return {
       endpoints: summarizeHttpApiEndpoints(parsed.endpoints),
@@ -262,6 +274,9 @@ async function buildSnapshot(
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
 ): Promise<AgentDefinitionSnapshot> {
+  const hideRawMailboxEndpoints = workingSet.capabilities.some(
+    (row) => row.allowed && row.toolName.startsWith('mail_'),
+  )
   const connectorEntries = await Promise.all(
     workingSet.connectors.map(async (row) => {
       const base = {
@@ -272,7 +287,12 @@ async function buildSnapshot(
         ...knowledgeBaseSnapshotFields(row),
       }
       if (row.connector.type !== 'http_api' || !connectors) return base
-      const meta = await resolveHttpApiConnectorMeta(connectors, row.connector.id, agent.tenantId)
+      const meta = await resolveHttpApiConnectorMeta(
+        connectors,
+        row.connector.id,
+        agent.tenantId,
+        hideRawMailboxEndpoints,
+      )
       return meta ? { ...base, ...meta } : base
     }),
   )

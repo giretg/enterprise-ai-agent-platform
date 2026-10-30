@@ -54,6 +54,7 @@
     "test:client-policy-tool-catalog": "tsx scripts/client-policy-tool-catalog.test.ts",
     "test:client-install": "tsx scripts/client-install.test.ts",
     "test:agent-mailbox": "tsx scripts/agent-mailbox.test.ts",
+    "test:mail-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mail-tools.test.ts",
     "test:platform-chat": "tsx scripts/platform-chat.test.ts",
     "test:public-chat": "tsx --require ./scripts/_server-only-shim.cjs scripts/public-chat.test.ts",
     "test:public-chat-db": "tsx scripts/public-chat-db.test.ts",
