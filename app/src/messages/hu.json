@@ -1064,6 +1064,8 @@
         "modellDesc": "Melyik AI-modell dolgozik a munkatárs mögött, és mi legyen a tartalék, ha egy szolgáltató kiesik.",
         "kapcsolatok": "Konnektorok",
         "kapcsolatokDesc": "API-k, levelezés, Drive és egyéb külső rendszerek — olvasási vagy írási módban.",
+        "email": "E-mail",
+        "emailDesc": "Az agent saját e-mail címe, aláírása és megjelenő neve.",
         "tudasbazis": "Tudásbázis",
         "tudasbazisDesc": "Dokumentumok, katalógus és adattárház, amiből a munkatárs dolgozik.",
         "eszkozok": "Eszközök",
@@ -1913,6 +1915,10 @@
         "label": "Mihez fér hozzá?",
         "hint": "Levelezés, dokumentumok, rendszerek"
       },
+      "mailbox": {
+        "label": "Saját e-mail cím",
+        "hint": "Honnan küld levelet"
+      },
       "knowledge": {
         "label": "Mit tudjon?",
         "hint": "Dokumentumok, amiből dolgozik"
@@ -2132,6 +2138,7 @@
       "identity": "Jó név: rövid és beszédes, pl. „Számla Szilvi”. A bemutatkozás alapján döntik el a kollégák, mikor szóljanak neki.",
       "duties": "Egy kártya = egy feladat. Írd úgy, ahogy egy új kollégának mondanád.",
       "access": "Csak azt kapcsold be, amire tényleg szüksége van. Kezdésnek az „olvas” elég — az írást később is megadhatod.",
+      "mailbox": "Ha levelet is küld, adj neki saját címet — így a címzett tudja, kitől jön, és az agent is tudja, mely levelek szólnak neki. Ki is hagyhatod.",
       "knowledge": "Minél pontosabb dokumentumot adsz, annál pontosabban válaszol. Szabályzat, árlista, GYIK — ezek a legjobbak.",
       "autonomy": "Kezdd Gyakornokként: minden írás előtt rákérdez. Ha megbízol benne, később több önállóságot adhatsz.",
       "team": "Kezdésnek elég, ha csak te látod. Ha bevált, egy kattintással megoszthatod a csapattal.",

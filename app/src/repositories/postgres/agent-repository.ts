@@ -309,6 +309,13 @@ export class PostgresAgentRepository implements AgentRepository {
       },
       update: { accessMode: input.accessMode },
     })
+    // #1029: olvasási hozzáféréssel a postafiók nem lehet az agent saját címe.
+    if (input.accessMode !== 'write') {
+      await prisma.agent.updateMany({
+        where: { id: input.agentId, primaryMailboxConnectorId: input.connectorId },
+        data: { primaryMailboxConnectorId: null },
+      })
+    }
   }
 }
 

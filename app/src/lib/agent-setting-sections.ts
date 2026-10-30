@@ -78,6 +78,13 @@ export const AGENT_SETTING_SECTIONS = [
     wizardUses: ['AgentConnectorBindingForm', 'assignConnectorToAgent'],
   },
   {
+    id: 'mailbox',
+    detailSection: 'email',
+    detailComponent: 'AgentMailboxPanel',
+    wizardStep: 'mailbox',
+    wizardUses: ['AgentMailboxPanel'],
+  },
+  {
     id: 'knowledgeBase',
     detailSection: 'tudasbazis',
     detailComponent: 'AgentKnowledgeBasePanel',

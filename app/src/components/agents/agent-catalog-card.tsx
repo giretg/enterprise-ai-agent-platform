@@ -25,6 +25,8 @@ export type AgentCatalogCardModel = {
   platformChatEnabled?: boolean
   /** #1016: `public` = nyilvános ügyfélszolgálati asszisztens (saját oldal, nincs varázsló/platform-chat). */
   kind?: string
+  /** #1029: az agent saját e-mail címe (ha van). */
+  mailboxAddress?: string | null
 }
 
 /**
@@ -105,6 +107,11 @@ export async function AgentCatalogCard({
             <p className="mt-1 text-sm text-ink">{agent.description}</p>
           ) : null}
           {isPublic ? null : <p className="mt-1 text-sm text-ink-soft">{statusLabel}</p>}
+          {agent.mailboxAddress ? (
+            <p className="mt-1 truncate text-xs text-ink-soft" title="A munkatárs saját e-mail címe">
+              ✉ {agent.mailboxAddress}
+            </p>
+          ) : null}
         </div>
       </Link>
       {showStartChat ? (

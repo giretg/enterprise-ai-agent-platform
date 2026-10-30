@@ -14,6 +14,7 @@ export const CREATE_AGENT_WIZARD_STEPS = [
   { id: 'identity', label: 'Ki ő?', hint: 'Név, bemutatkozás, kép', phase: 'pre', optional: false },
   { id: 'duties', label: 'Mi a dolga?', hint: 'Feladatok és hangnem', phase: 'pre', optional: false },
   { id: 'access', label: 'Mihez fér hozzá?', hint: 'Levelezés, dokumentumok, rendszerek', phase: 'post', optional: false },
+  { id: 'mailbox', label: 'Saját e-mail cím', hint: 'Honnan küld levelet', phase: 'post', optional: true },
   { id: 'knowledge', label: 'Mit tudjon?', hint: 'Dokumentumok, amiből dolgozik', phase: 'post', optional: false },
   { id: 'autonomy', label: 'Mennyire önálló?', hint: 'Mikor kérdezzen meg', phase: 'post', optional: false },
   { id: 'team', label: 'Ki dolgozik vele?', hint: 'Kik használhatják', phase: 'post', optional: false },

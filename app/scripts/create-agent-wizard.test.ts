@@ -59,11 +59,11 @@ function main() {
   check('a varázsló a „munkatárs-felvétel” lépéseit követi (#957)', () => {
     assert.deepEqual(
       CREATE_AGENT_WIZARD_STEPS.map((s) => s.id),
-      ['start', 'identity', 'duties', 'access', 'knowledge', 'autonomy', 'team', 'advanced', 'launch'],
+      ['start', 'identity', 'duties', 'access', 'mailbox', 'knowledge', 'autonomy', 'team', 'advanced', 'launch'],
     )
     assert.deepEqual(
       CREATE_AGENT_WIZARD_STEPS.filter((s) => s.optional).map((s) => s.id),
-      ['advanced'],
+      ['mailbox', 'advanced'],
     )
   })
 

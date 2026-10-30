@@ -6,6 +6,7 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser } from '@/auth'
 import { requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
+import { loadPrimaryMailboxAddresses, syncAgentMailDisplayName } from '@/lib/agent-mailbox'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
@@ -398,8 +399,11 @@ export async function listAgentsForCatalog(input?: { limit?: number; offset?: nu
     if (!tenantId) {
       return ok(listed.data.map((agent) => ({ ...agent, unpublished: false })))
     }
+    // #1029: a saját e-mail cím a kártyán.
+    const addresses = await loadPrimaryMailboxAddresses(tenantId).catch(() => new Map<string, string>())
     const rows = await Promise.all(
-      listed.data.map(async (agent) => {
+      listed.data.map(async (listedAgent) => {
+        const agent = { ...listedAgent, mailboxAddress: addresses.get(listedAgent.id) ?? null }
         if (!agent.currentDefinitionVersionId) {
           return { ...agent, unpublished: false }
         }
@@ -810,6 +814,10 @@ export async function updateAgentProfile(input: { agentId: string; name?: string
       },
       tenantId: user.activeTenantId,
     })
+    // #1029: a saját AgentMail-postafiók megjelenő neve kövesse az átnevezést (ha nincs külön megjelenő név).
+    if (existing.name !== updated.name && !updated.mailDisplayName) {
+      await syncAgentMailDisplayName(user.activeTenantId, updated.id)
+    }
     return ok({ updated: true, name: updated.name, description: updated.description })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update profile')
