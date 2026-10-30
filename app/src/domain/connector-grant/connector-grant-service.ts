@@ -45,6 +45,7 @@ import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
+import { tenantMailboxOf, tenantMailboxScopes } from './tenant-mailbox'
 import { lookup } from 'node:dns/promises'
 import { allowlistForOAuthEndpoint, guardEgressUrl } from '@/domain/net/egress-guard'
 
@@ -483,10 +484,28 @@ async function refreshGrantTokens(
   }
 }
 
+/** #1028: a tenant-postafiók tokenje elromlott — az adminnak kell újracsatlakoztatnia. */
+export type TenantMailboxBrokenEvent = {
+  tenantId: string
+  connectorId: string
+  grantId: string
+  address: string | null
+  reason: string
+  actingUserId: string | null
+}
+
+export class TenantMailboxAccountMismatchError extends Error {
+  constructor() {
+    super('mailbox_account_mismatch')
+    this.name = 'TenantMailboxAccountMismatchError'
+  }
+}
+
 export class ConnectorGrantService {
   constructor(
     private grants: ConnectorGrantRepository,
     private readonly resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>,
+    private readonly onTenantMailboxBroken?: (event: TenantMailboxBrokenEvent) => Promise<void>,
   ) {}
 
   private async tenantAllowlistOrNull(connector: Connector): Promise<string[] | null> {
@@ -530,8 +549,10 @@ export class ConnectorGrantService {
     returnTo?: import('./connector-grant-needed').OAuthReturnTo
     nickname?: string
     addAccount?: boolean
+    owner?: 'tenant'
   }): Promise<{ url: string; state: string }> {
-    if (params.connector.authMode !== 'user_delegated') {
+    const tenantOwned = params.owner === 'tenant'
+    if (tenantOwned ? !tenantMailboxOf(params.connector) : params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
     }
     if (params.connector.tenantId && params.connector.tenantId !== params.tenantId) {
@@ -547,6 +568,7 @@ export class ConnectorGrantService {
       ...(params.returnTo ? { returnTo: params.returnTo } : {}),
       ...(params.nickname ? { nickname: params.nickname } : {}),
       ...(params.addAccount ? { addAccount: true } : {}),
+      ...(tenantOwned ? { owner: 'tenant' as const } : {}),
     })
 
     const url = new URL(oauth.authUrl)
@@ -678,10 +700,11 @@ export class ConnectorGrantService {
     connector: Connector
     actorId: string
   }) {
+    const statePayload = verifyOAuthState(params.state)
+    if (statePayload.owner === 'tenant') return this.completeTenantMailboxCallback(params)
     if (params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
     }
-    const statePayload = verifyOAuthState(params.state)
     if (statePayload.connectorId !== params.connector.id) {
       throw new Error('oauth_state: connector mismatch')
     }
@@ -760,6 +783,115 @@ export class ConnectorGrantService {
     return grant
   }
 
+  /**
+   * #1028: az admin a tenant nevében köti be a postafiókot. A token a tenanté; a
+   * `userId` a state-ben csak a bekötő admin (audit), a grantbe nem kerül.
+   */
+  async startTenantMailboxAuthorization(params: {
+    connector: Connector
+    userId: string
+    tenantId: string
+  }): Promise<{ url: string; stub?: true }> {
+    const mailbox = tenantMailboxOf(params.connector)
+    if (!mailbox) throw new Error('connector_not_tenant_mailbox')
+    if (params.connector.lifecycleState !== 'active') throw new Error('connector_not_active')
+    if (params.connector.tenantId !== params.tenantId) throw new Error('connector tenant mismatch')
+    const requestedScopes = tenantMailboxScopes(mailbox.source, mailbox.readOnly)
+    const returnTo = { kind: 'mailboxes' as const }
+
+    if (isDelegatedOAuthStubEnabled()) {
+      const { state } = createOAuthState({
+        userId: params.userId,
+        connectorId: params.connector.id,
+        tenantId: params.tenantId,
+        requestedScopes,
+        returnTo,
+        owner: 'tenant',
+      })
+      await this.completeTenantMailboxCallback({
+        code: 'stub-auth-code',
+        state,
+        connector: params.connector,
+        actorId: params.userId,
+      })
+      return { url: oauthReturnPath(returnTo), stub: true }
+    }
+
+    const { url } = await this.buildAuthorizationUrl({
+      connector: params.connector,
+      userId: params.userId,
+      tenantId: params.tenantId,
+      requestedScopes,
+      returnTo,
+      owner: 'tenant',
+    })
+    return { url }
+  }
+
+  private async completeTenantMailboxCallback(params: {
+    code: string
+    state: string
+    connector: Connector
+    actorId: string
+  }): Promise<ConnectorGrant> {
+    const mailbox = tenantMailboxOf(params.connector)
+    if (!mailbox) throw new Error('connector_not_tenant_mailbox')
+    const statePayload = verifyOAuthState(params.state)
+    if (statePayload.owner !== 'tenant') throw new Error('oauth_state: owner mismatch')
+    if (statePayload.connectorId !== params.connector.id) throw new Error('oauth_state: connector mismatch')
+    if (!statePayload.tenantId || params.connector.tenantId !== statePayload.tenantId) {
+      throw new Error('oauth_state: connector tenant mismatch')
+    }
+    if (statePayload.userId !== params.actorId) throw new Error('oauth_state: user mismatch')
+
+    const tokens = await exchangeCodeForTokens({
+      connector: params.connector,
+      code: params.code,
+      codeVerifier: statePayload.codeVerifier,
+      requestedScopes: statePayload.requestedScopes,
+      tenantAllowlist: await this.tenantAllowlistOrNull(params.connector),
+    })
+    const address = tokens.accountEmail?.trim().toLowerCase() || null
+    if (!address) throw new Error('mailbox_address_unknown')
+    // Újracsatlakoztatás más fiókkal csendben kicserélné, kinek a leveleit olvassák az agentek.
+    if (mailbox.address && mailbox.address.toLowerCase() !== address) {
+      throw new TenantMailboxAccountMismatchError()
+    }
+
+    const existing = await this.grants.findLatestTenantGrant({
+      tenantId: statePayload.tenantId,
+      connectorId: params.connector.id,
+    })
+    const tokenRef =
+      existing?.tokenRef ??
+      `tenant/${statePayload.tenantId}/mailbox/connector/${params.connector.id}/account/${uniqueAccountKey()}`
+    await createGrantTokenStore(tokenRef).save(tokens)
+
+    const grant = await this.grants.upsertTenantGrant({
+      tenantId: statePayload.tenantId,
+      connectorId: params.connector.id,
+      scopes: (tokens.scopes ?? []) as Prisma.JsonValue,
+      tokenRef,
+      accountLabel: address,
+      expiresAt: tokens.expiresAt ? new Date(tokens.expiresAt) : null,
+      // Csak audit: a hozzáférést nem befolyásolja, a bekötő kilépése után is működik.
+      metadata: { connectedByUserId: statePayload.userId, connectedAt: new Date().toISOString() },
+    })
+    if (!mailbox.address) {
+      await prisma.connector.update({
+        where: { id: params.connector.id },
+        data: {
+          name: `Postafiók · ${address}`,
+          config: {
+            ...((params.connector.config ?? {}) as Prisma.JsonObject),
+            mailbox: { ...mailbox, address },
+          },
+        },
+      })
+    }
+    return grant
+  }
+
   async updateNickname(params: {
     grantId: string
     nickname: string | null
@@ -779,7 +911,8 @@ export class ConnectorGrantService {
     if (params.nickname != null && params.nickname.trim() !== '' && !nickname) {
       throw new Error('invalid_nickname')
     }
-    if (nickname) {
+    if (nickname && !grant.userId) throw new Error('connector_grant_forbidden')
+    if (nickname && grant.userId) {
       const peers = await this.grants.findActiveGrants({
         tenantId: grant.tenantId,
         connectorId: grant.connectorId,
@@ -873,14 +1006,26 @@ export class ConnectorGrantService {
     tenantId?: string | null
     metadata?: Prisma.JsonValue
   }) {
-    await this.loadGrantForAccess({
+    const grant = await this.loadGrantForAccess({
       grantId: params.grantId,
-      expectedUserId: params.actingUserId,
       expectedTenantId: params.tenantId,
       expectedConnectorId: params.connectorId,
     })
+    if (grant.ownerType !== 'tenant' && grant.userId !== params.actingUserId) {
+      throw new Error('connector_grant_forbidden')
+    }
     await this.grants.updateStatus(params.grantId, 'expired')
-
+    if (grant.ownerType === 'tenant' && this.onTenantMailboxBroken) {
+      const meta = (params.metadata ?? {}) as { reason?: unknown }
+      await this.onTenantMailboxBroken({
+        tenantId: grant.tenantId,
+        connectorId: grant.connectorId,
+        grantId: grant.id,
+        address: grant.accountLabel,
+        reason: typeof meta.reason === 'string' ? meta.reason : 'expired',
+        actingUserId: params.actingUserId || null,
+      }).catch(() => {})
+    }
   }
 
   async resolveAccessToken(params: {
@@ -890,14 +1035,20 @@ export class ConnectorGrantService {
     actingUserId: string
     tenantId: string | null
   }): Promise<string> {
-    await this.loadGrantForAccess({
+    const grant = await this.loadGrantForAccess({
       grantId: params.grantId,
-      expectedUserId: params.actingUserId,
       expectedTenantId: params.tenantId,
       expectedConnectorId: params.connector.id,
       expectedTokenRef: params.tokenRef,
       requireActive: true,
     })
+    // User-grant csak a gazdájáé; tenant-grant csak tenant-postafiók konnektoron él,
+    // a hívó jogát ott az agent-kötés (authorizeToolCall) adja.
+    if (grant.ownerType === 'tenant') {
+      if (!tenantMailboxOf(params.connector)) throw new Error('connector_grant_forbidden')
+    } else if (grant.userId !== params.actingUserId) {
+      throw new Error('connector_grant_forbidden')
+    }
     const store = createGrantTokenStore(params.tokenRef)
     let tokens: ConnectorGrantTokens
     try {

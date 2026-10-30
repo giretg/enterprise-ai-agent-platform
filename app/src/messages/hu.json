@@ -984,6 +984,8 @@
       "startChatHint": "Beszélgetés ezzel a munkatárssal a platformon"
     },
     "dashboard": {
+      "mailboxBroken": "A(z) {address} közös postafiók kapcsolata megszakadt — az agentek most nem érik el. Csatlakoztasd újra.",
+      "mailboxBrokenAction": "Újracsatlakoztatás →",
       "eyebrow": "Kezdőlap",
       "title": "Áttekintés",
       "tasksTitle": "Teendők",
@@ -1120,6 +1122,7 @@
         "drive_write_not_allowed": "A Google Drive írás ehhez a mappához nem engedélyezett.",
         "google_drive_auth_failed": "A Google Drive bejelentkezés sikertelen.",
         "google_drive_api_error": "A Google Drive kérés sikertelen.",
+        "tenant_mailbox_disconnected": "A közös postafiók kapcsolata megszakadt — szólj az adminnak, hogy csatlakoztassa újra.",
         "drive_file_modified": "A fájl közben megváltozott a Drive-on, ezért nem írtuk felül. Olvasd be újra, és próbáld meg még egyszer.",
         "tool_execution_failed": "A művelet végrehajtása sikertelen.",
         "http_api_error": "A célrendszer elutasította a kérést.",
@@ -2995,7 +2998,7 @@
     "hubFilterPending": "Befejezésre vár ({count})",
     "hubFilterAvailable": "Elérhető",
     "hubCatalogLink": "Sablon-katalógus",
-    "hubAgentMailLink": "Agent postafiókok",
+    "hubAgentMailLink": "Postafiókok",
     "hubSectionPending": "Befejezésre vár",
     "hubSectionPendingHint": "Ezeket elkezdted, de még nem működnek. Nyisd meg, és fejezd be a beállítást.",
     "hubSectionConnected": "Csatlakoztatva",

@@ -222,7 +222,7 @@ const optionalConnectorName = z
   .max(200)
   .optional()
   .describe(
-    'Human connector name from the published agent definition (connectors[].name). Prefer this over connectorId when several HTTP APIs are bound.',
+    'Human connector name from the published agent definition (connectors[].name). Prefer this over connectorId when several HTTP APIs or mailboxes (e.g. the user\'s own Gmail and a shared company mailbox) are bound.',
   )
 const optionalLinkedAccount = z
   .string()
@@ -368,6 +368,8 @@ export const gmailSearchInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     account: optionalLinkedAccount,
     query: z
       .string()
@@ -382,6 +384,8 @@ export const gmailGetMessageInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     account: optionalLinkedAccount,
     id: z.string().min(1).max(200).describe('Gmail message id from gmail_search'),
   })
@@ -391,6 +395,8 @@ export const gmailGetThreadInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     account: optionalLinkedAccount,
     threadId: z.string().min(1).max(200).describe('Gmail threadId from gmail_search or gmail_get_message'),
   })
@@ -400,6 +406,8 @@ export const gmailListLabelsInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     account: optionalLinkedAccount,
   })
   .passthrough()
@@ -408,6 +416,8 @@ export const gmailListDraftsInputSchema = z
   .object({
     definitionId,
     agentId: optionalAgentId,
+    connectorId: optionalConnectorId,
+    connectorName: optionalConnectorName,
     account: optionalLinkedAccount,
     maxResults: z.number().int().min(1).max(25).optional(),
   })
@@ -420,6 +430,8 @@ const emailList = (what: string) =>
 const composeFields = {
   definitionId,
   agentId: optionalAgentId,
+  connectorId: optionalConnectorId,
+  connectorName: optionalConnectorName,
   account: optionalLinkedAccount,
   to: emailList('Recipients. Omit when replying — defaults to the original sender (all participants with replyAll)'),
   cc: emailList('Cc'),
@@ -466,6 +478,8 @@ export const gmailCreateDraftInputSchema = gmailCreateDraftObject.superRefine((a
 const messageOrThread = {
   definitionId,
   agentId: optionalAgentId,
+  connectorId: optionalConnectorId,
+  connectorName: optionalConnectorName,
   account: optionalLinkedAccount,
   messageId: z.string().max(200).optional().describe('One Gmail message id'),
   threadId: z.string().max(200).optional().describe('Whole thread id (use instead of messageId)'),

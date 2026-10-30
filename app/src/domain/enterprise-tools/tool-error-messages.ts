@@ -93,8 +93,11 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   unknown_account:
     'No linked account matches that account nickname or email; pass one from platform.whoami linkedAccounts (see accounts in the error payload)',
   connector_id_required:
-    'Multiple HTTP API connectors match; pass connectorName (from connectors[].name in the published definition), connectorId, or a path that appears on only one connector\'s endpoint list (see connectors in the error payload)',
+    'Multiple connectors match (HTTP APIs or mailboxes); pass connectorName (from connectors[].name in the published definition), connectorId, or a path that appears on only one connector\'s endpoint list (see connectors in the error payload)',
   acting_user_required: 'This tool requires a delegated user grant',
+  tenant_mailbox_disconnected:
+    'The shared mailbox connection is broken. Tell the user to ask an admin to reconnect it — do not send them to connect their own account',
+  tenant_mailbox_read_only: 'This shared mailbox is connected read-only; sending is not allowed',
   google_drive_scope_not_granted: 'Google Drive scopes are insufficient',
   gmail_scope_not_granted: 'Gmail scopes are insufficient',
   invalid_args: 'Invalid tool arguments — fix the fields listed in issues and retry',

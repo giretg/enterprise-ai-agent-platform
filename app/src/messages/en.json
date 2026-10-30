@@ -984,6 +984,8 @@
       "startChatHint": "Chat with this teammate on the platform"
     },
     "dashboard": {
+      "mailboxBroken": "The shared mailbox {address} is disconnected — agents cannot reach it right now. Reconnect it.",
+      "mailboxBrokenAction": "Reconnect →",
       "eyebrow": "Home",
       "title": "Overview",
       "tasksTitle": "To-dos",
@@ -1120,6 +1122,7 @@
         "drive_write_not_allowed": "Google Drive writes are not allowed for this folder.",
         "google_drive_auth_failed": "Google Drive sign-in failed.",
         "google_drive_api_error": "The Google Drive request failed.",
+        "tenant_mailbox_disconnected": "The shared mailbox is disconnected — ask an admin to reconnect it.",
         "drive_file_modified": "The file changed on Drive in the meantime, so it was not overwritten. Read it again and retry.",
         "tool_execution_failed": "The action could not be executed.",
         "http_api_error": "The target system rejected the request.",
@@ -2995,7 +2998,7 @@
     "hubFilterPending": "Needs finishing ({count})",
     "hubFilterAvailable": "Available",
     "hubCatalogLink": "Template catalog",
-    "hubAgentMailLink": "Agent mailboxes",
+    "hubAgentMailLink": "Mailboxes",
     "hubSectionPending": "Needs finishing",
     "hubSectionPendingHint": "You started these but they are not working yet. Open one to finish the setup.",
     "hubSectionConnected": "Connected",

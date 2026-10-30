@@ -149,6 +149,63 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     })
   }
 
+  async findActiveTenantGrant(params: { tenantId: string; connectorId: string }) {
+    return prisma.connectorGrant.findFirst({
+      where: {
+        tenantId: params.tenantId,
+        connectorId: params.connectorId,
+        ownerType: 'tenant',
+        status: 'active',
+        connector: { lifecycleState: 'active' },
+      },
+      orderBy: { grantedAt: 'desc' },
+    })
+  }
+
+  async findLatestTenantGrant(params: { tenantId: string; connectorId: string }) {
+    return prisma.connectorGrant.findFirst({
+      where: { tenantId: params.tenantId, connectorId: params.connectorId, ownerType: 'tenant' },
+      orderBy: { grantedAt: 'desc' },
+    })
+  }
+
+  async upsertTenantGrant(data: {
+    tenantId: string
+    connectorId: string
+    scopes: Prisma.JsonValue
+    tokenRef: string
+    accountLabel: string | null
+    expiresAt?: Date | null
+    metadata: Prisma.InputJsonValue
+  }) {
+    const payload = {
+      scopes: data.scopes as Prisma.InputJsonValue,
+      tokenRef: data.tokenRef,
+      accountLabel: data.accountLabel?.trim() || null,
+      expiresAt: data.expiresAt ?? null,
+      metadata: data.metadata,
+      status: 'active' as const,
+      revokedAt: null,
+      grantedAt: new Date(),
+    }
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.connectorGrant.findFirst({
+        where: { tenantId: data.tenantId, connectorId: data.connectorId, ownerType: 'tenant' },
+        orderBy: { grantedAt: 'desc' },
+      })
+      if (existing) return tx.connectorGrant.update({ where: { id: existing.id }, data: payload })
+      return tx.connectorGrant.create({
+        data: {
+          tenantId: data.tenantId,
+          connectorId: data.connectorId,
+          ownerType: 'tenant',
+          userId: null,
+          ...payload,
+        },
+      })
+    })
+  }
+
   async updateNickname(id: string, nickname: string | null) {
     return prisma.connectorGrant.update({
       where: { id },

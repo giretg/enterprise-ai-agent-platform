@@ -91,6 +91,23 @@ const resolveEgressAllowlist = (tenantId: string | null) =>
 const connectorGrantService = new ConnectorGrantService(
   repositories.connectorGrants,
   resolveEgressAllowlist,
+  // #1028: megszakadt tenant-postafiók — auditnyom; az admin a vezérlőpulton és a Postafiókok oldalon látja.
+  async (event) => {
+    await repositories.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'connector.mailbox.broken',
+      targetType: 'connector',
+      targetId: event.connectorId,
+      modelUsed: null,
+      inputRef: event.address,
+      outputRef: event.reason,
+      policyDecision: 'denied',
+      metadata: { grantId: event.grantId, address: event.address, reason: event.reason, actingUserId: event.actingUserId },
+      tenantId: event.tenantId,
+    })
+  },
 )
 
 const iamService = new IamService(
@@ -352,6 +369,8 @@ const sharedToolLookups = {
     repositories.connectorGrants.findActiveGrant(input),
   findActiveGrants: (input: { tenantId: string; connectorId: string; userId: string }) =>
     repositories.connectorGrants.findActiveGrants(input),
+  findActiveTenantGrant: (input: { tenantId: string; connectorId: string }) =>
+    repositories.connectorGrants.findActiveTenantGrant(input),
   async resolveActingUser(input: { userId: string }) {
     const user = await repositories.users.findById(input.userId)
     return user ? { id: user.id, email: user.email } : null

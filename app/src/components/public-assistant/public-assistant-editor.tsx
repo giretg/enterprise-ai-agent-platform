@@ -15,7 +15,18 @@ const input = 'mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 te
 const label = 'text-sm font-medium text-ink'
 const hint = 'text-xs text-ink-soft'
 
-export type ForwardOption = { connectorId: string; connectorName: string; senders: Array<{ userId: string; label: string }> }
+export type ForwardOption = {
+  connectorId: string
+  connectorName: string
+  senders: Array<{ userId: string; label: string }>
+  /** #1028: közös (tenant-)postafiók — nincs küldő munkatárs, a postafiók a cégé. */
+  tenantMailbox?: { connected: boolean }
+}
+
+function forwardOptionUnavailable(option: ForwardOption): string | null {
+  if (option.tenantMailbox) return option.tenantMailbox.connected ? null : ' — a kapcsolat megszakadt'
+  return option.senders.length === 0 ? ' — nincs bejelentkezett fiók' : null
+}
 
 /**
  * #1016 WP-5: a profil szerkesztése (draft), élő előnézettel (D19), élesítés/szünet (D16, csak admin),
@@ -195,7 +206,7 @@ export function PublicAssistantEditor({
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="public-assistant-field-9" className={label}>Melyik Gmail-fiókból menjen?</label>
+              <label htmlFor="public-assistant-field-9" className={label}>Melyik postafiókból menjen?</label>
               <select id="public-assistant-field-9"
                 className={input}
                 disabled={disabled}
@@ -208,9 +219,9 @@ export function PublicAssistantEditor({
               >
                 <option value="">Nincs (csak „Visszahívást kér”)</option>
                 {forwardOptions.map((o) => (
-                  <option key={o.connectorId} value={o.connectorId} disabled={o.senders.length === 0}>
+                  <option key={o.connectorId} value={o.connectorId} disabled={forwardOptionUnavailable(o) !== null}>
                     {o.connectorName}
-                    {o.senders.length === 0 ? ' — nincs bejelentkezett fiók' : ''}
+                    {forwardOptionUnavailable(o) ?? ''}
                   </option>
                 ))}
               </select>

@@ -30,6 +30,8 @@ export type OAuthStatePayload = {
   nickname?: string
   /** Új fiók hozzáadása: ne uniózzuk egy másik Google-fiók scope-jait. */
   addAccount?: boolean
+  /** #1028: a grant gazdája a tenant (közös postafiók), a `userId` csak a bekötő admin. */
+  owner?: 'tenant'
 }
 
 function signPayload(payload: string): string {
@@ -92,6 +94,7 @@ export function createOAuthState(params: {
   returnTo?: OAuthReturnTo
   nickname?: string
   addAccount?: boolean
+  owner?: 'tenant'
 }): { state: string; codeVerifier: string } {
   const codeVerifier = randomBytes(32).toString('base64url')
   const payload: OAuthStatePayload = {
@@ -104,6 +107,7 @@ export function createOAuthState(params: {
     ...(params.returnTo && isSafeOAuthReturnTo(params.returnTo) ? { returnTo: params.returnTo } : {}),
     ...(params.nickname ? { nickname: params.nickname } : {}),
     ...(params.addAccount ? { addAccount: true } : {}),
+    ...(params.owner ? { owner: params.owner } : {}),
   }
   return { state: encodeJson(payload), codeVerifier }
 }

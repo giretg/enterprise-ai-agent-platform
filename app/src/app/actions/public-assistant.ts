@@ -5,6 +5,7 @@
  * Szerkesztés (draft): operator+. Élesítés, szüneteltetés, domain-lista, végleges törlés: admin (D16, D18).
  */
 import { revalidatePath } from 'next/cache'
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { Prisma } from '@prisma/client'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { publicChatSecret } from '@/auth/public-chat-deps'
@@ -189,8 +190,14 @@ export async function savePublicAssistantDraftAction(input: { agentId: string; c
       if (allowed !== new Set(config.kbConnectorIds).size) return fail('Csak nyilvános tudásbázis köthető be.')
     }
     if (config.forwardConnectorId) {
-      const gmail = await repositories.connectors.findById(config.forwardConnectorId, ctx.activeTenantId)
-      if (!gmail || gmail.type !== 'gmail') return fail('A továbbításhoz Gmail-kapcsolatot válassz.')
+      const sender = await repositories.connectors.findById(config.forwardConnectorId, ctx.activeTenantId)
+      const mailbox = sender ? tenantMailboxOf(sender) : null
+      if (!sender || (!mailbox && sender.type !== 'gmail')) {
+        return fail('A továbbításhoz Gmail-kapcsolatot vagy közös postafiókot válassz.')
+      }
+      if (mailbox?.readOnly) return fail('Ez a közös postafiók csak olvasásra van bekötve, ezért nem küldhet levelet.')
+      // #1028: tenant-postafióknál nincs „küldő munkatárs” — a postafiók a tenanté.
+      if (mailbox) config.forwardSenderUserId = null
     }
     await prisma.publicAssistant.update({
       where: { agentId: row.agentId },

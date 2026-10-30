@@ -10,6 +10,7 @@
  * agent_connectors / RBAC / Secret Manager elérhetetlen. Az aktiválás és a
  * hozzárendelés agent-aktorral SOHA → `PROVISIONING_FORBIDDEN` + provisioning.access_denied.
  */
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { createHash } from 'crypto'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
@@ -818,6 +819,15 @@ export class ProvisioningService {
       throw new ProvisioningError(
         'CONNECTOR_NOT_ACTIVE',
         'only an active connector can be assigned to an agent',
+      )
+    }
+    if (
+      tenantMailboxOf({ authMode: connector.authMode ?? '', config: connector.config })?.readOnly &&
+      input.accessMode === 'write'
+    ) {
+      throw new ProvisioningError(
+        'TENANT_MAILBOX_READ_ONLY',
+        'Ez a közös postafiók csak olvasásra van bekötve, ezért agent nem kaphat rá küldési jogot.',
       )
     }
     if (!(await this.deps.drafts.isAssignableToAgent(input.connectorId))) {

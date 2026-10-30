@@ -8,6 +8,7 @@ export const OPERATION_ERROR_LABELS: Record<string, string> = {
   google_drive_api_error: 'A Google Drive kérés sikertelen.',
   drive_file_modified:
     'A fájl közben megváltozott a Drive-on, ezért nem írtuk felül. Olvasd be újra, és próbáld meg még egyszer.',
+  tenant_mailbox_disconnected: 'A közös postafiók kapcsolata megszakadt — szólj az adminnak, hogy csatlakoztassa újra.',
   tool_execution_failed: 'A művelet végrehajtása sikertelen.',
   http_api_error: 'A célrendszer elutasította a kérést.',
   missing_api_key: 'A connectorhoz nincs beállítva API-kulcs.',
