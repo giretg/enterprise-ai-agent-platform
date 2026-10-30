@@ -1,11 +1,12 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { pickPlatformChatAgentId } from '@/lib/platform-chat-href'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
+import { takePendingPrompt } from './pending-prompt'
 import {
   ChatApiError,
   createWorkerClient,
@@ -23,6 +24,9 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_FILES = 5
 const ACCEPT = '.csv,.xlsx,.pdf,.txt,.md,.png,.jpg,.jpeg'
 const COLD_START_MS = 1500
+const FILE_HINT = 'CSV, XLSX, PDF, TXT, MD, PNG, JPG — fájlonként legfeljebb 20 MB, üzenetenként 5 fájl.'
+const SIDEBAR_KEY = 'platform-chat:sidebar'
+const DESKTOP_QUERY = '(min-width: 1024px)'
 
 type Live = {
   turnId: string
@@ -56,28 +60,121 @@ function suggestions(agent: ChatAgent): string[] {
   ]
 }
 
+/** Előzmények csoportosítása az utolsó aktivitás szerint (a lista már időrendben jön). */
+function historyGroup(iso: string, now: Date): string {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const t = Date.parse(iso)
+  const day = 86_400_000
+  if (t >= startOfToday) return 'Ma'
+  if (t >= startOfToday - day) return 'Tegnap'
+  if (t >= startOfToday - 7 * day) return 'Előző 7 nap'
+  if (t >= startOfToday - 30 * day) return 'Előző 30 nap'
+  return 'Régebbi'
+}
+
+const ICONS = {
+  menu: 'M4 6h16M4 12h16M4 18h16',
+  sidebar: 'M4 5h16v14H4zM9.5 5v14',
+  newChat: 'M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z',
+  search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14M20 20l-4-4',
+  clip: 'M20.5 11.5 12 20a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6L14.5 7',
+  send: 'M12 19V5M5.5 11.5 12 5l6.5 6.5',
+  stop: 'M7 7h10v10H7z',
+  copy: 'M9 9h10v11H9zM5 15V4h10',
+  check: 'M5 12.5 10 17l9-10',
+  edit: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
+  trash: 'M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9L17.5 7',
+  more: 'M6 12h.01M12 12h.01M18 12h.01',
+  chevron: 'm6 9.5 6 6 6-6',
+  close: 'M6 6l12 12M18 6 6 18',
+  down: 'M12 5v14M5.5 12.5 12 19l6.5-6.5',
+  eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5',
+} as const
+
+function Icon({ name, className = 'h-4 w-4' }: { name: keyof typeof ICONS; className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d={ICONS[name]} />
+    </svg>
+  )
+}
+
+function AgentAvatar({ name, size = 'sm' }: { name: string; size?: 'xs' | 'sm' | 'lg' }) {
+  const cls = size === 'lg' ? 'h-14 w-14 text-xl' : size === 'xs' ? 'h-5 w-5 text-[10px]' : 'h-7 w-7 text-xs'
+  return (
+    <span aria-hidden className={`flex shrink-0 items-center justify-center rounded-full bg-coral/15 font-semibold text-coral-deep ${cls}`}>
+      {name.slice(0, 1).toUpperCase()}
+    </span>
+  )
+}
+
 function Markdown({ text }: { text: string }) {
   return (
-    <div className="space-y-2 text-sm leading-relaxed text-ink [&_a]:text-coral-deep [&_a]:underline [&_code]:rounded [&_code]:bg-ink/5 [&_code]:px-1 [&_li]:ml-5 [&_ol]:list-decimal [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-ink/5 [&_pre]:p-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-line/70 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line/70 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_ul]:list-disc">
+    <div className="space-y-3 text-[15px] leading-7 text-ink [&_a]:text-coral-deep [&_a]:underline [&_code]:rounded [&_code]:bg-ink/5 [&_code]:px-1 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:bg-ink/5 [&_pre]:p-3 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_td]:border [&_td]:border-line/70 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-line/70 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_ul]:list-disc">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   )
 }
 
-function MessageBubble({ message }: { message: Pick<ChatMessageView, 'role' | 'content' | 'attachments'> }) {
-  const mine = message.role === 'user'
+function ActionButton({ label, icon, onClick }: { label: string; icon: keyof typeof ICONS; onClick: () => void }) {
   return (
-    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${mine ? 'bg-coral/15' : 'border border-line/60 bg-panel'}`}>
-        {mine ? <p className="whitespace-pre-wrap text-sm text-ink">{message.content}</p> : <Markdown text={message.content} />}
-        {message.attachments.length ? (
-          <ul className="mt-2 flex flex-wrap gap-1.5">
-            {message.attachments.map((a) => (
-              <li key={a.id} className="rounded-md bg-ink/5 px-2 py-0.5 text-xs text-ink-soft">📎 {a.name}</li>
-            ))}
-          </ul>
-        ) : null}
+    <button type="button" title={label} aria-label={label} onClick={onClick} className="rounded-lg p-1.5 text-ink-faint transition hover:bg-ink/5 hover:text-ink">
+      <Icon name={icon} />
+    </button>
+  )
+}
+
+function AttachmentList({ attachments }: { attachments: ChatAttachment[] }) {
+  if (!attachments.length) return null
+  return (
+    <ul className="mt-2 flex flex-wrap gap-1.5">
+      {attachments.map((a) => (
+        <li key={a.id} className="flex items-center gap-1 rounded-lg border border-line bg-card px-2 py-1 text-xs text-ink-soft">
+          <Icon name="clip" className="h-3.5 w-3.5" /> {a.name}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Grok-szerű üzenet: a saját üzenet jobbra buborékban, a munkatárs válasza buborék nélkül, teljes szélességben. */
+function Message({
+  message,
+  streaming = false,
+  copied,
+  onCopy,
+  onEdit,
+}: {
+  message: Pick<ChatMessageView, 'id' | 'role' | 'content' | 'attachments'>
+  streaming?: boolean
+  copied: boolean
+  onCopy?: () => void
+  onEdit?: () => void
+}) {
+  if (message.role === 'user') {
+    return (
+      <div className="group flex flex-col items-end">
+        <div className="max-w-[85%] rounded-3xl rounded-br-lg bg-ink/[0.06] px-4 py-2.5">
+          {message.content ? <p className="whitespace-pre-wrap text-[15px] leading-7 text-ink">{message.content}</p> : null}
+          <AttachmentList attachments={message.attachments} />
+        </div>
+        <div className="mt-1 flex gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
+          {onCopy ? <ActionButton label={copied ? 'Kimásolva' : 'Másolás'} icon={copied ? 'check' : 'copy'} onClick={onCopy} /> : null}
+          {onEdit ? <ActionButton label="Szerkesztés és újraküldés" icon="edit" onClick={onEdit} /> : null}
+        </div>
       </div>
+    )
+  }
+  return (
+    <div className="group">
+      <Markdown text={message.content} />
+      {streaming ? <span aria-hidden className="ml-0.5 inline-block h-4 w-2 animate-pulse rounded-sm bg-ink/40 align-middle" /> : null}
+      <AttachmentList attachments={message.attachments} />
+      {!streaming && onCopy ? (
+        <div className="mt-1 flex gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
+          <ActionButton label={copied ? 'Kimásolva' : 'Válasz másolása'} icon={copied ? 'check' : 'copy'} onClick={onCopy} />
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -105,9 +202,29 @@ export function PlatformChat({
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
+  const [menuFor, setMenuFor] = useState<string | null>(null)
   const [adminMode, setAdminMode] = useState(false)
+  // Asztali nézetben megjegyezzük, hogy az oldalsáv nyitva vagy csukva volt (betöltés alatt még nem látszik).
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return typeof window === 'undefined' || localStorage.getItem(SIDEBAR_KEY) !== 'closed'
+    } catch {
+      return true
+    }
+  })
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [atBottom, setAtBottom] = useState(true)
+  const [dragging, setDragging] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
-  const bottom = useRef<HTMLDivElement | null>(null)
+  const scroller = useRef<HTMLDivElement | null>(null)
+  const textarea = useRef<HTMLTextAreaElement | null>(null)
+  const searchInput = useRef<HTMLInputElement | null>(null)
+  const atBottomRef = useRef(true)
+  const refreshListRef = useRef<() => void>(() => {})
+  const booted = useRef(false)
+  const pendingPrompt = useRef<{ agentId: string; text: string } | null>(null)
 
   const agent = useMemo(() => agents?.find((a) => a.agentId === agentId) ?? null, [agents, agentId])
 
@@ -118,9 +235,12 @@ export function PlatformChat({
         const c = createWorkerClient(session)
         const list = await c.agents()
         if (cancelled) return
+        // Az Áttekintés oldalról hozott kérdés: ezzel a munkatárssal indul, és azonnal elmegy.
+        const pending = takePendingPrompt()
+        pendingPrompt.current = pending && list.agents.some((a) => a.agentId === pending.agentId) ? pending : null
         setClient(c)
         setAgents(list.agents)
-        setAgentId(pickPlatformChatAgentId(list.agents, initialAgentId))
+        setAgentId(pendingPrompt.current?.agentId ?? pickPlatformChatAgentId(list.agents, initialAgentId))
       })
       .catch((e) => {
         if (cancelled) return
@@ -134,16 +254,19 @@ export function PlatformChat({
   }, [initialAgentId])
 
   const loadConversations = useCallback(
-    async (c: WorkerClient, forAgent: string | null, q: string) => {
-      if (adminMode) {
-        setConversations((await c.adminConversations({ q })).conversations)
-        return
-      }
-      if (!forAgent) return
-      setConversations((await c.conversations({ agentId: forAgent, q })).conversations)
+    async (c: WorkerClient, q: string) => {
+      // Grok-szerű egységes előzmény: minden munkatárssal folytatott beszélgetés egy listában.
+      const list = adminMode ? await c.adminConversations({ q }) : await c.conversations({ q })
+      setConversations(list.conversations)
     },
     [adminMode],
   )
+
+  useEffect(() => {
+    refreshListRef.current = () => {
+      if (client) void loadConversations(client, query).catch(() => {})
+    }
+  }, [client, query, loadConversations])
 
   const follow = useCallback(
     async (c: WorkerClient, conversationId: string, turnId: string, after = 0) => {
@@ -186,6 +309,8 @@ export function PlatformChat({
       const fresh = await c.conversation(conversationId)
       setView(fresh)
       setLive((p) => (p && (p.approval || p.error) ? p : null))
+      // Az első válasz után a beszélgetés címet kap — frissül az előzménylista.
+      refreshListRef.current()
     },
     [],
   )
@@ -195,8 +320,12 @@ export function PlatformChat({
       streamAbort.current?.abort()
       setLive(null)
       setNotice(null)
+      setDrawerOpen(false)
       const v = adminMode ? await c.adminConversation(conversationId) : await c.conversation(conversationId)
       setView(v)
+      if (!adminMode) setAgentId(v.conversation.agentId)
+      atBottomRef.current = true
+      setAtBottom(true)
       if (v.activeTurn?.pendingApproval) {
         setLive({ turnId: v.activeTurn.id, lastId: 0, text: '', status: '', approval: { message: v.activeTurn.pendingApproval.message }, error: null })
       } else if (v.activeTurn) {
@@ -212,10 +341,9 @@ export function PlatformChat({
   useEffect(() => {
     if (!client) return
     let cancelled = false
-    const forAgent = agentId
     const t = setTimeout(async () => {
       try {
-        await loadConversations(client, forAgent, query)
+        await loadConversations(client, query)
       } catch {
         if (!cancelled) setNotice('A korábbi beszélgetéseket most nem sikerült betölteni.')
       }
@@ -224,48 +352,118 @@ export function PlatformChat({
       cancelled = true
       clearTimeout(t)
     }
-  }, [client, agentId, query, loadConversations])
+  }, [client, query, loadConversations])
 
+  // Követjük, hogy a felhasználó az alján van-e: csak akkor görgetünk magunktól, ha igen.
+  function onScroll() {
+    const el = scroller.current
+    if (!el) return
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    atBottomRef.current = bottom
+    setAtBottom(bottom)
+  }
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    const el = scroller.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+  }, [])
+
+  useLayoutEffect(() => {
+    if (atBottomRef.current) scrollToBottom()
+  }, [view?.messages.length, view?.conversation.id, live?.text, live?.status, live?.approval, live?.error, scrollToBottom])
+
+  // A szövegmező a tartalommal együtt nő (max. ~8 sor), mint a chat-appokban.
+  useLayoutEffect(() => {
+    const el = textarea.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`
+  }, [draft])
+
+  const focusComposer = useCallback(() => {
+    requestAnimationFrame(() => textarea.current?.focus())
+  }, [])
+
+  function newChat(forAgent?: string) {
+    streamAbort.current?.abort()
+    setView(null)
+    setLive(null)
+    setNotice(null)
+    setFiles([])
+    setAdminMode(false)
+    setDrawerOpen(false)
+    setPickerOpen(false)
+    if (forAgent) setAgentId(forAgent)
+    atBottomRef.current = true
+    setAtBottom(true)
+    focusComposer()
+  }
+
+  function toggleSidebar() {
+    if (window.matchMedia(DESKTOP_QUERY).matches) {
+      setSidebarOpen((o) => {
+        try {
+          localStorage.setItem(SIDEBAR_KEY, o ? 'closed' : 'open')
+        } catch {
+          // nincs tároló
+        }
+        return !o
+      })
+    } else {
+      setDrawerOpen(true)
+    }
+  }
+
+  // Billentyűparancsok: Ctrl/⌘+Shift+O új beszélgetés, Ctrl/⌘+K keresés, Esc bezárja a lenyílókat.
   useEffect(() => {
-    if (!client || adminMode || !agentId) return
-    // Kattintás → az utolsó beszélgetés folytatása, ha van (§2/3).
-    void (async () => {
-      const list = (await client.conversations({ agentId })).conversations
-      if (list[0]) await open(client, list[0].id)
-      else {
-        setView(null)
-        setLive(null)
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault()
+        newChat()
+      } else if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        if (window.matchMedia(DESKTOP_QUERY).matches) setSidebarOpen(true)
+        else setDrawerOpen(true)
+        requestAnimationFrame(() => searchInput.current?.focus())
+      } else if (e.key === 'Escape') {
+        setDrawerOpen(false)
+        setPickerOpen(false)
+        setMenuFor(null)
       }
-    })().catch(() => setNotice('A beszélgetést most nem sikerült megnyitni.'))
-  }, [client, agentId, adminMode, open])
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // newChat csak állapot-settereket hív — a legutóbbi példány mindig jó.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' })
-  }, [view?.messages.length, live?.text, live?.approval])
-
-  async function ensureConversation(c: WorkerClient): Promise<string> {
+  async function ensureConversation(c: WorkerClient, forAgent: string): Promise<string> {
     if (view && !adminMode) return view.conversation.id
-    const created = await c.createConversation(agentId!)
+    const created = await c.createConversation(forAgent)
     setConversations((list) => [created.conversation, ...list])
     setView({ conversation: created.conversation, messages: [], activeTurn: null, lastError: null })
     return created.conversation.id
   }
 
-  async function send(text = draft) {
-    if (!client || !agentId || busy) return
+  async function send(text = draft, forAgent = agentId) {
+    if (!client || !forAgent || busy) return
     const content = text.trim()
     if (!content && files.length === 0) return
     setBusy(true)
     setNotice(null)
     try {
-      const id = await ensureConversation(client)
+      const id = await ensureConversation(client, forAgent)
       const { turnId } = await client.send(id, content, files.map((f) => f.id))
       setView((v) => (v ? { ...v, messages: [...v.messages, { id: `local-${turnId}`, role: 'user', content, attachments: files, createdAt: new Date().toISOString() }] } : v))
       setDraft('')
       setFiles([])
+      atBottomRef.current = true
+      setAtBottom(true)
       setLive({ turnId, lastId: 0, text: '', status: 'Gondolkodom…', approval: null, error: null })
       void follow(client, id, turnId)
-      void loadConversations(client, agentId, query)
+      refreshListRef.current()
     } catch (e) {
       setNotice(e instanceof ChatApiError && e.status === 409 ? 'Még dolgozik az előző kérésen. Várj, vagy állítsd le.' : 'Az üzenetet most nem sikerült elküldeni. Próbáld újra.')
     } finally {
@@ -273,15 +471,40 @@ export function PlatformChat({
     }
   }
 
-  async function attach(list: FileList | null) {
-    if (!client || !list?.length) return
+  // Első betöltés: az Áttekintés oldalról hozott kérdés azonnal elmegy; a kártya gombja (`?agent=`)
+  // az adott munkatárssal folytatott utolsó beszélgetést nyitja (§2/3); egyébként üres új beszélgetés.
+  useEffect(() => {
+    if (!client || !agents || booted.current) return
+    booted.current = true
+    const pending = pendingPrompt.current
+    if (pending) {
+      pendingPrompt.current = null
+      void send(pending.text, pending.agentId)
+      return
+    }
+    if (initialAgentId && agents.some((a) => a.agentId === initialAgentId)) {
+      void (async () => {
+        const list = (await client.conversations({ agentId: initialAgentId })).conversations
+        if (list[0]) await open(client, list[0].id)
+        else focusComposer()
+      })().catch(() => setNotice('A beszélgetést most nem sikerült megnyitni.'))
+      return
+    }
+    focusComposer()
+    // Egyszeri indítás — a `send` / `open` a pillanatnyi állapottal fut.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, agents])
+
+  async function attach(list: FileList | File[] | null) {
+    if (!client || !agentId || !list?.length) return
     const picked = [...list]
     if (files.length + picked.length > MAX_FILES) return setNotice(`Egy üzenethez legfeljebb ${MAX_FILES} fájl csatolható.`)
     const tooBig = picked.find((f) => f.size > MAX_FILE_BYTES)
     if (tooBig) return setNotice(`A(z) ${tooBig.name} túl nagy: fájlonként legfeljebb 20 MB csatolható.`)
     setBusy(true)
+    setNotice(null)
     try {
-      const id = await ensureConversation(client)
+      const id = await ensureConversation(client, agentId)
       for (const file of picked) {
         const { attachment } = await client.upload(id, file)
         setFiles((f) => [...f, attachment])
@@ -290,6 +513,7 @@ export function PlatformChat({
       setNotice(e instanceof ChatApiError && e.status === 415 ? 'Ezt a fájltípust nem lehet csatolni (CSV, XLSX, PDF, TXT, MD, PNG, JPG).' : 'A fájlt most nem sikerült feltölteni.')
     } finally {
       setBusy(false)
+      focusComposer()
     }
   }
 
@@ -321,19 +545,31 @@ export function PlatformChat({
   }
 
   async function remove(c: ChatConversation) {
+    setMenuFor(null)
     if (!client || !window.confirm(`Törlöd a(z) „${c.title}” beszélgetést? Ez nem vonható vissza.`)) return
     await client.remove(c.id).catch(() => setNotice('A törlés most nem sikerült.'))
     setConversations((list) => list.filter((x) => x.id !== c.id))
-    if (view?.conversation.id === c.id) {
-      setView(null)
-      setLive(null)
-    }
+    if (view?.conversation.id === c.id) newChat()
+  }
+
+  function copy(id: string, text: string) {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(id)
+      setTimeout(() => setCopied((cur) => (cur === id ? null : cur)), 1500)
+    })
+  }
+
+  function pickAgent(id: string) {
+    setPickerOpen(false)
+    if (id === agentId && !view) return focusComposer()
+    // Egy beszélgetés egy munkatárshoz tartozik: másik munkatárs = új beszélgetés (a megkezdett szöveg marad).
+    newChat(id)
   }
 
   // --- Üres állapotok (§2) ---
   if (fatal) {
     return (
-      <div className="mx-auto max-w-xl rounded-xl border border-line bg-panel p-6 text-sm">
+      <div className="mx-auto mt-10 max-w-xl rounded-2xl border border-line bg-panel p-6 text-sm">
         <p className="text-ink">{fatal}</p>
         {keyMissingForAdmin ? (
           <Link href="/control-plane/settings?section=openrouter" className="mt-3 inline-block rounded-lg bg-coral px-3 py-1.5 font-medium text-white">
@@ -347,10 +583,16 @@ export function PlatformChat({
       </div>
     )
   }
-  if (!agents) return <p className="text-sm text-ink-soft">Betöltés…</p>
+  if (!agents) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <p className="animate-pulse text-sm text-ink-soft">Betöltés…</p>
+      </div>
+    )
+  }
   if (agents.length === 0) {
     return (
-      <div className="mx-auto max-w-xl rounded-xl border border-line bg-panel p-6 text-sm text-ink">
+      <div className="mx-auto mt-10 max-w-xl rounded-2xl border border-line bg-panel p-6 text-sm text-ink">
         Még nincs olyan munkatárs, akivel itt beszélgethetnél. Kérd meg az adminisztrátort, hogy engedélyezzen egyet.
       </div>
     )
@@ -358,222 +600,491 @@ export function PlatformChat({
 
   const readOnly = adminMode
   const working = !!live && !live.approval && !live.error
+  const empty = !view?.messages.length && !live
+  const now = new Date()
 
-  return (
-    <div className="flex h-[calc(100vh-9rem)] min-h-[480px] flex-col gap-3 lg:flex-row">
-      <aside className="flex shrink-0 flex-col gap-3 lg:w-72">
-        {/* Mobilon lenyíló lista (§6.2) */}
-        <select
-          className="rounded-lg border border-line bg-panel px-3 py-2 text-sm lg:hidden"
-          value={agentId ?? ''}
-          onChange={(e) => setAgentId(e.target.value)}
-          disabled={adminMode}
+  const sidebar = (
+    <div className="flex h-full min-h-0 flex-col gap-2 p-2">
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => newChat()}
+          title="Új beszélgetés (Ctrl+Shift+O)"
+          className="flex flex-1 items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium text-ink transition hover:bg-ink/5"
         >
-          {agents.map((a) => (
-            <option key={a.agentId} value={a.agentId}>{a.name}</option>
-          ))}
-        </select>
-        <ul className="hidden space-y-1 lg:block">
-          {agents.map((a) => (
-            <li key={a.agentId}>
-              <button
-                type="button"
-                disabled={adminMode}
-                onClick={() => setAgentId(a.agentId)}
-                className={`flex w-full items-start gap-3 rounded-xl px-3 py-2 text-left transition ${a.agentId === agentId && !adminMode ? 'bg-coral/15' : 'hover:bg-night/30'}`}
-              >
-                <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-coral/20 text-sm font-semibold text-coral-deep">
-                  {a.name.slice(0, 1).toUpperCase()}
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium text-ink">{a.name}</span>
-                  {a.description ? <span className="block truncate text-xs text-ink-soft">{a.description}</span> : null}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-line/60 bg-panel/40 p-2">
-          <div className="flex items-center gap-2">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Keresés a beszélgetésekben"
-              className="min-w-0 flex-1 rounded-lg border border-line bg-panel px-2 py-1.5 text-sm"
-            />
-            {!adminMode ? (
-              <button
-                type="button"
-                title="Új beszélgetés"
-                onClick={() => {
-                  setView(null)
-                  setLive(null)
-                }}
-                className="rounded-lg border border-line px-2 py-1.5 text-sm hover:border-coral/50"
-              >
-                +
-              </button>
-            ) : null}
-          </div>
-          <ul className="mt-2 min-h-0 flex-1 space-y-0.5 overflow-y-auto">
-            {conversations.length === 0 ? <li className="px-2 py-1 text-xs text-ink-faint">{query ? 'Nincs találat.' : 'Még nincs korábbi beszélgetés.'}</li> : null}
-            {conversations.map((c) => (
-              <li key={c.id} className={`group flex items-center gap-1 rounded-lg px-2 py-1 ${view?.conversation.id === c.id ? 'bg-coral/10' : 'hover:bg-night/20'}`}>
+          <Icon name="newChat" />
+          Új beszélgetés
+        </button>
+        <button type="button" aria-label="Oldalsáv bezárása" title="Oldalsáv bezárása" onClick={() => (drawerOpen ? setDrawerOpen(false) : toggleSidebar())} className="rounded-xl p-2 text-ink-soft hover:bg-ink/5 hover:text-ink">
+          <Icon name={drawerOpen ? 'close' : 'sidebar'} />
+        </button>
+      </div>
+
+      <label className="flex items-center gap-2 rounded-xl border border-line bg-card px-3 py-2 text-sm focus-within:border-coral/50">
+        <Icon name="search" className="h-4 w-4 shrink-0 text-ink-faint" />
+        <input
+          ref={searchInput}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Keresés"
+          title="Keresés a beszélgetésekben (Ctrl+K)"
+          aria-label="Keresés a beszélgetésekben"
+          className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-ink-faint sm:text-sm"
+        />
+        {query ? (
+          <button type="button" aria-label="Keresés törlése" onClick={() => setQuery('')} className="text-ink-faint hover:text-ink">
+            <Icon name="close" className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </label>
+
+      {!adminMode && !query ? (
+        <div>
+          <p className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">Munkatársak</p>
+          <ul className="max-h-48 space-y-0.5 overflow-y-auto">
+            {agents.map((a) => (
+              <li key={a.agentId}>
+                <button
+                  type="button"
+                  onClick={() => pickAgent(a.agentId)}
+                  title={a.description ?? `Új beszélgetés vele: ${a.name}`}
+                  className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-left text-sm transition ${a.agentId === agentId && !view ? 'bg-coral/10 text-ink' : 'text-ink hover:bg-ink/5'}`}
+                >
+                  <AgentAvatar name={a.name} size="xs" />
+                  <span className="truncate">{a.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <nav aria-label="Korábbi beszélgetések" className="min-h-0 flex-1 overflow-y-auto">
+        {adminMode ? <p className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-honey">Munkatársak beszélgetései · csak olvasás</p> : null}
+        {conversations.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-ink-faint">{query ? 'Nincs találat.' : 'Még nincs korábbi beszélgetés.'}</p>
+        ) : null}
+        {conversations.map((c, i) => {
+          const group = historyGroup(c.lastActivityAt, now)
+          const showGroup = i === 0 || historyGroup(conversations[i - 1].lastActivityAt, now) !== group
+          const active = view?.conversation.id === c.id
+          return (
+            <div key={c.id}>
+              {showGroup ? <p className="px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">{group}</p> : null}
+              <div className={`group relative flex items-center rounded-xl ${active ? 'bg-ink/[0.07]' : 'hover:bg-ink/5'}`}>
                 {renaming === c.id ? (
                   <input
                     autoFocus
                     defaultValue={c.title}
+                    aria-label="Beszélgetés új neve"
                     onBlur={(e) => void rename(c, e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') void rename(c, e.currentTarget.value)
                       if (e.key === 'Escape') setRenaming(null)
                     }}
-                    className="min-w-0 flex-1 rounded border border-line bg-panel px-1 text-sm"
+                    className="m-1 min-w-0 flex-1 rounded-lg border border-coral/50 bg-card px-2 py-1 text-base outline-none sm:text-sm"
                   />
                 ) : (
-                  <button type="button" className="min-w-0 flex-1 truncate text-left text-sm text-ink" onClick={() => client && void open(client, c.id)}>
-                    {adminMode ? `${c.agentName}: ` : ''}
-                    {c.title}
+                  <button type="button" className="min-w-0 flex-1 px-3 py-2 text-left" onClick={() => client && void open(client, c.id)}>
+                    <span className="block truncate text-sm text-ink">{c.title}</span>
+                    <span className="block truncate text-[11px] text-ink-faint">{c.agentName}</span>
                   </button>
                 )}
-                {!adminMode ? (
-                  <span className="hidden shrink-0 gap-1 group-hover:flex">
-                    <button type="button" title="Átnevezés" className="text-xs text-ink-faint hover:text-ink" onClick={() => setRenaming(c.id)}>✎</button>
-                    <button type="button" title="Törlés" className="text-xs text-ink-faint hover:text-coral-deep" onClick={() => void remove(c)}>✕</button>
-                  </span>
+                {!adminMode && renaming !== c.id ? (
+                  <button
+                    type="button"
+                    aria-label={`Műveletek: ${c.title}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuFor === c.id}
+                    onClick={() => setMenuFor((m) => (m === c.id ? null : c.id))}
+                    className={`mr-1 shrink-0 rounded-lg p-1.5 text-ink-faint hover:bg-ink/5 hover:text-ink ${menuFor === c.id || active ? 'opacity-100' : 'opacity-100 lg:opacity-0 lg:group-hover:opacity-100'}`}
+                  >
+                    <Icon name="more" />
+                  </button>
                 ) : null}
-              </li>
-            ))}
-          </ul>
-          {isAdmin && client?.adminInsight ? (
-            <button
-              type="button"
-              onClick={() => {
-                setAdminMode((m) => !m)
-                setView(null)
-                setLive(null)
-              }}
-              className="mt-2 rounded-lg border border-line px-2 py-1.5 text-xs text-ink-soft hover:border-coral/50"
-              title="A munkatársak platform-chat beszélgetései, csak olvasásra. Minden megnyitás naplózott."
-            >
-              {adminMode ? '← Vissza a saját beszélgetéseimhez' : 'Munkatársak beszélgetései (admin)'}
-            </button>
-          ) : null}
-        </div>
-      </aside>
-
-      <section className="flex min-h-0 flex-1 flex-col rounded-xl border border-line/60 bg-panel/30">
-        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-line/50 px-4 py-2">
-          <p className="truncate text-sm font-medium text-ink">
-            {adminMode ? 'Megtekintés (csak olvasás)' : agent?.name}
-            {view ? <span className="ml-2 font-normal text-ink-soft">· {view.conversation.title}</span> : null}
-          </p>
-          {client?.adminInsight ? (
-            <p className="rounded-full bg-honey/15 px-2.5 py-0.5 text-xs text-ink-soft" title="A cég adminisztrátora a platform üzemeltetőjének engedélyével olvashatja a platform-chat beszélgetéseket. Minden megnyitás naplózott.">
-              Az adminisztrátor megtekintheti a beszélgetéseidet.
-            </p>
-          ) : null}
-        </header>
-
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-          {!view?.messages.length && !live && agent && !adminMode ? (
-            <div className="mx-auto max-w-lg space-y-2 pt-8 text-center">
-              <p className="text-sm text-ink-soft">Kezdj egy kérdéssel — például:</p>
-              {suggestions(agent).map((s) => (
-                <button key={s} type="button" onClick={() => void send(s)} className="block w-full rounded-xl border border-line bg-panel px-3 py-2 text-left text-sm text-ink hover:border-coral/50">
-                  {s}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {view?.messages.map((m) => <MessageBubble key={m.id} message={m} />)}
-          {live ? (
-            <div className="space-y-2">
-              {live.text ? <MessageBubble message={{ role: 'assistant', content: live.text, attachments: [] }} /> : null}
-              {live.status ? <p className="animate-pulse text-xs text-ink-soft">{live.status}</p> : null}
-              {live.approval ? (
-                <div className="max-w-[85%] rounded-xl border border-coral/40 bg-coral/5 p-3 text-sm">
-                  <p className="font-medium text-ink">A munkatárs ezt szeretné elvégezni:</p>
-                  <p className="mt-1 whitespace-pre-wrap text-ink">{live.approval.message}</p>
-                  {readOnly ? null : (
-                    <div className="mt-3 flex gap-2">
-                      <button type="button" onClick={() => void decide('approve')} className="rounded-lg bg-coral px-3 py-1.5 font-medium text-white">Jóváhagyom</button>
-                      <button type="button" onClick={() => void decide('reject')} className="rounded-lg border border-line bg-panel px-3 py-1.5 font-medium text-ink">Elvetem</button>
-                    </div>
-                  )}
-                  <p className="mt-2 text-xs text-ink-faint">
-                    15 percen belül dönthetsz itt; utána a kérés a{' '}
-                    <Link href="/control-plane/operations" className="underline">jóváhagyási listára</Link> kerül.
-                  </p>
-                </div>
-              ) : null}
-              {live.error ? (
-                <div className="max-w-[85%] rounded-xl border border-coral/35 bg-coral/10 p-3 text-sm text-coral-deep">
-                  <p>{live.error}</p>
-                  {!readOnly ? (
+                {menuFor === c.id ? (
+                  <div role="menu" className="absolute right-1 top-full z-30 mt-1 w-40 rounded-xl border border-line bg-card p-1 shadow-lg">
                     <button
                       type="button"
-                      className="mt-2 rounded-lg border border-coral/40 px-3 py-1 text-xs font-medium"
+                      role="menuitem"
                       onClick={() => {
-                        const last = [...(view?.messages ?? [])].reverse().find((m) => m.role === 'user')
-                        setLive(null)
-                        if (last) void send(last.content)
+                        setMenuFor(null)
+                        setRenaming(c.id)
                       }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm text-ink hover:bg-ink/5"
                     >
-                      Újra
+                      <Icon name="edit" /> Átnevezés
                     </button>
-                  ) : null}
-                </div>
-              ) : null}
+                    <button type="button" role="menuitem" onClick={() => void remove(c)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm text-rose hover:bg-rose/10">
+                      <Icon name="trash" /> Törlés
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
-          ) : null}
-          <div ref={bottom} />
-        </div>
+          )
+        })}
+      </nav>
 
-        {readOnly ? null : (
-          <footer className="border-t border-line/50 p-3">
-            {notice ? <p className="mb-2 text-xs text-coral-deep">{notice}</p> : null}
-            {files.length ? (
-              <ul className="mb-2 flex flex-wrap gap-1.5">
-                {files.map((f) => (
-                  <li key={f.id} className="flex items-center gap-1 rounded-md bg-ink/5 px-2 py-0.5 text-xs text-ink-soft">
-                    📎 {f.name}
-                    <button type="button" className="hover:text-coral-deep" onClick={() => setFiles((all) => all.filter((x) => x.id !== f.id))}>✕</button>
+      {isAdmin && client?.adminInsight ? (
+        <button
+          type="button"
+          onClick={() => {
+            const next = !adminMode
+            newChat()
+            setAdminMode(next)
+          }}
+          className="flex items-center gap-2 rounded-xl border border-line px-3 py-2 text-left text-xs text-ink-soft hover:border-coral/50"
+          title="A munkatársak platform-chat beszélgetései, csak olvasásra. Minden megnyitás naplózott."
+        >
+          <Icon name="eye" />
+          {adminMode ? 'Vissza a saját beszélgetéseimhez' : 'Munkatársak beszélgetései (admin)'}
+        </button>
+      ) : null}
+    </div>
+  )
+
+  const composer = (
+    <div
+      className={`rounded-[1.75rem] border bg-card shadow-[0_4px_24px_-12px_rgba(0,0,0,0.18)] transition focus-within:border-coral/50 ${dragging ? 'border-coral' : 'border-line'}`}
+    >
+      {files.length ? (
+        <ul className="flex flex-wrap gap-1.5 px-3 pt-3">
+          {files.map((f) => (
+            <li key={f.id} className="flex items-center gap-1.5 rounded-xl border border-line bg-night px-2.5 py-1.5 text-xs text-ink-soft">
+              <Icon name="clip" className="h-3.5 w-3.5" />
+              <span className="max-w-[12rem] truncate">{f.name}</span>
+              <button type="button" aria-label={`${f.name} eltávolítása`} className="hover:text-coral-deep" onClick={() => setFiles((all) => all.filter((x) => x.id !== f.id))}>
+                <Icon name="close" className="h-3.5 w-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <textarea
+        ref={textarea}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault()
+            if (!working) void send()
+          }
+        }}
+        onPaste={(e) => {
+          if (e.clipboardData.files.length) {
+            e.preventDefault()
+            void attach(e.clipboardData.files)
+          }
+        }}
+        rows={1}
+        aria-label="Üzenet"
+        placeholder={agent ? `Kérdezd ${agent.name} munkatársat…` : 'Írd ide a kérdésed…'}
+        className="block max-h-[220px] w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 text-ink outline-none placeholder:text-ink-faint sm:px-5"
+      />
+      <div className="flex items-center gap-1.5 px-2 pb-2 pt-1 sm:px-3">
+        <label
+          className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-ink-soft transition hover:bg-ink/5 hover:text-ink"
+          title={`Fájl csatolása (vagy húzd ide / illeszd be): ${FILE_HINT}`}
+        >
+          <Icon name="clip" className="h-[18px] w-[18px]" />
+          <span className="sr-only">Fájl csatolása</span>
+          <input
+            type="file"
+            multiple
+            accept={ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              void attach(e.target.files)
+              e.target.value = ''
+            }}
+          />
+        </label>
+        <div className="relative min-w-0">
+          <button
+            type="button"
+            onClick={() => setPickerOpen((o) => !o)}
+            aria-haspopup="listbox"
+            aria-expanded={pickerOpen}
+            title="Kivel beszélgetsz? Másik munkatárs választása új beszélgetést indít."
+            className="flex max-w-full items-center gap-1.5 rounded-full border border-line px-2.5 py-1.5 text-sm text-ink transition hover:bg-ink/5"
+          >
+            {agent ? <AgentAvatar name={agent.name} size="xs" /> : null}
+            <span className="truncate">{agent?.name ?? 'Munkatárs'}</span>
+            <Icon name="chevron" className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+          </button>
+          {pickerOpen ? (
+            <>
+              <button type="button" aria-hidden tabIndex={-1} className="fixed inset-0 z-30 cursor-default" onClick={() => setPickerOpen(false)} />
+              <ul
+                role="listbox"
+                aria-label="Munkatárs választása"
+                className={`absolute left-0 z-40 max-h-72 w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-2xl border border-line bg-card p-1.5 shadow-xl ${empty ? 'top-full mt-2' : 'bottom-full mb-2'}`}
+              >
+                {agents.map((a) => (
+                  <li key={a.agentId}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={a.agentId === agentId}
+                      onClick={() => pickAgent(a.agentId)}
+                      className={`flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition ${a.agentId === agentId ? 'bg-coral/10' : 'hover:bg-ink/5'}`}
+                    >
+                      <AgentAvatar name={a.name} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-ink">{a.name}</span>
+                        {a.description ? <span className="line-clamp-2 text-xs text-ink-soft">{a.description}</span> : null}
+                      </span>
+                      {a.agentId === agentId ? <Icon name="check" className="mt-1 h-4 w-4 shrink-0 text-coral" /> : null}
+                    </button>
                   </li>
                 ))}
+                {view?.messages.length ? <li className="px-2.5 pb-1 pt-2 text-[11px] text-ink-faint">Másik munkatárs választása új beszélgetést indít.</li> : null}
               </ul>
-            ) : null}
-            <div className="flex items-end gap-2">
-              <label className="cursor-pointer rounded-lg border border-line px-2.5 py-2 text-sm text-ink-soft hover:border-coral/50" title="Fájl csatolása: CSV, XLSX, PDF, TXT, MD, PNG, JPG — fájlonként legfeljebb 20 MB, üzenetenként 5 fájl.">
-                📎
-                <input type="file" multiple accept={ACCEPT} className="hidden" onChange={(e) => {
-                  void attach(e.target.files)
-                  e.target.value = ''
-                }} />
-              </label>
-              <textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    void send()
-                  }
-                }}
-                rows={Math.min(6, Math.max(1, draft.split('\n').length))}
-                placeholder={agent ? `Üzenet neki: ${agent.name}` : 'Üzenet'}
-                className="min-w-0 flex-1 resize-none rounded-lg border border-line bg-panel px-3 py-2 text-sm"
-              />
-              {working ? (
-                <button type="button" onClick={() => void stop()} className="rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink hover:border-coral/50">Leállítás</button>
-              ) : (
-                <button type="button" disabled={busy || (!draft.trim() && !files.length)} onClick={() => void send()} className="rounded-lg bg-coral px-3 py-2 text-sm font-medium text-white disabled:opacity-50">Küldés</button>
-              )}
+            </>
+          ) : null}
+        </div>
+        <span className="flex-1" />
+        {working ? (
+          <button
+            type="button"
+            onClick={() => void stop()}
+            aria-label="Leállítás"
+            title="Leállítás"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink text-night transition hover:bg-ink/85"
+          >
+            <Icon name="stop" className="h-3.5 w-3.5 fill-current" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={busy || (!draft.trim() && !files.length)}
+            onClick={() => void send()}
+            aria-label="Küldés"
+            title="Küldés (Enter) · új sor: Shift+Enter"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-coral text-white transition hover:bg-coral-deep disabled:bg-ink/10 disabled:text-ink-faint"
+          >
+            <Icon name="send" className="h-[18px] w-[18px]" />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+
+  const noticeLine = notice ? <p role="status" className="mb-2 px-2 text-xs text-coral-deep">{notice}</p> : null
+  const footnote = (
+    <p className="mt-1.5 hidden text-center text-[11px] text-ink-faint sm:block">
+      A munkatárs tévedhet — a fontos adatokat ellenőrizd. Csatolható: {FILE_HINT}
+    </p>
+  )
+
+  return (
+    <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      {/* Asztali oldalsáv (összecsukható) */}
+      {sidebarOpen ? <aside className="hidden w-72 shrink-0 border-r border-line bg-night-2/60 lg:block">{sidebar}</aside> : null}
+
+      {/* Mobil fiók */}
+      {drawerOpen ? (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <button type="button" aria-label="Bezárás" className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]" onClick={() => setDrawerOpen(false)} />
+          <aside className="absolute inset-y-0 left-0 w-[min(20rem,86vw)] bg-night pt-[env(safe-area-inset-top)] shadow-2xl">{sidebar}</aside>
+        </div>
+      ) : null}
+
+      <section
+        className="relative flex min-w-0 flex-1 flex-col"
+        onDragOver={(e) => {
+          if (readOnly || !e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={(e) => {
+          if (readOnly) return
+          e.preventDefault()
+          setDragging(false)
+          void attach(e.dataTransfer.files)
+        }}
+      >
+        <header className="flex h-12 shrink-0 items-center gap-1 px-2 sm:px-3">
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-label="Beszélgetések listája"
+            title="Beszélgetések listája"
+            className={`rounded-xl p-2 text-ink-soft hover:bg-ink/5 hover:text-ink ${sidebarOpen ? 'lg:hidden' : ''}`}
+          >
+            <Icon name="sidebar" className="h-5 w-5" />
+          </button>
+          <p className="min-w-0 flex-1 truncate px-1 text-sm font-medium text-ink">
+            {adminMode ? (view ? `${view.conversation.agentName} · ${view.conversation.title}` : 'Megtekintés (csak olvasás)') : view ? view.conversation.title : ''}
+          </p>
+          {client?.adminInsight ? (
+            <span
+              className="flex items-center gap-1 rounded-full bg-honey/15 px-2.5 py-1 text-xs text-ink-soft"
+              title="A cég adminisztrátora a platform üzemeltetőjének engedélyével olvashatja a platform-chat beszélgetéseket. Minden megnyitás naplózott."
+            >
+              <Icon name="eye" className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Az adminisztrátor megtekintheti a beszélgetéseidet.</span>
+              <span className="sm:hidden">Admin láthatja</span>
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => newChat()}
+            aria-label="Új beszélgetés"
+            title="Új beszélgetés (Ctrl+Shift+O)"
+            className={`rounded-xl p-2 text-ink-soft hover:bg-ink/5 hover:text-ink ${empty && !adminMode ? 'invisible' : ''}`}
+          >
+            <Icon name="newChat" className="h-5 w-5" />
+          </button>
+        </header>
+
+        {dragging ? (
+          <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-3xl border-2 border-dashed border-coral bg-coral/5 text-sm font-medium text-coral-deep">
+            Engedd el a fájlt a csatoláshoz
+          </div>
+        ) : null}
+
+        {readOnly && !view ? (
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-ink-soft">Válassz egy beszélgetést a listából. A megnyitás naplózott.</div>
+        ) : empty && !readOnly ? (
+          // Üres beszélgetés: asztalon középre igazított kérdezőmező (Grok kezdőképernyő), mobilon a mező alul.
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:justify-center sm:px-4">
+            <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col sm:flex-none">
+              <div className="order-1 flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center sm:flex-none sm:pb-8 sm:pt-0">
+                {agent ? <AgentAvatar name={agent.name} size="lg" /> : null}
+                <h2 className="font-display text-2xl font-semibold tracking-tight text-ink sm:text-3xl">Miben segíthetek?</h2>
+                {agent ? (
+                  <p className="max-w-md text-sm text-ink-soft">
+                    <span className="font-medium text-ink">{agent.name}</span>
+                    {agent.description ? <span className="line-clamp-2"> {agent.description}</span> : null}
+                  </p>
+                ) : null}
+              </div>
+              <div className="order-3 sm:order-2">
+                {noticeLine}
+                {composer}
+              </div>
+              {agent ? (
+                <div className="order-2 -mx-3 mb-3 flex gap-2 overflow-x-auto px-3 pb-1 sm:order-3 sm:mx-0 sm:mb-0 sm:mt-4 sm:flex-wrap sm:justify-center sm:overflow-visible sm:px-0">
+                  {suggestions(agent).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => void send(s)}
+                      className="shrink-0 rounded-full border border-line bg-card px-3.5 py-2 text-left text-sm text-ink-soft transition hover:border-coral/50 hover:text-ink sm:max-w-full sm:shrink"
+                    >
+                      <span className="line-clamp-1">{s}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="order-4">{footnote}</div>
             </div>
-            <p className="mt-1 text-[11px] text-ink-faint">Csatolható: CSV, XLSX, PDF, TXT, MD, PNG, JPG — fájlonként 20 MB, üzenetenként 5 fájl.</p>
-          </footer>
+          </div>
+        ) : (
+          <>
+            <div className="relative min-h-0 flex-1">
+              <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto">
+                <div className="mx-auto w-full max-w-3xl space-y-6 px-4 pb-8 pt-4">
+                  {view?.messages.map((m) => (
+                    <Message
+                      key={m.id}
+                      message={m}
+                      copied={copied === m.id}
+                      onCopy={m.content ? () => copy(m.id, m.content) : undefined}
+                      onEdit={
+                        m.role === 'user' && !readOnly && m.content
+                          ? () => {
+                              setDraft(m.content)
+                              focusComposer()
+                            }
+                          : undefined
+                      }
+                    />
+                  ))}
+                  {live ? (
+                    <div className="space-y-3">
+                      {live.text ? <Message message={{ id: 'live', role: 'assistant', content: live.text, attachments: [] }} streaming={working} copied={false} /> : null}
+                      {live.status ? (
+                        <p className="flex items-center gap-2 text-sm text-ink-soft">
+                          <span aria-hidden className="flex gap-1">
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.3s]" />
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint [animation-delay:-0.15s]" />
+                            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-ink-faint" />
+                          </span>
+                          {live.status}
+                        </p>
+                      ) : null}
+                      {live.approval ? (
+                        <div className="rounded-2xl border border-coral/40 bg-coral/5 p-4 text-sm">
+                          <p className="font-medium text-ink">A munkatárs ezt szeretné elvégezni:</p>
+                          <p className="mt-1 whitespace-pre-wrap text-ink">{live.approval.message}</p>
+                          {readOnly ? null : (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button type="button" onClick={() => void decide('approve')} className="rounded-full bg-coral px-4 py-1.5 font-medium text-white hover:bg-coral-deep">Jóváhagyom</button>
+                              <button type="button" onClick={() => void decide('reject')} className="rounded-full border border-line bg-card px-4 py-1.5 font-medium text-ink hover:bg-ink/5">Elvetem</button>
+                            </div>
+                          )}
+                          <p className="mt-2 text-xs text-ink-faint">
+                            15 percen belül dönthetsz itt; utána a kérés a{' '}
+                            <Link href="/control-plane/operations" className="underline">jóváhagyási listára</Link> kerül.
+                          </p>
+                        </div>
+                      ) : null}
+                      {live.error ? (
+                        <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+                          <p>{live.error}</p>
+                          {!readOnly ? (
+                            <button
+                              type="button"
+                              className="mt-2 rounded-full border border-coral/40 px-3 py-1 text-xs font-medium hover:bg-coral/10"
+                              onClick={() => {
+                                const last = [...(view?.messages ?? [])].reverse().find((m) => m.role === 'user')
+                                setLive(null)
+                                if (last) void send(last.content)
+                              }}
+                            >
+                              Újra
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              {!atBottom ? (
+                <button
+                  type="button"
+                  aria-label="Ugrás a legújabb üzenethez"
+                  onClick={() => {
+                    atBottomRef.current = true
+                    setAtBottom(true)
+                    scrollToBottom(true)
+                  }}
+                  className="absolute bottom-3 left-1/2 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-card text-ink-soft shadow-md hover:text-ink"
+                >
+                  <Icon name="down" />
+                </button>
+              ) : null}
+            </div>
+            {readOnly ? null : (
+              <footer className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-1 sm:px-4">
+                <div className="mx-auto max-w-3xl">
+                  {noticeLine}
+                  {composer}
+                  {footnote}
+                </div>
+              </footer>
+            )}
+          </>
         )}
       </section>
     </div>
   )
 }
+

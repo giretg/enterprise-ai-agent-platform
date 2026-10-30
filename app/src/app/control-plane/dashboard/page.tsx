@@ -5,9 +5,11 @@ import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operat
 import { listAgentsForCatalog } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
 import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
+import { DashboardChatLauncher } from '@/components/platform-chat/dashboard-chat-launcher'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
+import { canStartPlatformChat } from '@/lib/platform-chat-href'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import {
   COMPANY_CONNECTOR_TYPES,
@@ -58,6 +60,19 @@ export default async function DashboardPage() {
   ])
   const agents = agentsRes.success ? agentsRes.data : []
   const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
+  // Ugyanaz a feltétel, mint a kártya „Beszélgetés indítása” gombján.
+  const chatAgents = agents
+    .filter(
+      (agent) =>
+        agent.kind !== 'public' &&
+        canStartPlatformChat({
+          tenantEnabled: tenantChatEnabled,
+          platformChatEnabled: agent.platformChatEnabled !== false,
+          status: agent.status,
+          currentDefinitionVersionId: agent.currentDefinitionVersionId ?? null,
+        }),
+    )
+    .map((agent) => ({ id: agent.id, name: agent.name, description: agent.description ?? null }))
   const operations = listed.success ? listed.data.operations : []
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const t = await getTranslations('ControlPlane.dashboard')
@@ -87,6 +102,8 @@ export default async function DashboardPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
       </div>
+
+      {chatAgents.length > 0 ? <DashboardChatLauncher agents={chatAgents} /> : null}
 
       {doneCount < steps.length ? (
         <section className="space-y-4" aria-labelledby="onboarding-title">
