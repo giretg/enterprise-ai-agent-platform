@@ -18,6 +18,10 @@ export const runtime = 'nodejs'
  * (ugyanaz a titok, mint a dispatch-ciklusé, vagy `AI_AUDIT_SWEEP_TOKEN`). Clerk-kapu
  * nélkül, mert a Schedulernek nincs munkamenete — a minta a public-routes allowlisten van.
  */
+/** Önfrissítő kapcsolatok napi ellenőrzése: 20 óra, hogy a Scheduler csúszása se hagyjon ki napot. */
+const SPEC_SYNC_INTERVAL_MS = 20 * 60 * 60 * 1000
+const SPEC_SYNC_BUDGET_MS = 25_000
+
 export async function POST(request: Request): Promise<Response> {
   const result = await handleAiAuditRetentionRequest(
     { providedToken: request.headers.get('x-dispatcher-token') },
@@ -52,6 +56,25 @@ export async function POST(request: Request): Promise<Response> {
         policyDecision: 'allowed',
         metadata: publicChat,
       })
+      // Önfrissítő kapcsolatok: a partner API-leírásának napi ellenőrzése gombnyomás nélkül.
+      // Saját hibája nem buktatja el a retenciós sweepet.
+      try {
+        const specSync = await services.selfUpdatingConnectors.syncDue({
+          syncedBefore: new Date(Date.now() - SPEC_SYNC_INTERVAL_MS),
+          limit: 50,
+          concurrency: 4,
+          deadline: new Date(Date.now() + SPEC_SYNC_BUDGET_MS),
+        })
+        await writeAudit(repositories.audit, {
+          actorType: 'system',
+          action: 'connector.self_update.scheduled_sync',
+          targetType: 'connector',
+          policyDecision: 'allowed',
+          metadata: specSync,
+        })
+      } catch (error) {
+        console.error('[ai-audit-retention] self-updating connector sync failed', error)
+      }
       return swept
     },
   )

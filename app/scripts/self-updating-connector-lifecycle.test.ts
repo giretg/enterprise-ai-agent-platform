@@ -109,6 +109,12 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
   }
   async listVersions(_connectorId: string, tenantId: string) { return this.versions.filter((v) => v.tenantId === tenantId) }
   async touchSynced(_sourceId: string, at: Date) { this.context!.source.lastSyncedAt = at }
+  async listDueForSync(input: { syncedBefore: Date; limit: number }) {
+    const ctx = this.context
+    if (!ctx?.source.urlApprovedAt || !ctx.source.trustedAt || !ctx.connector.activeSpecVersionId) return []
+    if (ctx.source.lastSyncedAt && ctx.source.lastSyncedAt >= input.syncedBefore) return []
+    return [{ connectorId: ctx.connector.id, tenantId: ctx.connector.tenantId }].slice(0, input.limit)
+  }
 }
 
 class AuditSpy implements SelfUpdateAudit {
@@ -212,6 +218,47 @@ async function run() {
     const result = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
     assert.equal(result.kind, 'proposed'); if (result.kind === 'proposed') assert.equal(result.autoApproved, true)
     assert.equal(repo.context!.source.autoApprovePolicy?.allowAddedWrite, false)
+  })
+
+  await test('napi háttér-ellenőrzés: gombnyomás nélkül átveszi a tisztán olvasási bővítést, rendszer-actorral auditál', async () => {
+    const { service, repo, sync, audit, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+    repo.context!.tenantAutoApproveEnabled = true; await service.updatePolicy(connectorId, { enabled: true, allowAddedWrite: false }, { id: APPROVER, tenantId: TENANT })
+    // Az ellenőrzés frissen futott → nem esedékes.
+    const fresh = await service.syncDue({ syncedBefore: new Date('2026-07-15T00:00:00Z'), limit: 10 })
+    assert.equal(fresh.checked, 0)
+    sync.result = { ok: true, rawText: '{"v":2}', rawHash: 'hash-2', capabilitySet: capabilitySet([{ method: 'GET', path: '/customers' }, { method: 'GET', path: '/reports' }]), host: 'partner.example' }
+    const run = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.deepEqual(run, { checked: 1, skipped: 0, outcomes: { unchanged: 0, auto_approved: 1, awaiting_approval: 0, failed: 0 } })
+    assert.equal(repo.context!.connector.activeSpecVersionId, repo.versions[1].id)
+    assert.equal(audit.events.at(-1)?.actorId, null)
+  })
+
+  await test('napi háttér-ellenőrzés: írási bővítés javaslatként emberre vár, hiba nem állítja meg a futást', async () => {
+    const { service, repo, sync, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); const v1 = repo.versions[0]
+    await service.approveVersion(connectorId, v1.id, { id: APPROVER, tenantId: TENANT })
+    repo.context!.tenantAutoApproveEnabled = true; await service.updatePolicy(connectorId, { enabled: true, allowAddedWrite: false }, { id: APPROVER, tenantId: TENANT })
+    sync.result = { ok: true, rawText: '{"v":2}', rawHash: 'hash-2', capabilitySet: capabilitySet([{ method: 'GET', path: '/customers' }, { method: 'POST', path: '/customers' }]), host: 'partner.example' }
+    const run = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(run.outcomes.awaiting_approval, 1)
+    assert.equal(repo.context!.connector.activeSpecVersionId, v1.id)
+    assert.equal(repo.versions[1].status, 'proposed')
+    repo.context!.source.lastSyncedAt = null
+    sync.sync = async () => { throw new Error('boom') }
+    const failed = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(failed.outcomes.failed, 1)
+    assert.equal(repo.context!.connector.activeSpecVersionId, v1.id)
+  })
+
+  await test('napi háttér-ellenőrzés: lejárt időkeretnél nem indít új ellenőrzést', async () => {
+    const { service, repo, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+    const run = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10, deadline: new Date('2026-07-15T11:00:00Z') })
+    assert.deepEqual(run, { checked: 0, skipped: 1, outcomes: { unchanged: 0, auto_approved: 0, awaiting_approval: 0, failed: 0 } })
   })
 
   await test('cross-tenant hozzáférés minden publikus műveleten fail-closed', async () => {

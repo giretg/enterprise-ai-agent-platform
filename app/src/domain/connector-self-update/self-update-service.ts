@@ -10,6 +10,18 @@ export type SelfUpdateActor = {
   sodExempt?: boolean
 }
 
+/** Ütemezett (napi) háttér-ellenőrzés hívója: nincs mögötte ember, az audit `system` sort kap. */
+export type SelfUpdateSystemActor = { id: null; tenantId: string }
+
+/** Napi háttér-ellenőrzésre esedékes kapcsolat: jóváhagyott link + megbízható partner + élő verzió. */
+export type DueSpecSync = { connectorId: string; tenantId: string }
+
+export type DueSyncOutcome =
+  | 'unchanged'
+  | 'auto_approved'
+  | 'awaiting_approval'
+  | 'failed'
+
 export type SelfUpdatingConnector = {
   id: string
   tenantId: string
@@ -94,13 +106,13 @@ export interface SelfUpdatingConnectorRepository {
     diffFromVersionId: string | null
     diffSummary: CapabilityDiff
     fetchedAt: Date
-    actorId: string
+    actorId: string | null
   }): Promise<SelfUpdatingSpecVersion>
   activateVersion(input: {
     connectorId: string
     tenantId: string
     versionId: string
-    actorId: string
+    actorId: string | null
     approvedById: string | null
     approvedAt: Date
     auditMetadata?: Record<string, unknown>
@@ -120,6 +132,8 @@ export interface SelfUpdatingConnectorRepository {
   }): Promise<SelfUpdatingSpecVersion>
   listVersions(connectorId: string, tenantId: string): Promise<SelfUpdatingSpecVersion[]>
   touchSynced(sourceId: string, at: Date): Promise<void>
+  /** Tenant-független lista a napi háttér-ellenőrzéshez: rég (vagy soha) nem ellenőrzött, élő kapcsolatok. */
+  listDueForSync(input: { syncedBefore: Date; limit: number }): Promise<DueSpecSync[]>
 }
 
 export interface SelfUpdateAudit {
@@ -220,7 +234,43 @@ export class SelfUpdatingConnectorService {
     if (!this.repo.atomicAudit) await this.record('connector.self_update.policy.update', actor, connectorId, 'allowed', safePolicy)
   }
 
-  async sync(connectorId: string, actor: SelfUpdateActor): Promise<
+  /**
+   * Napi háttér-ellenőrzés: a rég nem ellenőrzött kapcsolatokon ugyanazt a `sync`-et futtatja,
+   * mint a frissítés gomb — ugyanazokkal a kapukkal. Tisztán új, csak olvasási változás magától
+   * élesedik, ha a szervezet ÉS a kapcsolat is engedi; minden más javaslatként emberre vár.
+   * Egy kapcsolat hibája nem állítja meg a többit.
+   */
+  async syncDue(input: { syncedBefore: Date; limit: number; deadline?: Date; concurrency?: number }): Promise<{
+    checked: number
+    skipped: number
+    outcomes: Record<DueSyncOutcome, number>
+  }> {
+    const due = await this.repo.listDueForSync({ syncedBefore: input.syncedBefore, limit: input.limit })
+    const outcomes: Record<DueSyncOutcome, number> = { unchanged: 0, auto_approved: 0, awaiting_approval: 0, failed: 0 }
+    let next = 0
+    let checked = 0
+    const worker = async () => {
+      // Időkeret: a hívó (napi karbantartás) a kérés-timeout előtt végezni akar; ami kimarad,
+      // az a legrégebbi-előre sorrend miatt holnap kerül sorra.
+      while (next < due.length && (!input.deadline || this.now() < input.deadline)) {
+        const item = due[next++]
+        checked++
+        try {
+          const result = await this.sync(item.connectorId, { id: null, tenantId: item.tenantId })
+          if (result.kind === 'failed') outcomes.failed++
+          else if (result.kind === 'unchanged') outcomes.unchanged++
+          else if (result.autoApproved) outcomes.auto_approved++
+          else outcomes.awaiting_approval++
+        } catch {
+          outcomes.failed++
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.max(1, input.concurrency ?? 1) }, worker))
+    return { checked, skipped: due.length - checked, outcomes }
+  }
+
+  async sync(connectorId: string, actor: SelfUpdateActor | SelfUpdateSystemActor): Promise<
     | { kind: 'failed'; reason: string; detail?: string }
     | { kind: 'unchanged'; activeVersionId: string | null }
     | { kind: 'proposed'; version: SelfUpdatingSpecVersion; autoApproved: boolean }
@@ -387,7 +437,7 @@ export class SelfUpdatingConnectorService {
     return { context, versions }
   }
 
-  private async context(connectorId: string, actor: SelfUpdateActor): Promise<SelfUpdatingContext> {
+  private async context(connectorId: string, actor: SelfUpdateActor | SelfUpdateSystemActor): Promise<SelfUpdatingContext> {
     const ctx = await this.repo.findContext(connectorId, actor.tenantId)
     if (!ctx) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
     if (ctx.connector.tenantId !== actor.tenantId || ctx.source.tenantId !== actor.tenantId) {
@@ -409,7 +459,7 @@ export class SelfUpdatingConnectorService {
 
   private async record(
     action: string,
-    actor: SelfUpdateActor | null,
+    actor: SelfUpdateActor | SelfUpdateSystemActor | null,
     connectorId: string,
     policyDecision: string,
     metadata?: Record<string, unknown>,

@@ -396,8 +396,11 @@ export function TenantAutoApproveSwitch({
         <strong>Tisztán új, csak olvasási képességek automatikus átvételének engedélyezése.</strong>
         <br />
         <span className="text-xs text-ink-soft">
-          Ez önmagában nem kapcsol be semmit: minden konnektornál külön is engedélyezni kell. Törlő,
-          módosító, auth- vagy törésveszélyes változás mindig emberi jóváhagyást kér.
+          A rendszer naponta egyszer magától is megnézi, változott-e a partner API-ja — ehhez nem kell
+          a frissítés gombot megnyomni. Ha ez a beállítás és a kapcsolatnál a saját kapcsolója is be
+          van kapcsolva, a tisztán új, csak olvasási képességek ilyenkor jóváhagyás nélkül élesednek.
+          Törlő, módosító, auth- vagy törésveszélyes változás mindig emberi jóváhagyást kér: ez
+          javaslatként vár a kapcsolat lapján.
         </span>
       </span>
     </label>
