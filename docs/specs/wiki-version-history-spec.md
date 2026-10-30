@@ -1,8 +1,8 @@
 # Feature-spec — Wiki-előzmények: változás-nézet, visszaállítás, időutazás, megőrzés és GDPR-törlés
 
-**Verzió:** 1.0
-**Dátum:** 2026-10-26
-**Státusz:** fejlesztésre kész
+**Verzió:** 1.1
+**Dátum:** 2026-10-26 (implementációs megjegyzések: 2026-10-30)
+**Státusz:** implementálva — [#980](https://github.com/giretg/enterprise-ai-agent-platform/pull/980), migráció `0037_wiki_version_history`; eltérések: §12
 **GitHub issue:** [#978](https://github.com/giretg/enterprise-ai-agent-platform/issues/978)
 **Előzmény:** LLM Wiki EPIC [#941](https://github.com/giretg/enterprise-ai-agent-platform/issues/941) (#942–#947, #965, #968)
 **Célközönség:** product, tenant-admin, security/compliance és fejlesztők
@@ -69,7 +69,7 @@
 | **D9** | **A GDPR-törlés helyén sír-jel (tombstone) marad, nem lyuk.** A revízió sora megmarad üres tartalommal, `erasedAt`/`erasureId` mezővel, és a `contentHash` is megmarad. | Az idővonal és a verziószámok folytonosak maradnak, az audit pedig hash alapján igazolja, mi törlődött, a tartalom nélkül. |
 | **D10** | **GDPR-törlést közös wikiben a tenant-admin indíthat, privát wikiben csak a tulajdonos.** Kötelező indoklás, előnézet és begépelt megerősítés. | A privát KB tartalmát az admin nem látja (D13 / #942). |
 
-## 4. Adatmodell (migráció `00NN_wiki_version_history`)
+## 4. Adatmodell (migráció `0037_wiki_version_history`)
 
 ```prisma
 model WikiChangeSet {
@@ -284,3 +284,17 @@ A diff-statisztika (`linesAdded`/`linesRemoved`) az alkalmazáskor kiszámolódi
 - **Q2:** a „legutóbbi 5 verzió mindig megmarad” szabály felülírhatja-e a rövid törlési időt? Most igen. Ha egy tenant szigorúbb törlést akar, ehhez kapcsoló kell.
 - **Q3:** kapjon-e emberi felhasználó is „újdonságok” jelzést a konzolon (ugyanaz a cursor, `agentId` nélkül)? → v2-jelölt.
 - **Q4:** legyen-e négy-szem elv (második admin jóváhagyása) a GDPR-törlésnél közös wikiben?
+
+## 12. Implementációs megjegyzések (#980)
+
+A #980 a fenti terv szerint készült. Az alábbi pontokban a kód eltér a spec szövegétől vagy kiegészíti azt. Ilyenkor a kód a mérvadó.
+
+- **Diff-statisztika külön oszlopban:** az alkalmazáskor számolt oldal-összefoglaló (útvonal, művelet, cím, `linesAdded`/`linesRemoved`) nem a `pages` JSON-ba kerül, hanem az új `WikiChangeSet.pageSummary` mezőbe. Így a `pages` kiürítése (§6, `pagesPrunedAt`) nem érinti.
+- **Teljes revízió-állapot:** a `WikiPageRevision` a `path`/`status` mellett `type`, `category` és `sourceRefs` mezőt is kap, hogy a visszaállítás a forrásokat és a besorolást is visszahozza. A `type = NULL` jelöli a bevezetés előtti (backfill) revíziót.
+- **`WikiErasure.scope`:** a tényleges alak módonként eltér: `{ kind: 'pages', pageIds }`, `{ kind: 'revision', pageId, revisionId, version }`, illetve `{ kind: 'text', mode: 'redact' | 'erase', matchHash, salt }`. A `matchHash` egy törlésenként generált sóval számolt SHA-256 a kifejezés kisbetűs alakjára.
+- **Szerző-típus:** az agent-változáslistában és a konzolon a szerző `kind` értéke `agent` vagy `human` (a §5.4-ben `user`).
+- **WP-0 lelet (D7):** éles kódban nincs `changeSetId` nélküli oldal-író út. A `createPage`/`updatePage` közvetlenül csak tesztből hívódik, ezért szintetikus change-setbe csomagolásra nem volt szükség.
+- **Elavult visszaállítás:** a jóváhagyásra váró visszaállítás az oldal akkori verziójához van kötve, ezért ha közben az oldalt archiválják vagy azonos tartalommal újraírják, a visszaállítás alkalmazáskor `conflict`.
+- **GDPR-törlés hatóköre:** a jóváhagyásra váró visszaállítások másolatait és a jóváhagyásra váró gateway-kártyákat (a `changeSetId` alapján) is tisztítja. Ezt a #980 utáni javítások pótolták.
+- **Tesztek:** `npm run test:wiki-history-db` (a §10 elfogadási kritériumai Postgresen) és a bővített `npm run test:kb-wiki-e2e`.
+- **Audit:** a 2026-10-27-i mély audit (`production_audit.md`) a #978/#980 felületen nem talált hibát.
