@@ -1,5 +1,7 @@
 'use client'
 
+import { approveSelfUpdatingVersion, rollbackSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
+
 import { useCallback, useEffect, useState, useTransition, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
@@ -9,13 +11,10 @@ import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/co
 import { decommissionActiveConnector, deleteArchivedConnector } from '@/app/actions/provisioning'
 import {
   approveSelfUpdatingSource,
-  approveSelfUpdatingVersion,
   listSelfUpdatingConnectors,
   rejectSelfUpdatingVersion,
-  rollbackSelfUpdatingVersion,
   setSelfUpdatingAutoApprove,
   setTenantSelfUpdatingAutoApprove,
-  syncSelfUpdatingConnector,
   trustSelfUpdatingPartner,
   updateSelfUpdatingConnectorApiKey,
 } from '@/app/actions/self-updating-connectors'

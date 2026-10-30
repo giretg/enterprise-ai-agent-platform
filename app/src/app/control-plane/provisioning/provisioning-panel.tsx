@@ -1,5 +1,7 @@
 'use client'
 
+import { activateConnector, approveSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
+
 import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
@@ -7,7 +9,6 @@ import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
 import {
-  activateConnector,
   assignConnectorToAgent,
   createConnectorFromTemplateAction,
   createConnectorDraft,
@@ -45,13 +46,11 @@ import { listTenants } from '@/app/actions/tenant'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   approveSelfUpdatingSource,
-  approveSelfUpdatingVersion,
   createSelfUpdatingConnector,
   createSelfUpdatingConnectorsFromCatalog,
   listSelfUpdatingConnectors,
   previewSelfUpdatingCatalog,
   setTenantSelfUpdatingAutoApprove,
-  syncSelfUpdatingConnector,
   trustSelfUpdatingPartner,
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'

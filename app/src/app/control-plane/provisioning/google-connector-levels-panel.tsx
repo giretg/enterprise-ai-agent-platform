@@ -1,8 +1,9 @@
 'use client'
 
+import { updateGoogleAccountBinding } from '@/lib/connector-update-publishing'
+
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { updateGoogleAccountBinding } from '@/app/actions/provisioning'
 import {
   formatGoogleAccountId,
   splitGoogleAccountIds,
