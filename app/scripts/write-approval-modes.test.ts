@@ -19,6 +19,8 @@ const allDirect = {
 
 assert.equal(writeKindForTool('http_api_request'), 'httpApi')
 assert.equal(writeKindForTool('gmail_send'), 'gmail')
+assert.equal(writeKindForTool('mail_send'), 'gmail')
+assert.equal(writeKindForTool('mail_mark'), 'gmail')
 assert.equal(writeKindForTool('google_drive_upload_file'), 'drive')
 assert.equal(writeKindForTool('google_drive_update_file'), 'drive')
 assert.equal(writeKindForTool('google_sheets_write_range'), 'drive')

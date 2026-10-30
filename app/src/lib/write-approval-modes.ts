@@ -33,6 +33,10 @@ const GMAIL_WRITE_TOOLS = new Set([
   'gmail_create_draft',
   'gmail_modify_labels',
   'gmail_trash',
+  // #1030: a mail_* írás a meglévő gmail jóváhagyási módot használja (nincs külön DB-oszlop).
+  'mail_send',
+  'mail_create_draft',
+  'mail_mark',
 ])
 const WIKI_WRITE_TOOLS = new Set(['kb_wiki_write', 'kb_wiki_revert'])
 /** #978 D2: a visszaállítás a wiki közvetlen írási módjától függetlenül mindig jóváhagyásra vár. */

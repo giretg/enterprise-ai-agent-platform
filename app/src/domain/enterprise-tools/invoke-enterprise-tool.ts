@@ -13,7 +13,9 @@ import {
   GoogleWorkspaceApiError,
 } from '@/domain/connector-grant/google-workspace-api-client'
 import { findHttpApiEndpoint, HttpApiError } from '@/domain/connector/http-api-client'
-import { isAgentMailSendRequest, withAgentMailSignature } from '@/domain/agent-mailbox/agent-mailbox'
+import { appendTextSignature, isAgentMailSendRequest, withAgentMailSignature } from '@/domain/agent-mailbox/agent-mailbox'
+import { executeMailTool } from '@/domain/mail/providers'
+import { listMailAccounts, publicMailAccount, resolveMailAccounts } from '@/domain/mail/mail'
 import {
   authorizeToolCall,
   type AuthorizeToolCallDeps,
@@ -53,6 +55,11 @@ import {
   HTTP_API_REQUEST_TOOL,
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
+  isEnterpriseMailTool,
+  MAIL_CREATE_DRAFT_TOOL,
+  MAIL_LIST_ACCOUNTS_TOOL,
+  MAIL_SEARCH_TOOL,
+  MAIL_SEND_TOOL,
   isEnterpriseKbTool,
   isEnterpriseMcpTool,
   isEnterpriseReadOnlyTool,
@@ -182,6 +189,7 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     accessToken: string,
   ) => Promise<unknown>
+  executeMailTool?: typeof executeMailTool
   executeHttpApiTool?: (
     toolName: EnterpriseHttpTool,
     args: Record<string, unknown>,
@@ -425,6 +433,16 @@ async function withPrimaryMailboxSignature(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  if ((toolName === MAIL_SEND_TOOL || toolName === MAIL_CREATE_DRAFT_TOOL) && deps.findAgentMailSignature) {
+    const mailbox = await deps.findAgentMailSignature({ agentId: definition.agentId, tenantId }).catch(() => null)
+    const signature = mailbox?.signature?.trim()
+    const body = typeof args.body === 'string' ? args.body : ''
+    if (!signature || !body) return args
+    const account = typeof args.account === 'string' ? args.account.trim().toLowerCase() : ''
+    const primaryName = mailbox?.connectorName.trim().toLowerCase() ?? ''
+    const fromPrimary = !account || account === 'all' || primaryName.includes(account) || account === mailbox?.connectorId
+    return fromPrimary ? { ...args, body: appendTextSignature(body, signature) } : args
+  }
   if (toolName !== HTTP_API_REQUEST_TOOL || !deps.findAgentMailSignature) return args
   if (!isAgentMailSendRequest(args.method, args.path)) return args
   const mailbox = await deps.findAgentMailSignature({ agentId: definition.agentId, tenantId }).catch(() => null)
@@ -672,6 +690,10 @@ export async function invokeEnterpriseTool(
     return errorResult('agent_access_denied')
   }
 
+  if (isEnterpriseMailTool(toolName) && !isEnterpriseWriteTool(toolName)) {
+    return invokeMailRead(deps, { principal, toolName, args, definitionId, definition })
+  }
+
   if (isEnterpriseMcpTool(toolName)) {
     return invokeMcpTool(deps, { principal, toolName, args, definitionId, definition, origin, confirm })
   }
@@ -900,6 +922,190 @@ export async function invokeEnterpriseTool(
   }
 }
 
+async function grantsFor(
+  deps: EnterpriseToolDeps,
+  input: { tenantId: string; connectorId: string; userId: string },
+) {
+  if (deps.findActiveGrants) return deps.findActiveGrants(input)
+  const one = await deps.findActiveGrant(input)
+  return one ? [one] : []
+}
+
+async function invokeMailRead(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  const schema = schemaForEnterpriseTool(toolName)
+  if (!schema) {
+    await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
+    return errorResult('tool_not_configured')
+  }
+  const parsed = schema.safeParse(args)
+  if (!parsed.success) {
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, details)
+    return errorResult('invalid_args', details)
+  }
+  const parsedArgs = parsed.data as Record<string, unknown>
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: parsedArgs })
+  if (toolName === MAIL_LIST_ACCOUNTS_TOOL) {
+    if (!authorized.allowed && authorized.reason === 'capability_not_allowed') {
+      await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+      return errorResult(authorized.reason)
+    }
+    const accounts = await listMailAccounts({
+      definition,
+      primaryConnectorId: deps.findPrimaryMailboxConnectorId
+        ? await deps.findPrimaryMailboxConnectorId({ agentId: definition.agentId, tenantId: principal.tenantId })
+        : null,
+      findConnector: deps.findConnector,
+      findActiveGrants: (row) => grantsFor(deps, row),
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+    })
+    const payload = { accounts: accounts.map(publicMailAccount) }
+    await auditToolOutcome(deps, {
+      principal,
+      toolName,
+      definitionId,
+      agentId: definition.agentId,
+      ok: true,
+      metadata: { count: accounts.length },
+    })
+    return textResult(payload)
+  }
+  const all = toolName === MAIL_SEARCH_TOOL && typeof parsedArgs.account === 'string' && parsedArgs.account.trim().toLowerCase() === 'all'
+  if (all) {
+    if (!authorized.allowed && authorized.reason === 'capability_not_allowed') {
+      await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+      return errorResult(authorized.reason)
+    }
+    const primaryConnectorId = deps.findPrimaryMailboxConnectorId
+      ? await deps.findPrimaryMailboxConnectorId({ agentId: definition.agentId, tenantId: principal.tenantId })
+      : null
+    const listed = await listMailAccounts({
+      definition,
+      primaryConnectorId,
+      findConnector: deps.findConnector,
+      findActiveGrants: (row) => grantsFor(deps, row),
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+    })
+    const resolved = resolveMailAccounts(listed, 'all', { allAllowed: true, write: false, primaryConnectorId })
+    if (!resolved.ok) {
+      await auditDenied(deps, principal, toolName, resolved.reason, definitionId, definition.agentId)
+      return errorResult(resolved.reason, resolved.accounts.length ? { accounts: resolved.accounts } : undefined)
+    }
+    const messages: unknown[] = []
+    for (const account of resolved.accounts) {
+      const one = await authorizeToolCall(deps, {
+        principal,
+        definition,
+        toolName,
+        args: { ...parsedArgs, account: account.account },
+      })
+      if (!one.allowed) continue
+      let accessToken: string | undefined
+      try {
+        accessToken = await resolveGrantToken(deps, principal, one.connector, one)
+      } catch {
+        continue
+      }
+      const execute = deps.executeMailTool ?? executeMailTool
+      const result = await execute({
+        toolName,
+        args: parsedArgs,
+        connector: one.connector,
+        accessToken,
+        account: account.account,
+      })
+      const rows = result && typeof result === 'object' && Array.isArray((result as { messages?: unknown[] }).messages)
+        ? (result as { messages: unknown[] }).messages
+        : []
+      messages.push(...rows)
+    }
+    await auditToolOutcome(deps, {
+      principal,
+      toolName,
+      definitionId,
+      agentId: definition.agentId,
+      ok: true,
+      metadata: { account: 'all', count: messages.length },
+    })
+    return textResult({ messages })
+  }
+  if (!authorized.allowed) {
+    await auditDenied(deps, principal, toolName, authorized.reason, definitionId, definition.agentId)
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: authorized.reason,
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return errorResult(authorized.reason, {
+      ...extra,
+      ...(authorized.accountChoices?.length ? { accounts: authorized.accountChoices } : {}),
+      ...tenantMailboxErrorExtra(authorized.reason, authorized.mailboxAddress),
+    })
+  }
+  const connector = authorized.connector
+  const mailboxMeta = mailboxAuditMeta(connector, authorized.grant)
+  let accessToken: string | undefined
+  try {
+    accessToken = await resolveGrantToken(deps, principal, connector, authorized)
+  } catch {
+    if (tenantMailboxOf(connector)) {
+      await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
+      return errorResult(TENANT_MAILBOX_DISCONNECTED, tenantMailboxErrorExtra(TENANT_MAILBOX_DISCONNECTED, mailboxMeta.mailbox as string | null))
+    }
+    const extra = await authorizationLinkFields(deps.startAuthorization, {
+      reason: connector.type === 'gmail' ? 'gmail_auth_failed' : 'http_api_error',
+      connectorId: authorized.connectorId,
+      userId: principal.userId,
+      tenantId: principal.tenantId,
+      role: principal.role,
+      toolName,
+    })
+    return errorResult(connector.type === 'gmail' ? 'gmail_auth_failed' : 'http_api_error', extra)
+  }
+  try {
+    const execute = deps.executeMailTool ?? executeMailTool
+    const account =
+      typeof parsedArgs.account === 'string' && parsedArgs.account.trim()
+        ? parsedArgs.account.trim()
+        : mailboxAuditMeta(connector, authorized.grant).mailbox as string | undefined ?? connector.name ?? connector.id
+    const result = await execute({
+      toolName,
+      args: parsedArgs,
+      connector,
+      accessToken,
+      account: typeof account === 'string' ? account : connector.id,
+    })
+    await auditToolOutcome(deps, {
+      principal,
+      toolName,
+      definitionId,
+      agentId: definition.agentId,
+      ok: true,
+      metadata: { connectorId: authorized.connectorId, ...mailboxMeta },
+    })
+    return textResult(result)
+  } catch (error) {
+    const mapped = mapToolError(error, connector.type)
+    await auditDenied(deps, principal, toolName, mapped.code, definitionId, definition.agentId, mapped.extra)
+    return errorResult(mapped.code, mapped.extra)
+  }
+}
+
 async function dispatchTool(
   deps: EnterpriseToolDeps,
   input: {
@@ -911,6 +1117,19 @@ async function dispatchTool(
     agent?: { id: string; version?: number }
   },
 ): Promise<unknown> {
+  if (isEnterpriseMailTool(input.toolName)) {
+    const execute = deps.executeMailTool ?? executeMailTool
+    const account = typeof input.args.account === 'string' && input.args.account.trim()
+      ? input.args.account.trim()
+      : input.connector.name || input.connector.id
+    return execute({
+      toolName: input.toolName,
+      args: input.args,
+      connector: input.connector,
+      accessToken: input.accessToken,
+      account,
+    })
+  }
   if (isEnterpriseGmailTool(input.toolName)) {
     const execute = deps.executeGmailTool ?? executeGmailTool
     return execute(input.toolName, input.args, input.accessToken ?? '')

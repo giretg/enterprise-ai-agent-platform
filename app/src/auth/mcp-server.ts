@@ -70,6 +70,15 @@ import {
   GMAIL_SEARCH_TOOL,
   GMAIL_SEND_TOOL,
   GMAIL_TRASH_TOOL,
+  MAIL_CREATE_DRAFT_TOOL,
+  MAIL_GET_ATTACHMENT_TOOL,
+  MAIL_GET_MESSAGE_TOOL,
+  MAIL_GET_THREAD_TOOL,
+  MAIL_LIST_ACCOUNTS_TOOL,
+  MAIL_MARK_TOOL,
+  MAIL_MCP_INPUT_SCHEMAS,
+  MAIL_SEARCH_TOOL,
+  MAIL_SEND_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
@@ -98,6 +107,11 @@ import {
   gmailListDraftsInputSchema,
   gmailListLabelsInputSchema,
   gmailSearchInputSchema,
+  mailGetAttachmentInputSchema,
+  mailGetMessageInputSchema,
+  mailGetThreadInputSchema,
+  mailListAccountsInputSchema,
+  mailSearchInputSchema,
   googleDriveCreateFolderInputSchema,
   googleDriveReadFileInputSchema,
   googleDriveSearchInputSchema,
@@ -1780,11 +1794,99 @@ async function createMcpResourceHandler(
         async (args) => enterpriseToolResult(principal, GOOGLE_SHEETS_WRITE_RANGE_TOOL, args, deps),
       )
       server.registerTool(
+        MAIL_LIST_ACCOUNTS_TOOL,
+        {
+          title: 'List mail accounts',
+          description:
+            'List mailboxes this agent can use: address, kind (AgentMail / Gmail / Microsoft 365), read or write, and whether it is the agent\'s own address. Prefer mail_* over gmail_* or raw http_api mailbox endpoints. Pass account from this list on the other mail_* tools; omit account to use the own address.',
+          inputSchema: mailListAccountsInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_LIST_ACCOUNTS_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_SEARCH_TOOL,
+        {
+          title: 'Search mail',
+          description:
+            'Search mailboxes (AgentMail, Gmail, Microsoft 365). Filter with query, from, to, subject, unread, after, before, label. Omit account to use the agent\'s own address; pass account from mail_list_accounts, or account:"all" to search every reachable mailbox. Results include account, messageId, threadId, from, to, subject, date, snippet. Prefer this over gmail_search.',
+          inputSchema: mailSearchInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_SEARCH_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_GET_MESSAGE_TOOL,
+        {
+          title: 'Read mail message',
+          description:
+            'Read one message by messageId from mail_search: from, to, cc, subject, body, labels, attachments. Prefer this over gmail_get_message.',
+          inputSchema: mailGetMessageInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_GET_MESSAGE_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_GET_THREAD_TOOL,
+        {
+          title: 'Read mail thread',
+          description:
+            'Read every message of one conversation (threadId from mail_search), oldest first. Use before replying. Prefer this over gmail_get_thread.',
+          inputSchema: mailGetThreadInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_GET_THREAD_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_GET_ATTACHMENT_TOOL,
+        {
+          title: 'Read mail attachment',
+          description:
+            'Read one attachment (attachmentId from mail_get_message). Returns extracted text when the file is text, otherwise base64 bytes.',
+          inputSchema: mailGetAttachmentInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_GET_ATTACHMENT_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_SEND_TOOL,
+        {
+          title: 'Send mail',
+          description:
+            'Send from a mailbox (AgentMail, Gmail, Microsoft 365). To reply pass replyToMessageId and body — stays in the same thread. For a new message pass to, subject, body. Omit account to use the agent\'s own address. Read-only mailboxes are rejected. Prefer this over gmail_send. Does not send until a human approves: returns awaiting_approval and an approvalUrl — show that link, do not poll.',
+          inputSchema: MAIL_MCP_INPUT_SCHEMAS[MAIL_SEND_TOOL],
+          annotations: { destructiveHint: false, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_SEND_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_CREATE_DRAFT_TOOL,
+        {
+          title: 'Create mail draft',
+          description:
+            'Save a draft without sending (same fields as mail_send). Not every mailbox supports drafts. Prefer this over gmail_create_draft. Returns awaiting_approval when this agent requires approval.',
+          inputSchema: MAIL_MCP_INPUT_SCHEMAS[MAIL_CREATE_DRAFT_TOOL],
+          annotations: { destructiveHint: false, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_CREATE_DRAFT_TOOL, args, deps),
+      )
+      server.registerTool(
+        MAIL_MARK_TOOL,
+        {
+          title: 'Mark mail',
+          description:
+            'Mark one message (messageId) or thread (threadId) read, unread, archive, or add a label. Prefer this over gmail_modify_labels. Returns awaiting_approval when this agent requires approval.',
+          inputSchema: MAIL_MCP_INPUT_SCHEMAS[MAIL_MARK_TOOL],
+          annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, MAIL_MARK_TOOL, args, deps),
+      )
+      server.registerTool(
         GMAIL_SEARCH_TOOL,
         {
           title: 'Search Gmail',
           description:
-            'Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If platform.whoami lists several linkedAccounts of type gmail, pass account (nickname or email, e.g. magán / céges). If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
+            'Prefer mail_search. Search the connected Gmail mailbox. Returns id, threadId, from, subject, snippet. Call gmail_get_message with an id to read a body, gmail_get_thread for the whole conversation. If platform.whoami lists several linkedAccounts of type gmail, pass account (nickname or email, e.g. magán / céges). If the result includes authorizationUrl, show that URL to the user and retry after they finish connecting.',
           inputSchema: gmailSearchInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },

@@ -70,6 +70,19 @@ check('gmail_send never falls through to Drive root chrome', () => {
   assert.ok(!text.includes('root'))
 })
 
+check('mail_send approval card shows from mailbox', () => {
+  const text = pendingArgsSummary(
+    'mail_send',
+    { account: 'szamlazas@ceg.hu', to: 'anna@x.hu', subject: 'Összefoglaló', body: 'Szia' },
+    labels,
+  )
+  assert.match(text, /^from: szamlazas@ceg\.hu\nnew message\nto: anna@x\.hu/)
+  assert.equal(
+    pendingOperationHeadline('mail_send', { account: 'szamlazas@ceg.hu', subject: 'Összefoglaló' }),
+    'Levél innen: szamlazas@ceg.hu, tárgy: Összefoglaló',
+  )
+})
+
 check('gmail_send draftId omits decoy body', () => {
   const text = pendingArgsSummary(
     'gmail_send',

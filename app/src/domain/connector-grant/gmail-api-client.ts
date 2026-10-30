@@ -442,6 +442,30 @@ export class GmailApiClient {
     return parseMessageDetail((await res.json()) as Record<string, unknown>)
   }
 
+  async getAttachment(params: {
+    messageId: string
+    attachmentId: string
+  }): Promise<{ fileName: string; mimeType: string; text?: string; contentBase64?: string }> {
+    if (this.isStub()) {
+      return { fileName: 'stub.txt', mimeType: 'text/plain', text: 'stub attachment' }
+    }
+    const message = await this.getMessage({ id: params.messageId })
+    const meta = message.attachments.find((row) => row.attachmentId === params.attachmentId)
+    const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(params.messageId)}/attachments/${encodeURIComponent(params.attachmentId)}`
+    const res = await fetchWithBackoff('gmail.get_attachment', url, {
+      headers: { authorization: `Bearer ${this.accessToken}` },
+    })
+    if (!res.ok) throw gmailApiError('gmail.get_attachment', res.status)
+    const raw = (await res.json()) as { data?: string }
+    const bytes = Buffer.from((raw.data ?? '').replace(/-/g, '+').replace(/_/g, '/'), 'base64')
+    const mimeType = meta?.mimeType ?? 'application/octet-stream'
+    const fileName = meta?.fileName ?? 'attachment'
+    if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+      return { fileName, mimeType, text: bytes.toString('utf8') }
+    }
+    return { fileName, mimeType, contentBase64: bytes.toString('base64') }
+  }
+
   async getThread(params: { threadId: string }): Promise<{ threadId: string; messages: GmailMessageDetail[] }> {
     if (this.isStub()) {
       return { threadId: params.threadId, messages: [await this.getMessage({ id: 'stub-msg-1' })] }

@@ -147,7 +147,7 @@ async function main() {
   await check('briefing: saját cím, többi postafiók, user Gmail', () => {
     const lines = renderMailIdentityBriefingLines(identity)!.join('\n')
     assert.match(lines, /Your own e-mail address: `szamlazas@ceg\.hu` \(AgentMail\), display name: Számlázási asszisztens/)
-    assert.match(lines, /connectorName "AgentMail · szamlazas@ceg\.hu"/)
+    assert.match(lines, /mail_send, account "szamlazas@ceg\.hu"/)
     assert.match(lines, /the user's own Gmail/)
     assert.match(lines, /`ugyfelszolgalat@ceg\.hu` \(AgentMail\) \(read only\)/)
     assert.match(lines, /only when the user explicitly asks/)
