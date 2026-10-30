@@ -54,6 +54,8 @@ import { HireCard, type HireCardModel } from '@/components/agents/hire/hire-card
 import { HireCardList } from '@/components/agents/hire/hire-card-list'
 import { InlinePageDialog } from '@/components/agents/hire/inline-page-dialog'
 import { LaunchStep } from '@/components/agents/hire/launch-step'
+import { AgentMailboxPanel } from '@/components/agents/agent-mailbox-panel'
+import type { AgentMailboxSettings } from '@/app/actions/agent-mailbox'
 import { StartPaths, type HireStartPath } from '@/components/agents/hire/start-paths'
 import { TeamAccessStep } from '@/components/agents/hire/team-access-step'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
@@ -126,6 +128,8 @@ export type CreateAgentWizardCloneOption = {
 
 export type CreateAgentWizardContinuation = {
   agentId: string
+  /** #1029: a „Saját e-mail cím” lépés adatai (null = nem tölthető be). */
+  mailbox?: AgentMailboxSettings | null
   name: string
   roleInstruction: string
   description: string | null
@@ -1066,6 +1070,14 @@ export function CreateAgentWizard({
                     </div>
                   </div>
                 </div>
+              ) : null}
+
+              {step === 'mailbox' && createdAgentId && c ? (
+                c.mailbox ? (
+                  <AgentMailboxPanel key={c.mailbox.primaryConnectorId ?? 'none'} settings={c.mailbox} onChanged={refresh} />
+                ) : (
+                  <p className="text-sm text-ink-soft">{t('loading')}</p>
+                )
               ) : null}
 
               {step === 'knowledge' && createdAgentId && c ? (

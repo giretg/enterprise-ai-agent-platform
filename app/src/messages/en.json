@@ -1062,6 +1062,8 @@
         "modellDesc": "Which AI model powers this agent, and which backup to use when a provider is down.",
         "kapcsolatok": "Connectors",
         "kapcsolatokDesc": "APIs, mail, Drive, and other external systems — in read or write mode.",
+        "email": "E-mail",
+        "emailDesc": "The agent's own e-mail address, signature and display name.",
         "tudasbazis": "Knowledge base",
         "tudasbazisDesc": "Documents, catalog and data warehouse this teammate works from.",
         "eszkozok": "Tools",
@@ -1910,6 +1912,10 @@
         "label": "What can they access?",
         "hint": "Mail, documents, systems"
       },
+      "mailbox": {
+        "label": "Own e-mail address",
+        "hint": "Where it sends mail from"
+      },
       "knowledge": {
         "label": "What should they know?",
         "hint": "Documents they work from"
@@ -2129,6 +2135,7 @@
       "identity": "A good name is short and telling, e.g. “Invoice Ivy”. Colleagues use the introduction to decide when to ask them.",
       "duties": "One card = one duty. Write it the way you would tell a new colleague.",
       "access": "Only switch on what they really need. “Read” is enough to start — you can allow writing later.",
+      "mailbox": "If it sends e-mail, give it its own address — recipients see who it comes from, and the agent knows which messages are meant for it. You can skip this.",
       "knowledge": "The more precise the documents, the more precise the answers. Policies, price lists and FAQs work best.",
       "autonomy": "Start as Trainee: they ask before every write. Once you trust them, give more independence.",
       "team": "To start, it is enough if only you can see them. Once it works, share with the team in one click.",

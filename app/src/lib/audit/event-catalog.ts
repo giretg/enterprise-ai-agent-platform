@@ -80,6 +80,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.version',
   'agent.delete',
   'agent.profile',
+  'agent.mailbox.primary',
+  'agent.mailbox.identity',
   'agent.memory_write_mode',
   'agent.write_approval_modes',
   // #957 D1: „Mondd el” — AI-vázlat a varázslóban (a tenant napi keretéből).

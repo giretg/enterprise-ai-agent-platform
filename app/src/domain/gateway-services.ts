@@ -7,6 +7,7 @@
  * layers.
  */
 import { repositories } from '@/repositories/postgres'
+import { loadAgentMailIdentity } from '@/lib/agent-mailbox'
 import { AgentDefinitionService } from '@/domain/agent-definition'
 import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
@@ -629,6 +630,10 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     return agent
       ? clampWriteModesToCeiling(modesFromAgentRow(agent), readTenantAutonomyCeiling(tenant?.settings))
       : null
+  },
+  findAgentMailSignature: async ({ agentId, tenantId }) => {
+    const primary = (await loadAgentMailIdentity(tenantId, agentId))?.primary
+    return primary ? { connectorId: primary.connectorId, connectorName: primary.connectorName, signature: primary.signature } : null
   },
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>

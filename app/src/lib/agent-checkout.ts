@@ -1,4 +1,5 @@
 import { DEFAULT_WAREHOUSE_AGENT_ACCESS, type WarehouseAgentAccess } from '@/lib/warehouse-settings'
+import { renderMailIdentityBriefingLines, type AgentMailIdentity } from '@/domain/agent-mailbox/agent-mailbox'
 import { renderAgentWikiBriefing, type AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { dump as yamlDump } from 'js-yaml'
 import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
@@ -479,6 +480,8 @@ export function renderAgentBriefing(input: {
    * magyar mondat a kimenetben; az UI-locale (`NEXT_LOCALE`) sose vezérli.
    */
   language?: TenantLanguage
+  /** #1029: az agent saját e-mail címe és a többi hozzáférhető postafiók. */
+  mailIdentity?: AgentMailIdentity | null
 }): string {
   const language: TenantLanguage = input.language ?? 'hu'
   const en = language === 'en'
@@ -565,6 +568,9 @@ export function renderAgentBriefing(input: {
     '- Scheduled tasks live on the platform. If platform.agent.get_definition → scheduledTasks.pending names your client type, call platform.scheduled_task.sync, carry out the plan, ask the user its questions, then platform.scheduled_task.install_report. When the user asks for recurring work, first platform.scheduled_task.create, then install the recipe. Never edit a platform stub by hand.',
     '- Knowledge base: call kb_list_index first (one row per source). Then kb_get_page for one wiki page, or kb_get_document for one file. Use kb_search only when the catalog does not name the source.',
   )
+
+  const mailLines = renderMailIdentityBriefingLines(input.mailIdentity)
+  if (mailLines) lines.splice(lines.indexOf('## Start'), 0, ...mailLines, '')
 
   if (roots.length > 0) {
     lines.push(

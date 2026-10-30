@@ -49,6 +49,8 @@ import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-p
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-definition-form'
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
+import { AgentMailboxPanel } from '@/components/agents/agent-mailbox-panel'
+import { getAgentMailboxSettings } from '@/app/actions/agent-mailbox'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
 import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
@@ -70,6 +72,7 @@ const SECTION_DESC_KEYS: Partial<Record<AgentDetailSectionId, string>> = {
   elesites: 'elesitesDesc',
   modell: 'modellDesc',
   kapcsolatok: 'kapcsolatokDesc',
+  email: 'emailDesc',
   tudasbazis: 'tudasbazisDesc',
   eszkozok: 'eszkozokDesc',
   skillek: 'skillekDesc',
@@ -143,6 +146,7 @@ export default async function AgentDetailPage({
   ])
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
+  const mailboxRes = hasMinimumRole(ctx.activeTenantRole, 'admin') ? await getAgentMailboxSettings({ agentId: agent.id }) : null
   const capabilities = govRes.success ? govRes.data.capabilities : []
   const connectors = govRes.success ? govRes.data.connectors : []
   const skills = skillsRes.success ? skillsRes.data : []
@@ -279,6 +283,20 @@ export default async function AgentDetailPage({
         />
       ),
     },
+    ...(mailboxRes?.success
+      ? [
+          {
+            id: 'email' as const,
+            label: sectionLabel('email'),
+            description: sectionDesc('email'),
+            content: (
+              <Card title={sectionLabel('email')}>
+                <AgentMailboxPanel settings={mailboxRes.data} />
+              </Card>
+            ),
+          },
+        ]
+      : []),
     {
       id: 'tudasbazis',
       label: sectionLabel('tudasbazis'),
@@ -419,6 +437,9 @@ export default async function AgentDetailPage({
             <p className="mt-1 text-ink-soft">{agent.description}</p>
           ) : null}
           <p className="mt-1 text-ink-soft">{agent.status}</p>
+          {mailboxRes?.success && mailboxRes.data.primaryAddress ? (
+            <p className="mt-1 text-sm text-ink-soft" title="A munkatárs saját e-mail címe">✉ {mailboxRes.data.primaryAddress}</p>
+          ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
             <AgentIdCopyButton agentId={agent.id} />
@@ -441,6 +462,16 @@ export default async function AgentDetailPage({
         </div>
         {canDelete ? <DeleteAgentButton agentId={agent.id} agentName={agent.name} /> : null}
       </div>
+
+      {mailboxRes?.success && mailboxRes.data.lostPrimaryAddress ? (
+        <Link
+          href={`/control-plane/agents/${agent.id}?section=email`}
+          className="block rounded-lg border border-amber-600/40 bg-amber-500/10 px-4 py-3 text-sm text-ink hover:border-amber-600/70"
+        >
+          A munkatárs saját e-mail címe ({mailboxRes.data.lostPrimaryAddress}) megszűnt, ezért most nincs címe, amiről
+          levelet küldhet. <span className="font-semibold text-coral">Új cím beállítása →</span>
+        </Link>
+      ) : null}
 
       <p className="max-w-2xl text-sm text-ink-soft">{t('pickTopic')}</p>
 

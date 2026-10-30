@@ -9,6 +9,7 @@ import {
   listKbDocuments,
   listKnowledgeCatalog,
 } from '@/app/actions/platform'
+import { getAgentMailboxSettings } from '@/app/actions/agent-mailbox'
 import { getMyGoogleDriveGrantForPicker } from '@/app/actions/connector-grants'
 import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
 import { getAgentModelSettings } from '@/app/actions/model-config'
@@ -82,6 +83,7 @@ export default async function NewAgentPage({
       modelRes,
       publishRes,
       drivePickerRes,
+      mailboxRes,
     ] = await Promise.all([
       getAgent({ id: continueId }),
       getAgentGovernance({ agentId: continueId }),
@@ -94,6 +96,7 @@ export default async function NewAgentPage({
       getAgentModelSettings({ agentId: continueId }),
       getAgentPublishStatus({ agentId: continueId }),
       getMyGoogleDriveGrantForPicker(),
+      getAgentMailboxSettings({ agentId: continueId }),
     ])
     if (agentRes.success && agentRes.data) {
       const agent = agentRes.data
@@ -106,6 +109,7 @@ export default async function NewAgentPage({
       const drivePicker = drivePickerRes.success ? drivePickerRes.data : null
       continuation = {
         agentId: agent.id,
+        mailbox: mailboxRes.success ? mailboxRes.data : null,
         name: agent.name,
         roleInstruction: agent.roleInstruction,
         description: agent.description,

@@ -648,11 +648,20 @@ model Agent {
   platformChatEnabled        Boolean         @default(true) @map("platform_chat_enabled")
   /// #1016 D1: létrehozáskor dől el; `public` agent sosem publikálható MCP-re / Hermesbe / platform-chatbe.
   kind                       AgentKind       @default(internal)
+  /// #1029: az agent saját címe — egy hozzá `write` módban kötött postafiók-konnektor; egy postafiók legfeljebb egy agenté (részleges egyedi index, 0043).
+  primaryMailboxConnectorId  String?         @map("primary_mailbox_connector_id") @db.Uuid
+  /// #1029: az utoljára beállított saját cím. Ha a konnektor megszűnik (FK → NULL), ebből tudjuk figyelmeztetni az admint.
+  primaryMailboxAddress      String?         @map("primary_mailbox_address")
+  /// #1029: kimenő levél aláírása (a levél végére kerül, ha a modell nem írta bele).
+  mailSignature              String?         @map("mail_signature")
+  /// #1029: megjelenő név a leveleken; NULL = az agent neve.
+  mailDisplayName            String?         @map("mail_display_name")
   createdAt                  DateTime        @default(now()) @map("created_at") @db.Timestamptz
   updatedAt                  DateTime        @updatedAt @map("updated_at") @db.Timestamptz
   retiredAt                  DateTime?       @map("retired_at") @db.Timestamptz
 
   tenant                     Tenant                      @relation(fields: [tenantId], references: [id])
+  primaryMailboxConnector    Connector?                  @relation("AgentPrimaryMailbox", fields: [primaryMailboxConnectorId], references: [id], onDelete: SetNull)
   currentDefinition          AgentDefinitionVersion?     @relation("AgentCurrentDefinition", fields: [currentDefinitionVersionId], references: [id], onDelete: SetNull)
   definitionVersions         AgentDefinitionVersion[]    @relation("AgentDefinitionHistory")
   agentConnectors            AgentConnector[]
@@ -815,6 +824,7 @@ model Connector {
 
   tenant             Tenant                 @relation(fields: [tenantId], references: [id])
   agentConnectors    AgentConnector[]
+  primaryForAgents   Agent[]                @relation("AgentPrimaryMailbox")
   grants             ConnectorGrant[]
   draft              ConnectorDraft?
   gatewayOperations  GatewayOperation[]

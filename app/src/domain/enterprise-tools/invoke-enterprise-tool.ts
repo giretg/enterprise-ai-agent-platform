@@ -11,7 +11,8 @@ import {
   GoogleWorkspaceApiAuthError,
   GoogleWorkspaceApiError,
 } from '@/domain/connector-grant/google-workspace-api-client'
-import { HttpApiError } from '@/domain/connector/http-api-client'
+import { findHttpApiEndpoint, HttpApiError } from '@/domain/connector/http-api-client'
+import { isAgentMailSendRequest, withAgentMailSignature } from '@/domain/agent-mailbox/agent-mailbox'
 import {
   authorizeToolCall,
   type AuthorizeToolCallDeps,
@@ -48,6 +49,7 @@ import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-langu
 import { asUuid, enterpriseToolErrorPayload } from './tool-error-messages'
 import {
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+  HTTP_API_REQUEST_TOOL,
   isEnterpriseGmailTool,
   isEnterpriseHttpTool,
   isEnterpriseKbTool,
@@ -242,6 +244,11 @@ export type EnterpriseToolDeps = AuthorizeToolCallDeps &
     agentId: string
     tenantId: string
   }) => Promise<AgentWriteApprovalModes | null>
+  /** #1029: az agent saját postafiókja és aláírása — a kimenő AgentMail-levél végére kerül. */
+  findAgentMailSignature?: (input: {
+    agentId: string
+    tenantId: string
+  }) => Promise<{ connectorId: string; connectorName: string; signature: string | null } | null>
   startAuthorization?: StartDelegatedAuthorization
   /** #395: külső MCP-hívás; tesztben cserélhető. */
   executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
@@ -368,6 +375,38 @@ export function isOutputFolderWrite(input: {
 }
 
 type DirectWriteBypass = 'agent_output_folder' | 'agent_write_mode'
+
+/**
+ * #1029: AgentMail-küldés az agent saját címéről → aláírás a levél végére. A cél
+ * konnektor: connectorId / connectorName, ennek hiányában az egyetlen kötött HTTP
+ * konnektor, amelynek van ilyen végpontja (ugyanígy választ a szerver is).
+ */
+async function withPrimaryMailboxSignature(
+  deps: EnterpriseToolDeps,
+  tenantId: string,
+  definition: AgentDefinition,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (toolName !== HTTP_API_REQUEST_TOOL || !deps.findAgentMailSignature) return args
+  if (!isAgentMailSendRequest(args.method, args.path)) return args
+  const mailbox = await deps.findAgentMailSignature({ agentId: definition.agentId, tenantId }).catch(() => null)
+  if (!mailbox?.signature) return args
+  const connectorId = typeof args.connectorId === 'string' ? args.connectorId.trim() : ''
+  const connectorName = typeof args.connectorName === 'string' ? args.connectorName.trim().toLowerCase() : ''
+  let targetsPrimary: boolean
+  if (connectorId) targetsPrimary = connectorId === mailbox.connectorId
+  else if (connectorName) targetsPrimary = connectorName === mailbox.connectorName.trim().toLowerCase()
+  else {
+    const method = String(args.method).toUpperCase()
+    const path = String(args.path)
+    const candidates = definition.snapshot.connectors.filter(
+      (row) => row.type === 'http_api' && row.endpoints?.length && findHttpApiEndpoint({ endpoints: row.endpoints }, method, path),
+    )
+    targetsPrimary = candidates.length === 1 && candidates[0].connectorId === mailbox.connectorId
+  }
+  return targetsPrimary ? withAgentMailSignature(args, mailbox.signature) : args
+}
 
 /**
  * Output-mappa vagy agent-szintű közvetlen írás: capability- és connector-ellenőrzéssel,
@@ -601,9 +640,11 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
-    const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args })
+    // #1029: az aláírás a jóváhagyás ELŐTT kerül a levélbe, így a jóváhagyó a végleges szöveget látja.
+    const writeArgs = await withPrimaryMailboxSignature(deps, principal.tenantId, definition, toolName, args)
+    const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs })
     if (direct) return direct
-    return deps.enqueueWrite({ principal, toolName, args, origin, confirm })
+    return deps.enqueueWrite({ principal, toolName, args: writeArgs, origin, confirm })
   }
 
   if (isEnterpriseSandboxTool(toolName)) {

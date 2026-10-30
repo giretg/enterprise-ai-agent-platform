@@ -99,7 +99,7 @@ export function inboxIdFromConnectorBaseUrl(baseUrl: unknown): string | null {
 async function call<T>(
   apiBase: string,
   apiKey: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PATCH',
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -157,6 +157,18 @@ export async function createAgentMailInbox(
   return toInbox(raw)
 }
 
+/** #1029: a postafiók megjelenő neve kövesse az agent nevét (átnevezéskor). */
+export async function updateAgentMailInboxDisplayName(
+  apiKey: string,
+  inboxId: string,
+  displayName: string,
+  apiBase: string = AGENTMAIL_API_BASE,
+): Promise<void> {
+  await call<RawInbox>(apiBase, apiKey, 'PATCH', `/inboxes/${agentMailInboxPathSegment(inboxId)}`, {
+    display_name: displayName,
+  })
+}
+
 export async function createAgentInboxApiKey(
   orgKey: string,
   inboxId: string,
@@ -173,8 +185,11 @@ export async function createAgentInboxApiKey(
   return res.api_key
 }
 
-/** A kapcsolat leírása az agent promptjába kerül — így tudja, mi a saját címe. */
+/**
+ * A kapcsolat leírása az agent promptjába kerül. #1029: egy postafiók több agenthez is
+ * köthető, ezért hogy ez az agent SAJÁT címe-e, azt a briefing „Your e-mail identity” blokkja dönti el.
+ */
 export function agentMailConnectorDescription(inbox: AgentMailInbox): string {
   const identity = inbox.displayName ? `${inbox.displayName} <${inbox.email}>` : inbox.email
-  return `A munkatárs SAJÁT postafiókja: ${identity}. Ebből a címből, a saját nevedben levelezel (nem a felhasználó nevében). Küldés: POST /messages/send, válasz: POST /messages/{message_id}/reply — minden kimenő levél emberi jóváhagyás után megy ki. Beérkezett levelek: GET /messages, levélváltások: GET /threads.`
+  return `AgentMail-postafiók: ${identity}. Hogy ez a te saját címed-e, azt a briefing „Your e-mail identity” blokkja mondja meg. Küldés: POST /messages/send, válasz: POST /messages/{message_id}/reply — minden kimenő levél emberi jóváhagyás után megy ki. Beérkezett levelek: GET /messages, levélváltások: GET /threads.`
 }

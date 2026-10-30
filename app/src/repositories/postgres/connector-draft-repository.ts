@@ -165,6 +165,8 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         accessMode: params.accessMode,
       },
     })
+    // #1029: olvasási hozzáféréssel a postafiók nem lehet az agent saját címe.
+    if (params.accessMode !== 'write') await clearPrimaryMailbox({ agentId: params.agentId, connectorId: params.connectorId })
   }
 
   async unassignFromAgent(params: {
@@ -174,6 +176,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     const result = await prisma.agentConnector.deleteMany({
       where: { agentId: params.agentId, connectorId: params.connectorId },
     })
+    await clearPrimaryMailbox(params)
     return { removed: result.count > 0 }
   }
 
@@ -351,6 +354,8 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     const affectedAgentIds = [...new Set(links.map((l) => l.agentId))]
 
     await tx.agentConnector.deleteMany({ where: { connectorId } })
+    // #1029: a megszűnt postafiók senkinek sem saját címe; a cím marad a figyelmeztetéshez.
+    await tx.agent.updateMany({ where: { primaryMailboxConnectorId: connectorId }, data: { primaryMailboxConnectorId: null } })
 
     await tx.connector.update({
       where: { id: connectorId },
@@ -438,4 +443,12 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         ),
       }))
   }
+}
+
+/** #1029: a leválasztott postafiók már nem az agent saját címe (a korábbi cím marad a figyelmeztetéshez). */
+async function clearPrimaryMailbox(params: { agentId: string; connectorId: string }): Promise<void> {
+  await prisma.agent.updateMany({
+    where: { id: params.agentId, primaryMailboxConnectorId: params.connectorId },
+    data: { primaryMailboxConnectorId: null },
+  })
 }

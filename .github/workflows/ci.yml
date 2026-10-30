@@ -130,6 +130,7 @@ jobs:
           npm run test:google-drive-api-client
           npm run test:google-workspace-api-client
           npm run test:agentmail-connector
+          npm run test:agent-mailbox
           npm run test:kb-gate
           npm run test:kb-retrieval
           npm run test:wiki-foundation

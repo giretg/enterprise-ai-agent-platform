@@ -1,4 +1,6 @@
 import { CUSTOMER_PROMISE_TOOLS, isCustomerPromiseTool, promiseRegisterSchema, promiseGetSchema, promiseListSchema, promiseResolveSchema } from '@/domain/customer-promise/mcp'
+import { mailIdentityDefinitionBlock, type AgentMailIdentity } from '@/domain/agent-mailbox/agent-mailbox'
+import { loadAgentMailIdentity } from '@/lib/agent-mailbox'
 import { SCHEDULED_TASK_DESCRIPTIONS, SCHEDULED_TASK_TOOLS, isScheduledTaskTool, scheduledTaskInputSchemas } from '@/domain/scheduled-task/mcp'
 import { WIKI_MAINTAINER, withWikiMaintainer, wikiMaintainerPackage } from '@/domain/skill/llm-wiki-maintainer'
 import type { AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
@@ -251,6 +253,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   }) => Promise<boolean>
   /** #663: az agent megnevezett jóváhagyójának neve a briefing Jóváhagyások blokkjához. */
   loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
+  /** #1029: az agent saját e-mail címe és a többi postafiók (briefing + get_definition). */
+  loadAgentMailIdentity?: (input: { tenantId: string; agentId: string }) => Promise<AgentMailIdentity | null>
   loadAgentWriteModes?: (input: {
     tenantId: string
     agentId: string
@@ -437,6 +441,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
       const user = await repositories.users.findById(agent.approverUserId)
       return user ? user.name || user.email : null
     },
+    loadAgentMailIdentity: ({ tenantId, agentId }) => loadAgentMailIdentity(tenantId, agentId),
     loadAgentWriteModes: async ({ tenantId, agentId }) => {
       const agent = await repositories.agents.findById(agentId, tenantId)
       return agent ? modesFromAgentRow(agent) : null
@@ -859,6 +864,8 @@ async function getDefinitionToolResult(
     tenantId: principal.tenantId,
     agentId: loaded.agentId,
   })
+  // Opcionális kiegészítés: hibás lekérdezés nem töri el a get_definitiont.
+  const mailIdentity = await deps.loadAgentMailIdentity?.({ tenantId: principal.tenantId, agentId: loaded.agentId }).catch(() => null)
   if (loaded.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
   const wikis = await deps.loadAgentWikis?.(principal, loaded) ?? []
   const roots = loaded.snapshot.localRoots
@@ -879,6 +886,7 @@ async function getDefinitionToolResult(
       customerPromises,
       approverName: approverName ?? null,
       writeModes: writeModes ?? undefined,
+      mailIdentity,
       // #717 B réteg: a briefing platform-szövegei a tenant kimeneti nyelvén.
       language: readTenantLanguage(tenant?.settings),
     }),
@@ -888,6 +896,7 @@ async function getDefinitionToolResult(
     // A publikált (szűretlen) snapshot hash-e — a vázlat/közzétett összevetés ezt várja.
     contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
+    ...mailIdentityDefinitionBlock(mailIdentity),
     ...memoryContext,
     customerPromises: { entries: customerPromises },
     // #640 S1: üres pending + missed esetén a blokk elmarad.
