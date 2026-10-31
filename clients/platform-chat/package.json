@@ -10,14 +10,16 @@
     "dev": "PLATFORM_CHAT_QUEUE=inline node --import tsx --watch src/main.ts",
     "migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/engine.test.ts && tsx test/auth.test.ts && tsx test/server.test.ts && tsx test/platform-client.test.ts && tsx scripts/check-import-boundary.ts",
+    "test": "tsx test/attachments.test.ts && tsx test/engine.test.ts && tsx test/auth.test.ts && tsx test/server.test.ts && tsx test/platform-client.test.ts && tsx scripts/check-import-boundary.ts",
     "test:pg": "tsx test/pg-store.it.ts",
     "test:import-boundary": "tsx scripts/check-import-boundary.ts"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
+    "jszip": "^3.10.2",
     "pdf-parse": "^2.4.5",
     "pg": "^8.23.1",
+    "saxes": "^5.0.1",
     "tsx": "^4.23.15"
   },
   "devDependencies": {

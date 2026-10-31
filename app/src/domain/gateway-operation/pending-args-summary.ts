@@ -235,6 +235,16 @@ export function pendingArgsSummary(
   return Object.entries(args)
     .filter(([key]) => key !== 'definitionId' && key !== 'idempotencyKey' && key !== 'withUserId')
     .slice(0, 8)
-    .map(([key, value]) => `${key}: ${typeof value === 'string' ? clip(value) : JSON.stringify(value)}`)
+    .map(([key, value]) => {
+      if (key === 'contentBase64' || key === 'fileBase64') return `${key}: [csatolt fájl]`
+      if (key === 'inputFiles') {
+        try {
+          const files: unknown = JSON.parse(String(value))
+          if (Array.isArray(files)) return `csatolt fájlok: ${files.map((file) => typeof file?.path === 'string' ? file.path : '—').join(', ')}`
+        } catch { /* Hibás bemenetet az eszköz elutasítja; a kártyán nem jelenítünk meg bájtokat. */ }
+        return 'csatolt fájlok'
+      }
+      return `${key}: ${typeof value === 'string' ? clip(value) : JSON.stringify(value)}`
+    })
     .join('\n')
 }

@@ -360,6 +360,66 @@ async function main() {
     assert.match(String(user?.content), /adat\.csv[\s\S]*3;4/)
   })
 
+  await check('#1023 helyi olvasás → gateway; Drive-átadás → jóváhagyás, bájtok nélkül a promptban', async () => {
+    const upload = { name: 'google_drive_upload_file', inputSchema: { type: 'object', properties: { contentBase64: {}, idempotencyKey: {} } } }
+    const script: Script = { llm: [], tool: [{ kind: 'input_required', requestState: 'state', inputKey: 'approval', message: 'Upload contract.txt?' }, done('uploaded')] }
+    const h = harness(script, { tools: [upload], coreTools: [upload.name] })
+    const c = await h.conversation()
+    const bytes = Buffer.from('termination notice 62 days')
+    h.deps.storage = { get: async () => bytes, put: async () => {}, remove: async () => {} }
+    const att = await h.store.addAttachment({ conversationId: c.id, storagePath: 'p', name: 'contract.txt', mime: 'text/plain', size: bytes.length, extractedText: bytes.toString() })
+    script.llm.push(callTool('attachment_read', { id: att.id }), callTool(upload.name, { contentBase64: `attachment://${att.id}` }), say('Kész.'))
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Olvasd el és töltsd fel', attachments: [att] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal(h.toolCalls.length, 1) // az attachment_read nem MCP
+    assert.equal(h.toolCalls[0].args.contentBase64, bytes.toString('base64'))
+    assert.equal(h.toolCalls[0].args.name, att.name)
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'awaiting_approval')
+    const gatewayInput = h.llmMessages[1] as Array<{ role: string; content: unknown }>
+    assert.match(String(gatewayInput.find((m) => m.role === 'tool')?.content), /termination notice/)
+    // A jelen forduló user-üzenete tool-lépés után is megtartja a kezdőrészletet.
+    assert.match(String(gatewayInput.find((m) => m.role === 'user')?.content), /termination notice/)
+    assert.ok(!JSON.stringify(h.llmMessages).includes(bytes.toString('base64')))
+    assert.ok(JSON.stringify(h.llmTools[0]).includes('attachment_search'))
+    assert.equal(await decideApproval(h.deps, { turnId: r.turn.id, userId: USER, decision: 'approve' }), 'ok')
+    await h.drain()
+    assert.equal(h.toolCalls[0].args.idempotencyKey, h.toolCalls[1].args.idempotencyKey)
+    assert.deepEqual(h.toolCalls[0].args, h.toolCalls[1].args)
+    assert.ok(!JSON.stringify(h.llmMessages).includes(bytes.toString('base64')))
+  })
+
+  await check('#1023 idegen csatolmány: helyi hiba, nincs MCP-hívás', async () => {
+    const script: Script = { llm: [], tool: [] }
+    const h = harness(script)
+    const c = await h.conversation()
+    const other = await h.conversation()
+    const att = await h.store.addAttachment({ conversationId: other.id, storagePath: 'secret', name: 'secret.txt', mime: 'text/plain', size: 5, extractedText: 'SECRET' })
+    h.deps.storage = { get: async () => { throw new Error('must not read') }, put: async () => {}, remove: async () => {} }
+    script.llm.push(callTool('attachment_read', { id: att.id }), say('Ez a fájl itt nem érhető el.'))
+    assert.ok((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Olvasd el', attachments: [] })).ok)
+    await h.drain()
+    assert.equal(h.toolCalls.length, 0)
+    assert.match(JSON.stringify(h.llmMessages[1]), /nem érhető el ebben a beszélgetésben/)
+    assert.ok(!JSON.stringify(h.llmMessages).includes('SECRET'))
+  })
+
+  await check('#1023 képet nem fogadó modell: közérthető jelzés, továbbra is gatewayen át', async () => {
+    const script: Script = { llm: [], tool: [] }
+    const h = harness(script)
+    const c = await h.conversation()
+    h.deps.storage = { get: async () => Buffer.from('image'), put: async () => {}, remove: async () => {} }
+    const att = await h.store.addAttachment({ conversationId: c.id, storagePath: 'p', name: 'scan.png', mime: 'image/png', size: 5, extractedText: null })
+    script.llm.push(callTool('attachment_view', { id: att.id }), new PlatformError('model does not support image input', 400), say('A modell nem tud képet olvasni.'))
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Olvasd el a szkennelt oldalt', attachments: [att] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.llmMessages.length, 3)
+    assert.match(JSON.stringify(h.llmMessages.at(-1)), /nem tud képet fogadni/)
+    assert.equal(h.toolCalls.length, 0)
+  })
+
   await check('planNext: tool-hívások sorban, utána újra LLM', async () => {
     const llm = { turnId: 't', seq: 0, kind: 'llm' as const, inputHash: '', status: 'done' as const, attempts: 1, idempotencyKey: null,
       output: { content: '', toolCalls: [{ id: 'a', name: 'x', arguments: '{}' }, { id: 'b', name: 'y', arguments: '{}' }] } }

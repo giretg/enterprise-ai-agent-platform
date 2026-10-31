@@ -22,6 +22,16 @@ function check(name: string, fn: () => void) {
   }
 }
 
+check('binary input summaries show filenames, never bytes', () => {
+  const inputFiles = JSON.stringify([{ path: 'attachments/data.xlsx', contentBase64: 'SECRET_BASE64' }])
+  const text = pendingArgsSummary('sandbox_run', { inputFiles }, labels)
+  assert.match(text, /data.xlsx/)
+  assert.ok(!text.includes('SECRET_BASE64'))
+  const warehouse = pendingArgsSummary('warehouse.prepare_import', { fileName: 'data.xlsx', fileBase64: 'SECRET_BASE64' }, labels)
+  assert.match(warehouse, /data.xlsx/)
+  assert.ok(!warehouse.includes('SECRET_BASE64'))
+})
+
 check('splitLabelledSections splits run-on labelled body', () => {
   const out = splitLabelledSections(
     'Téma: Google Pay. Folyamat: blogok (a/b) + linkek. Következő lépés: jóváhagyás után PATCH.',

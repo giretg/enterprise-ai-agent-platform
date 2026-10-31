@@ -8,8 +8,6 @@ import { createPlatformClient } from './platform.ts'
 import { cloudTasksQueue, inlineQueue } from './queue.ts'
 import { createHandler } from './server.ts'
 
-const IMAGE_INLINE_MAX = 5 * 1024 * 1024
-
 const config = loadConfig()
 // Kis pool: request-based Cloud Run, egy példányon kevés párhuzamos kérés; a Neon pooler mögött.
 const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 5, idleTimeoutMillis: 10_000 })
@@ -20,8 +18,8 @@ const deps: EngineDeps = {
   queue: undefined as unknown as TaskQueue,
   limits: config.limits,
   platformOrigin: config.platformOrigin,
+  storage,
   coreTools: config.coreTools,
-  loadImage: async (att) => (att.size <= IMAGE_INLINE_MAX ? `data:${att.mime};base64,${(await storage.get(att.storagePath)).toString('base64')}` : null),
 }
 deps.queue = config.queue.kind === 'inline' ? inlineQueue((task) => runStep(deps, task)) : cloudTasksQueue(config)
 

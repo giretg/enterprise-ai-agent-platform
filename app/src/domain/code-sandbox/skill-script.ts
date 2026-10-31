@@ -2,7 +2,7 @@ import { classifyPackageFile } from '@/lib/skill/skill-package-adapter'
 import { parseSkillAttachments, type SkillAttachment } from '@/lib/skill/skill-attachments'
 import type { AgentDefinition } from '@/domain/agent-definition'
 import { normalizeWorkFilePath } from '@/lib/work-project'
-import { normalizeSandboxWorkspacePath } from './code-sandbox-types'
+import { codeSandboxLimits, normalizeSandboxWorkspacePath } from './code-sandbox-types'
 
 /** Claude.ai drops MCP tools whose advertised schema has arrays — keep a string field. */
 export const MAX_SANDBOX_WORK_INPUTS = 16
@@ -112,4 +112,27 @@ export function resolvePinnedSkillScript(input: {
     (row) => row.path !== entry.path && classifyPackageFile(row.path) === 'code',
   )
   return { ok: true, script: { skillName: pin.name, entry, helpers } }
+}
+
+/** Binary client inputs share the sandbox limits and cannot shadow a skill or a work file. */
+export function resolveSandboxBinaryInputs(value: string | undefined): Array<{ sandboxPath: string; bytes: Buffer }> {
+  if (value === undefined) return []
+  const items: unknown = JSON.parse(value)
+  const limits = codeSandboxLimits()
+  if (!Array.isArray(items) || items.length > limits.maxFiles) throw new Error('invalid_args')
+  let total = 0
+  const seen = new Set<string>()
+  return items.map((item: unknown) => {
+    if (!item || typeof item !== 'object' || !('path' in item) || !('contentBase64' in item)
+      || typeof item.path !== 'string' || typeof item.contentBase64 !== 'string') throw new Error('invalid_args')
+    const resolved = resolveSandboxWorkInput(item.path)
+    if (!resolved.ok) throw new Error('invalid_args')
+    const pathKey = resolved.sandboxPath.toLowerCase()
+    if (seen.has(pathKey)) throw new Error('invalid_args')
+    seen.add(pathKey)
+    const bytes = Buffer.from(item.contentBase64, 'base64')
+    total += bytes.length
+    if (bytes.toString('base64') !== item.contentBase64 || bytes.length > limits.maxFileBytes || total > limits.maxInputBytes) throw new Error('invalid_args')
+    return { sandboxPath: resolved.sandboxPath, bytes }
+  })
 }

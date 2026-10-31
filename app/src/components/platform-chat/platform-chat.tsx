@@ -23,9 +23,9 @@ import {
 /** §6.4: a korlátok a feltöltés előtt látszanak és érvényesülnek. */
 const MAX_FILE_BYTES = 20 * 1024 * 1024
 const MAX_FILES = 5
-const ACCEPT = '.csv,.xlsx,.pdf,.txt,.md,.png,.jpg,.jpeg'
+const ACCEPT = '.csv,.xlsx,.pdf,.docx,.pptx,.json,.txt,.md,.png,.jpg,.jpeg'
 const COLD_START_MS = 1500
-const FILE_HINT = 'CSV, XLSX, PDF, TXT, MD, PNG, JPG — fájlonként legfeljebb 20 MB, üzenetenként 5 fájl.'
+const FILE_HINT = 'CSV, XLSX, PDF, DOCX, PPTX, JSON, TXT, MD, PNG, JPG — fájlonként legfeljebb 20 MB, üzenetenként 5 fájl.'
 const SIDEBAR_KEY = 'platform-chat:sidebar'
 const DESKTOP_QUERY = '(min-width: 1024px)'
 
@@ -594,7 +594,7 @@ export function PlatformChat({
         setFiles((f) => [...f, attachment])
       }
     } catch (e) {
-      setNotice(e instanceof ChatApiError && e.status === 415 ? 'Ezt a fájltípust nem lehet csatolni (CSV, XLSX, PDF, TXT, MD, PNG, JPG).' : 'A fájlt most nem sikerült feltölteni.')
+      setNotice(e instanceof ChatApiError && e.status === 415 ? 'Ezt a fájltípust nem lehet csatolni (CSV, XLSX, PDF, DOCX, PPTX, JSON, TXT, MD, PNG, JPG).' : 'A fájlt most nem sikerült feltölteni.')
     } finally {
       setBusy(false)
       focusComposer()
