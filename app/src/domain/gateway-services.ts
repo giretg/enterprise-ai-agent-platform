@@ -60,6 +60,9 @@ import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { getPolicySnapshot } from '@/domain/client-policy/policy-service'
 import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
+import { PostgresDocumentExportRepository } from '@/repositories/postgres/document-export-repository'
+import { documentExportPath, loadOwnExport } from '@/domain/document-export/document-export-store'
+import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
 import { PostgresCustomerPromiseRepository } from '@/repositories/postgres/customer-promise-repository'
@@ -634,6 +637,7 @@ async function listGatewayOperationHistoryRows(input: {
 }
 
 const clientPolicyStore = new PostgresClientPolicyRepository()
+const documentExportStore = new PostgresDocumentExportRepository()
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
@@ -695,6 +699,18 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   },
   executeSandboxRun,
   resolveClientPolicy: (input) => getPolicySnapshot(clientPolicyStore, input),
+  // #1024: letölthető fájlok ideiglenes tárolója.
+  saveDocumentExport: ({ document, ...input }) =>
+    documentExportStore.create({
+      ...input,
+      fileName: document.fileName,
+      format: document.format,
+      mimeType: document.mimeType,
+      byteSize: document.bytes.length,
+      data: document.bytes,
+    }),
+  loadOwnDocumentExport: (input) => loadOwnExport(documentExportStore, { ...input, now: new Date() }),
+  documentExportUrl: (id) => `${resolvePublicAppOrigin()}${documentExportPath(id)}`,
   countWebSearchCalls: ({ tenantId, agentId, since }) =>
     prisma.auditLog.count({
       where: { tenantId, action: 'enterprise.tool.ok', inputRef: 'web_search', targetId: agentId, createdAt: { gte: since } },

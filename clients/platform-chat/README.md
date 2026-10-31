@@ -26,6 +26,15 @@ feladat); a „Jóváhagyom / Elvetem” új lépést indít. 15 perc után a k�
 listáján marad, a forduló zárószöveggel lezárul. Korlátok: 25 lépés, 40 perc, lépésenként 3 próba,
 ismétlődő-hurok (azonos tool + argumentum 3×) → leállás.
 
+## Letöltés-kártya (#1024)
+
+- A tool-eredmény `resource_link` tartalma (pl. `document_export`) és az ismert letöltési mező
+  (`warehouse.export_dataset` → `exportUrl`) a válasz-üzenet `files` mezőjébe kerül (`messages.files`, 002-es migráció).
+  Csak a platform saját címére (`PLATFORM_ORIGIN`) mutató link lesz kártya.
+- A kártya a beszélgetés újranyitásakor is látszik; lejárt fájlnál a teendőt mutatja, letöltés-gomb nélkül.
+- „Mentés a Drive-ra”: csak `exportId`-s fájlnál és csak ha a munkatárs eléri a `google_drive_upload_file`-t;
+  a gomb egy rövid kérést küld, a modell az előzményben látja az `exportId`-t, a feltöltés a szokásos jóváhagyással megy.
+
 ## Halasztott eszköz-betöltés (#1022)
 
 A modell nem kapja meg minden lépésben az összes MCP-eszköz teljes sémáját:

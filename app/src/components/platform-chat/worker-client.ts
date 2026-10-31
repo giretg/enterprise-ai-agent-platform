@@ -7,7 +7,24 @@ export type ChatSession = { token: string; expiresAt: string; workerUrl: string;
 export type ChatAgent = { agentId: string; name: string; description: string | null }
 export type ChatConversation = { id: string; agentId: string; agentName: string; title: string; createdAt: string; lastActivityAt: string; userId?: string }
 export type ChatAttachment = { id: string; name: string; mime: string; size: number }
-export type ChatMessageView = { id: string; role: 'user' | 'assistant'; content: string; attachments: ChatAttachment[]; createdAt: string }
+/** #1024: a munkatárs által készített letölthető fájl (fájl-kártya). */
+export type ChatFile = {
+  url: string
+  name: string
+  mimeType: string | null
+  size: number | null
+  expiresAt: string | null
+  exportId: string | null
+  canSaveToDrive?: boolean
+}
+export type ChatMessageView = {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  attachments: ChatAttachment[]
+  files?: ChatFile[]
+  createdAt: string
+}
 export type ConversationView = {
   conversation: ChatConversation
   messages: ChatMessageView[]

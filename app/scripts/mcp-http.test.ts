@@ -29,6 +29,7 @@ import {
   KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
   WEB_SEARCH_TOOL,
+  DOCUMENT_EXPORT_TOOL,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -974,6 +975,50 @@ async function main() {
     assert.deepEqual(calls, [{ toolName: WEB_SEARCH_TOOL, client: 'hermes' }])
   })
 
+  await check('#1024 document_export: listing follows local_files level × client kind × tenant switch', async () => {
+    const listed = async (input: { preset: keyof typeof PRESETS; headers?: Record<string, string>; externalClients?: boolean }) => {
+      const { deps } = runtimeDeps({
+        grantedAgentIds: new Set([AGENT_ID]),
+        tenant: tenant({ settings: input.externalClients ? { harnessSubstitutes: { externalClients: true } } : {} }),
+      })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS[input.preset], toolRules: [] })
+      const res = await post('acme', { jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }, { authorization: `Bearer ${TOKEN}`, ...input.headers }, deps)
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      return (body.result?.tools ?? []).some((tool) => tool.name === DOCUMENT_EXPORT_TOOL)
+    }
+    const hermes = { 'x-excellence-client': 'hermes-managed' }
+    const claude = { 'user-agent': 'Claude-User/1.0' }
+    assert.equal(await listed({ preset: 'bound', headers: hermes }), true, 'Kötött pálya Hermes → céges fájl-készítés')
+    assert.equal(await listed({ preset: 'bound', headers: { ...hermes, 'x-excellence-agent-id': AGENT_ID } }), true, 'fájlkészítés agent-képesség nélkül is listázódik')
+    assert.equal(await listed({ preset: 'standard', headers: hermes }), true, 'Standard Hermes (csak olvas) → céges fájl-készítés')
+    assert.equal(await listed({ preset: 'free', headers: hermes }), false, 'Szabad Hermes → maga ír fájlt')
+    assert.equal(await listed({ preset: 'standard', headers: claude }), false, 'Claude Desktop alapból nem kapja')
+    assert.equal(await listed({ preset: 'standard', headers: claude, externalClients: true }), true, 'tenant-kapcsolóval igen')
+  })
+
+  await check('#1024 document_export: the download link goes out as an MCP resource_link', async () => {
+    const { deps } = runtimeDeps({})
+    deps.invokeEnterpriseTool = async () => ({
+      content: [{ type: 'text', text: '{"exportId":"x","downloadUrl":"https://app.example/api/control-plane/document-exports/x"}' }],
+      links: [{ uri: 'https://app.example/api/control-plane/document-exports/x', name: 'Riport.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 1234 }],
+    })
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: DOCUMENT_EXPORT_TOOL, arguments: { format: 'xlsx', fileName: 'Riport', sheets: '[]' } } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: Record<string, unknown> & { content?: Array<Record<string, unknown>> } }
+    assert.equal(body.result?.links, undefined, 'the internal links field is not on the wire')
+    assert.deepEqual(body.result?.content?.[1], {
+      type: 'resource_link',
+      uri: 'https://app.example/api/control-plane/document-exports/x',
+      name: 'Riport.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      size: 1234,
+    })
+  })
+
   await check('tools/list returns platform tools, Drive, knowledge base, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
@@ -1015,8 +1060,9 @@ async function main() {
       ...PROJECT_WORK_TOOLS.slice(-2),
       ...WAREHOUSE_TOOLS,
       ...MINI_APP_TOOLS,
-      // #1020: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search nem listázódik.
-      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL),
+      // #1020: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search nem listázódik;
+      // #1024: a document_export hívható volna, de külső kliensnek alapból nem listázzuk.
+      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL && name !== DOCUMENT_EXPORT_TOOL),
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
     const submit = tools.find((tool) => tool.name === MCP_SKILL_SUBMIT_TOOL)
@@ -2710,6 +2756,7 @@ async function main() {
     assert.equal(list.status, 200)
     const tools = ((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []
     assert.ok(tools.some((t) => t.name === MCP_AGENTS_LIST_TOOL))
+    assert.ok(tools.some((t) => t.name === DOCUMENT_EXPORT_TOOL), 'platform-chat: document export needs no agent capability')
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

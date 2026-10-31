@@ -100,6 +100,9 @@ import {
   SANDBOX_RUN_TOOL,
   WEB_SEARCH_TOOL,
   webSearchInputSchema,
+  DOCUMENT_EXPORT_TOOL,
+  documentExportInputSchema,
+  type EnterpriseToolResourceLink,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
   MCP_LIST_TOOLS_TOOL,
@@ -1464,7 +1467,7 @@ async function createMcpResourceHandler(
   }
   const substituteVisible = (tool: string) => {
     const sub = harnessSubstituteFor(tool)
-    return !!sub && boundAgentAllows(tool) && isSubstituteVisible(sub, {
+    return !!sub && (tool === DOCUMENT_EXPORT_TOOL || boundAgentAllows(tool)) && isSubstituteVisible(sub, {
       policy: substitutePolicy,
       client: harnessClientKind(client),
       externalClientsEnabled: readExternalClientsEnabled(tenant?.settings),
@@ -2180,6 +2183,21 @@ async function createMcpResourceHandler(
           async (args) => enterpriseToolResult(principal, WEB_SEARCH_TOOL, args, deps),
         )
       }
+      if (substituteVisible(DOCUMENT_EXPORT_TOOL)) {
+        server.registerTool(
+          DOCUMENT_EXPORT_TOOL,
+          {
+            title: 'Make a downloadable file',
+            description:
+              'Create a downloadable Excel (xlsx), CSV, Word (docx), PDF or Markdown file for the user — use it whenever the user asks for a file, a spreadsheet, a Word document or a PDF instead of only answering in chat. ' +
+              'xlsx/csv: pass sheets (JSON text with headers, rows and optional numberFormats; numbers as numbers, dates as ISO text). docx/pdf/md: pass markdown. ' +
+              'The file is kept for 7 days and only the requesting user can download it; reply with one short sentence and the link, do not repeat the content. Omit definitionId when this client is bound; otherwise pass it.',
+            inputSchema: documentExportInputSchema,
+            annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+          },
+          async (args) => enterpriseToolResult(principal, DOCUMENT_EXPORT_TOOL, args, deps),
+        )
+      }
       server.registerTool(
         MCP_LIST_TOOLS_TOOL,
         {
@@ -2377,7 +2395,15 @@ async function invokeEnterpriseToolResult(
     CallToolResult | InputRequiredResult
   return toolName === KB_GET_DOCUMENT_TOOL && args.pageImages === true && 'content' in result
     ? kbDocumentImageResult(result as CallToolResult)
-    : result
+    : withResourceLinks(result)
+}
+
+/** #1024: a letölthető fájl MCP `resource_link`-ként is megy, így a kliens fájlként mutathatja. */
+function withResourceLinks<T extends CallToolResult | InputRequiredResult>(result: T): T {
+  if (!('content' in result)) return result
+  const { links, ...rest } = result as CallToolResult & { links?: EnterpriseToolResourceLink[] }
+  if (!links?.length) return rest as T
+  return { ...rest, content: [...rest.content, ...links.map((link) => ({ type: 'resource_link' as const, ...link }))] } as T
 }
 
 /** Lift only server-generated KB page images into MCP image content blocks. */

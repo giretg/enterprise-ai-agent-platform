@@ -136,7 +136,7 @@ const codeOf = (result: Awaited<ReturnType<typeof call>>) =>
 
 async function main() {
   await check('registry: web_search is callable at company_egress and builtin, client-builtin only at builtin', () => {
-    assert.deepEqual(HARNESS_SUBSTITUTES.map((row) => row.tool), ['web_search'])
+    assert.deepEqual(HARNESS_SUBSTITUTES.map((row) => row.tool), ['web_search', 'document_export'])
     for (const level of [...webSearch.callableAt, ...webSearch.clientBuiltinAt]) {
       assert.ok(capabilityLevels(webSearch.capability).includes(level), `${level} is not a ${webSearch.capability} level`)
     }

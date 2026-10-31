@@ -55,6 +55,8 @@ export function hermesWarehouseTools(access: WarehouseAgentAccess): string[] {
 }
 
 const HERMES_BASE_TOOLS = [
+  // #1024: letölthető fájl — a szerver csak ott listázza, ahol a Bot maga nem írhat fájlt (Kötött pálya, Standard).
+  'document_export',
   'platform.whoami',
   'platform.agent.get_definition',
   'platform.gateway_operation.get',

@@ -18,6 +18,23 @@ export type Conversation = {
 
 export type AttachmentRef = { id: string; name: string; mime: string; size: number }
 
+/**
+ * #1024: letölthető fájl a munkatárs válaszán — a `document_export` `resource_link`-je vagy egy ismert
+ * letöltési mező (`warehouse.export_dataset` → `exportUrl`). Csak a platform saját címére mutathat.
+ */
+export type FileCard = {
+  url: string
+  name: string
+  mimeType: string | null
+  size: number | null
+  /** ISO időpont; null = nem jár le (pl. adattárház-export). */
+  expiresAt: string | null
+  /** A `document_export` azonosítója (Drive-mentéshez); null = más forrás. */
+  exportId: string | null
+  /** A munkatárs eléri-e a Drive-feltöltést (a „Mentés a Drive-ra” gomb ettől látszik). */
+  canSaveToDrive?: boolean
+}
+
 export type Message = {
   id: string
   conversationId: string
@@ -25,6 +42,7 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   attachments: AttachmentRef[]
+  files: FileCard[]
   createdAt: Date
 }
 
@@ -70,7 +88,7 @@ export type LlmStepOutput = {
   content: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
 }
-export type ToolStepOutput = { callId: string; name: string; text: string; isError: boolean }
+export type ToolStepOutput = { callId: string; name: string; text: string; isError: boolean; files?: FileCard[] }
 
 export type Step = {
   turnId: string
@@ -108,7 +126,7 @@ export interface Store {
   touchConversation(id: string): Promise<void>
 
   // üzenetek
-  addMessage(input: Omit<Message, 'id' | 'createdAt'>): Promise<Message>
+  addMessage(input: Omit<Message, 'id' | 'createdAt' | 'files'> & { files?: FileCard[] }): Promise<Message>
   listMessages(conversationId: string, limit?: number): Promise<Message[]>
 
   // fordulók

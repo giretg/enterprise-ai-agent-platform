@@ -21,8 +21,11 @@ export class PlatformError extends Error {
 
 export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> }
 
+/** #1024: letölthető fájl a tool-eredményből (a `FileCard` a `store.ts`-ben ebből készül). */
+export type FileLink = { url: string; name: string; mimeType: string | null; size: number | null; expiresAt: string | null; exportId: string | null }
+
 export type McpCallResult =
-  | { kind: 'complete'; text: string; isError: boolean }
+  | { kind: 'complete'; text: string; isError: boolean; files?: FileLink[] }
   | {
       kind: 'input_required'
       requestState: string
@@ -78,6 +81,52 @@ function textOf(result: Record<string, unknown>): string {
     .filter((c) => c.type === 'text' && typeof c.text === 'string')
     .map((c) => c.text)
     .join('\n')
+}
+
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+function sameOrigin(url: unknown, platformOrigin: string): url is string {
+  if (typeof url !== 'string') return false
+  try {
+    return new URL(url).origin === new URL(platformOrigin).origin
+  } catch {
+    return false
+  }
+}
+
+/**
+ * #1024: a tool-eredmény letölthető fájljai — a `resource_link` tartalom (document_export) és az ismert
+ * letöltési mező (`warehouse.export_dataset` → `exportUrl`). Csak a platform saját címére mutató link
+ * lesz kártya, így egy külső eszköz (vagy a modell) nem tud idegen letöltést becsempészni.
+ */
+export function fileLinksOf(toolName: string, result: Record<string, unknown>, platformOrigin: string): FileLink[] {
+  if (result.isError === true) return []
+  let payload: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(textOf(result) || '{}')
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>
+  } catch {
+    // nem JSON — csak a resource_link számít
+  }
+  const content = Array.isArray(result.content) ? (result.content as Array<Record<string, unknown>>) : []
+  const files: FileLink[] = content
+    .filter((c) => c.type === 'resource_link' && sameOrigin(c.uri, platformOrigin) && typeof c.name === 'string')
+    .map((c) => {
+      const described = payload.downloadUrl === c.uri
+      return {
+        url: c.uri as string,
+        name: c.name as string,
+        mimeType: typeof c.mimeType === 'string' ? c.mimeType : null,
+        size: typeof c.size === 'number' ? c.size : null,
+        expiresAt: described && typeof payload.expiresAt === 'string' ? payload.expiresAt : null,
+        exportId: described && typeof payload.exportId === 'string' ? payload.exportId : null,
+      }
+    })
+  if (toolName === 'warehouse.export_dataset' && sameOrigin(payload.exportUrl, platformOrigin)) {
+    const dataset = typeof payload.dataset === 'string' && payload.dataset ? payload.dataset : 'export'
+    files.push({ url: payload.exportUrl, name: `${dataset}.xlsx`, mimeType: XLSX_MIME, size: null, expiresAt: null, exportId: null })
+  }
+  return files
 }
 
 async function readJsonRpc(res: Response): Promise<Record<string, unknown>> {
@@ -201,7 +250,7 @@ export function createPlatformClient(platformOrigin: string, fetchImpl: typeof f
           message: requests[inputKey]?.params?.message ?? 'A munkatárs írni szeretne.',
         }
       }
-      return { kind: 'complete', text: textOf(result), isError: result.isError === true }
+      return { kind: 'complete', text: textOf(result), isError: result.isError === true, files: fileLinksOf(name, result, platformOrigin) }
     },
 
     async streamCompletion({ token, tenantSlug, agentId, conversationId, turnId, messages, tools, onDelta, signal }) {

@@ -11,6 +11,7 @@ import {
   ACTIVE_TURN_STATUSES,
   type Attachment,
   type Conversation,
+  type FileCard,
   type LlmStepOutput,
   type Step,
   type Store,
@@ -100,22 +101,40 @@ function assistantText(steps: Step[]): string {
     .join('\n\n')
 }
 
+/** Drive-feltöltés eszköze: ha a munkatárs eléri, a fájl-kártyán „Mentés a Drive-ra” gomb is van (#1024). */
+const DRIVE_UPLOAD_TOOL = 'google_drive_upload_file'
+
+/** #1024: a forduló tool-lépéseinek letölthető fájljai (egy link egyszer). */
+function turnFiles(steps: Step[], context: TurnContext | null): FileCard[] {
+  const canSaveToDrive = !!context?.tools.some((t) => t.name === DRIVE_UPLOAD_TOOL)
+  const byUrl = new Map<string, FileCard>()
+  for (const s of steps) {
+    if (s.kind !== 'tool' || s.status !== 'done') continue
+    for (const file of (s.output as ToolStepOutput).files ?? []) {
+      byUrl.set(file.url, { ...file, ...(file.exportId ? { canSaveToDrive } : {}) })
+    }
+  }
+  return [...byUrl.values()]
+}
+
 async function finalize(deps: EngineDeps, turn: Turn, extra?: string) {
   const steps = await deps.store.listSteps(turn.id)
   const content = [assistantText(steps), extra].filter(Boolean).join('\n\n') || '…'
+  const files = turnFiles(steps, turn.context ?? (await deps.store.getTurn(turn.id))?.context ?? null)
   const message = await deps.store.addMessage({
     conversationId: turn.conversationId,
     turnId: turn.id,
     role: 'assistant',
     content,
     attachments: [],
+    files,
   })
   const ok = await deps.store.transitionTurn(turn.id, ACTIVE_TURN_STATUSES, 'succeeded', {
     finishedAt: nowOf(deps),
     continuationToken: null,
     pendingApproval: null,
   })
-  if (ok) await deps.store.appendEvent(turn.id, 'done', { messageId: message.id, content })
+  if (ok) await deps.store.appendEvent(turn.id, 'done', { messageId: message.id, content, files })
   await deps.store.touchConversation(turn.conversationId)
   await deps.store.pruneOldEvents(7).catch(() => {})
 }
@@ -265,6 +284,17 @@ async function userContent(deps: EngineDeps, message: { content: string; attachm
   return parts.length ? [{ type: 'text', text }, ...parts] : text
 }
 
+/**
+ * #1024: a korábbi válaszok fájljai a modell előzményében — így a „Mentés a Drive-ra” kérésnél tudja,
+ * melyik exportId-t adja át (a tool-lépések nem kerülnek a következő forduló előzményébe).
+ */
+function fileNote(files: FileCard[] | undefined): string {
+  if (!files?.length) return ''
+  return `\n\n${files
+    .map((f) => `[Elkészült fájl: „${f.name}”${f.exportId ? ` — exportId: ${f.exportId}` : ''}${f.expiresAt ? `, letölthető ${f.expiresAt}-ig` : ''}]`)
+    .join('\n')}`
+}
+
 export async function buildMessages(deps: EngineDeps, conversation: Conversation, context: TurnContext, steps: Step[]): Promise<ChatMessage[]> {
   const history = await deps.store.listMessages(conversation.id, deps.limits.historyMessages)
   const ids = history.flatMap((m) => m.attachments.map((a) => a.id))
@@ -272,7 +302,7 @@ export async function buildMessages(deps: EngineDeps, conversation: Conversation
   const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt(conversation, context) }]
   for (const m of history) {
     if (m.role === 'user') messages.push({ role: 'user', content: await userContent(deps, m, attachments) })
-    else messages.push({ role: 'assistant', content: m.content })
+    else messages.push({ role: 'assistant', content: m.content + fileNote(m.files) })
   }
   for (const s of steps) {
     if (s.kind === 'llm') {
@@ -480,7 +510,13 @@ async function runTool(deps: EngineDeps, turn: Turn, conversation: Conversation,
   const text = result.text.length > deps.limits.toolResultChars
     ? `${result.text.slice(0, deps.limits.toolResultChars)}\n… (az eredmény csonkolva)`
     : result.text
-  await deps.store.finishStep(turn.id, seq, 'done', { callId: call.id, name: call.name, text, isError: result.isError } satisfies ToolStepOutput)
+  await deps.store.finishStep(turn.id, seq, 'done', {
+    callId: call.id,
+    name: call.name,
+    text,
+    isError: result.isError,
+    ...(result.files?.length ? { files: result.files } : {}),
+  } satisfies ToolStepOutput)
   if (pending) await deps.store.updateTurn(turn.id, { pendingApproval: null })
   await deps.store.updateTurn(turn.id, { stepCount: seq + 1 })
   await deps.store.appendEvent(turn.id, 'tool', { phase: 'done', name: call.name, isError: result.isError })

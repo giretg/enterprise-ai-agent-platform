@@ -233,6 +233,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.placement_overrides',
   'platform_setting.mini_app_link_ttl_changed',
   'platform_setting.web_search_changed',
+  // #1024 letölthető fájlok: letöltés (kérő vagy admin-betekintés) és a lejártak napi törlése.
+  'document_export.downloaded',
+  'document_export.retention_sweep',
   // #1004 platform-chat: tenant-/agent-kapcsoló, superadmin admin-betekintés, folytatási token, napi keret.
   'platform_setting.platform_chat_changed',
   'platform_setting.platform_chat_admin_insight',

@@ -40,7 +40,7 @@ export class MemoryStore implements Store {
   }
   async touchConversation() {}
   async addMessage(input: Parameters<Store['addMessage']>[0]) {
-    const m: Message = { ...input, id: randomUUID(), createdAt: new Date() }
+    const m: Message = { ...input, files: input.files ?? [], id: randomUUID(), createdAt: new Date() }
     this.messages.push(m)
     return m
   }
