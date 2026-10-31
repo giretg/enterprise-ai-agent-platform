@@ -114,6 +114,38 @@ async function main() {
     }
   })
 
+  // Google Docs export és szöveges letöltés: a maxBytes korlát ott is kötelező
+  // (korábban csak bináris/PDF ágon érvényesült, a szöveg korlát nélkül töltődött be).
+  for (const [label, meta, body] of [
+    ['export (Google Docs)', { mimeType: 'application/vnd.google-apps.document' }, 'x'.repeat(64)],
+    ['text download (méret-mező nélkül)', { mimeType: 'text/plain' }, 'x'.repeat(64)],
+  ] as const) {
+    await test(`read_file rejects oversized ${label} via maxBytes`, async () => {
+      const realFetch = globalThis.fetch
+      const realStub = process.env.GOOGLE_DRIVE_API_STUB
+      delete process.env.GOOGLE_DRIVE_API_STUB
+      globalThis.fetch = (async (input: unknown) => {
+        const url = String(input)
+        if (url.includes('/export') || url.includes('alt=media')) {
+          return new Response(body, { status: 200, headers: { 'content-type': 'text/plain' } })
+        }
+        return Response.json({ id: 'doc-1', name: 'nagy', ...meta })
+      }) as typeof fetch
+      try {
+        const live = new GoogleDriveApiClient('real-token-for-test')
+        await assert.rejects(
+          () => live.readFile({ fileId: 'doc-1', maxBytes: 10 }),
+          (err: unknown) => err instanceof GoogleDriveApiError && err.code === 'file_too_large',
+        )
+        const ok = await live.readFile({ fileId: 'doc-1', maxBytes: 1000 })
+        assert.equal(ok.text, body)
+      } finally {
+        globalThis.fetch = realFetch
+        process.env.GOOGLE_DRIVE_API_STUB = realStub
+      }
+    })
+  }
+
   // --- 5xx retry-duplikátum regresszió (nem-idempotens create-POST nem ismételhető) ---
   async function withLiveFetch<T>(
     responder: (calls: number, url: string, init?: RequestInit) => Response,
