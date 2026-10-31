@@ -55,13 +55,24 @@ try {
     assert.equal(isClerkEnabled(), false)
   })
 
-  check('dev auth csak nem-productionban engedett', () => {
+  check('dev auth csak explicit development/test alatt engedett (fail-closed)', () => {
     const previous = process.env.NODE_ENV
     const writableEnv = process.env as Record<string, string | undefined>
-    writableEnv.NODE_ENV = 'development'
-    assert.equal(isDevAuthAllowed(), true)
-    writableEnv.NODE_ENV = 'production'
-    assert.equal(isDevAuthAllowed(), false)
+    // Engedett: a felismert fejlesztői környezetek (next dev / teszt-futás).
+    for (const env of ['development', 'test']) {
+      writableEnv.NODE_ENV = env
+      assert.equal(isDevAuthAllowed(), true, `${env} → engedett`)
+    }
+    // Tiltott: production ÉS minden ismeretlen/kétértelmű érték. Ezek alatt a
+    // belépés nélküli dev-bypass fail-closed, nehogy egy pinneletlen NODE_ENV
+    // vagy titok-feloldási hiba névtelen superadmin-hozzáférést nyisson.
+    for (const env of ['production', 'prod', 'PRODUCTION', 'staging', 'preview', '']) {
+      writableEnv.NODE_ENV = env
+      assert.equal(isDevAuthAllowed(), false, `${JSON.stringify(env)} → tiltott`)
+    }
+    // Beállítatlan NODE_ENV: fail-closed (ez volt a legveszélyesebb fail-open eset).
+    delete writableEnv.NODE_ENV
+    assert.equal(isDevAuthAllowed(), false, 'undefined → tiltott')
     writableEnv.NODE_ENV = previous
   })
 
@@ -80,7 +91,7 @@ try {
     assert.doesNotMatch(shell, /isClerkUiEnabled/)
     assert.match(
       layout,
-      /<html lang="hu" suppressHydrationWarning>/,
+      /<html lang=\{locale\} suppressHydrationWarning>/,
       'html: böngésző-extension attribútum ne indítson Next recovery-flasht',
     )
     const pkg = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')
