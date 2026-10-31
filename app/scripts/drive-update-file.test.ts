@@ -66,9 +66,10 @@ await check('séma: fileId, textContent és idempotencyKey kötelező', () => {
 
 await check('felülírás stubbal: friss modifiedTime-mal lefut', async () => {
   const listed = (await executeGoogleDriveTool('google_drive_search', {}, 'stub-token')) as {
-    files: Array<{ id: string; modifiedTime?: string }>
+    files: Array<{ id: string; mimeType: string; modifiedTime?: string }>
   }
-  const target = listed.files[0]!
+  // Szöveges fájl kell: bináris/Workspace MIME-ra az update_file 415-tel áll meg.
+  const target = listed.files.find((file) => file.mimeType === 'text/plain')!
   const result = (await executeGoogleDriveTool(
     GOOGLE_DRIVE_UPDATE_FILE_TOOL,
     { fileId: target.id, textContent: 'új tartalom', expectedModifiedTime: target.modifiedTime },
@@ -82,7 +83,7 @@ await check('közben módosított fájl: nem ír, file_modified hibával áll me
     () =>
       executeGoogleDriveTool(
         GOOGLE_DRIVE_UPDATE_FILE_TOOL,
-        { fileId: 'stub-file-1', textContent: 'új', expectedModifiedTime: '2000-01-01T00:00:00.000Z' },
+        { fileId: 'stub-file-text', textContent: 'új', expectedModifiedTime: '2000-01-01T00:00:00.000Z' },
         'stub-token',
       ),
     (error: unknown) => error instanceof GoogleDriveApiError && error.code === 'file_modified',
