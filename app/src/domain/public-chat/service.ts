@@ -260,14 +260,15 @@ export async function handlePublicChat(
 
     let active = session
     if (!active) {
+      // D22: a teszt-token ugyanazokat a korlátokat kapja (Turnstile, IP/óra) — csak az analitikán
+      // (jelzések, beszélgetéslista, betöltés-állapot) kívül. Különben egy kiszivárgott 1 órás
+      // kipróbálás-link korlátlan billable modellhívásra és új munkamenetekre nyitna.
       const ipHash = hashIp(deps.secret, input.ip)
-      if (!isTest) {
-        if (deps.verifyTurnstile && !(await deps.verifyTurnstile(typeof b.turnstileToken === 'string' ? b.turnstileToken : '', input.ip))) {
-          return { status: 403, body: { error: 'bot_check_failed', message: 'Nem sikerült ellenőrizni, hogy ember vagy. Frissítsd az oldalt, és próbáld újra.' } }
-        }
-        if (ipHash && (await deps.store.countRecentSessionsByIp(ipHash, new Date(now.getTime() - 3_600_000))) >= NEW_SESSIONS_PER_IP_HOUR) {
-          return { status: 429, body: { error: 'rate_limited', message: 'Túl sok új beszélgetés indult innen. Próbáld újra egy óra múlva.' } }
-        }
+      if (deps.verifyTurnstile && !(await deps.verifyTurnstile(typeof b.turnstileToken === 'string' ? b.turnstileToken : '', input.ip))) {
+        return { status: 403, body: { error: 'bot_check_failed', message: 'Nem sikerült ellenőrizni, hogy ember vagy. Frissítsd az oldalt, és próbáld újra.' } }
+      }
+      if (ipHash && (await deps.store.countRecentSessionsByIp(ipHash, new Date(now.getTime() - 3_600_000))) >= NEW_SESSIONS_PER_IP_HOUR) {
+        return { status: 429, body: { error: 'rate_limited', message: 'Túl sok új beszélgetés indult innen. Próbáld újra egy óra múlva.' } }
       }
       active = await deps.store.createSession({
         tenantId: row.tenantId,
@@ -321,7 +322,8 @@ export async function handlePublicChat(
           callModel: async (input) => {
             const reply = await modelDeps.callModel(input)
             // A már sikeres modellkör költsége későbbi eszköz-/modellhiba esetén is megmarad.
-            if (!isTest && reply.costUsd > 0) await deps.store.addSpend({ tenantId: row.tenantId, day, costUsd: reply.costUsd })
+            // Teszt-mód is a napi keretet terheli (D22: ugyanazok a korlátok) — a provider valóban számláz.
+            if (reply.costUsd > 0) await deps.store.addSpend({ tenantId: row.tenantId, day, costUsd: reply.costUsd })
             return reply
           },
         },

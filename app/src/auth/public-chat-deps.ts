@@ -185,6 +185,8 @@ export function publicChatDeps(): PublicChatDeps {
         },
         async forward({ contact, summary }) {
           await signal('forward', summary)
+          // D22 dry-run: teszt-tokennel ne küldjünk valódi levelet a tenant postafiókján át.
+          if (isTest) return 'emailed'
           return forwardToSupport({ tenantId, agentId, config, contact, summary, transcript: transcript(), isTest })
         },
         flag: ({ source, question }) => signal(source, question),
