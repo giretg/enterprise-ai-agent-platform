@@ -207,7 +207,7 @@ export async function runWebSearch(
     if (!domain) continue
     const outOfScope =
       matchesAny(domain, config.deniedDomains) ||
-      (effective.domains.length > 0 && !matchesAny(domain, effective.domains.flatMap((d) => [d, `*.${d.replace(/^\*\./, '')}`])))
+      (effective.domains.length > 0 && !matchesAny(domain, effective.domains))
     if (outOfScope) {
       filtered++
       continue

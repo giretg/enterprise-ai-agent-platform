@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import { PRESETS, capabilityLevels, type PresetId } from '../src/domain/client-policy/capabilities'
 import { disabledToolsetsForPolicies } from '../src/domain/client-policy/machine-floor'
+import { getPolicySnapshot } from '../src/domain/client-policy/policy-service'
 import type { ToolRule } from '../src/domain/client-policy/resolve-effective-policy'
 import {
   HARNESS_SUBSTITUTES,
@@ -247,6 +248,22 @@ async function main() {
     assert.equal(searched.length, 0)
   })
 
+  await check('tenant kill-switch survives user override, and approve fails closed', async () => {
+    const snapshot = await getPolicySnapshot({ findRows: async () => [
+      { scope: 'tenant', scopeId: TENANT_ID, preset: 'standard', capabilities: {}, toolOverrides: { web_search: 'deny' } },
+      { scope: 'user', scopeId: USER_ID, preset: null, capabilities: {}, toolOverrides: { web_search: 'allow' } },
+    ] }, { tenantId: TENANT_ID, userId: USER_ID, agentId: AGENT_ID })
+    assert.equal(substituteCallability(webSearch, snapshot).callable, false)
+    assert.equal(isSubstituteVisible(webSearch, { policy: snapshot, client: 'platform_chat', externalClientsEnabled: true }), false)
+    const blockedDeps = deps({ preset: 'standard' })
+    blockedDeps.resolveClientPolicy = async () => snapshot
+    assert.equal(codeOf(await call(blockedDeps)), 'web_search_not_allowed_by_policy')
+    const approval = policy('standard', [{ pattern: 'web_search', action: 'approve', source: 'tenant' }])
+    assert.equal(substituteCallability(webSearch, approval).callable, false)
+    blockedDeps.resolveClientPolicy = async () => approval
+    assert.equal(codeOf(await call(blockedDeps)), 'web_search_not_allowed_by_policy')
+  })
+
   await check('domain rules: narrow only, deny wins, wildcard is left-anchored', () => {
     assert.equal(domainMatchesPattern('www.gov.hu', '*.gov.hu'), true)
     assert.equal(domainMatchesPattern('gov.hu', '*.gov.hu'), false)
@@ -273,6 +290,7 @@ async function main() {
           provider: 'stub',
           items: [
             { title: 'a', url: 'https://www.mnb.hu/a', snippet: '' },
+            { title: 'exact', url: 'https://mnb.hu/a', snippet: '' },
             { title: 'b', url: 'https://pastebin.com/x', snippet: '' },
             { title: 'c', url: 'https://index.hu/c', snippet: '' },
             { title: 'd', url: 'not a url', snippet: '' },
@@ -282,10 +300,12 @@ async function main() {
     }
     const cfg = config({ deniedDomains: ['pastebin.com'] })
     const scoped = await runWebSearch(provider, { query: 'q', domains: ['mnb.hu'], locale: 'hu-HU', maxResults: 5, queryHash: 'h' }, cfg)
-    assert.deepEqual(scoped.results.map((r) => r.domain), ['www.mnb.hu'])
+    assert.deepEqual(scoped.results.map((r) => r.domain), ['mnb.hu'])
+    const wildcard = await runWebSearch(provider, { query: 'q', domains: ['*.mnb.hu'], locale: 'hu-HU', maxResults: 5, queryHash: 'h' }, cfg)
+    assert.deepEqual(wildcard.results.map((r) => r.domain), ['www.mnb.hu'])
     assert.equal(scoped.warnings.length, 1)
     const open = await runWebSearch(provider, { query: 'q', domains: [], locale: 'hu-HU', maxResults: 5, queryHash: 'h' }, cfg)
-    assert.deepEqual(open.results.map((r) => r.domain), ['www.mnb.hu', 'index.hu'])
+    assert.deepEqual(open.results.map((r) => r.domain), ['www.mnb.hu', 'mnb.hu', 'index.hu'])
   })
 
   await check('Brave helpers: site: operators, freshness codes, supported country only, tolerant parsing', () => {

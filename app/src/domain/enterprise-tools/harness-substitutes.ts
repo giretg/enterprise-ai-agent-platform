@@ -39,7 +39,7 @@ export function harnessClientKind(client: McpClientName): HarnessClientKind {
 }
 
 /** Az `EffectivePolicy` vagy a policy-snapshot (`getPolicySnapshot`) elég ehhez. */
-export type SubstitutePolicy = { capabilities: Readonly<Record<string, string>>; toolRules: readonly ToolRule[] }
+export type SubstitutePolicy = { capabilities: Readonly<Record<string, string>>; toolRules: readonly ToolRule[]; tenantDeniedTools?: readonly string[] }
 
 export type SubstituteCallability =
   | { callable: true; level: string }
@@ -47,8 +47,10 @@ export type SubstituteCallability =
 
 export function substituteCallability(sub: HarnessSubstitute, policy: SubstitutePolicy): SubstituteCallability {
   const level = policy.capabilities[sub.capability] ?? ''
-  // ponytail: az `approve` szabály itt engedett — az MCP-oldali jóváhagyás külön munka (a Guard a sajátját kezeli).
-  if (decideToolRule(policy.toolRules, sub.tool) === 'deny') return { callable: false, level, reason: 'tool_rule' }
+  const tenantDenials: ToolRule[] = (policy.tenantDeniedTools ?? []).map((pattern) => ({ pattern, action: 'deny', source: 'tenant' }))
+  const rule = decideToolRule(policy.toolRules, sub.tool)
+  // Szerveroldali jóváhagyás nélkül az approve nem adhat kimenő hozzáférést.
+  if (decideToolRule(tenantDenials, sub.tool) === 'deny' || rule === 'deny' || rule === 'approve') return { callable: false, level, reason: 'tool_rule' }
   if (!sub.callableAt.includes(level)) return { callable: false, level, reason: 'policy_level' }
   return { callable: true, level }
 }
