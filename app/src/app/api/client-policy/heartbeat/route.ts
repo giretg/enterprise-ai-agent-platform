@@ -4,8 +4,12 @@ import { clientPolicyDeps } from '@/auth/client-policy-deps'
 import { heartbeatBodySchema, recordHeartbeat } from '@/domain/client-policy/client-install'
 import { verifyGatewayToken } from '@/domain/model-gateway-token/gateway-token'
 import { isReservedInstallId } from '@/domain/platform-chat/gateway'
+import { readBoundedJson, RequestTooLargeError } from '@/lib/request-body'
 
 export const dynamic = 'force-dynamic'
+
+/** A heartbeat törzse apró (hash-ek + legfeljebb 50 × 200 karakteres session). 64 KiB bőven elég. */
+const MAX_HEARTBEAT_BODY_BYTES = 64 * 1024
 
 /** #774 (D14): a Guard heartbeatje a gateway-JWT-vel; ez teszi a klienst Managed-dé a Model Gateway-en. */
 export async function POST(request: Request): Promise<Response> {
@@ -16,7 +20,14 @@ export async function POST(request: Request): Promise<Response> {
   }
   // #1004: a platform-chat szerveroldali install-ja nem Guard — heartbeatet nem fogad.
   if (isReservedInstallId(verified.claims.installId)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const body = heartbeatBodySchema.safeParse(await request.json().catch(() => null))
+  let raw: unknown
+  try {
+    raw = await readBoundedJson(request, MAX_HEARTBEAT_BODY_BYTES)
+  } catch (error) {
+    if (error instanceof RequestTooLargeError) return NextResponse.json({ error: 'request_too_large' }, { status: 413 })
+    return NextResponse.json({ error: 'bad_request' }, { status: 400 })
+  }
+  const body = heartbeatBodySchema.safeParse(raw)
   if (!body.success) return NextResponse.json({ error: 'bad_request' }, { status: 400 })
 
   const { principal, claims } = verified

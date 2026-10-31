@@ -111,6 +111,7 @@ jobs:
           npm run test:machine-floor
           npm run test:hermes-installer
           npm run test:model-gateway-token
+          npm run test:request-body-limit
           npm run test:model-fallback-chain
           npm run test:model-gateway-proxy
           npm run test:openrouter-tenant-key
