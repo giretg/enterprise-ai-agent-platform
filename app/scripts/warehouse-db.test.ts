@@ -298,6 +298,19 @@ async function main() {
     assert.ok(audits.some((a) => a.action === 'warehouse.import.discarded' && a.targetId === stray.import.id))
     console.log('  OK  Betöltésre váró feltöltés törölhető; betöltött/visszavont nem')
 
+    // #996 clobber + discard: state=awaiting_approval, de published_at megvan → törlés tilos (eredet megmarad).
+    await prisma.$executeRawUnsafe(
+      `UPDATE "${schema}"._imports SET state = 'awaiting_approval', updated_at = now() WHERE id = $1::uuid AND published_at IS NOT NULL`,
+      customers.import.id,
+    )
+    await expectCode(service.discardImport(ai, customers.import.id), 'import_invalid_state')
+    const stillThere = await prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT count(*)::int AS n FROM "${schema}"._imports WHERE id = $1::uuid`,
+      customers.import.id,
+    )
+    assert.equal(stillThere[0]?.n, 1)
+    console.log('  OK  Clobberolt published import nem törölhető (published_at őr)')
+
   } finally {
     for (const t of [tenant, other]) {
       await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${warehouseSchemaName(t.id)}" CASCADE`)
