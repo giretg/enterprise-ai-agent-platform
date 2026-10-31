@@ -47,7 +47,7 @@ def main() -> None:
             "files": {
                 "SOUL.md": "# Kati\n",
                 "profile.yaml": "display_name: Kati\n",
-                "config.yaml": "mcp_servers: {}\n",
+                "config.yaml": "mcp_servers:\n  excellence:\n    url: https://app.example.com/api/mcp/acme\n",
                 "distribution.yaml": "name: exc-kati\n",
             },
         }]
@@ -71,6 +71,11 @@ def main() -> None:
         assert (hermes_home / "plugins/excellence-guard/plugin.yaml").is_file()
         assert (hermes_home / "profiles/test-bot/plugins/excellence-guard/plugin.yaml").is_file()
         assert (hermes_home / "profiles/exc-kati/mcp-tokens/excellence.json").read_text(encoding="utf-8") == '{"access_token":"oauth-parent"}\n'
+        # #1043: a Bot MCP-hívásai a gép telepítés-azonosítójával mennek.
+        assert (hermes_home / "profiles/exc-kati/config.yaml").read_text(encoding="utf-8") == (
+            "mcp_servers:\n  excellence:\n    url: https://app.example.com/api/mcp/acme\n"
+            "    headers:\n      X-Excellence-Install-Id: 'inst-win'\n"
+        )
 
         # A user által átirányított plugin-könyvtárba nem ír.
         outside = Path(tmp) / "outside"

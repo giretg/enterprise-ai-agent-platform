@@ -100,6 +100,126 @@ def install_id(home):
     return v
 
 
+INSTALL_HEADER = "X-Excellence-Install-Id"
+# A szerver (`parseMcpSessionId`) is csak ezt fogadja el; más érték YAML-ba sem kerül.
+SAFE_INSTALL_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def managed_install_id():
+    """A telepítő által kirakott azonosító. Nem menedzselt gépen None: a fejléchez nem generálunk."""
+    try:
+        v = open(os.path.join(MANAGED_DIR, "excellence-install-id"), encoding="utf-8").read().strip()
+    except OSError:
+        return None
+    return v if SAFE_INSTALL_ID.match(v) else None
+
+
+def with_install_header(config_text, inst):
+    """A config szövege, a `mcp_servers.<SERVER>.headers` alatt az install-id sorral (#1043).
+
+    Csak a saját szerverblokk sorai változnak, a többi byte marad. None = nincs teendő
+    (már egyezik, nincs ilyen blokk, vagy olyan alakú, amit yaml-lib nélkül nem írunk biztonságosan).
+    """
+    lines = config_text.splitlines(keepends=True)
+    nl = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += nl
+    indent = lambda ln: len(ln) - len(ln.lstrip())
+    meaningful = lambda ln: ln.strip() and not ln.lstrip().startswith("#")
+    start = base = None
+    in_servers = False
+    for i, ln in enumerate(lines):
+        if not meaningful(ln):
+            continue
+        if indent(ln) == 0:
+            in_servers, base = ln.strip() == "mcp_servers:", None
+        elif in_servers and (base is None or indent(ln) == base):
+            base = indent(ln)
+            if ln.strip() == f"{SERVER}:":
+                start = i
+                break
+    if start is None:
+        return None
+    end = start
+    for i in range(start + 1, len(lines)):
+        if meaningful(lines[i]):
+            if indent(lines[i]) <= base:
+                break
+            end = i
+    children = [i for i in range(start + 1, end + 1) if meaningful(lines[i])]
+    if not children:
+        return None
+    child = indent(lines[children[0]])
+    # Idézőjelben: egy csupa számjegyű azonosító YAML-ban szám lenne.
+    entry = lambda pad: f"{' ' * pad}{INSTALL_HEADER}: '{inst}'{nl}"
+    head = next((i for i in children if indent(lines[i]) == child and re.match(r"['\"]?headers['\"]?:", lines[i].strip())), None)
+    if head is None:
+        new = [f"{' ' * child}headers:{nl}", entry(child + 2)]
+        return "".join(lines[: end + 1] + new + lines[end + 1 :])
+    rest = re.sub(r"^['\"]?headers['\"]?:", "", lines[head].strip()).strip()
+    if rest == "{}":
+        return "".join(lines[:head] + [f"{' ' * child}headers:{nl}", entry(child + 2)] + lines[head + 1 :])
+    if rest:
+        return None  # flow-stílusú fejlécek: nem írjuk át
+    items = []
+    for i in children[children.index(head) + 1 :]:
+        if indent(lines[i]) <= child:
+            break
+        items.append(i)
+    if not items:
+        return "".join(lines[: head + 1] + [entry(child + 2)] + lines[head + 1 :])
+    pad = indent(lines[items[0]])
+    pattern = re.compile(rf"['\"]?{INSTALL_HEADER}['\"]?:\s*(.*?)\s*$", re.I)
+    for i in items:
+        m = pattern.match(lines[i].strip())
+        if m and indent(lines[i]) == pad:
+            if m.group(1).strip("'\"") == inst:
+                return None
+            return "".join(lines[:i] + [entry(pad)] + lines[i + 1 :])
+    return "".join(lines[: items[-1] + 1] + [entry(pad)] + lines[items[-1] + 1 :])
+
+
+def _set_install_header(bot, inst):
+    """A Bot config.yaml-jába atomikusan beírja a fejlécet. Symlinket nem követ, nem ír. True = írt."""
+    path = os.path.join(bot, "config.yaml")
+    if os.path.islink(bot) or os.path.islink(path) or not os.path.isfile(path):
+        return False
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    try:
+        new = with_install_header(raw.decode("utf-8"), inst)
+    except UnicodeDecodeError:
+        return False
+    if new is None:
+        return False
+    tmp = f"{path}.{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, os.stat(path).st_mode & 0o777)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(new.encode("utf-8"))
+    os.replace(tmp, path)
+    return True
+
+
+def ensure_install_headers(home, inst=None):
+    """Minden `exc-*` Bot MCP-hívása vigye a gép telepítés-azonosítóját (#1043, audit-korreláció).
+
+    A Bot-configot a szerver adja ki, mindenkinek ugyanazt; az Agent Sync újraírhatja, ezért a
+    key_cmd minden futáskor pótolja. Nem hiteles azonosító: a user átírhatja, jog nem épülhet rá.
+    """
+    inst = inst if inst is not None else managed_install_id()
+    if not inst or not SAFE_INSTALL_ID.match(inst):
+        return 0
+    root = parent_hermes_home(home) or home
+    profiles = os.path.join(root, "profiles")
+    if os.path.islink(profiles):
+        return 0
+    try:
+        names = sorted(os.listdir(profiles))
+    except OSError:
+        return 0
+    return sum(1 for name in names if name.startswith("exc-") and _set_install_header(os.path.join(profiles, name), inst))
+
+
 def parent_hermes_home(home):
     """A vékony Bot (`.../profiles/exc-…`) default Hermes-profilja. Más HERMES_HOME-ra None."""
     home = os.path.abspath(home)
@@ -288,6 +408,11 @@ def get_token(home, now=time.time, fetcher=fetch):
 
 
 def get_token_exp(home, now=time.time, fetcher=fetch):
+    # A cache előtt: az Agent Sync után legkésőbb a következő modellhívásnál visszakerül a fejléc.
+    try:
+        ensure_install_headers(home)
+    except OSError:
+        pass  # csak audit-korreláció, a modellhívást nem állítja meg
     origin, tenant, agent = read_profile(home)
     inst = install_id(home)
     cache = os.path.join(home, CACHE_NAME)
@@ -324,8 +449,10 @@ def key_cmd_payload(token, exp, now=time.time):
 
 def main():
     if sys.argv[1:2] == ["--share"]:
-        # Telepítő: a frissen kirakott Bot-profilok az azonos URL-ű default belépőt kapják.
-        share_all_mcp_tokens(sys.argv[2] if len(sys.argv) > 2 else default_home())
+        # Telepítő: a frissen kirakott Bot-profilok az azonos URL-ű default belépőt és a gép azonosítóját kapják.
+        home = sys.argv[2] if len(sys.argv) > 2 else default_home()
+        share_all_mcp_tokens(home)
+        ensure_install_headers(home, sys.argv[3] if len(sys.argv) > 3 else None)
         return 0
     home = os.environ.get("HERMES_HOME") or default_home()
     try:
