@@ -925,6 +925,36 @@ async function main() {
     )
   })
 
+  await check('#1022 web_search: a bound agent is only offered it when its definition allows it', async () => {
+    const listed = async (definition: typeof SAMPLE_DEFINITION) => {
+      const { deps } = runtimeDeps({ role: 'admin' })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS.standard, toolRules: [] })
+      deps.loadDefinition = async () => definition
+      const res = await post(
+        'acme',
+        { jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} },
+        { authorization: `Bearer ${TOKEN}`, 'x-excellence-client': 'hermes-managed', 'x-excellence-agent-id': AGENT_ID },
+        deps,
+      )
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      return (body.result?.tools ?? []).some((tool) => tool.name === WEB_SEARCH_TOOL)
+    }
+    const withSearch = (connector: boolean) => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        connectors: [
+          ...SAMPLE_DEFINITION.snapshot.connectors,
+          ...(connector ? [{ connectorId: CONNECTOR_ID, type: 'web_search', accessMode: 'read' as const }] : []),
+        ],
+        capabilities: [...SAMPLE_DEFINITION.snapshot.capabilities, { toolName: WEB_SEARCH_TOOL, allowed: true }],
+      },
+    })
+    assert.equal(await listed(SAMPLE_DEFINITION), false, 'a definíció nem engedi → nem kínáljuk fel')
+    assert.equal(await listed(withSearch(false)), false, 'webes kereső kapcsolat nélkül sem')
+    assert.equal(await listed(withSearch(true)), true, 'jog + kapcsolat → listázódik')
+  })
+
   await check('#1020 web_search: a direct tools/call reaches the policy check even when not listed', async () => {
     const { deps } = runtimeDeps({})
     const calls: Array<{ toolName: string; client?: string }> = []
