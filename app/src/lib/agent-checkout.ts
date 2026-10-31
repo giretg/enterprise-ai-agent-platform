@@ -27,6 +27,9 @@ const SKILL_DIR = '.enterprise-agent/skills'
 const HERMES_SKILL_DIR = 'skills/excellence'
 /** Must match MCP_AGENT_ID_HEADER in auth/mcp-server.ts (#682 WP-2). */
 const AGENT_ID_HEADER = 'X-Excellence-Agent-Id'
+/** Must match MCP_CLIENT_HEADER / HERMES_MANAGED_CLIENT in lib/mcp-session.ts (#1020). */
+const CLIENT_HEADER = 'X-Excellence-Client'
+const HERMES_MANAGED_CLIENT_VALUE = 'hermes-managed'
 /** Hermes' published CIMD client: the Bot's `mcp login` must not fall back to DCR (our AS has no registration_endpoint). */
 const HERMES_OAUTH_CLIENT_ID = 'https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json'
 /** Platform tools a Hermes Bot needs besides the agent's own capabilities (#682 WP-1). */
@@ -239,7 +242,8 @@ export function renderHermesBotConnector(input: {
             url: input.mcpUrl,
             auth: 'oauth',
             oauth: { client_id: HERMES_OAUTH_CLIENT_ID },
-            headers: { [AGENT_ID_HEADER]: input.agentId },
+            // #1020: a menedzselt Hermes jelzése (csak az eszközlista rendezettségéhez; a jog a policyé).
+            headers: { [AGENT_ID_HEADER]: input.agentId, [CLIENT_HEADER]: HERMES_MANAGED_CLIENT_VALUE },
             tools: { include: tools },
           },
         },

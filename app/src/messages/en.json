@@ -2230,6 +2230,11 @@
           "title": "Calculations",
           "read": "Makes calculations and reports",
           "write": ""
+        },
+        "web": {
+          "title": "Web search",
+          "read": "Searches the public web with the company search key",
+          "write": ""
         }
       },
       "systemsTitle": "Company system connections",

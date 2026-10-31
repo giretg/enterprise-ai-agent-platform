@@ -63,6 +63,7 @@ const CARD_MEANING: Record<CapabilityDeckCategory, string> = {
   company: "reads data from the company's own systems (APIs)",
   knowledge: 'answers from the company knowledge base, citing sources',
   compute: 'runs calculations and data analysis',
+  web: 'looks up current public information on the web',
 }
 
 export function cleanHireDescription(text: string): string {

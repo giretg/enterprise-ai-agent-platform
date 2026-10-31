@@ -105,6 +105,10 @@ export const ENTERPRISE_KB_TOOLS = [
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
 export const ENTERPRISE_SANDBOX_TOOLS = [SANDBOX_RUN_TOOL] as const
 
+/** #1020: céges webes keresés — „harness-pótló”, a listázását a `harness-substitutes.ts` dönti el. */
+export const WEB_SEARCH_TOOL = 'web_search'
+export const ENTERPRISE_WEB_TOOLS = [WEB_SEARCH_TOOL] as const
+
 /** #395 D1: két fix eszköz minden külső MCP-szerverhez — a nevek futásidőben nem változnak. */
 export const MCP_LIST_TOOLS_TOOL = 'mcp_list_tools'
 export const MCP_CALL_TOOL = 'mcp_call'
@@ -125,6 +129,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_KB_TOOLS,
   ...ENTERPRISE_SANDBOX_TOOLS,
   ...ENTERPRISE_MCP_TOOLS,
+  ...ENTERPRISE_WEB_TOOLS,
 ] as const
 
 /**
@@ -152,6 +157,7 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   KB_GET_DOCUMENT_TOOL,
   KB_WIKI_CHANGES_TOOL,
   MCP_LIST_TOOLS_TOOL,
+  WEB_SEARCH_TOOL,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -220,6 +226,10 @@ export function isEnterpriseKbTool(toolName: string): toolName is EnterpriseKbTo
 
 export function isEnterpriseSandboxTool(toolName: string): toolName is EnterpriseSandboxTool {
   return ENTERPRISE_SANDBOX_TOOL_SET.has(toolName)
+}
+
+export function isEnterpriseWebSearchTool(toolName: string): toolName is typeof WEB_SEARCH_TOOL {
+  return toolName === WEB_SEARCH_TOOL
 }
 
 export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcpTool {
@@ -1056,6 +1066,27 @@ export const sandboxRunInputSchema = z
   })
   .passthrough()
 
+export const webSearchInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    query: z
+      .string()
+      .min(1)
+      .max(2000)
+      .describe('What to look up on the public web. Never put personal data, card numbers, passwords or internal secrets in the query.'),
+    // ponytail: string not string[] — Claude.ai drops MCP tools whose advertised schema has arrays
+    domains: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Optional comma-separated domains to search only (e.g. "mnb.hu, docs.stripe.com"). Can only narrow the company rules.'),
+    recencyDays: z.number().int().min(1).max(3650).optional().describe('Only results from the last N days.'),
+    locale: z.string().max(16).optional().describe('Result language, e.g. hu-HU or en-US. Omit for the company default.'),
+    maxResults: z.number().int().min(1).max(20).optional().describe('How many results to return (the company limit applies).'),
+  })
+  .passthrough()
+
 export function schemaForEnterpriseSandboxTool(_toolName: EnterpriseSandboxTool) {
   return sandboxRunInputSchema
 }
@@ -1103,6 +1134,7 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (isEnterpriseDriveTool(toolName)) return schemaForEnterpriseDriveTool(toolName)
   if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
   if (isEnterpriseSandboxTool(toolName)) return schemaForEnterpriseSandboxTool(toolName)
+  if (toolName === WEB_SEARCH_TOOL) return webSearchInputSchema
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
   if (toolName === GMAIL_GET_THREAD_TOOL) return gmailGetThreadInputSchema

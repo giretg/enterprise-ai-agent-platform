@@ -20,6 +20,7 @@ import { readTenantAutonomyCeiling, writeModesAboveCeiling } from '@/lib/agent-a
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { ensureAgentCodeSandbox, toolsNeedCodeSandbox } from '@/lib/agent-code-sandbox'
+import { ensureAgentWebSearch, toolsNeedWebSearch } from '@/lib/agent-web-search'
 import {
   agentIdSchema,
   approveUserSchema,
@@ -870,6 +871,9 @@ export async function updateAgentCapabilities(input: {
         connectors: repositories.connectors,
         agents: repositories.agents,
       })
+    }
+    if (toolsNeedWebSearch(tools) && user.activeTenantId) {
+      await ensureAgentWebSearch(existing, { connectors: repositories.connectors, agents: repositories.agents })
     }
     return ok({ updated: true, updatedCount: tools.length })
   } catch (e) {

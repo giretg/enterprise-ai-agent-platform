@@ -506,7 +506,8 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   // Webes kutatás
   web_search: {
     label: 'Webes keresés',
-    description: 'Kontrollált webes keresés publikus, aktuális információhoz.',
+    description:
+      'Keresés a nyilvános weben a cég saját keresőjével; minden keresés a cég naplójába kerül. Előtte egy adminnak be kell állítania a Beállítások → Webes keresés alatt.',
   },
   web_research_request: {
     label: 'Webes kutatás',

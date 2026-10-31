@@ -271,7 +271,16 @@ def _lead(kind, level, tool_name):
     return f"A(z) „{tool_name}” eszközt a céges lista még nem ismeri, ezért nem fut le. A rendszergazda a besorolatlan eszközök között látja."
 
 
+# #1020: céges keresőnél nem elutasítás, hanem átterelés — a modell váltson, ne adja fel.
+COMPANY_WEB_SEARCH = (
+    "A cég a webes keresést a céges keresőn keresztül engedi — használd az Excellence webes keresőjét "
+    "(a „web_search” eszköz az Excellence-eszközök között)."
+)
+
+
 def _block(kind, level, tool_name, source, capability):
+    if kind == "web" and level == "company_egress":
+        return Decision("block", COMPANY_WEB_SEARCH, capability, level)
     # Ismeretlen vagy véglegesen tiltott eszköznél nincs szintbeli döntés, amire hivatkozhatnánk (#871).
     why = "" if kind in ("other", "denied", "unknown_axis") else f" {_why(source)}"
     text = f"{_lead(kind, level, tool_name)}{why} {ASK}"

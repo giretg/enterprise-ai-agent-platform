@@ -521,7 +521,11 @@ export async function authorizeToolCall(
     }
   }
 
-  if (requirement.connectorType === 'knowledge_base' || requirement.connectorType === 'code_sandbox') {
+  if (
+    requirement.connectorType === 'knowledge_base' ||
+    requirement.connectorType === 'code_sandbox' ||
+    requirement.connectorType === 'web_search'
+  ) {
     return {
       allowed: true,
       connectorId: connector.id,

@@ -11,6 +11,13 @@
  */
 
 export const MCP_SESSION_ID_HEADER = 'mcp-session-id'
+/**
+ * #1020: a menedzselt Hermes Bot jelzi magát. Nem hiteles (a gépattesztáció a #883 dolga): csak az
+ * eszközlista rendezettségét befolyásolja, biztonsági döntést nem.
+ */
+export const MCP_CLIENT_HEADER = 'x-excellence-client'
+export const MCP_INSTALL_ID_HEADER = 'x-excellence-install-id'
+export const HERMES_MANAGED_CLIENT = 'hermes-managed'
 
 export type McpClientName =
   | 'claude'
@@ -28,6 +35,8 @@ export type McpRequestContext = {
   clientName: McpClientName
   /** A per-client agent-kötő fejléc nyers értéke (legfeljebb 64 kar.). */
   headerAgentId: string | null
+  /** #1020: a menedzselt Hermes telepítés-azonosítója, ha küldi (audit-korreláció). */
+  installId: string | null
 }
 
 const SESSION_RE = /^[A-Za-z0-9_-]{8,64}$/
@@ -62,10 +71,12 @@ export function detectMcpClient(
 export function getMcpRequestContext(headers: {
   get: (name: string) => string | null
 }): McpRequestContext {
+  const managed = (headers.get(MCP_CLIENT_HEADER) ?? '').trim().toLowerCase() === HERMES_MANAGED_CLIENT
   return {
     sessionId: parseMcpSessionId(headers.get(MCP_SESSION_ID_HEADER)),
-    clientName: detectMcpClient(headers.get('user-agent')),
+    clientName: managed ? 'hermes' : detectMcpClient(headers.get('user-agent')),
     headerAgentId: (headers.get('x-excellence-agent-id') ?? '').trim().slice(0, 64) || null,
+    installId: parseMcpSessionId(headers.get(MCP_INSTALL_ID_HEADER)),
   }
 }
 
@@ -109,6 +120,7 @@ export function scopeMcpAuditSink<T extends AuditSinkLike | undefined>(
       if (ctx.headerAgentId && meta.headerAgentId === undefined) {
         meta.headerAgentId = ctx.headerAgentId
       }
+      if (ctx.installId && meta.installId === undefined) meta.installId = ctx.installId
       return (sink as AuditSinkLike).append({ ...data, metadata: meta })
     },
   }

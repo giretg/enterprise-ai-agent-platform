@@ -37,6 +37,17 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   missing_code_sandbox_connector_read: 'Published definition has no code sandbox connector',
   missing_code_sandbox_connector_write:
     'Published definition has no code sandbox connector — grant sandbox_run and publish after the sandbox connection is bound',
+  // #1020: céges webes keresés
+  missing_web_search_connector_read:
+    'Company web search is not set up for this agent — an admin must add the search key in Settings → Web search, enable web_search on the agent and publish it',
+  web_search_not_allowed_by_policy:
+    'Web search is turned off for you by the company AI policy. Tell the user plainly that the company does not allow web search here, and that an admin can change this in the AI client policy',
+  web_search_key_missing: 'Company web search has no search key yet — an admin must add it in Settings → Web search',
+  web_search_query_blocked:
+    'The search query looks like it contains personal or confidential data (or is too long), so it was not sent to the web — rephrase it without such data',
+  web_search_domain_not_allowed: 'The company web search rules do not allow searching these sites',
+  web_search_rate_limited: 'This agent reached its daily web search limit — try again tomorrow or ask an admin to raise it',
+  web_search_provider_error: 'The web search service did not answer — try again in a minute',
   skill_not_pinned: 'This skill version is not pinned on the published agent definition',
   // #967 mini appok
   // #984 AI-adattárház

@@ -2230,6 +2230,11 @@
           "title": "Számolás",
           "read": "Számításokat, kimutatásokat készít",
           "write": ""
+        },
+        "web": {
+          "title": "Webes keresés",
+          "read": "Keres a nyilvános weben a cég saját keresőjével",
+          "write": ""
         }
       },
       "systemsTitle": "Céges rendszerek kapcsolatai",

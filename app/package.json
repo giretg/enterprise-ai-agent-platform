@@ -175,6 +175,7 @@
     "test:agent-checkout": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-checkout.test.ts",
     "test:agent-local-roots": "tsx scripts/agent-local-roots.test.ts",
     "test:agent-knowledge-placement": "tsx scripts/agent-knowledge-placement.test.ts",
+    "test:harness-substitutes": "tsx scripts/harness-substitutes.test.ts",
     "test:enterprise-tools": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/enterprise-tools.test.ts",
     "test:tenant-mailbox": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-mailbox.test.ts",
     "test:tenant-mailbox-db": "tsx scripts/tenant-mailbox-db.test.ts",
