@@ -327,6 +327,7 @@
     "test:google-drive-api-client": "GOOGLE_DRIVE_API_STUB=true tsx scripts/google-drive-api-client.test.ts",
     "test:google-drive-scopes": "tsx scripts/google-drive-scopes.test.ts",
     "test:drive-oauth-scope-escalation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/drive-oauth-scope-escalation.test.ts",
+    "test:google-drive-grant-metadata-cas": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/google-drive-grant-metadata-cas.test.ts",
     "test:google-workspace-api-client": "GOOGLE_WORKSPACE_API_STUB=true tsx scripts/google-workspace-api-client.test.ts",
     "test:decode-github-contents": "tsx scripts/decode-github-contents.test.ts",
     "test:stuck-final-answer": "tsx scripts/stuck-final-answer.test.ts",

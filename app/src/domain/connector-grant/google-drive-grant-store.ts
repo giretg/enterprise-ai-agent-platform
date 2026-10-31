@@ -17,15 +17,29 @@ export async function readGoogleDriveGrantMetadata(grantId: string): Promise<Goo
   return parseGoogleDriveGrantMetadata(grant.metadata)
 }
 
+const METADATA_CAS_ATTEMPTS = 8
+
+/**
+ * Olvasás-módosítás-írás compare-and-swap-pal: a Picker-visszavonás és egy
+ * párhuzamos app-létrehozott fájl rögzítése ugyanazt a JSON-t írja. Zár nélkül a
+ * később író felülírná a másikat — egy visszavont fájl újra írhatóvá válna.
+ */
 export async function updateGoogleDriveGrantMetadata(
   grantId: string,
   updater: (current: GoogleDriveGrantMetadata) => GoogleDriveGrantMetadata,
 ): Promise<GoogleDriveGrantMetadata> {
-  const grant = await repositories.connectorGrants.findById(grantId)
-  if (!grant) throw new Error('Grant not found')
-  const next = updater(parseGoogleDriveGrantMetadata(grant.metadata))
-  await repositories.connectorGrants.updateMetadata(grantId, toGoogleDriveGrantMetadataJson(next))
-  return next
+  for (let attempt = 0; attempt < METADATA_CAS_ATTEMPTS; attempt++) {
+    const grant = await repositories.connectorGrants.findById(grantId)
+    if (!grant) throw new Error('Grant not found')
+    const next = updater(parseGoogleDriveGrantMetadata(grant.metadata))
+    const wrote = await repositories.connectorGrants.updateMetadataIfMatch(
+      grantId,
+      (grant.metadata ?? {}) as Prisma.InputJsonValue,
+      toGoogleDriveGrantMetadataJson(next),
+    )
+    if (wrote) return next
+  }
+  throw new Error('Google Drive grant metadata update conflict — retry later')
 }
 
 export async function saveGoogleDrivePickerSelections(params: {
