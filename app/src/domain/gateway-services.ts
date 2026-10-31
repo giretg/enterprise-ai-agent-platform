@@ -58,6 +58,8 @@ import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-cons
 import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
+import { getPolicySnapshot } from '@/domain/client-policy/policy-service'
+import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
 import { PostgresCustomerPromiseRepository } from '@/repositories/postgres/customer-promise-repository'
@@ -631,6 +633,8 @@ async function listGatewayOperationHistoryRows(input: {
   return { rows: enriched, total, pageSize: HISTORY_PAGE_SIZE }
 }
 
+const clientPolicyStore = new PostgresClientPolicyRepository()
+
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
   ...mcpGateDeps,
@@ -690,6 +694,11 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     }
   },
   executeSandboxRun,
+  resolveClientPolicy: (input) => getPolicySnapshot(clientPolicyStore, input),
+  countWebSearchCalls: ({ tenantId, agentId, since }) =>
+    prisma.auditLog.count({
+      where: { tenantId, action: 'enterprise.tool.ok', inputRef: 'web_search', targetId: agentId, createdAt: { gte: since } },
+    }),
   readWorkFile: async (input) => {
     const found = await projectWorkService.readFile(input)
     if (!found.ok) {

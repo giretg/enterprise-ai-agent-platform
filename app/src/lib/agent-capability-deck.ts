@@ -8,7 +8,7 @@
  * `updateAgentCapabilities` fut, mint az adatlapon.
  */
 
-export const CAPABILITY_DECK_CATEGORIES = ['mail', 'documents', 'sheets', 'company', 'knowledge', 'compute'] as const
+export const CAPABILITY_DECK_CATEGORIES = ['mail', 'documents', 'sheets', 'company', 'knowledge', 'compute', 'web'] as const
 export type CapabilityDeckCategory = (typeof CAPABILITY_DECK_CATEGORIES)[number]
 
 export type CapabilityDeckLevel = 'off' | 'read' | 'write'
@@ -76,6 +76,11 @@ export const CAPABILITY_DECK: readonly CapabilityDeckCard[] = [
     readTools: ['sandbox_run'],
     writeTools: [],
   },
+  {
+    id: 'web',
+    readTools: ['web_search'],
+    writeTools: [],
+  },
 ]
 
 export function capabilityDeckTools(card: CapabilityDeckCard): string[] {
@@ -137,6 +142,8 @@ export function capabilityCategoryForConnectorType(type: string): CapabilityDeck
       return 'knowledge'
     case 'code_sandbox':
       return 'compute'
+    case 'web_search':
+      return 'web'
     default:
       return 'company'
   }

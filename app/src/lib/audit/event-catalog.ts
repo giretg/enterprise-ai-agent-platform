@@ -232,6 +232,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'warehouse.agent_access.changed',
   'agent.placement_overrides',
   'platform_setting.mini_app_link_ttl_changed',
+  'platform_setting.web_search_changed',
   // #1004 platform-chat: tenant-/agent-kapcsoló, superadmin admin-betekintés, folytatási token, napi keret.
   'platform_setting.platform_chat_changed',
   'platform_setting.platform_chat_admin_insight',

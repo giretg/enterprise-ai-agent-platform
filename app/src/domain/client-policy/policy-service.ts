@@ -20,6 +20,7 @@ export const policySnapshotSchema = z.object({
   policyVersion: z.string(),
   issuedAt: z.string(),
   capabilities: z.record(z.enum(CAPABILITY_KEYS as [string, ...string[]]), z.string()),
+  tenantDeniedTools: z.array(z.string()).default([]),
   agentCeilings: z.record(z.string(), z.string()),
   models: z.array(z.string()).nullable(),
   toolRules: z.array(z.object({ pattern: z.string(), action: z.enum(TOOL_ACTIONS), source: z.enum(['tenant', 'user', 'agent']) })),
@@ -57,6 +58,9 @@ export async function getPolicySnapshot(
   })
   const toolCatalog = effectiveToolCatalog(parseTenantToolCatalog(tenant?.capabilities))
   return policySnapshotSchema.parse({
-    ...input, ...effective, toolCatalog, catalogVersion: catalogVersion(toolCatalog), issuedAt: now().toISOString(),
+    ...input, ...effective,
+    tenantDeniedTools: resolveEffectivePolicy({ tenant, user: null, agent: null }).toolRules
+      .filter((rule) => rule.action === 'deny').map((rule) => rule.pattern),
+    toolCatalog, catalogVersion: catalogVersion(toolCatalog), issuedAt: now().toISOString(),
   })
 }

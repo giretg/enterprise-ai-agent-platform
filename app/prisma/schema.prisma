@@ -155,6 +155,7 @@ enum ConnectorType {
   knowledge_base
   code_sandbox
   mcp
+  web_search
 }
 
 enum DocumentStatus {

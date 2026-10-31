@@ -52,6 +52,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
     ],
   },
   { label: 'Kódfuttatás', tools: ['sandbox_run'] },
+  { label: 'Webes keresés', tools: ['web_search'] },
   { label: 'Külső MCP-szerver', tools: ['mcp_list_tools', 'mcp_call'] },
 ]
 

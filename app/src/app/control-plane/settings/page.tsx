@@ -18,11 +18,13 @@ import { TenantLanguagePanel } from './tenant-language-panel'
 import { TenantMcpIntroPanel } from './tenant-mcp-intro-panel'
 import { getPlatformChatSettingsAction } from '@/app/actions/platform-chat'
 import { PlatformChatSettingsPanel } from './platform-chat-settings-panel'
+import { getWebSearchSettingsAction } from '@/app/actions/web-search'
+import { WebSearchSettingsPanel } from './web-search-settings-panel'
 
 export default async function TenantSettingsPage({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
   await requireTenantRole('admin')
   const { section } = await searchParams
-  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings, warehouseAccess, platformChat] = await Promise.all([
+  const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, agentSettings, miniAppSettings, warehouseAccess, platformChat, webSearch] = await Promise.all([
     getTenantLanguage(),
     getTenantMcpIntro(),
     getTenantModelPolicy(),
@@ -32,6 +34,7 @@ export default async function TenantSettingsPage({ searchParams }: { searchParam
     getMiniAppSettingsAction(),
     getWarehouseAgentAccessAction(),
     getPlatformChatSettingsAction(),
+    getWebSearchSettingsAction(),
   ])
   const t = await getTranslations('ControlPlane.settings')
 
@@ -102,6 +105,15 @@ export default async function TenantSettingsPage({ searchParams }: { searchParam
               />
             ) : (
               <p className="text-sm text-coral-deep">{agentSettings.error}</p>
+            ),
+          },
+          {
+            id: 'web-search',
+            label: 'Webes keresés',
+            content: webSearch.success ? (
+              <WebSearchSettingsPanel initial={webSearch.data} canEdit />
+            ) : (
+              <p className="text-sm text-coral-deep">{webSearch.error}</p>
             ),
           },
           {

@@ -13,6 +13,7 @@ import type {
 } from '@prisma/client'
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
+import { PRESETS } from '../src/domain/client-policy/capabilities'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
 import type { McpSkillPackage } from '../src/lib/skill/mcp-skill'
 import { buildMcpSkillPackage } from '../src/lib/skill/mcp-skill'
@@ -27,6 +28,7 @@ import {
   GOOGLE_DRIVE_SEARCH_TOOL,
   KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
+  WEB_SEARCH_TOOL,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -892,6 +894,56 @@ async function main() {
     assert.match(body.result?.instructions ?? '', /Drive assistant/)
   })
 
+  await check('#1020 web_search: listing follows policy level × client kind × tenant switch', async () => {
+    const listed = async (input: {
+      preset: keyof typeof PRESETS
+      headers?: Record<string, string>
+      externalClients?: boolean
+      toolRules?: Array<{ pattern: string; action: 'allow' | 'approve' | 'deny'; source: 'tenant' | 'user' | 'agent' }>
+    }) => {
+      const { deps } = runtimeDeps({
+        tenant: tenant({ settings: input.externalClients ? { harnessSubstitutes: { externalClients: true } } : {} }),
+      })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS[input.preset], toolRules: input.toolRules ?? [] })
+      const headers = { authorization: `Bearer ${TOKEN}`, ...input.headers }
+      const res = await post('acme', { jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }, headers, deps)
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      return (body.result?.tools ?? []).some((tool) => tool.name === WEB_SEARCH_TOOL)
+    }
+    const hermes = { 'x-excellence-client': 'hermes-managed' }
+    const claude = { 'user-agent': 'Claude-User/1.0' }
+    assert.equal(await listed({ preset: 'standard', headers: hermes }), true, 'Standard Hermes → céges kereső')
+    assert.equal(await listed({ preset: 'free', headers: hermes }), false, 'Szabad Hermes → a sajátja dolgozik')
+    assert.equal(await listed({ preset: 'bound', headers: hermes }), false, 'Kötött pálya → tiltott')
+    assert.equal(await listed({ preset: 'standard', headers: claude }), false, 'Claude Desktop alapból nem kapja')
+    assert.equal(await listed({ preset: 'standard', headers: claude, externalClients: true }), true, 'tenant-kapcsolóval igen')
+    assert.equal(await listed({ preset: 'bound', headers: claude, externalClients: true }), false, 'a kapcsoló a policyt nem írja felül')
+    assert.equal(
+      await listed({ preset: 'standard', headers: hermes, toolRules: [{ pattern: 'web_search', action: 'deny', source: 'tenant' }] }),
+      false,
+      'tenant kill-switch',
+    )
+  })
+
+  await check('#1020 web_search: a direct tools/call reaches the policy check even when not listed', async () => {
+    const { deps } = runtimeDeps({})
+    const calls: Array<{ toolName: string; client?: string }> = []
+    deps.invokeEnterpriseTool = async (input) => {
+      calls.push({ toolName: input.toolName, client: input.client })
+      return { isError: true, content: [{ type: 'text', text: '{"code":"web_search_not_allowed_by_policy"}' }] }
+    }
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: WEB_SEARCH_TOOL, arguments: { query: 'mnb alapkamat' } } },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-client': 'hermes-managed' },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text?: string }> } }
+    assert.equal(body.result?.isError, true)
+    assert.match(body.result?.content?.[0]?.text ?? '', /web_search_not_allowed_by_policy/)
+    assert.deepEqual(calls, [{ toolName: WEB_SEARCH_TOOL, client: 'hermes' }])
+  })
+
   await check('tools/list returns platform tools, Drive, knowledge base, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
@@ -933,7 +985,8 @@ async function main() {
       ...PROJECT_WORK_TOOLS.slice(-2),
       ...WAREHOUSE_TOOLS,
       ...MINI_APP_TOOLS,
-      ...ENTERPRISE_TOOLS,
+      // #1020: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search nem listázódik.
+      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL),
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
     const submit = tools.find((tool) => tool.name === MCP_SKILL_SUBMIT_TOOL)

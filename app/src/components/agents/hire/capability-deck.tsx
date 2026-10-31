@@ -26,7 +26,7 @@ import {
 import { grantedToolNames } from '@/lib/create-agent-wizard'
 
 /** Kapcsolat-típusok, amelyeket a pakli eszköz-kártyái automatikusan bekötnek. */
-const AUTO_LINKED_CONNECTOR_TYPES = new Set(['gmail', 'google_drive', 'knowledge_base', 'code_sandbox'])
+const AUTO_LINKED_CONNECTOR_TYPES = new Set(['gmail', 'google_drive', 'knowledge_base', 'code_sandbox', 'web_search'])
 
 const CATEGORY_ICON: Record<CapabilityDeckCard['id'], string> = {
   mail: '✉️',
@@ -35,6 +35,7 @@ const CATEGORY_ICON: Record<CapabilityDeckCard['id'], string> = {
   company: '🏢',
   knowledge: '📚',
   compute: '🧮',
+  web: '🌐',
 }
 
 type BoundConnector = {

@@ -32,6 +32,19 @@ import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
+import { executeWebSearch as defaultExecuteWebSearch } from './handlers/web-search'
+import { ConnectorApiKeyMissingError } from '@/domain/connector/connector-secret-store'
+import { BraveSearchError } from '@/domain/web-search/brave-provider'
+import {
+  authorizeWebSearch,
+  parseWebSearchConfig,
+  type WebSearchConfig,
+  type WebSearchEffectiveQuery,
+  type WebSearchResult,
+} from '@/domain/web-search/web-search'
+import { resolveEffectivePolicy } from '@/domain/client-policy/resolve-effective-policy'
+import type { McpClientName } from '@/lib/mcp-session'
+import { harnessSubstituteFor, substituteCallability, type SubstitutePolicy } from './harness-substitutes'
 import {
   isWikiToolCall,
   KbToolError,
@@ -65,6 +78,8 @@ import {
   isEnterpriseMcpTool,
   isEnterpriseReadOnlyTool,
   isEnterpriseSandboxTool,
+  isEnterpriseWebSearchTool,
+  webSearchInputSchema,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   KB_GET_DOCUMENT_TOOL,
@@ -267,6 +282,16 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     tenantId: string
   }) => Promise<{ connectorId: string; connectorName: string; signature: string | null } | null>
   startAuthorization?: StartDelegatedAuthorization
+  /** #1020: a hívó effektív kliens-policyja (tenant → user ∩ agent-plafon). Hiányában Kötött pálya (tiltás). */
+  resolveClientPolicy?: (input: { tenantId: string; userId: string; agentId: string }) => Promise<SubstitutePolicy>
+  /** #1020: az agent sikeres webes keresései a megadott időpont óta (napi keret). */
+  countWebSearchCalls?: (input: { tenantId: string; agentId: string; since: Date }) => Promise<number>
+  executeWebSearch?: (
+    effective: WebSearchEffectiveQuery,
+    config: WebSearchConfig,
+    connector: LiveConnectorRow,
+  ) => Promise<WebSearchResult>
+  now?: () => Date
   /** #395: külső MCP-hívás; tesztben cserélhető. */
   executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
   audit?: AuditSink
@@ -646,6 +671,8 @@ export async function invokeEnterpriseTool(
     confirm?: WriteConfirmInput
     /** Belső: egyszer már átváltottunk a régi definícióról az aktuálisra (nincs második ugrás). */
     followedStaleDefinition?: boolean
+    /** #1020: a hívó kliens (csak audit; a meghívhatóságot nem befolyásolja). */
+    client?: McpClientName
   },
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, origin, confirm } = input
@@ -751,6 +778,10 @@ export async function invokeEnterpriseTool(
       definitionId,
       definition,
     })
+  }
+
+  if (isEnterpriseWebSearchTool(toolName)) {
+    return invokeWebSearchTool(deps, { principal, toolName, args, definitionId, definition, client: input.client ?? 'unknown' })
   }
 
   if (!isEnterpriseTool(toolName)) {
@@ -1953,6 +1984,117 @@ async function invokeSandboxTool(
       connectorId: authorized.connectorId,
       errorCode: code,
     }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: code,
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return errorResult(code)
+  }
+}
+
+const WEB_SEARCH_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * #1020: céges webes keresés. Sorrend: policy (a kliensfajtától függetlenül) → agent-jog és connector
+ * (`authorizeToolCall`) → lekérdezés-szűrés, domain-kör, napi keret → Brave. Minden kimenet auditált,
+ * a nyers lekérdezés nélkül (csak hash).
+ */
+async function invokeWebSearchTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+    client: McpClientName
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition, client } = input
+  const substitute = harnessSubstituteFor(toolName)!
+  const policy = deps.resolveClientPolicy
+    ? await deps.resolveClientPolicy({ tenantId: principal.tenantId, userId: principal.userId, agentId: definition.agentId })
+    : resolveEffectivePolicy({ tenant: null, user: null, agent: null })
+  const callability = substituteCallability(substitute, policy)
+  const policyMeta = { capability: substitute.capability, policyLevel: callability.level, client }
+  const deny = async (code: string, extra?: Record<string, unknown>) => {
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId, { ...policyMeta, ...extra })
+    return errorResult(code)
+  }
+  if (!callability.callable) return deny('web_search_not_allowed_by_policy', { policyReason: callability.reason })
+
+  const parsed = webSearchInputSchema.safeParse(args)
+  if (!parsed.success) {
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, { ...policyMeta, ...details })
+    return errorResult('invalid_args', details)
+  }
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: parsed.data as Record<string, unknown> })
+  if (!authorized.allowed) return deny(authorized.reason)
+
+  const config = parseWebSearchConfig(authorized.connector.config)
+  const now = (deps.now ?? (() => new Date()))()
+  const agentDayQueryCount = deps.countWebSearchCalls
+    ? await deps.countWebSearchCalls({
+        tenantId: principal.tenantId,
+        agentId: definition.agentId,
+        since: new Date(now.getTime() - WEB_SEARCH_WINDOW_MS),
+      })
+    : 0
+  const domains = parsed.data.domains?.split(',').map((d) => d.trim()).filter(Boolean)
+  const decision = authorizeWebSearch({ ...parsed.data, domains }, config, { agentDayQueryCount })
+  if (!decision.allowed) return deny(decision.reason, { detail: decision.detail, connectorId: authorized.connectorId })
+
+  const execute = deps.executeWebSearch ?? defaultExecuteWebSearch
+  const meta = {
+    toolName,
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    definitionId,
+    agentId: definition.agentId,
+    connectorId: authorized.connectorId,
+    queryHash: decision.effective.queryHash,
+    domainsEffective: decision.effective.domains,
+    ...policyMeta,
+  }
+  try {
+    const result = await execute(decision.effective, config, authorized.connector)
+    const payload = { ...meta, resultCount: result.results.length, resultDomains: [...new Set(result.results.map((r) => r.domain))] }
+    console.info('enterprise.tool.ok', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.ok',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: decision.effective.queryHash,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return textResult(result)
+  } catch (error) {
+    const code =
+      error instanceof ConnectorApiKeyMissingError || (error instanceof Error && error.message === 'web_search_key_missing')
+        ? 'web_search_key_missing'
+        : error instanceof BraveSearchError || (error instanceof Error && error.name === 'TimeoutError')
+          ? 'web_search_provider_error'
+          : 'tool_execution_failed'
+    const payload = { ...meta, errorCode: code, ...(error instanceof BraveSearchError ? { providerStatus: error.status } : {}) }
     console.info('enterprise.tool.error', payload)
     await writeAudit(deps.audit, {
       actorType: 'human',

@@ -198,6 +198,18 @@ class Policy(unittest.TestCase):
         ))
         self.assertEqual(p.decide(user_allow_agent_approval, "terminal").action, "approve")
 
+    def test_company_egress_redirects_to_excellence_web_search(self):
+        # #1020: Standard = céges kereső; a saját keresőt átterelő (nem elutasító) üzenettel tiltja.
+        own = p.decide(snap(p.STANDARD), "web_search")
+        self.assertEqual(own.action, "block")
+        self.assertIn("Excellence webes keresőjét", own.message)
+        self.assertNotIn("rendszergazdát", own.message)
+        self.assertNotEqual(p.decide(snap(p.STANDARD), "mcp__excellence__web_search").action, "block")
+        bound = p.decide(snap(p.BOUND), "web_search")
+        self.assertEqual(bound.action, "block")
+        self.assertNotIn("Excellence webes keresőjét", bound.message)
+        self.assertEqual(p.decide(snap(p.FREE), "web_search").action, "allow")
+
     def test_unknown_mcp_server_is_blocked_company_server_is_not(self):
         bound = snap(p.BOUND)
         unknown = p.decide(bound, "mcp__github__search")
