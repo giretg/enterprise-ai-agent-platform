@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
+import { PDFFont, PDFPage } from 'pdf-lib'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import { PRESETS, type PresetId } from '../src/domain/client-policy/capabilities'
 import { disabledToolsetsForPolicies } from '../src/domain/client-policy/machine-floor'
@@ -191,6 +192,38 @@ async function main() {
     assert.match(text, /árvíztűrő tükörfúrógép/)
     assert.match(text, /125 000/)
     assert.equal(pdfSafe('a🚀b\tж'), 'ab    ?')
+  })
+
+  await check('pdf: oversized table cells and headers stay on the page; long words use bounded measurement', async () => {
+    const drawText = PDFPage.prototype.drawText
+    const measure = PDFFont.prototype.widthOfTextAtSize
+    let measuredChars = 0
+    let drawn = 0
+    PDFPage.prototype.drawText = function (text, options) {
+      assert.ok((options?.y ?? 0) >= 0 && (options?.y ?? 0) <= this.getHeight(), `text outside page: ${options?.y}`)
+      drawn++
+      return drawText.call(this, text, options)
+    }
+    PDFFont.prototype.widthOfTextAtSize = function (text, size) {
+      measuredChars += text.length
+      return measure.call(this, text, size)
+    }
+    try {
+      for (const markdown of [
+        `| A | B |\n|---|---|\n| ${'word '.repeat(2000)} | end |`,
+        `| ${'header '.repeat(2000)} | B |\n|---|---|\n| body | end |`,
+        'x'.repeat(10_000),
+      ]) {
+        measuredChars = 0
+        const doc = await renderDocument({ format: 'pdf', markdown })
+        assert.ok(doc.bytes.length > 0)
+        assert.ok(measuredChars < 300_000, `excessive prefix rescanning: ${measuredChars}`)
+      }
+      assert.ok(drawn > 4000, 'all long table content was drawn')
+    } finally {
+      PDFPage.prototype.drawText = drawText
+      PDFFont.prototype.widthOfTextAtSize = measure
+    }
   })
 
   await check('md: the markdown text, with the title on top', async () => {

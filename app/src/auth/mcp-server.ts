@@ -28,6 +28,7 @@ import {
   isDelegatedLinkedAccountType,
   linkedAccountHandle,
 } from '@/domain/connector-grant/linked-account'
+import { TOOL_REQUIREMENTS } from '@/domain/connector-grant/tool-connector-requirements'
 import {
   AgentDefinitionService,
   canReadPublishedAgent,
@@ -702,6 +703,9 @@ type AgentSkills = {
   agentId: string
   packages: McpSkillPackage[]
   entrySkillVersionId: string | null
+  /** A publikált definíció engedélyezett eszközei és kötött kapcsolat-típusai (harness-pótló listázáshoz). */
+  allowedTools: string[]
+  connectorTypes: string[]
 }
 
 /**
@@ -747,7 +751,13 @@ async function loadAgentSkills(
         Number(a.skillVersionId === entrySkillVersionId),
     )
   }
-  return { agentId: loaded.agentId, packages, entrySkillVersionId }
+  return {
+    agentId: loaded.agentId,
+    packages,
+    entrySkillVersionId,
+    allowedTools: loaded.snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName),
+    connectorTypes: loaded.snapshot.connectors.map((row) => row.type),
+  }
 }
 
 async function listSkillsToolResult(
@@ -1447,9 +1457,17 @@ async function createMcpResourceHandler(
         .loadClientPolicy({ tenantId: principal.tenantId, userId: principal.userId, agentId: boundAgentId })
         .catch(boundPolicy)
     : boundPolicy()
+  // Kötött kliensnél (platform-chat, Hermes) a munkatárs joga is kell: amit a definíció nem enged, azt a
+  // hívás `capability_not_allowed`-dal utasítaná el — ne kínáljuk fel.
+  const boundAgentAllows = (tool: string) => {
+    if (!agentHeader) return true
+    if (!boundSkills || boundSkills === 'not_found') return false
+    const connectorType = TOOL_REQUIREMENTS[tool]?.connectorType
+    return boundSkills.allowedTools.includes(tool) && (!connectorType || boundSkills.connectorTypes.includes(connectorType))
+  }
   const substituteVisible = (tool: string) => {
     const sub = harnessSubstituteFor(tool)
-    return !!sub && isSubstituteVisible(sub, {
+    return !!sub && (tool === DOCUMENT_EXPORT_TOOL || boundAgentAllows(tool)) && isSubstituteVisible(sub, {
       policy: substitutePolicy,
       client: harnessClientKind(client),
       externalClientsEnabled: readExternalClientsEnabled(tenant?.settings),

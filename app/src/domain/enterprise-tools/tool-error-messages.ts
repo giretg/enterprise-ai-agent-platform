@@ -120,6 +120,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   tenant_mailbox_read_only: 'This shared mailbox is connected read-only; sending is not allowed',
   mailbox_read_only:
     'This mailbox is read-only — the agent cannot send or change mail here. Ask an admin for write access, or pick a mailbox with write access from mail_list_accounts.',
+  mailbox_changed:
+    'The mailbox for this pending send changed since it was queued — reject and ask the agent to send again so the approver sees the current from-address.',
   missing_mailbox:
     'This agent has no mailbox. Ask an admin to assign a mailbox, or connect Gmail on the linked accounts page.',
   google_drive_scope_not_granted: 'Google Drive scopes are insufficient',

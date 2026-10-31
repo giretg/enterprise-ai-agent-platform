@@ -717,7 +717,8 @@ export class WarehouseService {
       await sql.exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${schema}:load`])
       const record = await store.getImport(sql, schema, importId, true)
       if (!record) throw new WarehouseError('import_not_found')
-      if (!canDiscardImport(record.state)) throw new WarehouseError('import_invalid_state', { state: record.state })
+      // publishedAt/rolledBackAt: state önmagában megbízhatatlan (#996 clobber után is).
+      if (!canDiscardImport(record.state, record)) throw new WarehouseError('import_invalid_state', { state: record.state })
       await sql.exec(`DELETE FROM ${qt(schema, '_exceptions')} WHERE import_id = $1::uuid`, [record.id])
       await sql.exec(`DELETE FROM ${qt(schema, '_imports')} WHERE id = $1::uuid`, [record.id])
       await store.recordDecision(sql, schema, 'import.discarded', { importId: record.id, fileName: record.fileName, state: record.state }, actor.userId)

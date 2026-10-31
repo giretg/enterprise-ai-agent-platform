@@ -297,6 +297,16 @@ async function main() {
     assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.noAccess)
   })
 
+  await check('elfogyott modell-kredit (402): azonnal failed, érthető üzenettel, nincs újrapróbálás', async () => {
+    const h = harness({ llm: [new PlatformError('model gateway: 402 requires more credits', 402)], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    assert.equal(await runStep(h.deps, h.queued.shift()!), 'done')
+    assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.creditExhausted)
+    assert.equal(h.queued.length, 0)
+  })
+
   await check('csatolmány: a kinyert szöveg a user-üzenet mellé kerül', async () => {
     const h = harness({ llm: [say('3 sor van.')], tool: [] })
     const c = await h.conversation()

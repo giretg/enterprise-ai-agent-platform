@@ -926,6 +926,36 @@ async function main() {
     )
   })
 
+  await check('#1022 web_search: a bound agent is only offered it when its definition allows it', async () => {
+    const listed = async (definition: typeof SAMPLE_DEFINITION) => {
+      const { deps } = runtimeDeps({ role: 'admin' })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS.standard, toolRules: [] })
+      deps.loadDefinition = async () => definition
+      const res = await post(
+        'acme',
+        { jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} },
+        { authorization: `Bearer ${TOKEN}`, 'x-excellence-client': 'hermes-managed', 'x-excellence-agent-id': AGENT_ID },
+        deps,
+      )
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      return (body.result?.tools ?? []).some((tool) => tool.name === WEB_SEARCH_TOOL)
+    }
+    const withSearch = (connector: boolean) => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        connectors: [
+          ...SAMPLE_DEFINITION.snapshot.connectors,
+          ...(connector ? [{ connectorId: CONNECTOR_ID, type: 'web_search', accessMode: 'read' as const }] : []),
+        ],
+        capabilities: [...SAMPLE_DEFINITION.snapshot.capabilities, { toolName: WEB_SEARCH_TOOL, allowed: true }],
+      },
+    })
+    assert.equal(await listed(SAMPLE_DEFINITION), false, 'a definíció nem engedi → nem kínáljuk fel')
+    assert.equal(await listed(withSearch(false)), false, 'webes kereső kapcsolat nélkül sem')
+    assert.equal(await listed(withSearch(true)), true, 'jog + kapcsolat → listázódik')
+  })
+
   await check('#1020 web_search: a direct tools/call reaches the policy check even when not listed', async () => {
     const { deps } = runtimeDeps({})
     const calls: Array<{ toolName: string; client?: string }> = []
@@ -948,6 +978,7 @@ async function main() {
   await check('#1024 document_export: listing follows local_files level × client kind × tenant switch', async () => {
     const listed = async (input: { preset: keyof typeof PRESETS; headers?: Record<string, string>; externalClients?: boolean }) => {
       const { deps } = runtimeDeps({
+        grantedAgentIds: new Set([AGENT_ID]),
         tenant: tenant({ settings: input.externalClients ? { harnessSubstitutes: { externalClients: true } } : {} }),
       })
       deps.loadClientPolicy = async () => ({ capabilities: PRESETS[input.preset], toolRules: [] })
@@ -958,6 +989,7 @@ async function main() {
     const hermes = { 'x-excellence-client': 'hermes-managed' }
     const claude = { 'user-agent': 'Claude-User/1.0' }
     assert.equal(await listed({ preset: 'bound', headers: hermes }), true, 'Kötött pálya Hermes → céges fájl-készítés')
+    assert.equal(await listed({ preset: 'bound', headers: { ...hermes, 'x-excellence-agent-id': AGENT_ID } }), true, 'fájlkészítés agent-képesség nélkül is listázódik')
     assert.equal(await listed({ preset: 'standard', headers: hermes }), true, 'Standard Hermes (csak olvas) → céges fájl-készítés')
     assert.equal(await listed({ preset: 'free', headers: hermes }), false, 'Szabad Hermes → maga ír fájlt')
     assert.equal(await listed({ preset: 'standard', headers: claude }), false, 'Claude Desktop alapból nem kapja')
@@ -2724,6 +2756,7 @@ async function main() {
     assert.equal(list.status, 200)
     const tools = ((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []
     assert.ok(tools.some((t) => t.name === MCP_AGENTS_LIST_TOOL))
+    assert.ok(tools.some((t) => t.name === DOCUMENT_EXPORT_TOOL), 'platform-chat: document export needs no agent capability')
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

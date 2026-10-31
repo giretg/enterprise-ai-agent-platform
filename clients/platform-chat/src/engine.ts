@@ -66,6 +66,7 @@ export type EngineDeps = {
 
 export const MESSAGES = {
   failed: 'Most nem sikerült válaszolni, mert a céges modell nem érhető el. Próbáld újra.',
+  creditExhausted: 'Most nem tudok válaszolni, mert elfogyott a cég AI-szolgáltatásának kerete. Szólj az adminisztrátornak, hogy emelje meg.',
   noAccess: 'Ehhez a munkatárshoz most nincs hozzáférésed, vagy kikapcsolták a platform-chatben.',
   tooManySteps: 'A munkatárs túl sok lépésben dolgozott ezen a kérésen, ezért leállt. Fogalmazd meg pontosabban, mit szeretnél.',
   tooLong: 'A válasz túl sokáig tartott, ezért leállt. Próbáld újra kisebb részekre bontva.',
@@ -566,6 +567,11 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
     // A platform elutasította a hozzáférést (visszavont user, kikapcsolt agent): nincs értelme újrapróbálni.
     if (error instanceof PlatformError && (error.status === 401 || error.status === 403)) {
       await fail(deps, turn, MESSAGES.noAccess, 'no_access')
+      return 'done'
+    }
+    // Elfogyott a szolgáltatói kredit (a gateway a 402-t továbbadja): újrapróbálva sem lesz jobb.
+    if (error instanceof PlatformError && error.status === 402) {
+      await fail(deps, turn, MESSAGES.creditExhausted, 'credit_exhausted')
       return 'done'
     }
     const attempts = (await deps.store.listSteps(turn.id)).find((s) => s.seq === task.seq)?.attempts ?? 1

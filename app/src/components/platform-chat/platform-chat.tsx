@@ -1085,7 +1085,7 @@ export function PlatformChat({
                             }
                           : undefined
                       }
-                      onSaveToDrive={readOnly || working ? undefined : (file) => void send(`Mentsd el a(z) „${file.name}” fájlt a Google Drive-ra.`)}
+                      onSaveToDrive={readOnly || working ? undefined : (file) => void send(`Mentsd el a(z) „${file.name}” fájlt a Google Drive-ra (exportId: ${file.exportId}).`)}
                     />
                   ))}
                   {live ? (

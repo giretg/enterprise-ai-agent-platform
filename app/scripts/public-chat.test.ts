@@ -206,7 +206,7 @@ async function main() {
     assert.equal([...store.sessions.values()][0].messages.length, 2)
   })
 
-  await check('későbbi modellhiba sem veszíti el a már felmerült költséget; teszt nem éles analitika', async () => {
+  await check('későbbi modellhiba sem veszíti el a már felmerült költséget; teszt is a napi keretet terheli', async () => {
     const store = makeStore()
     let calls = 0
     const d = deps(store, { turnDeps: () => ({ ...turnDeps([]), callModel: async () => {
@@ -218,7 +218,7 @@ async function main() {
     const testStore = makeStore()
     const token = issueTestToken(SECRET, AGENT, NOW)
     assert.equal((await send(deps(testStore, {}, [reply('teszt', [], 0.5)]), { testToken: token })).status, 200)
-    assert.equal(testStore.spentRef(), 0)
+    assert.equal(testStore.spentRef(), 0.5)
   })
 
   await check('a második botellenőrzés is feloldódik új beszélgetéskor', async () => {
@@ -445,15 +445,31 @@ async function main() {
     assert.equal(called, false)
   })
 
-  await check('Turnstile: új beszélgetés csak sikeres ellenőrzéssel; teszt-módban nem kell', async () => {
+  await check('Turnstile: új beszélgetés csak sikeres ellenőrzéssel; teszt-token sem kerülheti meg', async () => {
     const store = makeStore()
     const tokens: string[] = []
-    const d = deps(store, { verifyTurnstile: async (t) => (tokens.push(t), t === 'ok') }, [reply('a'), reply('b')])
+    const d = deps(store, { verifyTurnstile: async (t) => (tokens.push(t), t === 'ok') }, [reply('a'), reply('b'), reply('c')])
     assert.equal((await send(d, { turnstileToken: 'bad' })).status, 403)
     assert.equal((await send(d, { turnstileToken: 'ok' })).status, 200)
-    const test = await send(d, { testToken: issueTestToken(SECRET, AGENT, NOW) })
-    assert.equal(test.status, 200)
-    assert.deepEqual(tokens, ['bad', 'ok'])
+    const testBlocked = await send(d, { testToken: issueTestToken(SECRET, AGENT, NOW), turnstileToken: 'bad' })
+    assert.equal(testBlocked.status, 403)
+    const testOk = await send(d, { testToken: issueTestToken(SECRET, AGENT, NOW), turnstileToken: 'ok' })
+    assert.equal(testOk.status, 200)
+    assert.deepEqual(tokens, ['bad', 'ok', 'bad', 'ok'])
+  })
+
+  await check('teszt-token a kimerült napi keretet sem kerülheti meg', async () => {
+    const store = makeStore({ published: config({ dailyBudgetUsd: 1 }), draft: config({ dailyBudgetUsd: 1 }) })
+    await store.addSpend({ tenantId: TENANT, day: '2026-10-29', costUsd: 1 })
+    let called = false
+    const res = await send(
+      deps(store, {
+        turnDeps: () => ({ ...turnDeps([]), callModel: async () => ((called = true), reply('x')) }),
+      }),
+      { testToken: issueTestToken(SECRET, AGENT, NOW), turnstileToken: 'ok' },
+    )
+    assert.equal(res.status, 503)
+    assert.equal(called, false)
   })
 
   await check('rate-limit → 429; hibás bemenet → 400; túl nagy kontextus → 400', async () => {

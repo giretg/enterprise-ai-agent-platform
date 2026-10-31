@@ -89,13 +89,22 @@ class Layout {
           } else if (line.words.length > 0) {
             lines.push({ words: [], width: 0 })
           } else {
-            // Egy szó sem fér el egy sorban: karakterenként vágjuk.
-            let n = rest.length - 1
-            while (n > 1 && font.widthOfTextAtSize(rest.slice(0, n), size) > width) n--
-            line.words.push({ text: rest.slice(0, n), font, color, space: false })
-            line.width = font.widthOfTextAtSize(rest.slice(0, n), size)
-            rest = rest.slice(n)
-            lines.push({ words: [], width: 0 })
+            // A hosszú szót egyszer járjuk be, a teljes előtag ismételt mérése nélkül.
+            let chunk = ''
+            let chunkWidth = 0
+            for (const ch of rest) {
+              const charWidth = font.widthOfTextAtSize(ch, size)
+              if (chunk && chunkWidth + charWidth > width) {
+                lines[lines.length - 1] = { words: [{ text: chunk, font, color, space: false }], width: chunkWidth }
+                lines.push({ words: [], width: 0 })
+                chunk = ''
+                chunkWidth = 0
+              }
+              chunk += ch
+              chunkWidth += charWidth
+            }
+            lines[lines.length - 1] = { words: [{ text: chunk, font, color, space: false }], width: chunkWidth }
+            rest = ''
           }
         }
         pendingSpace = false
@@ -181,17 +190,33 @@ class Layout {
     }
     this.y -= 4
     const header = block.header.length ? layoutRow(block.header, true) : null
+    // Az oldalnál magasabb fejlécet is tördeljük, de nem ismételjük minden oldalon.
+    const repeatHeader = header && header.height < (PAGE.height - 2 * MARGIN) / 2 ? header : null
+    const drawPaginated = (row: ReturnType<typeof layoutRow>, isHeader: boolean) => {
+      const count = Math.max(...row.wrapped.map((lines) => lines.length), 1)
+      let offset = 0
+      while (offset < count) {
+        if (this.y - 2 * CELL_PAD - lineHeight < MARGIN) {
+          this.newPage()
+          if (!isHeader && repeatHeader) drawRow(repeatHeader, true)
+        }
+        const available = Math.floor((this.y - MARGIN - 2 * CELL_PAD) / lineHeight)
+        const take = Math.min(count - offset, available)
+        drawRow({ wrapped: row.wrapped.map((lines) => lines.slice(offset, offset + take)), height: take * lineHeight + 2 * CELL_PAD }, isHeader)
+        offset += take
+      }
+    }
     if (header) {
-      this.ensure(header.height + lineHeight * 2)
-      drawRow(header, true)
+      this.ensure(Math.min(header.height + lineHeight * 2, PAGE.height - 2 * MARGIN))
+      drawPaginated(header, true)
     }
     for (const cells of block.rows) {
       const row = layoutRow(cells, false)
-      if (this.y - row.height < MARGIN) {
+      if (this.y - row.height < MARGIN && this.y < PAGE.height - MARGIN - (repeatHeader?.height ?? 0)) {
         this.newPage()
-        if (header) drawRow(header, true)
+        if (repeatHeader) drawRow(repeatHeader, true)
       }
-      drawRow(row, false)
+      drawPaginated(row, false)
     }
     this.y -= BODY_SIZE
   }

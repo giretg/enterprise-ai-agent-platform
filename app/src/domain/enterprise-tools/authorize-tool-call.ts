@@ -100,6 +100,12 @@ export type AuthorizeToolCallAllowed = {
   grantId?: string | null
   tokenRef?: string | null
   grant?: LiveGrantRow | null
+  /**
+   * #1030: feloldott mail_* fiók handle. Beégetjük a jóváhagyásba / execute-ba,
+   * különben account nélkül a HITL „saját postafiók”-ot hazudhat, a execute pedig
+   * a mindenkori primary/egyetlen fiókra válthat.
+   */
+  resolvedMailAccount?: string
 }
 
 export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
@@ -328,7 +334,9 @@ async function authorizeMailTool(
   if (!mailCapabilityAllowed(input.definition, input.toolName, picked.kind === 'google' ? 'gmail' : 'httpApi')) {
     return { allowed: false, reason: 'capability_not_allowed' }
   }
-  return authorizeLoadedConnector(deps, input, picked.connectorId, picked.grantId)
+  const loaded = await authorizeLoadedConnector(deps, input, picked.connectorId, picked.grantId)
+  if (!loaded.allowed) return loaded
+  return { ...loaded, resolvedMailAccount: picked.account }
 }
 
 async function authorizeLoadedConnector(

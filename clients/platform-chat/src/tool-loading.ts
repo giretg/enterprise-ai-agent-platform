@@ -11,8 +11,18 @@ export const TOOL_DESCRIBE = 'tool_describe'
 export const DESCRIBE_MAX_NAMES = 8
 const SUMMARY_MAX_CHARS = 120
 
-/** Szinte minden fordulóban kellő, kis sémájú eszközök (a worker env-ből felülírhatja). */
-export const DEFAULT_CORE_TOOLS = ['platform.project_memory.read', 'kb_search', 'web_search']
+/**
+ * Szinte minden fordulóban kellő, kis sémájú eszközök (a worker env-ből felülírhatja). A vállalás- és
+ * munkafájl-listát a munkatárs-briefing minden munkamenet elején kéri: mag nélkül minden forduló egy
+ * `tool_describe` lépéssel (plusz modellhívással) indulna.
+ */
+export const DEFAULT_CORE_TOOLS = [
+  'platform.project_memory.read',
+  'platform.promise.list',
+  'platform.work_file.list',
+  'kb_search',
+  'web_search',
+]
 
 /** A modell-szolgáltató a függvénynevet `^[a-zA-Z0-9_-]{1,64}$` mintához köti — a visszajátszott hívásokra is. */
 export const toFunctionName = (tool: string) => tool.replace(/\./g, '__').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)

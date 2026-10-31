@@ -379,7 +379,7 @@ function ImportDetail({ data, pending, act }: { data: ReadyData; pending: boolea
               Betöltés visszavonása
             </button>
           ) : null}
-          {data.permissions.import && canDiscardImport(record.state) ? (
+          {data.permissions.import && canDiscardImport(record.state, record) ? (
             <DiscardButton fileName={record.fileName} importId={record.id} pending={pending} act={act} onDone={() => router.push('/control-plane/warehouse')} />
           ) : null}
         </div>
@@ -487,7 +487,7 @@ function ImportsCard({ data, pending, act, selectedImportId }: { data: ReadyData
                 <td className="pr-4">{formatDate(i.createdAt)}</td>
                 <td className="pr-4">{formatDate(i.publishedAt)}</td>
                 <td className="text-right">
-                  {data.permissions.import && canDiscardImport(i.state) ? (
+                  {data.permissions.import && canDiscardImport(i.state, i) ? (
                     <DiscardButton
                       compact
                       fileName={i.fileName}
