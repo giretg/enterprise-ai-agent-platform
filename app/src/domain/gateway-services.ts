@@ -174,7 +174,12 @@ const provisioningService = new ProvisioningService({
   extendEgressAllowlist: (tenantId, host, actorId, provenance) =>
     platformSettingsService.extendEgressAllowlist(tenantId, host, actorId, provenance),
   resolveBankPreset,
-  sandboxTester: new HttpSandboxConnectionTester({ resolveEgressAllowlist, resolveBankPreset }),
+  sandboxTester: new HttpSandboxConnectionTester({
+    resolveEgressAllowlist,
+    resolveBankPreset,
+    // Feloldás-utáni privát/reserved IP re-check (DNS-rebinding), mint a többi egress-nyelőnél.
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+  }),
   resolvePlatformGoogleOAuth: async (service: 'gmail' | 'drive' | 'api' = 'gmail') => {
     if (process.env.GOOGLE_DRIVE_API_STUB === 'true' && service === 'drive') {
       return { configured: true }
