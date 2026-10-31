@@ -149,6 +149,18 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
     })
   }
 
+  async updateMetadataIfMatch(
+    id: string,
+    expected: Prisma.InputJsonValue,
+    metadata: Prisma.InputJsonValue,
+  ) {
+    const { count } = await prisma.connectorGrant.updateMany({
+      where: { id, metadata: { equals: expected } },
+      data: { metadata },
+    })
+    return count === 1
+  }
+
   async findActiveTenantGrant(params: { tenantId: string; connectorId: string }) {
     return prisma.connectorGrant.findFirst({
       where: {

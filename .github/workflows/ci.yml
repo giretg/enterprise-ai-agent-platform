@@ -134,6 +134,7 @@ jobs:
           npm run test:google-drive-api-client
           npm run test:google-drive-scopes
           npm run test:drive-oauth-scope-escalation
+          npm run test:google-drive-grant-metadata-cas
           npm run test:google-workspace-api-client
           npm run test:agentmail-connector
           npm run test:agent-mailbox

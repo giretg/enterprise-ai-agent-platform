@@ -315,6 +315,12 @@ export interface ConnectorGrantRepository {
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<ConnectorGrant | null>
   updateMetadata(id: string, metadata: Prisma.InputJsonValue): Promise<ConnectorGrant>
+  /** Optimista CAS: csak akkor ír, ha a metadata még `expected`; különben `false`. */
+  updateMetadataIfMatch(
+    id: string,
+    expected: Prisma.InputJsonValue,
+    metadata: Prisma.InputJsonValue,
+  ): Promise<boolean>
   updateNickname(id: string, nickname: string | null): Promise<ConnectorGrant>
   /** #1028: a konnektor tenant-postafiók grantje (aktív). */
   findActiveTenantGrant(params: { tenantId: string; connectorId: string }): Promise<ConnectorGrant | null>
