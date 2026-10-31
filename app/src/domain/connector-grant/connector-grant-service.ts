@@ -41,7 +41,11 @@ import {
   resolveGrantOAuthScopes,
   scopesFromConnectorConfig,
 } from './delegated-oauth-registry'
-import { driveScopeProfileRequiresAdmin } from './google-drive-scopes'
+import {
+  clampDriveGrantedScopesToRequest,
+  driveScopeProfileRequiresAdmin,
+  mergeDriveGrantScopes,
+} from './google-drive-scopes'
 import { normalizeGmailScope } from './gmail-scopes'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
@@ -258,6 +262,18 @@ function resolveGrantedScopes(params: {
       )
     }
     throw new Error(`OAuth provider returned unrequested scope: ${grantedScopes.join(', ')}`)
+  }
+  // Drive: a configon belül is csak a KÉRT scope-ok kerülnek a grantba. Egy korábban
+  // megadott teljes `drive` különben selected_write kérésre is visszajönne, és
+  // megkerülné a start-kori admin-kaput (Picker-manifeszt nélküli írás).
+  if (params.connector.type === 'google_drive') {
+    const clamped = clampDriveGrantedScopesToRequest({ expectedScopes, grantedScopes: usable })
+    if (clamped.length === 0) {
+      throw new Error(
+        `connector_oauth_scopes_not_granted: requested ${expectedScopes.join(', ')}; provider returned ${grantedScopes.join(', ')}`,
+      )
+    }
+    return clamped
   }
   return usable
 }
@@ -650,7 +666,9 @@ export class ConnectorGrantService {
 
     if (
       params.connector.type === 'google_drive' &&
-      driveScopeProfileRequiresAdmin(effectiveScopes ?? []) &&
+      // Scope nélküli indításkor a Google-nak a connector TELJES scope-listája megy
+      // (benne a full `drive`) — a kapu ezt nézze, ne az üres tömböt.
+      driveScopeProfileRequiresAdmin(effectiveScopes ?? resolveRequestedScopes(params.connector)) &&
       !params.isAdmin
     ) {
       throw new Error(
@@ -750,12 +768,17 @@ export class ConnectorGrantService {
     // ne törölje a korábban megadott jogosultságokat a DB-ből. Másik fiók
     // hozzáadásakor nem keverjük a scope-okat.
     const normalize = scopeNormalizerFor(params.connector)
-    const mergedScopes = [
-      ...new Set([
-        ...(existing ? parseDelegatedGrantScopes(existing.scopes).map(normalize) : []),
-        ...(tokens.scopes ?? []).map(normalize),
-      ]),
-    ]
+    const existingScopes = existing ? parseDelegatedGrantScopes(existing.scopes).map(normalize) : []
+    const newScopes = (tokens.scopes ?? []).map(normalize)
+    // Drive: a teljes `drive` nem öröklődhet, ha ez a kör nem admin-only profilt kért.
+    const mergedScopes =
+      params.connector.type === 'google_drive'
+        ? mergeDriveGrantScopes({
+            existingScopes,
+            newScopes,
+            requestedScopes: resolveRequestedScopes(params.connector, statePayload.requestedScopes),
+          })
+        : [...new Set([...existingScopes, ...newScopes])]
     const tokensToStore: ConnectorGrantTokens = { ...tokens, scopes: mergedScopes }
 
     const tokenRef =
