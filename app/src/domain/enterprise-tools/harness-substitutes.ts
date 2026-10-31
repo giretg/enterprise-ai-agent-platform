@@ -21,10 +21,23 @@ export type HarnessSubstitute = {
   callableAt: readonly string[]
   /** Policy-szintek, amelyeken a (menedzselt) kliens a saját eszközét használja: ilyenkor nem listázzuk. */
   clientBuiltinAt: readonly string[]
+  /**
+   * A céges eszköz a kliens saját toolsetjét HELYETTESÍTI (a gép-padló elrejti a Hermes sajátját, ahol a céges
+   * dolgozik). A `document_export` csak kiegészít: a Hermes olvasó fájl-eszközei megmaradnak.
+   */
+  replacesClientToolset: boolean
 }
 
 export const HARNESS_SUBSTITUTES: readonly HarnessSubstitute[] = [
-  { tool: 'web_search', capability: 'web_search', callableAt: ['company_egress', 'builtin'], clientBuiltinAt: ['builtin'] },
+  { tool: 'web_search', capability: 'web_search', callableAt: ['company_egress', 'builtin'], clientBuiltinAt: ['builtin'], replacesClientToolset: true },
+  // #1024: céges rendszerbe nem ír, ezért minden szinten (a Kötött pályán is) hívható; ahol a kliens maga ír fájlt, nem listázzuk.
+  {
+    tool: 'document_export',
+    capability: 'local_files',
+    callableAt: ['none', 'attachments_only', 'read_only', 'project_write', 'free'],
+    clientBuiltinAt: ['project_write', 'free'],
+    replacesClientToolset: false,
+  },
 ]
 
 export function harnessSubstituteFor(tool: string): HarnessSubstitute | undefined {

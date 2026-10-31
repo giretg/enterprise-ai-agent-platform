@@ -509,6 +509,12 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description:
       'Keresés a nyilvános weben a cég saját keresőjével; minden keresés a cég naplójába kerül. Előtte egy adminnak be kell állítania a Beállítások → Webes keresés alatt.',
   },
+  // #1024 letölthető fájl
+  document_export: {
+    label: 'Fájl készítése',
+    description:
+      'Letölthető Excel-, Word-, PDF- vagy CSV-fájlt készít a válaszból. A fájlt 7 napig csak az töltheti le, aki kérte; céges rendszerbe nem ír.',
+  },
   web_research_request: {
     label: 'Webes kutatás',
     description: 'Strukturált web-kutatás kérése a Web-Egress workertől (tények + források).',

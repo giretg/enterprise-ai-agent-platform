@@ -128,6 +128,7 @@ export function createHandler(deps: ServerDeps) {
         role: m.role,
         content: m.content,
         attachments: m.attachments,
+        files: m.files,
         createdAt: m.createdAt.toISOString(),
       })),
       activeTurn: activeTurn

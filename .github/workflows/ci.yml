@@ -119,6 +119,7 @@ jobs:
           npm run test:ai-audit
           npm run test:enterprise-tools
           npm run test:harness-substitutes
+          npm run test:document-export
           npm run test:tenant-mailbox
           npm run test:http-api
           npm run test:write-approval-modes

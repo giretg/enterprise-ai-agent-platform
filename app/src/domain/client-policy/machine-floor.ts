@@ -48,7 +48,7 @@ function toolsetGates(catalog: readonly ToolCatalogEntry[]): { key: CapabilityKe
  * Ez csak UX: a döntés a Guardé és a szerveré.
  */
 function hiddenLevels(key: CapabilityKey): readonly string[] {
-  const substitute = HARNESS_SUBSTITUTES.find((row) => row.capability === key)
+  const substitute = HARNESS_SUBSTITUTES.find((row) => row.capability === key && row.replacesClientToolset)
   const levels = capabilityLevels(key)
   return substitute ? levels.filter((level) => !substitute.clientBuiltinAt.includes(level)) : [levels[0]]
 }

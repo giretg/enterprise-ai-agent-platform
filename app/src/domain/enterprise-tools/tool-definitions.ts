@@ -109,6 +109,10 @@ export const ENTERPRISE_SANDBOX_TOOLS = [SANDBOX_RUN_TOOL] as const
 export const WEB_SEARCH_TOOL = 'web_search'
 export const ENTERPRISE_WEB_TOOLS = [WEB_SEARCH_TOOL] as const
 
+/** #1024: letölthető fájl (XLSX, CSV, DOCX, PDF, MD) — „harness-pótló”, a listázását a `harness-substitutes.ts` dönti el. */
+export const DOCUMENT_EXPORT_TOOL = 'document_export'
+export const ENTERPRISE_FILE_TOOLS = [DOCUMENT_EXPORT_TOOL] as const
+
 /** #395 D1: két fix eszköz minden külső MCP-szerverhez — a nevek futásidőben nem változnak. */
 export const MCP_LIST_TOOLS_TOOL = 'mcp_list_tools'
 export const MCP_CALL_TOOL = 'mcp_call'
@@ -130,6 +134,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_SANDBOX_TOOLS,
   ...ENTERPRISE_MCP_TOOLS,
   ...ENTERPRISE_WEB_TOOLS,
+  ...ENTERPRISE_FILE_TOOLS,
 ] as const
 
 /**
@@ -158,6 +163,8 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   KB_WIKI_CHANGES_TOOL,
   MCP_LIST_TOOLS_TOOL,
   WEB_SEARCH_TOOL,
+  // Céges rendszerbe nem ír: a fájl a platform ideiglenes tárolójába kerül.
+  DOCUMENT_EXPORT_TOOL,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -230,6 +237,10 @@ export function isEnterpriseSandboxTool(toolName: string): toolName is Enterpris
 
 export function isEnterpriseWebSearchTool(toolName: string): toolName is typeof WEB_SEARCH_TOOL {
   return toolName === WEB_SEARCH_TOOL
+}
+
+export function isDocumentExportTool(toolName: string): toolName is typeof DOCUMENT_EXPORT_TOOL {
+  return toolName === DOCUMENT_EXPORT_TOOL
 }
 
 export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcpTool {
@@ -372,8 +383,13 @@ export const googleDriveUploadFileInputSchema = z
       .max(14_000_000)
       .optional()
       .describe(
-        'Base64-encoded file bytes instead of textContent (image, PDF, HTML). Pass exactly one of textContent or contentBase64.',
+        'Base64-encoded file bytes instead of textContent (image, PDF, HTML). Pass exactly one of textContent, contentBase64 or exportId.',
       ),
+    exportId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe('Save a file made with document_export (its exportId) instead of textContent/contentBase64. Only the user who asked for that file can save it.'),
     mimeType: z.string().max(200).optional(),
     parentFolderId: z.string().max(200).optional(),
     convertToGoogleType: z.enum(['doc', 'sheet', 'slides']).optional(),
@@ -1087,6 +1103,30 @@ export const webSearchInputSchema = z
   })
   .passthrough()
 
+export const documentExportInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    format: z.enum(['xlsx', 'csv', 'docx', 'pdf', 'md']).describe('xlsx = Excel, csv = plain table, docx = Word, pdf = PDF, md = Markdown text file.'),
+    fileName: z.string().min(1).max(200).describe('File name the user sees, e.g. "Számlák 2025 havonta". The extension is added automatically.'),
+    title: z.string().max(200).optional().describe('Optional document title (docx/pdf: shown at the top; xlsx: workbook title).'),
+    // ponytail: JSON text, not an array — Claude.ai drops MCP tools whose advertised schema has arrays/unions.
+    sheets: z
+      .string()
+      .max(8_000_000)
+      .optional()
+      .describe(
+        'xlsx/csv only. JSON text: an array of sheets, each {"name": "Havi", "headers": ["Hónap", "Összeg"], "rows": [["2025-01", 125000], …], "numberFormats": {"Összeg": "#,##0 \\"Ft\\""}}. ' +
+          'Put numbers as JSON numbers (not text) and dates as ISO text (2025-01-31) so Excel formats them. csv takes exactly one sheet. Max 100 000 rows.',
+      ),
+    markdown: z
+      .string()
+      .max(1_000_000)
+      .optional()
+      .describe('docx/pdf/md only. The document body in Markdown: headings (#), lists, tables, bold/italic, links.'),
+  })
+  .passthrough()
+
 export function schemaForEnterpriseSandboxTool(_toolName: EnterpriseSandboxTool) {
   return sandboxRunInputSchema
 }
@@ -1135,6 +1175,7 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
   if (isEnterpriseSandboxTool(toolName)) return schemaForEnterpriseSandboxTool(toolName)
   if (toolName === WEB_SEARCH_TOOL) return webSearchInputSchema
+  if (toolName === DOCUMENT_EXPORT_TOOL) return documentExportInputSchema
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
   if (toolName === GMAIL_GET_THREAD_TOOL) return gmailGetThreadInputSchema

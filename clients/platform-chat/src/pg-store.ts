@@ -34,6 +34,7 @@ const msg = (r: Row): Message => ({
   role: r.role as Message['role'],
   content: r.content as string,
   attachments: (r.attachments as Message['attachments']) ?? [],
+  files: (r.files as Message['files']) ?? [],
   createdAt: r.created_at as Date,
 })
 
@@ -160,9 +161,9 @@ export function createPgStore(pool: pg.Pool): Store {
 
     async addMessage(input) {
       const r = await one(
-        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments)],
+        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments), JSON.stringify(input.files ?? [])],
       )
       return msg(r!)
     },

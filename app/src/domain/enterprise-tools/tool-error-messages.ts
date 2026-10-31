@@ -48,6 +48,15 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   web_search_domain_not_allowed: 'The company web search rules do not allow searching these sites',
   web_search_rate_limited: 'This agent reached its daily web search limit — try again tomorrow or ask an admin to raise it',
   web_search_provider_error: 'The web search service did not answer — try again in a minute',
+  // #1024: letölthető fájl
+  document_export_not_allowed_by_policy:
+    'Making downloadable files is turned off for you by the company AI policy. Tell the user plainly that the company does not allow it here, and that an admin can change this in the AI client policy',
+  document_export_invalid_content:
+    'The file content is not in the expected shape (see detail) — fix it and call document_export again. xlsx/csv need sheets (JSON text), docx/pdf/md need markdown',
+  document_export_too_large:
+    'The file would be too large (max 10 MB or 100 000 rows). Tell the user plainly, and offer to split it into smaller files or to summarise the data',
+  document_export_not_found:
+    'This file is no longer available (it expired after 7 days, or it belongs to someone else). Offer to make it again with document_export',
   skill_not_pinned: 'This skill version is not pinned on the published agent definition',
   // #967 mini appok
   // #984 AI-adattárház

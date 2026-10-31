@@ -135,6 +135,35 @@ async function main() {
     assert.equal(replayed.tool_calls?.[0].function.name, 'google_drive__search')
   })
 
+  await check('#1024 fájl-kártya: a document_export linkje az üzenetre és a done eseménybe kerül; Drive-gomb csak Drive-eszközzel', async () => {
+    const url = 'https://app.example.com/api/control-plane/document-exports/e1'
+    const file = { url, name: 'Riport.xlsx', mimeType: 'application/xlsx', size: 1234, expiresAt: '2026-11-07T10:00:00.000Z', exportId: 'e1' }
+    const exportTool: ToolSpec = { name: 'document_export', inputSchema: { type: 'object', properties: { format: {} } } }
+    for (const [tools, canSaveToDrive] of [
+      [[exportTool, { name: 'google_drive_upload_file', inputSchema: { type: 'object' } }], true],
+      [[exportTool], false],
+    ] as const) {
+      const h = harness(
+        { llm: [callTool('document_export', { format: 'xlsx' }), say('Elkészült, innen töltheted le.'), say('Rendben.')], tool: [{ kind: 'complete', text: '{"exportId":"e1"}', isError: false, files: [file] }] },
+        { tools: [...tools], coreTools: tools.map((t) => t.name) },
+      )
+      const c = await h.conversation()
+      const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Készíts Excelt', attachments: [] })
+      assert.ok(r.ok)
+      await h.drain()
+      const reply = h.store.messages.find((m) => m.role === 'assistant')
+      assert.deepEqual(reply?.files, [{ ...file, canSaveToDrive }])
+      const doneEvent = h.store.events.find((e) => e.type === 'done')
+      assert.deepEqual(doneEvent?.payload.files, [{ ...file, canSaveToDrive }])
+      // A következő fordulóban a modell látja az exportId-t (Drive-mentéshez).
+      const next = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Mentsd el a Drive-ra', attachments: [] })
+      assert.ok(next.ok)
+      await h.drain()
+      const history = h.llmMessages.at(-1) as Array<{ role: string; content?: string }>
+      assert.match(String(history.find((m) => m.role === 'assistant')?.content), /Elkészült fájl: „Riport\.xlsx” — exportId: e1/)
+    }
+  })
+
   await check('újraküldés (worker elhal): a kész lépés nem fut újra, az író tool azonos idempotencia-kulcsot kap', async () => {
     const h = harness({
       llm: [callTool('google_drive_create_folder', { name: 'Q3' }), say('Kész a mappa.')],

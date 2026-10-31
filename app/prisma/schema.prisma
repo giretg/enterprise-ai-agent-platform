@@ -526,6 +526,7 @@ model Tenant {
   publicAssistants           PublicAssistant[]
   publicChatSessions         PublicChatSession[]
   publicChatDailyUsage       PublicChatDailyUsage[]
+  documentExports            DocumentExport[]
 
   @@index([status])
   @@index([createdById, selfService])
@@ -2023,4 +2024,30 @@ model PublicChatDailyUsage {
 
   @@id([tenantId, day])
   @@map("public_chat_daily_usage")
+}
+
+/// #1024: a munkatárs által készített letölthető fájl (XLSX, CSV, DOCX, PDF, MD) — ideiglenes tároló.
+/// Csak a kérő user töltheti le (és a tenant admin, ha az admin-betekintés be van kapcsolva);
+/// 7 nap után lejár, a napi takarítás törli.
+model DocumentExport {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  agentId      String   @map("agent_id") @db.Uuid
+  definitionId String?  @map("definition_id") @db.Uuid
+  fileName     String   @map("file_name")
+  format       String
+  mimeType     String   @map("mime_type")
+  byteSize     Int      @map("byte_size")
+  data         Bytes
+  /// A hívó kliens (platform_chat, hermes, claude…) — audit-korreláció.
+  client       String   @default("unknown")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@index([expiresAt])
+  @@map("document_exports")
 }

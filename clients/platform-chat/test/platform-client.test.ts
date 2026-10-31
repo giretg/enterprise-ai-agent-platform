@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { createServer, type IncomingMessage } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { BUDGET_BLOCK_REASON, createPlatformClient, PLATFORM_CHAT_INSTALL_ID } from '../src/platform.ts'
+import { BUDGET_BLOCK_REASON, createPlatformClient, fileLinksOf, PLATFORM_CHAT_INSTALL_ID } from '../src/platform.ts'
 
 let failures = 0
 async function check(name: string, fn: () => Promise<void>) {
@@ -90,11 +90,40 @@ async function main() {
       assert.deepEqual(await client.listAgents({ token: 'chat', tenantSlug: 'acme' }), [{ agentId: 'a1', platformChat: true }])
     })
 
+    await check('#1024 fájl-linkek: resource_link + adattárház exportUrl; idegen cím és hibás eredmény nem kártya', async () => {
+      const origin = 'https://app.example.com'
+      const url = `${origin}/api/control-plane/document-exports/e1`
+      const exported = {
+        content: [
+          { type: 'text', text: JSON.stringify({ exportId: 'e1', downloadUrl: url, expiresAt: '2026-11-07T10:00:00.000Z' }) },
+          { type: 'resource_link', uri: url, name: 'Riport.xlsx', mimeType: 'application/xlsx', size: 1234 },
+          { type: 'resource_link', uri: 'https://evil.example/x.exe', name: 'x.exe' },
+        ],
+      }
+      assert.deepEqual(fileLinksOf('document_export', exported, origin), [
+        { url, name: 'Riport.xlsx', mimeType: 'application/xlsx', size: 1234, expiresAt: '2026-11-07T10:00:00.000Z', exportId: 'e1' },
+      ])
+      assert.deepEqual(fileLinksOf('document_export', { ...exported, isError: true }, origin), [])
+      const warehouse = { content: [{ type: 'text', text: JSON.stringify({ dataset: 'szamlak', exportUrl: `${origin}/api/control-plane/warehouse/export/szamlak` }) }] }
+      assert.deepEqual(fileLinksOf('warehouse.export_dataset', warehouse, origin), [
+        {
+          url: `${origin}/api/control-plane/warehouse/export/szamlak`,
+          name: 'szamlak.xlsx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          size: null,
+          expiresAt: null,
+          exportId: null,
+        },
+      ])
+      // Más eszköz „exportUrl” mezője (pl. külső MCP-n át) nem lesz kártya.
+      assert.deepEqual(fileLinksOf('mcp_call', warehouse, origin), [])
+    })
+
     await check('MRTR: input_required → űrlap-üzenet; második kör inputResponses + requestState', async () => {
       const first = await client.callTool({ ...access, name: 'gmail_send', args: { to: 'anna@example.com' } })
       assert.deepEqual(first, { kind: 'input_required', requestState: 'v1.sealed', inputKey: 'confirm_write', message: 'Gmail új levél, címzett: anna@example.com' })
       const second = await client.callTool({ ...access, name: 'gmail_send', args: { to: 'anna@example.com' }, approval: { requestState: 'v1.sealed', inputKey: 'confirm_write', decision: 'approve' } })
-      assert.deepEqual(second, { kind: 'complete', text: '{"sent":true}', isError: false })
+      assert.deepEqual(second, { kind: 'complete', text: '{"sent":true}', isError: false, files: [] })
       const params = seen.at(-1)!.body.params as Record<string, unknown>
       assert.deepEqual(params.inputResponses, { confirm_write: { action: 'accept', content: { decision: 'approve' } } })
       assert.equal(params.requestState, 'v1.sealed')

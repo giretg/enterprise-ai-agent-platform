@@ -46,6 +46,13 @@ import { resolveEffectivePolicy } from '@/domain/client-policy/resolve-effective
 import type { McpClientName } from '@/lib/mcp-session'
 import { harnessSubstituteFor, substituteCallability, type SubstitutePolicy } from './harness-substitutes'
 import {
+  DOCUMENT_EXPORT_TTL_MS,
+  DocumentExportError,
+  renderDocument,
+  type RenderedDocument,
+} from '@/domain/document-export/document-export'
+import { documentExportPath } from '@/domain/document-export/document-export-store'
+import {
   isWikiToolCall,
   KbToolError,
   type KbToolContext,
@@ -80,6 +87,8 @@ import {
   isEnterpriseSandboxTool,
   isEnterpriseWebSearchTool,
   webSearchInputSchema,
+  isDocumentExportTool,
+  documentExportInputSchema,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   KB_GET_DOCUMENT_TOOL,
@@ -133,9 +142,13 @@ export type StartDelegatedAuthorization = (input: {
   toolName: string
 }) => Promise<{ url: string } | null>
 
+/** #1024: MCP `resource_link` a letölthető fájlhoz; az MCP-réteg a `content` végére fűzi. */
+export type EnterpriseToolResourceLink = { uri: string; name: string; mimeType: string; size?: number; description?: string }
+
 export type EnterpriseToolMcpResult = {
   isError?: true
   content: Array<{ type: 'text'; text: string }>
+  links?: EnterpriseToolResourceLink[]
 }
 
 /** MCP 2026-07-28 multi-round-trip result: the client asks the user, then retries the call (#618). */
@@ -292,6 +305,24 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     connector: LiveConnectorRow,
   ) => Promise<WebSearchResult>
   now?: () => Date
+  /** #1024: a kész fájl mentése az ideiglenes tárolóba (7 nap); hiányában az eszköz nincs beállítva. */
+  saveDocumentExport?: (input: {
+    tenantId: string
+    userId: string
+    agentId: string
+    definitionId: string
+    client: string
+    document: RenderedDocument
+    expiresAt: Date
+  }) => Promise<{ id: string }>
+  /** #1024: a kérő saját, még élő fájlja (Drive-mentés `exportId`-vel). */
+  loadOwnDocumentExport?: (input: { tenantId: string; userId: string; exportId: string }) => Promise<{
+    fileName: string
+    mimeType: string
+    data: Buffer
+  } | null>
+  /** #1024: a letöltési link abszolút címe; hiányában relatív útvonal. */
+  documentExportUrl?: (id: string) => string
   /** #395: külső MCP-hívás; tesztben cserélhető. */
   executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
   audit?: AuditSink
@@ -763,8 +794,14 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
+    // #1024: „Mentés a Drive-ra” — a kész fájl tartalma a jóváhagyás előtt kerül a kérésbe.
+    const exportArgs = await withDocumentExportContent(deps, principal, toolName, args)
+    if ('error' in exportArgs) {
+      await auditDenied(deps, principal, toolName, exportArgs.error, definitionId, definition.agentId)
+      return errorResult(exportArgs.error)
+    }
     // #1029: az aláírás a jóváhagyás ELŐTT kerül a levélbe, így a jóváhagyó a végleges szöveget látja.
-    const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, args)
+    const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, exportArgs.args)
     const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs })
     if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args: writeArgs, origin, confirm })
@@ -782,6 +819,10 @@ export async function invokeEnterpriseTool(
 
   if (isEnterpriseWebSearchTool(toolName)) {
     return invokeWebSearchTool(deps, { principal, toolName, args, definitionId, definition, client: input.client ?? 'unknown' })
+  }
+
+  if (isDocumentExportTool(toolName)) {
+    return invokeDocumentExportTool(deps, { principal, toolName, args, definitionId, definition, client: input.client ?? 'unknown' })
   }
 
   if (!isEnterpriseTool(toolName)) {
@@ -2111,5 +2152,142 @@ async function invokeWebSearchTool(
       tenantId: principal.tenantId,
     })
     return errorResult(code)
+  }
+}
+
+/** #1024: `google_drive_upload_file` `exportId`-vel — a kérő saját, élő fájlja kerül feltöltésre. */
+async function withDocumentExportContent(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<{ args: Record<string, unknown> } | { error: string }> {
+  if (toolName !== GOOGLE_DRIVE_UPLOAD_FILE_TOOL || args.exportId === undefined) return { args }
+  const exportId = asUuid(args.exportId)
+  if (!exportId || args.textContent !== undefined || args.contentBase64 !== undefined) return { error: 'invalid_args' }
+  const found = deps.loadOwnDocumentExport
+    ? await deps.loadOwnDocumentExport({ tenantId: principal.tenantId, userId: principal.userId, exportId })
+    : null
+  if (!found) return { error: 'document_export_not_found' }
+  return {
+    args: {
+      ...args,
+      name: typeof args.name === 'string' && args.name.trim() ? args.name : found.fileName,
+      contentBase64: found.data.toString('base64'),
+      mimeType: typeof args.mimeType === 'string' ? args.mimeType : found.mimeType.split(';')[0],
+    },
+  }
+}
+
+function formatExpiry(date: Date): string {
+  return date.toLocaleString('hu-HU', { timeZone: 'Europe/Budapest', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * #1024: letölthető fájl készítése. Sorrend: policy (`local_files`, a kliensfajtától függetlenül) →
+ * bemenet → előállítás (méretkorláttal) → ideiglenes tároló (7 nap). Céges rendszerbe nem ír, külső
+ * szolgáltatást nem ér el, ezért nincs jóváhagyás és nincs agent-szintű jog. Az audit a tartalmat
+ * nem tartalmazza, csak a formátumot, méretet, sorszámot.
+ */
+async function invokeDocumentExportTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+    client: McpClientName
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition, client } = input
+  const substitute = harnessSubstituteFor(toolName)!
+  const policy = deps.resolveClientPolicy
+    ? await deps.resolveClientPolicy({ tenantId: principal.tenantId, userId: principal.userId, agentId: definition.agentId })
+    : resolveEffectivePolicy({ tenant: null, user: null, agent: null })
+  const callability = substituteCallability(substitute, policy)
+  const policyMeta = { capability: substitute.capability, policyLevel: callability.level, client }
+  const deny = async (code: string, extra?: Record<string, unknown>) => {
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId, { ...policyMeta, ...extra })
+    return errorResult(code, extra)
+  }
+  if (!callability.callable) return deny('document_export_not_allowed_by_policy', { policyReason: callability.reason })
+  if (!deps.saveDocumentExport) return deny('tool_not_configured')
+
+  const parsed = documentExportInputSchema.safeParse(args)
+  if (!parsed.success) return deny('invalid_args', invalidArgsDetails(parsed.error))
+
+  let document: RenderedDocument
+  try {
+    document = await renderDocument(parsed.data)
+  } catch (error) {
+    if (error instanceof DocumentExportError) return deny(error.code, { detail: error.detail })
+    throw error
+  }
+  const now = (deps.now ?? (() => new Date()))()
+  const expiresAt = new Date(now.getTime() + DOCUMENT_EXPORT_TTL_MS)
+  const saved = await deps.saveDocumentExport({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    agentId: definition.agentId,
+    definitionId,
+    client,
+    document,
+    expiresAt,
+  })
+  const downloadUrl = deps.documentExportUrl ? deps.documentExportUrl(saved.id) : documentExportPath(saved.id)
+  const metadata = {
+    toolName,
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    definitionId,
+    agentId: definition.agentId,
+    exportId: saved.id,
+    format: document.format,
+    byteSize: document.bytes.length,
+    rowCount: document.rowCount,
+    ...policyMeta,
+  }
+  console.info('enterprise.tool.ok', metadata)
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'enterprise.tool.ok',
+    targetType: 'agent',
+    targetId: definition.agentId,
+    modelUsed: null,
+    inputRef: toolName,
+    outputRef: saved.id,
+    policyDecision: 'allowed',
+    metadata,
+    tenantId: principal.tenantId,
+  })
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          exportId: saved.id,
+          fileName: document.fileName,
+          format: document.format,
+          sizeBytes: document.bytes.length,
+          expiresAt: expiresAt.toISOString(),
+          downloadUrl,
+          note:
+            `The file is ready. Tell the user in one sentence that it can be downloaded from the link (${downloadUrl}) until ${formatExpiry(expiresAt)}, and that only they can open it. ` +
+            'Do not paste the file content again. To save it to Google Drive, call google_drive_upload_file with this exportId.',
+        }),
+      },
+    ],
+    links: [
+      {
+        uri: downloadUrl,
+        name: document.fileName,
+        mimeType: document.mimeType,
+        size: document.bytes.length,
+        description: `Letölthető fájl — ${formatExpiry(expiresAt)}-ig érhető el.`,
+      },
+    ],
   }
 }

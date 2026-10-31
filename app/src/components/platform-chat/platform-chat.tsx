@@ -14,6 +14,7 @@ import {
   type ChatAgent,
   type ChatAttachment,
   type ChatConversation,
+  type ChatFile,
   type ChatMessageView,
   type ConversationView,
   type WorkerClient,
@@ -89,6 +90,8 @@ const ICONS = {
   close: 'M6 6l12 12M18 6 6 18',
   down: 'M12 5v14M5.5 12.5 12 19l6.5-6.5',
   eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5',
+  download: 'M12 4v11M7 10.5 12 15.5l5-5M5 19.5h14',
+  cloud: 'M7 18.5h10.5a4 4 0 0 0 .4-8 6 6 0 0 0-11.6 1.5A3.3 3.3 0 0 0 7 18.5M12 15V10M9.5 12.5 12 10l2.5 2.5',
 } as const
 
 function Icon({ name, className = 'h-4 w-4' }: { name: keyof typeof ICONS; className?: string }) {
@@ -137,6 +140,81 @@ function AttachmentList({ attachments }: { attachments: ChatAttachment[] }) {
   )
 }
 
+const FILE_BADGES: Record<string, string> = {
+  xlsx: 'bg-emerald-600',
+  csv: 'bg-emerald-700',
+  docx: 'bg-sky-700',
+  pdf: 'bg-rose-600',
+  md: 'bg-ink-soft',
+}
+
+function fileSize(bytes: number | null): string | null {
+  if (bytes == null) return null
+  if (bytes < 1024) return `${bytes} bájt`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`
+  return `${(bytes / 1024 / 1024).toLocaleString('hu-HU', { maximumFractionDigits: 1 })} MB`
+}
+
+function expiryText(iso: string): string {
+  return new Date(iso).toLocaleString('hu-HU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * #1024: a munkatárs által készített letölthető fájl. Lejárt fájlnál nincs letöltés, csak a teendő;
+ * a „Mentés a Drive-ra” a szokásos jóváhagyással megy, és csak Drive-hozzáféréssel látszik.
+ */
+function FileCards({ files, onSaveToDrive }: { files: ChatFile[]; onSaveToDrive?: (file: ChatFile) => void }) {
+  if (!files.length) return null
+  const now = new Date()
+  return (
+    <ul className="mt-3 flex flex-col gap-2">
+      {files.map((file) => {
+        const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+        const expired = file.expiresAt ? Date.parse(file.expiresAt) <= now.getTime() : false
+        const size = fileSize(file.size)
+        return (
+          <li key={file.url} className="flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-card px-3 py-2.5 sm:flex-nowrap">
+            <span aria-hidden className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[10px] font-semibold uppercase text-white ${FILE_BADGES[ext] ?? 'bg-ink-soft'}`}>
+              {ext.slice(0, 4) || 'fájl'}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-ink" title={file.name}>
+                {file.name}
+              </p>
+              <p className="text-xs text-ink-soft">
+                {expired
+                  ? 'A fájl lejárt — kérd meg a munkatársat, hogy készítse el újra.'
+                  : [size, file.expiresAt ? `${expiryText(file.expiresAt)}-ig tölthető le, csak te éred el` : null].filter(Boolean).join(' · ')}
+              </p>
+            </div>
+            {!expired ? (
+              <div className="flex shrink-0 gap-1.5">
+                {file.canSaveToDrive && onSaveToDrive ? (
+                  <button
+                    type="button"
+                    onClick={() => onSaveToDrive(file)}
+                    title="A munkatárs feltölti a fájlt a Google Drive-ra. Előtte jóváhagyást kér tőled."
+                    className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-ink/5"
+                  >
+                    <Icon name="cloud" className="h-3.5 w-3.5" /> Mentés a Drive-ra
+                  </button>
+                ) : null}
+                <a
+                  href={file.url}
+                  download={file.name}
+                  className="flex items-center gap-1.5 rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-white transition hover:bg-ink/85"
+                >
+                  <Icon name="download" className="h-3.5 w-3.5" /> Letöltés
+                </a>
+              </div>
+            ) : null}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 /** Grok-szerű üzenet: a saját üzenet jobbra buborékban, a munkatárs válasza buborék nélkül, teljes szélességben. */
 function Message({
   message,
@@ -144,12 +222,14 @@ function Message({
   copied,
   onCopy,
   onEdit,
+  onSaveToDrive,
 }: {
-  message: Pick<ChatMessageView, 'id' | 'role' | 'content' | 'attachments'>
+  message: Pick<ChatMessageView, 'id' | 'role' | 'content' | 'attachments' | 'files'>
   streaming?: boolean
   copied: boolean
   onCopy?: () => void
   onEdit?: () => void
+  onSaveToDrive?: (file: ChatFile) => void
 }) {
   if (message.role === 'user') {
     return (
@@ -170,6 +250,7 @@ function Message({
       <Markdown text={message.content} />
       {streaming ? <span aria-hidden className="ml-0.5 inline-block h-4 w-2 animate-pulse rounded-sm bg-ink/40 align-middle" /> : null}
       <AttachmentList attachments={message.attachments} />
+      <FileCards files={message.files ?? []} onSaveToDrive={onSaveToDrive} />
       {!streaming && onCopy ? (
         <div className="mt-1 flex gap-0.5 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
           <ActionButton label={copied ? 'Kimásolva' : 'Válasz másolása'} icon={copied ? 'check' : 'copy'} onClick={onCopy} />
@@ -1004,6 +1085,7 @@ export function PlatformChat({
                             }
                           : undefined
                       }
+                      onSaveToDrive={readOnly || working ? undefined : (file) => void send(`Mentsd el a(z) „${file.name}” fájlt a Google Drive-ra.`)}
                     />
                   ))}
                   {live ? (

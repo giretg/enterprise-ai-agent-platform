@@ -8,13 +8,14 @@ import { writeAudit } from '@/lib/audit/types'
 import { services } from '@/domain/gateway-services'
 import { publicChatMaintenanceDeps } from '@/auth/public-chat-deps'
 import { runPublicChatMaintenance } from '@/domain/public-chat/maintenance'
+import { PostgresDocumentExportRepository } from '@/repositories/postgres/document-export-repository'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 /**
  * #759: napi retenciós sweep élő hívója (+ #942 privát KB 30 napos törlés, #967 archivált mini appok 90 nap után,
- * #978 wiki-verziók megőrzése). Cloud Scheduler hívja `x-dispatcher-token`-nel
+ * #978 wiki-verziók megőrzése, #1024 lejárt letölthető fájlok). Cloud Scheduler hívja `x-dispatcher-token`-nel
  * (ugyanaz a titok, mint a dispatch-ciklusé, vagy `AI_AUDIT_SWEEP_TOKEN`). Clerk-kapu
  * nélkül, mert a Schedulernek nincs munkamenete — a minta a public-routes allowlisten van.
  */
@@ -55,6 +56,15 @@ export async function POST(request: Request): Promise<Response> {
         targetType: 'public_chat_session',
         policyDecision: 'allowed',
         metadata: publicChat,
+      })
+      // #1024: a munkatárs által készített, 7 napnál régebbi letölthető fájlok törlése.
+      const exportsDeleted = await new PostgresDocumentExportRepository().deleteExpired(new Date())
+      await writeAudit(repositories.audit, {
+        actorType: 'system',
+        action: 'document_export.retention_sweep',
+        targetType: 'document_export',
+        policyDecision: 'allowed',
+        metadata: { deleted: exportsDeleted },
       })
       // Önfrissítő kapcsolatok: a partner API-leírásának napi ellenőrzése gombnyomás nélkül.
       // Saját hibája nem buktatja el a retenciós sweepet.
