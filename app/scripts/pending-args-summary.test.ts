@@ -83,6 +83,16 @@ check('mail_send approval card shows from mailbox', () => {
   )
 })
 
+check('mail_send without account must not invent agent own mailbox', () => {
+  const text = pendingArgsSummary(
+    'mail_send',
+    { to: 'anna@x.hu', subject: 'Összefoglaló', body: 'Szia' },
+    labels,
+  )
+  assert.equal(text.includes('saját postafiók'), false)
+  assert.match(text, /^new message\nto: anna@x\.hu/)
+})
+
 check('gmail_send draftId omits decoy body', () => {
   const text = pendingArgsSummary(
     'gmail_send',

@@ -17,6 +17,9 @@ import {
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
   HTTP_API_REQUEST_TOOL,
+  MAIL_CREATE_DRAFT_TOOL,
+  MAIL_MARK_TOOL,
+  MAIL_SEND_TOOL,
   type EnterpriseToolMcpResult,
   type InputRequiredToolResult,
   type ToolCallPrincipal,
@@ -96,12 +99,22 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-function gmailComposeTarget(args: Record<string, unknown>): string {
-  if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+function gmailComposeTarget(args: Record<string, unknown>, label = 'Gmail'): string {
+  const from = str(args.account) ? `innen: ${str(args.account)}` : ''
+  if (str(args.draftId)) {
+    return [
+      label === 'Gmail' ? 'Gmail piszkozat elküldése' : 'Piszkozat elküldése',
+      from,
+      `draftId: ${str(args.draftId)}`,
+    ]
+      .filter(Boolean)
+      .join(', ')
+  }
   const parts = [
+    from,
     str(args.replyToMessageId)
-      ? `Gmail válasz a(z) ${str(args.replyToMessageId)} levélre${args.replyAll === true ? ' (mindenkinek)' : ''}`
-      : 'Gmail új levél',
+      ? `${label} válasz a(z) ${str(args.replyToMessageId)} levélre${args.replyAll === true ? ' (mindenkinek)' : ''}`
+      : `${label} új levél`,
     str(args.to) ? `címzett: ${str(args.to)}` : str(args.replyToMessageId) ? 'címzett: az eredeti feladó' : '',
     str(args.cc) ? `másolat: ${str(args.cc)}` : '',
     str(args.bcc) ? `titkos másolat: ${str(args.bcc)}` : '',
@@ -162,6 +175,21 @@ async function confirmMessage(
     // draftId send ignores compose fields at execute time — never surface args.body as "Tartalom"
     // or a decoy body would be what the human approves while a different draft is sent (#668).
     content = view.toolName === GMAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
+  } else if (view.toolName === MAIL_SEND_TOOL || view.toolName === MAIL_CREATE_DRAFT_TOOL) {
+    // #1030: mail_* a preferált küldő eszköz — a confirm nem lehet vak (to/tárgy/from nélkül).
+    target = gmailComposeTarget(args, 'Levél')
+    content = view.toolName === MAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
+  } else if (view.toolName === MAIL_MARK_TOOL) {
+    target = [
+      str(args.account) ? `fiók: ${str(args.account)}` : '',
+      str(args.threadId) ? `szál: ${str(args.threadId)}` : str(args.messageId) ? `levél: ${str(args.messageId)}` : '',
+      args.read === true ? 'olvasott' : '',
+      args.unread === true ? 'olvasatlan' : '',
+      args.archive === true ? 'archiválás' : '',
+      str(args.label) ? `címke: ${str(args.label)}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
   } else if (view.toolName === GMAIL_MODIFY_LABELS_TOOL) {
     target = [
       gmailItemTarget(args),
