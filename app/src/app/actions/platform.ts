@@ -10,6 +10,7 @@ import { loadPrimaryMailboxAddresses, syncAgentMailDisplayName } from '@/lib/age
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
+import { publicAppUrl } from '@/lib/public-app-url'
 import { parseLocalRoots, serializeLocalRoots } from '@/lib/agent-local-roots'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
 import { isKnowledgeBaseVisibleTo, scopeSnapshotToUser } from '@/lib/wiki-access'
@@ -160,14 +161,13 @@ export async function inviteUser(input: { email: string; role: string }) {
     let clerkInvited = false
     if (isClerkEnabled()) {
       try {
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '')
         const client = await clerkClient()
         const clerkInvitation = await client.invitations.createInvitation({
           emailAddress: email,
           publicMetadata: { enterpriseInvitationId: result.invitation.id },
           notify: true,
           ignoreExisting: true,
-          ...(appUrl ? { redirectUrl: `${appUrl}/sign-up` } : {}),
+          redirectUrl: publicAppUrl('/sign-up').href,
         })
         await services.iam.bindClerkInvitation({
           invitationId: result.invitation.id,

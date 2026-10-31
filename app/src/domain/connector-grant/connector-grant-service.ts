@@ -52,6 +52,7 @@ import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { tenantMailboxOf, tenantMailboxScopes } from './tenant-mailbox'
 import { lookup } from 'node:dns/promises'
 import { allowlistForOAuthEndpoint, guardEgressUrl } from '@/domain/net/egress-guard'
+import { publicAppUrl } from '@/lib/public-app-url'
 
 class OAuthEgressBlockedError extends Error {
   constructor(message = 'OAuth endpoint blocked by egress policy') {
@@ -165,10 +166,7 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
       (() => {
         const service = googleOAuthService(connector)
         const envRedirect = googleOAuthRedirectUriFromEnv(service)
-        return (
-          envRedirect ||
-          `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`
-        )
+        return envRedirect || publicAppUrl('/api/connectors/oauth/callback').href
       })(),
     userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
     accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',
