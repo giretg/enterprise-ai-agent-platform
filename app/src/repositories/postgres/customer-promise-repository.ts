@@ -19,11 +19,29 @@ export class PostgresCustomerPromiseRepository implements CustomerPromiseStore {
     return prisma.customerPromise.findFirst({ where: { tenantId, id } })
   }
 
-  list(input: CustomerPromiseListInput, now: Date) {
+  async list(input: CustomerPromiseListInput, now: Date) {
     const where: Prisma.CustomerPromiseWhereInput = { tenantId: input.tenantId, ownerUserId: input.ownerUserId, agentId: input.agentId, status: input.status === 'active' ? { in: ['open', 'claimed'] } : input.status }
     if (input.due === 'overdue') { where.AND = [{ status: { in: ['open', 'claimed'] } }]; where.dueAt = { lt: now } }
     if (input.due === 'upcoming') where.dueAt = { gte: now }
-    return prisma.customerPromise.findMany({ where, orderBy: [{ dueAt: 'asc' }, { id: 'asc' }], take: input.limit ?? 50, skip: input.offset ?? 0 })
+    const take = input.limit ?? 50
+    const skip = input.offset ?? 0
+    const orderBy = [{ dueAt: 'asc' as const }, { id: 'asc' as const }]
+    // Overdue-only / upcoming-only keep chronological order.
+    if (input.due === 'overdue' || input.due === 'upcoming') {
+      return prisma.customerPromise.findMany({ where, orderBy, take, skip })
+    }
+    // Default active (and history) lists: upcoming before overdue so an overdue backlog
+    // cannot push live commitments off the MCP/briefing take:50 window after #672 harden.
+    const upcomingWhere: Prisma.CustomerPromiseWhereInput = { ...where, dueAt: { gte: now } }
+    const overdueWhere: Prisma.CustomerPromiseWhereInput = { ...where, dueAt: { lt: now } }
+    const upcomingCount = await prisma.customerPromise.count({ where: upcomingWhere })
+    if (skip < upcomingCount) {
+      const upcoming = await prisma.customerPromise.findMany({ where: upcomingWhere, orderBy, take, skip })
+      if (upcoming.length === take) return upcoming
+      const overdue = await prisma.customerPromise.findMany({ where: overdueWhere, orderBy, take: take - upcoming.length, skip: 0 })
+      return [...upcoming, ...overdue]
+    }
+    return prisma.customerPromise.findMany({ where: overdueWhere, orderBy, take, skip: skip - upcomingCount })
   }
 
   countUrgentForUser(tenantId: string, userId: string, until: Date) {

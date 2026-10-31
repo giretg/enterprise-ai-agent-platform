@@ -71,7 +71,8 @@ export async function invokeCustomerPromise(deps: CustomerPromiseMcpDeps, input:
   }
   if (toolName === 'platform.promise.list') {
     const fields = parsed as z.infer<typeof promiseListSchema>
-    return result({ok: true, promises: await svc.list({tenantId: principal.tenantId, ownerUserId: principal.userId, agentId: definition.agentId, status: fields.status ?? 'active', due: fields.due, limit: 50})})
+    const fetched = await svc.list({tenantId: principal.tenantId, ownerUserId: principal.userId, agentId: definition.agentId, status: fields.status ?? 'active', due: fields.due, limit: 51})
+    return result({ok: true, hasMore: fetched.length > 50, promises: fetched.slice(0, 50)})
   }
   const fields = parsed as z.infer<typeof promiseResolveSchema>
   const found = await svc.get({tenantId: principal.tenantId, userId: principal.userId, promiseId: fields.promiseId})

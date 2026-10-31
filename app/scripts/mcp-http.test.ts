@@ -644,7 +644,9 @@ async function main() {
     assert.equal(registered.ok, true)
     const promiseId = registered.row.id
     assert.equal((await call('platform.promise.get', {promiseId})).row.id, promiseId)
-    assert.equal((await call('platform.promise.list', {})).promises.length, 1)
+    const listed = await call('platform.promise.list', {})
+    assert.equal(listed.promises.length, 1)
+    assert.equal(listed.hasMore, false)
     const briefing = await call(MCP_AGENT_GET_DEFINITION_TOOL, {})
     assert.equal(briefing.customerPromises.entries[0].id, promiseId)
     assert.match(briefing.briefing, /Open customer promises/)
