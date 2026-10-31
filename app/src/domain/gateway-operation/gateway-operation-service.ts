@@ -298,7 +298,8 @@ export function toGatewayOperationView(row: GatewayOperationRecord): GatewayOper
     designatedApproverUserId: row.designatedApproverUserId,
     designatedApproverName: row.designatedApproverName,
     errorCode: row.errorCode,
-    result: row.status === 'succeeded' ? row.resultJson : null,
+    // Failed HTTP writes may still carry the upstream body (e.g. 412 + ETag) for retry.
+    result: row.status === 'succeeded' || row.status === 'failed' ? row.resultJson : null,
     approval: row.approval
       ? {
           decision: row.approval.decision,
@@ -847,7 +848,7 @@ async function executeApprovedOperation(
 ): Promise<GatewayOperationRecord> {
   const args = asRecord(operation.argsJson)
 
-  const fail = async (code: string) => {
+  const fail = async (code: string, resultJson?: unknown) => {
     const changeSetId = wikiChangeSetIdOf(operation)
     if (changeSetId && deps.wikiChangeSets) {
       // A kártya innentől nem `awaiting_approval`, Control Plane már nem rejectelhet.
@@ -861,6 +862,7 @@ async function executeApprovedOperation(
     const updated = await deps.operations.update(operation.id, {
       status: 'failed',
       errorCode: code,
+      ...(resultJson !== undefined ? { resultJson } : {}),
     })
     console.info('gateway.operation.failed', {
       operationId: operation.id,
@@ -887,7 +889,14 @@ async function executeApprovedOperation(
       },
       tenantId: operation.tenantId,
     })
-    return updated ?? { ...operation, status: 'failed' as GatewayOperationStatus, errorCode: code }
+    return (
+      updated ?? {
+        ...operation,
+        status: 'failed' as GatewayOperationStatus,
+        errorCode: code,
+        ...(resultJson !== undefined ? { resultJson } : {}),
+      }
+    )
   }
 
   const live = await deps.resolveRequester({
@@ -1099,6 +1108,17 @@ async function executeApprovedOperation(
           args,
           accessToken ?? '',
         )
+    // Sync MCP path marks `ok: false` as isError; approved execute must not claim success
+    // when If-Match/upstream rejected the write (e.g. 412) without throwing.
+    if (
+      isEnterpriseHttpWriteTool(operation.toolName) &&
+      result !== null &&
+      typeof result === 'object' &&
+      'ok' in result &&
+      (result as { ok: unknown }).ok === false
+    ) {
+      return fail('http_api_error', result)
+    }
     if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: result })) return fail(TENANT_MAILBOX_DISCONNECTED)
     const updated = await deps.operations.update(operation.id, {
       status: 'succeeded',
