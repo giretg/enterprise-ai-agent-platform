@@ -31,7 +31,7 @@ ismétlődő-hurok (azonos tool + argumentum 3×) → leállás.
 A modell nem kapja meg minden lépésben az összes MCP-eszköz teljes sémáját:
 
 - **Mag** (`tools[]`, teljes sémával): `PLATFORM_CHAT_CORE_TOOLS` (vesszővel elválasztva; alapértelmezés
-  `platform.project_memory.read,kb_search,web_search`) ∪ a definíció opcionális `preloadTools` listája.
+  `platform.project_memory.read,platform.promise.list,platform.work_file.list,kb_search,web_search`) ∪ a definíció opcionális `preloadTools` listája.
 - **Eszköz-index** (system prompt, a definíció/memória előtt): minden más eszköz neve + egysoros leírása,
   csoportosítva, kódpont-sorrendben. Csak a mag-listától függ, így fordulók között is bájt-azonos (prompt-cache).
 - **`tool_describe(names[])`**: harness-eszköz, a worker helyben válaszol (nem MCP-hívás). A kért eszközök a

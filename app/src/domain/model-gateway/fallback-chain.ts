@@ -49,10 +49,15 @@ export function classifyProviderError(error: unknown): FallbackErrorClass {
   if (/\b(401|403)\b/.test(message) || has(message, 'unauthorized', 'forbidden', 'invalid api key', 'authentication')) {
     return 'auth_error'
   }
-  // Keret / költségkeret: szándékos limit, másik modellre váltva megkerülnénk.
+  // Keret / költségkeret: szándékos limit, másik modellre váltva megkerülnénk. A 402 (elfogyott
+  // szolgáltatói kredit) is ide tartozik — a „provider failed” szöveg miatt különben kiesésnek látszana.
   if (
+    /\b402\b/.test(message) ||
     has(
       message,
+      'payment required',
+      'more credits',
+      'insufficient credits',
       'keret',
       'költségkeret',
       'budget',

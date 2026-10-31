@@ -100,6 +100,11 @@ check('NEM váltó hiba-osztályok: auth, tartalom, blokk, keret, quota, ismeret
   }
   assert.equal(classifyProviderError(new GatewayBlockedError('érzékeny tartalom')), 'blocked')
   assert.equal(classifyProviderError(new Error('You exceeded your current quota')), 'blocked')
+  // #1022: elfogyott OpenRouter-kredit — a „provider failed” ne sorolja kiesésnek (a hash-ben lévő 5xx-szerű szám se).
+  assert.equal(
+    classifyProviderError(new Error('openrouter provider failed: 402 {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 65536 tokens, but can only afford 512","code":402}}')),
+    'blocked',
+  )
   assert.equal(classifyProviderError(new Error('401 Unauthorized')), 'auth_error')
 })
 
