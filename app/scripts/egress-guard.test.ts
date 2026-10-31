@@ -11,6 +11,7 @@ import {
   isForbiddenHost,
   isPrivateOrReservedIp,
   matchForbiddenHost,
+  PLATFORM_GOOGLE_OAUTH_HOSTS,
 } from '../src/domain/net/egress-guard'
 
 let failures = 0
@@ -158,14 +159,14 @@ async function main() {
     assert.equal(!r.ok && r.reason, 'invalid_url')
   })
 
-  await test('OAuth: Gmail/Drive üres tenant-listánál is a saját hostjára pinelődik', () => {
+  await test('OAuth: Gmail/Drive üres tenant-listánál is a fix Google hostokra pinelődik', () => {
     assert.deepEqual(
       allowlistForOAuthEndpoint({
         connectorType: 'gmail',
         url: 'https://oauth2.googleapis.com/token',
         tenantAllowlist: [],
       }),
-      ['oauth2.googleapis.com'],
+      [...PLATFORM_GOOGLE_OAUTH_HOSTS],
     )
     assert.deepEqual(
       allowlistForOAuthEndpoint({
@@ -173,7 +174,7 @@ async function main() {
         url: 'https://www.googleapis.com/oauth2/v2/userinfo',
         tenantAllowlist: [],
       }),
-      ['www.googleapis.com'],
+      [...PLATFORM_GOOGLE_OAUTH_HOSTS],
     )
   })
 
@@ -207,7 +208,7 @@ async function main() {
     )
   })
 
-  await test('OAuth: pinToEndpointHost pineli a platform Google API http_api-t üres listánál is', () => {
+  await test('OAuth: pinToEndpointHost a fix Google hostokra pinel (üres tenant listánál is)', () => {
     assert.deepEqual(
       allowlistForOAuthEndpoint({
         connectorType: 'http_api',
@@ -215,7 +216,7 @@ async function main() {
         tenantAllowlist: [],
         pinToEndpointHost: true,
       }),
-      ['oauth2.googleapis.com'],
+      [...PLATFORM_GOOGLE_OAUTH_HOSTS],
     )
     assert.deepEqual(
       allowlistForOAuthEndpoint({
@@ -225,6 +226,26 @@ async function main() {
         pinToEndpointHost: false,
       }),
       ['api.crm.example'],
+    )
+  })
+
+  await test('OAuth: platform pin nem bízza a allowlistet a connector tokenUrl hostjára', () => {
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'http_api',
+        url: 'https://attacker.example/token',
+        tenantAllowlist: ['attacker.example'],
+        pinToEndpointHost: true,
+      }),
+      [...PLATFORM_GOOGLE_OAUTH_HOSTS],
+    )
+    assert.deepEqual(
+      allowlistForOAuthEndpoint({
+        connectorType: 'gmail',
+        url: 'https://attacker.example/token',
+        tenantAllowlist: null,
+      }),
+      [...PLATFORM_GOOGLE_OAUTH_HOSTS],
     )
   })
 
