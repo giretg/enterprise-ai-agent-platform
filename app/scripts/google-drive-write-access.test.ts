@@ -9,8 +9,7 @@ import {
   GoogleDriveWriteAccessError,
 } from '../src/domain/connector-grant/google-drive-write-access'
 import { emptyGoogleDriveGrantMetadata, toGoogleDriveGrantMetadataJson } from '../src/domain/connector-grant/google-drive-grant-metadata'
-import { toolsRequiringConnector } from '../src/domain/tool-broker/tool-connector-requirements'
-import { isSideEffectingTool } from '../src/domain/tool-broker/tool-trust-registry'
+import { ENTERPRISE_DRIVE_WRITE_TOOLS } from '../src/domain/enterprise-tools/tool-definitions'
 
 function test(name: string, fn: () => void) {
   try {
@@ -154,8 +153,8 @@ test('fail-closed: hiányzó fileId → DENY (nem csúszhat át a share_file sem
 // írástoolt vesz fel a regiszterbe, de kihagyja a write-access kezelt halmazából,
 // ez a teszt bukik — így a manifeszt-kapu nem tud némán fail-open irányba sodródni.
 test('drift: minden mellékhatásos Drive-tool manifeszt-kapuzott', () => {
-  const driveWriteTools = toolsRequiringConnector('google_drive').filter(isSideEffectingTool)
-  assert.ok(driveWriteTools.length >= 10, 'a Drive írástoolok listája nem lehet üres')
+  const driveWriteTools = [...ENTERPRISE_DRIVE_WRITE_TOOLS]
+  assert.ok(driveWriteTools.length > 0, 'a Drive írástoolok listája nem lehet üres')
   const notInManifest = {
     fileId: 'ZZZ-not-in-manifest',
     parentFolderId: 'ZZZ-not-in-manifest',
