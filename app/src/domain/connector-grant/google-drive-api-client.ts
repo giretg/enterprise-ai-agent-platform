@@ -227,6 +227,21 @@ export function driveQueryClause(query: string): string {
   return `fullText contains '${query.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
 }
 
+/** Szöveges válasz beolvasása a hívó maxBytes korlátjával (export / text-letöltés). */
+async function readTextWithinLimit(res: Response, maxBytes: number): Promise<string> {
+  const contentLength = Number(res.headers.get('content-length') ?? '')
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await res.body?.cancel().catch(() => undefined)
+    throw new GoogleDriveApiError(`A fájl túl nagy (${contentLength} bájt, max ${maxBytes}).`, 413, 'file_too_large')
+  }
+  const text = await res.text()
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes > maxBytes) {
+    throw new GoogleDriveApiError(`A fájl túl nagy (${bytes} bájt, max ${maxBytes}).`, 413, 'file_too_large')
+  }
+  return text
+}
+
 export class GoogleDriveApiClient {
   constructor(private accessToken: string) {}
 
@@ -363,7 +378,7 @@ export class GoogleDriveApiClient {
       }
       const res = await fetchWithBackoff('google_drive.export', url, { headers: this.authHeaders() })
       if (!res.ok) throw driveApiError('google_drive.export', res.status, await res.text())
-      let text = await res.text()
+      let text = await readTextWithinLimit(res, maxBytes)
       let truncated = false
       if (text.length > MAX_TEXT_CHARS) {
         text = text.slice(0, MAX_TEXT_CHARS)
@@ -398,7 +413,7 @@ export class GoogleDriveApiClient {
       return this.readPdf(res, file, contentType, maxBytes, warnings)
     }
     if (contentType.startsWith('text/') || contentType.includes('json')) {
-      let text = await res.text()
+      let text = await readTextWithinLimit(res, maxBytes)
       let truncated = false
       if (text.length > MAX_TEXT_CHARS) {
         text = text.slice(0, MAX_TEXT_CHARS)
