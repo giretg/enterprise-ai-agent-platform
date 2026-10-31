@@ -466,6 +466,24 @@ async function mailAccountConnectorId(
 }
 
 /**
+ * #1030: account nélkül a mail_* a primary/egyetlen fiókra esik — a feloldott
+ * handle-t beégetjük, mielőtt a jóváhagyó kártya vagy a signature lefutna.
+ */
+async function withResolvedMailAccount(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+  definition: AgentDefinition,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!isEnterpriseMailWriteTool(toolName)) return args
+  if (typeof args.account === 'string' && args.account.trim()) return args
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args })
+  if (!authorized.allowed || !authorized.resolvedMailAccount) return args
+  return { ...args, account: authorized.resolvedMailAccount }
+}
+
+/**
  * #1029: AgentMail-küldés az agent saját címéről → aláírás a levél végére. A cél
  * konnektor: connectorId / connectorName, ennek hiányában az egyetlen kötött HTTP
  * konnektor, amelynek van ilyen végpontja (ugyanígy választ a szerver is).
@@ -484,7 +502,9 @@ async function withPrimaryMailboxSignature(
     const body = typeof args.body === 'string' ? args.body : ''
     if (!signature || !body) return args
     const account = typeof args.account === 'string' ? args.account.trim().toLowerCase() : ''
-    const fromPrimary = !account || (await mailAccountConnectorId(deps, principal, definition, account)) === mailbox?.connectorId
+    // Account nélkül ne tegyük fel, hogy primary — withResolvedMailAccount már beégette.
+    const fromPrimary =
+      Boolean(account) && (await mailAccountConnectorId(deps, principal, definition, account)) === mailbox?.connectorId
     return fromPrimary ? { ...args, body: appendTextSignature(body, signature) } : args
   }
   if (toolName !== HTTP_API_REQUEST_TOOL || !deps.findAgentMailSignature) return args
@@ -763,8 +783,9 @@ export async function invokeEnterpriseTool(
       await auditDenied(deps, principal, toolName, 'tool_not_configured', definitionId, definition.agentId)
       return errorResult('tool_not_configured')
     }
-    // #1029: az aláírás a jóváhagyás ELŐTT kerül a levélbe, így a jóváhagyó a végleges szöveget látja.
-    const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, args)
+    // #1030/#1029: előbb a konkrét postafiók, aztán az aláírás — a jóváhagyó a végleges from+szöveget látja.
+    const withAccount = await withResolvedMailAccount(deps, principal, definition, toolName, args)
+    const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, withAccount)
     const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs })
     if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args: writeArgs, origin, confirm })

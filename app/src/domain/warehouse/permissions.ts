@@ -23,9 +23,18 @@ export function canWarehouse(role: string | null | undefined, action: WarehouseA
 /**
  * Törölhető-e az import: csak amíg semmi nem töltődött be belőle. A betöltött
  * (vagy már visszavont) import sor-előzménye a visszavonás és az eredet alapja.
+ *
+ * `publishedAt` / `rolledBackAt` is kell: a state-mező önmagában nem elég —
+ * egy késői/versengő preview|commit felülírhatja a `published` állapotot
+ * (lásd #996), miközben a betöltött sorok és a published_at megmaradnak.
+ * Ilyenkor a törlés az eredet- és visszavonás-nyilvántartást rombolná.
  */
 const NOT_DISCARDABLE = new Set(['loading', 'published', 'rolled_back'])
 
-export function canDiscardImport(state: string): boolean {
+export function canDiscardImport(
+  state: string,
+  markers?: { publishedAt?: string | null; rolledBackAt?: string | null },
+): boolean {
+  if (markers?.publishedAt || markers?.rolledBackAt) return false
   return !NOT_DISCARDABLE.has(state)
 }

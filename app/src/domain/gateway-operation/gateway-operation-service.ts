@@ -519,11 +519,17 @@ async function loadAuthorizedWrite(
     return fail(authorized.reason, { ...ids, connectorId: authorized.connectorId })
   }
 
+  // #1030: feloldott fiók beégetése — HITL és execute ugyanazt a postafiókot lássa.
+  const stampedArgs =
+    authorized.resolvedMailAccount && isEnterpriseMailWriteTool(toolName)
+      ? { ...parsedArgs, account: authorized.resolvedMailAccount }
+      : parsedArgs
+
   return {
     ok: true,
     definition,
     connectorId: authorized.connectorId,
-    parsedArgs,
+    parsedArgs: stampedArgs,
   }
 }
 
@@ -964,6 +970,14 @@ async function executeApprovedOperation(
     args,
   })
   if (!authorized.allowed) return fail(authorized.reason)
+  // #1030: sorba állításkor rögzített postafiók — primary-váltás ne küldjön máshonnan.
+  if (
+    isEnterpriseMailWriteTool(operation.toolName) &&
+    operation.connectorId &&
+    authorized.connectorId !== operation.connectorId
+  ) {
+    return fail('mailbox_changed')
+  }
 
   if (operation.toolName === KB_WIKI_WRITE_TOOL) {
     const changeSetId = wikiChangeSetIdOf(operation)

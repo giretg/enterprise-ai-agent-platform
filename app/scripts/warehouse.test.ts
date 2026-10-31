@@ -22,7 +22,7 @@ import { buildQuerySpec, compileQuery, QueryError } from '../src/domain/warehous
 import { qi, UnsafeIdentifierError, warehouseSchemaName } from '../src/domain/warehouse/sql'
 import { buildLinkIndex, matchLink, prepareRows } from '../src/domain/warehouse/transform'
 import { convertCell, nameWithoutLegalForm, parseHuDate, parseHuNumber } from '../src/domain/warehouse/value-parse'
-import { canWarehouse } from '../src/domain/warehouse/permissions'
+import { canDiscardImport, canWarehouse } from '../src/domain/warehouse/permissions'
 import { customersXlsx, ordersXlsx, zipBombXlsx } from './warehouse-fixtures'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import type { WarehouseAgentAccess } from '../src/lib/warehouse-settings'
@@ -378,6 +378,21 @@ async function main() {
     assert.equal(canWarehouse('approver', 'operate'), false)
     assert.equal(canWarehouse('admin', 'operate'), true)
     assert.equal(canWarehouse(null, 'read'), false)
+  })
+
+  await check('discard: publishedAt/rolledBackAt megmarad state-clobber után is', () => {
+    assert.equal(canDiscardImport('previewed'), true)
+    assert.equal(canDiscardImport('awaiting_approval'), true)
+    assert.equal(canDiscardImport('failed'), true)
+    assert.equal(canDiscardImport('published'), false)
+    assert.equal(canDiscardImport('rolled_back'), false)
+    assert.equal(canDiscardImport('loading'), false)
+    // #996: state felülíródhat, a published_at nem — törlés tilos.
+    assert.equal(canDiscardImport('awaiting_approval', { publishedAt: '2026-10-29T12:00:00.000Z' }), false)
+    assert.equal(canDiscardImport('previewed', { publishedAt: '2026-10-29T12:00:00.000Z' }), false)
+    assert.equal(canDiscardImport('failed', { publishedAt: '2026-10-29T12:00:00.000Z' }), false)
+    assert.equal(canDiscardImport('awaiting_approval', { rolledBackAt: '2026-10-29T12:00:00.000Z' }), false)
+    assert.equal(canDiscardImport('planned', { publishedAt: null, rolledBackAt: null }), true)
   })
 
   await check('Feltöltés gomb: a kliens előszűr és mindig megmondja, miért vár', () => {

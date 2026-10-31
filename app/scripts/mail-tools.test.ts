@@ -325,6 +325,60 @@ async function main() {
     assert.equal(viaGmail.allowed, true)
   })
 
+  await check('mail_send account nélkül: resolvedMailAccount a konkrét fiók (nem „saját” inventálás)', async () => {
+    const authorized = await authorizeToolCall(
+      {
+        findConnector: async () => gmailConnector,
+        findActiveGrant: async () => grant(),
+        findActiveGrants: async () => [grant()],
+      },
+      {
+        principal,
+        definition: definition(
+          [{ connectorId: GMAIL_ID, type: 'gmail', accessMode: 'write', name: 'Gmail' }],
+          [MAIL_SEND_TOOL, 'gmail_send'],
+        ),
+        toolName: MAIL_SEND_TOOL,
+        args: { to: 'a@b.hu', subject: 'x', body: 'y' },
+      },
+    )
+    assert.equal(authorized.allowed, true)
+    if (authorized.allowed) {
+      assert.equal(authorized.resolvedMailAccount, 'saját')
+      assert.equal(authorized.connectorId, GMAIL_ID)
+    }
+  })
+
+  await check('mail_send enqueue: account nélkül beégeti a feloldott fiókot a jóváhagyásba', async () => {
+    let enqueuedArgs: Record<string, unknown> | null = null
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps(),
+        findAgentWriteModes: async () => ({ memory: 'approval', httpApi: 'approval', gmail: 'approval', drive: 'approval' }),
+        enqueueWrite: async (input) => {
+          enqueuedArgs = input.args
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ status: 'awaiting_approval', operationId: 'op1' }) }],
+          }
+        },
+      },
+      {
+        principal,
+        toolName: MAIL_SEND_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          to: 'anna@x.hu',
+          subject: 'Összefoglaló',
+          body: 'Szia',
+          idempotencyKey: 'mail-stamp-1',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.ok(enqueuedArgs, 'enqueueWrite not called')
+    assert.equal(enqueuedArgs!.account, 'saját')
+  })
+
   await check('mail_search account=all: egy hibás fiók nem viszi el a többit', async () => {
     const agentmail: LiveConnectorRow = {
       id: AGENTMAIL_ID,

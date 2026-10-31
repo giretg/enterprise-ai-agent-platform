@@ -160,8 +160,9 @@ export function pendingArgsSummary(
 
   if (toolName === 'gmail_send' || toolName === 'gmail_create_draft' || toolName === 'mail_send' || toolName === 'mail_create_draft') {
     const lines = gmailComposeLines(args)
+    // Ne találjunk ki „saját postafiók”-ot: account nélkül a execute más fiókra is eshet.
+    // A sorba állítás beégeti a feloldott fiókot (`resolvedMailAccount`).
     if (str(args.account)) lines.unshift(`from: ${str(args.account)}`)
-    else if (toolName.startsWith('mail_')) lines.unshift('from: az agent saját postafiókja')
     return lines.join('\n')
   }
   if (toolName === 'mail_mark') {
