@@ -29,6 +29,7 @@ import {
   KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
   WEB_SEARCH_TOOL,
+  WEB_FETCH_TOOL,
   DOCUMENT_EXPORT_TOOL,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
@@ -938,7 +939,10 @@ async function main() {
         deps,
       )
       const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
-      return (body.result?.tools ?? []).some((tool) => tool.name === WEB_SEARCH_TOOL)
+      const names = (body.result?.tools ?? []).map((tool) => tool.name)
+      // #1021: az oldalolvasás a keresés jogával együtt jár.
+      assert.equal(names.includes(WEB_FETCH_TOOL), names.includes(WEB_SEARCH_TOOL))
+      return names.includes(WEB_SEARCH_TOOL)
     }
     const withSearch = (connector: boolean) => ({
       ...SAMPLE_DEFINITION,
@@ -973,6 +977,36 @@ async function main() {
     assert.equal(body.result?.isError, true)
     assert.match(body.result?.content?.[0]?.text ?? '', /web_search_not_allowed_by_policy/)
     assert.deepEqual(calls, [{ toolName: WEB_SEARCH_TOOL, client: 'hermes' }])
+  })
+
+  await check('#1021 web_fetch: a user-link fejlécet csak a platform-chat token adhatja át', async () => {
+    const hash = 'a'.repeat(32)
+    const chatKey = 'p'.repeat(40)
+    const browser = signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, chatKey, new Date()).token
+    const seen: Array<{ client?: string; attested?: readonly string[] }> = []
+    const run = async (token: string) => {
+      const { deps: base } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+      const deps: McpRuntimeDeps = {
+        ...base,
+        verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+        users: { ...base.users, findById: async () => user() },
+        invokeEnterpriseTool: async (input) => {
+          seen.push({ client: input.client, attested: input.attestedUrlHashes })
+          return { isError: true, content: [{ type: 'text', text: '{"code":"web_fetch_url_not_known"}' }] }
+        },
+      }
+      const res = await post(
+        'acme',
+        { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: WEB_FETCH_TOOL, arguments: { url: 'https://www.mnb.hu/' } } },
+        { authorization: `Bearer ${token}`, 'x-excellence-user-urls': `${hash},nem-hash` },
+        deps,
+      )
+      assert.equal(res.status, 200)
+    }
+    await run(browser)
+    assert.deepEqual(seen.at(-1), { client: 'platform_chat', attested: [hash] })
+    await run(TOKEN)
+    assert.deepEqual(seen.at(-1)?.attested, [], 'külső kliens fejléce nem számít')
   })
 
   await check('#1024 document_export: listing follows local_files level × client kind × tenant switch', async () => {
@@ -1060,9 +1094,9 @@ async function main() {
       ...PROJECT_WORK_TOOLS.slice(-2),
       ...WAREHOUSE_TOOLS,
       ...MINI_APP_TOOLS,
-      // #1020: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search nem listázódik;
+      // #1020/#1021: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search / web_fetch nem listázódik;
       // #1024: a document_export hívható volna, de külső kliensnek alapból nem listázzuk.
-      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL && name !== DOCUMENT_EXPORT_TOOL),
+      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL && name !== WEB_FETCH_TOOL && name !== DOCUMENT_EXPORT_TOOL),
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
     const submit = tools.find((tool) => tool.name === MCP_SKILL_SUBMIT_TOOL)

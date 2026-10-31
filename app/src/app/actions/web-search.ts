@@ -7,7 +7,7 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { buildConnectorSecretRef, saveConnectorApiKey } from '@/domain/connector/connector-secret-store'
 import { readExternalClientsEnabled, withExternalClientsEnabled } from '@/domain/enterprise-tools/harness-substitutes'
-import { WEB_SEARCH_TOOL } from '@/domain/enterprise-tools/tool-definitions'
+import { WEB_FETCH_TOOL, WEB_SEARCH_TOOL } from '@/domain/enterprise-tools/tool-definitions'
 import {
   WEB_SEARCH_CONNECTOR_NAME,
   parseWebSearchConfig,
@@ -24,19 +24,37 @@ export type WebSearchAdminView = {
   externalClients: boolean
   /** Munkatársak, akiknél a webes keresés be van kapcsolva. */
   agentsWithWebSearch: number
+  /**
+   * #1021: sikeres keresések és megnyitott oldalak az egész cégnél. A keresőszolgáltató költsége nem a
+   * modell-keretből megy, ezért itt külön látszik.
+   */
+  usage: { searchesDay: number; fetchesDay: number; searches30d: number; fetches30d: number }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+function countWebCalls(tenantId: string, toolName: string, sinceMs: number) {
+  return prisma.auditLog.count({
+    where: { tenantId, action: 'enterprise.tool.ok', inputRef: toolName, createdAt: { gte: new Date(Date.now() - sinceMs) } },
+  })
 }
 
 async function loadView(tenantId: string): Promise<WebSearchAdminView> {
-  const [connector, tenant, agentsWithWebSearch] = await Promise.all([
+  const [connector, tenant, agentsWithWebSearch, searchesDay, fetchesDay, searches30d, fetches30d] = await Promise.all([
     repositories.connectors.findByTenantTypeAndName(tenantId, 'web_search', WEB_SEARCH_CONNECTOR_NAME),
     repositories.tenants.findById(tenantId),
     prisma.agent.count({ where: { tenantId, capabilities: { some: { toolName: WEB_SEARCH_TOOL, allowed: true } } } }),
+    countWebCalls(tenantId, WEB_SEARCH_TOOL, DAY_MS),
+    countWebCalls(tenantId, WEB_FETCH_TOOL, DAY_MS),
+    countWebCalls(tenantId, WEB_SEARCH_TOOL, 30 * DAY_MS),
+    countWebCalls(tenantId, WEB_FETCH_TOOL, 30 * DAY_MS),
   ])
   return {
     keyConfigured: Boolean(connector?.secretAlias),
     config: parseWebSearchConfig(connector?.config),
     externalClients: readExternalClientsEnabled(tenant?.settings),
     agentsWithWebSearch,
+    usage: { searchesDay, fetchesDay, searches30d, fetches30d },
   }
 }
 
@@ -66,6 +84,9 @@ export async function saveWebSearchSettingsAction(input: z.input<typeof saveSche
     const apiKey = parsed.data.apiKey?.trim() ?? ''
     if (config.defaultMaxResults > config.hardMaxResults) {
       return fail('Az alapértelmezett találatszám nem lehet nagyobb a felső korlátnál.')
+    }
+    if (config.maxQueriesPerAgentDay > config.maxQueriesPerTenantDay || config.maxFetchesPerAgentDay > config.maxFetchesPerTenantDay) {
+      return fail('A munkatársankénti napi keret nem lehet nagyobb az egész cégre vonatkozónál.')
     }
     const tenantId = ctx.activeTenantId
     let connector = await repositories.connectors.findByTenantTypeAndName(tenantId, 'web_search', WEB_SEARCH_CONNECTOR_NAME)

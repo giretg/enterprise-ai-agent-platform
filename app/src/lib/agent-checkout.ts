@@ -3,6 +3,7 @@ import { renderMailIdentityBriefingLines, type AgentMailIdentity } from '@/domai
 import { renderAgentWikiBriefing, type AgentWikiBriefing } from '@/lib/agent-wiki-briefing'
 import { dump as yamlDump } from 'js-yaml'
 import { MCP_ALLOWED_TOOLS } from '@/auth/mcp-principal'
+import { withCapabilityAliases } from '@/domain/enterprise-tools/tool-definitions'
 import type { AgentDefinition } from '@/domain/agent-definition'
 import { renderSnapshotRulesBriefingBlock } from '@/domain/agent-definition/snapshot-rules'
 import { hashSnapshot } from '@/domain/agent-definition'
@@ -214,7 +215,8 @@ export function renderHermesBotConnector(input: {
     ...new Set([
       ...HERMES_BASE_TOOLS,
       ...hermesWarehouseTools(input.warehouseAccess ?? DEFAULT_WAREHOUSE_AGENT_ACCESS),
-      ...input.snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName),
+      // #1021: a „Webes keresés” jog az oldalolvasást (`web_fetch`) is hozza.
+      ...withCapabilityAliases(input.snapshot.capabilities.filter((row) => row.allowed).map((row) => row.toolName)),
     ]),
   ]
   const yaml = (value: unknown) => yamlDump(value, { lineWidth: -1 })

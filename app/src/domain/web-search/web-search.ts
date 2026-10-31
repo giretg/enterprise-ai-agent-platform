@@ -32,6 +32,11 @@ export const webSearchConfigSchema = z.object({
   maxQueryLength: z.number().int().min(1).max(2000).default(400),
   /** Munkatársanként, gördülő 24 órára. */
   maxQueriesPerAgentDay: z.number().int().min(1).max(10_000).default(100),
+  /** #1021: az egész cégre, gördülő 24 órára (a keresőszolgáltató költségének plafonja). */
+  maxQueriesPerTenantDay: z.number().int().min(1).max(100_000).default(1000),
+  /** #1021: oldalolvasás (`web_fetch`) munkatársanként és az egész cégre, gördülő 24 órára. */
+  maxFetchesPerAgentDay: z.number().int().min(1).max(10_000).default(200),
+  maxFetchesPerTenantDay: z.number().int().min(1).max(100_000).default(2000),
   safeSearch: z.enum(['strict', 'moderate']).default('strict'),
 })
 
@@ -102,7 +107,7 @@ function effectiveDomains(requested: readonly string[] | undefined, config: WebS
 export function authorizeWebSearch(
   args: WebSearchArgs,
   config: WebSearchConfig,
-  usage: { agentDayQueryCount: number },
+  usage: { agentDayQueryCount: number; tenantDayQueryCount?: number },
 ): WebSearchDecision {
   const query = args.query.trim()
   if (!query || query.length > config.maxQueryLength) {
@@ -117,6 +122,9 @@ export function authorizeWebSearch(
   if (!domains) return { allowed: false, reason: 'web_search_domain_not_allowed', detail: 'no_domain_in_scope' }
   if (usage.agentDayQueryCount >= config.maxQueriesPerAgentDay) {
     return { allowed: false, reason: 'web_search_rate_limited', detail: 'max_queries_per_agent_day' }
+  }
+  if ((usage.tenantDayQueryCount ?? 0) >= config.maxQueriesPerTenantDay) {
+    return { allowed: false, reason: 'web_search_rate_limited', detail: 'max_queries_per_tenant_day' }
   }
   const requested = args.maxResults && args.maxResults > 0 ? args.maxResults : config.defaultMaxResults
   return {

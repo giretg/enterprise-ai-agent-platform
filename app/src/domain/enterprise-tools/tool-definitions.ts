@@ -107,7 +107,28 @@ export const ENTERPRISE_SANDBOX_TOOLS = [SANDBOX_RUN_TOOL] as const
 
 /** #1020: céges webes keresés — „harness-pótló”, a listázását a `harness-substitutes.ts` dönti el. */
 export const WEB_SEARCH_TOOL = 'web_search'
-export const ENTERPRISE_WEB_TOOLS = [WEB_SEARCH_TOOL] as const
+/** #1021: céges oldalolvasás (HTML, PDF → szöveg) — „harness-pótló”, a keresés jogával jár. */
+export const WEB_FETCH_TOOL = 'web_fetch'
+export const ENTERPRISE_WEB_TOOLS = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] as const
+
+/**
+ * #1021: az oldalolvasásnak nincs külön munkatárs-szintű kapcsolója — a „Webes keresés” jog (`web_search`)
+ * mindkettőt engedi, így a már bekapcsolt munkatársak újrabeállítás nélkül megkapják.
+ */
+const CAPABILITY_ALIASES: Record<string, readonly string[]> = { [WEB_FETCH_TOOL]: [WEB_SEARCH_TOOL] }
+
+/** Az agent-képességek, amelyek közül bármelyik engedi az eszközt. */
+export function capabilityToolsFor(toolName: string): string[] {
+  return [toolName, ...(CAPABILITY_ALIASES[toolName] ?? [])]
+}
+
+/** A képességlistából következő eszközök (az aliasokkal bővítve) — pl. a Hermes Bot eszközlistájához. */
+export function withCapabilityAliases(toolNames: readonly string[]): string[] {
+  const implied = Object.entries(CAPABILITY_ALIASES)
+    .filter(([, sources]) => sources.some((source) => toolNames.includes(source)))
+    .map(([tool]) => tool)
+  return [...new Set([...toolNames, ...implied])]
+}
 
 /** #1024: letölthető fájl (XLSX, CSV, DOCX, PDF, MD) — „harness-pótló”, a listázását a `harness-substitutes.ts` dönti el. */
 export const DOCUMENT_EXPORT_TOOL = 'document_export'
@@ -163,6 +184,7 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   KB_WIKI_CHANGES_TOOL,
   MCP_LIST_TOOLS_TOOL,
   WEB_SEARCH_TOOL,
+  WEB_FETCH_TOOL,
   // Céges rendszerbe nem ír: a fájl a platform ideiglenes tárolójába kerül.
   DOCUMENT_EXPORT_TOOL,
 ] as const
@@ -237,6 +259,10 @@ export function isEnterpriseSandboxTool(toolName: string): toolName is Enterpris
 
 export function isEnterpriseWebSearchTool(toolName: string): toolName is typeof WEB_SEARCH_TOOL {
   return toolName === WEB_SEARCH_TOOL
+}
+
+export function isEnterpriseWebFetchTool(toolName: string): toolName is typeof WEB_FETCH_TOOL {
+  return toolName === WEB_FETCH_TOOL
 }
 
 export function isDocumentExportTool(toolName: string): toolName is typeof DOCUMENT_EXPORT_TOOL {
@@ -1103,6 +1129,35 @@ export const webSearchInputSchema = z
   })
   .passthrough()
 
+/** #1021: egy oldal felolvasása — a hosszú tartalom `offset`-tel szakaszonként olvasható tovább. */
+export const WEB_FETCH_DEFAULT_CHARS = 12_000
+export const WEB_FETCH_MAX_CHARS = 40_000
+
+export const webFetchInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    url: z
+      .string()
+      .min(1)
+      .max(4000)
+      .describe('The full https:// link to open. Only links from a web_search result, a page opened with web_fetch, or the user\'s own message can be opened.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Continue a long page from this character position (nextOffset from the previous web_fetch call).'),
+    maxChars: z
+      .number()
+      .int()
+      .min(1000)
+      .max(WEB_FETCH_MAX_CHARS)
+      .optional()
+      .describe(`How many characters of text to return (default ${WEB_FETCH_DEFAULT_CHARS}).`),
+  })
+  .passthrough()
+
 export const documentExportInputSchema = z
   .object({
     definitionId,
@@ -1175,6 +1230,7 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (isEnterpriseKbTool(toolName)) return schemaForEnterpriseKbTool(toolName)
   if (isEnterpriseSandboxTool(toolName)) return schemaForEnterpriseSandboxTool(toolName)
   if (toolName === WEB_SEARCH_TOOL) return webSearchInputSchema
+  if (toolName === WEB_FETCH_TOOL) return webFetchInputSchema
   if (toolName === DOCUMENT_EXPORT_TOOL) return documentExportInputSchema
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema

@@ -18,6 +18,19 @@ export const MCP_SESSION_ID_HEADER = 'mcp-session-id'
 export const MCP_CLIENT_HEADER = 'x-excellence-client'
 export const MCP_INSTALL_ID_HEADER = 'x-excellence-install-id'
 export const HERMES_MANAGED_CLIENT = 'hermes-managed'
+/**
+ * #1021 D-B1: a platform-chat worker a user saját üzeneteiben szereplő linkek hash-ét küldi (vesszővel
+ * elválasztva), így a `web_fetch` ezeket megnyithatja. Csak a platform-chat tokennel hiteles.
+ */
+export const MCP_USER_URLS_HEADER = 'x-excellence-user-urls'
+const MAX_ATTESTED_URLS = 100
+
+export function parseAttestedUrlHashes(value: string | null | undefined): string[] {
+  return [...new Set((value ?? '').split(',').map((v) => v.trim().toLowerCase()).filter((v) => /^[0-9a-f]{32}$/.test(v)))].slice(
+    0,
+    MAX_ATTESTED_URLS,
+  )
+}
 
 export type McpClientName =
   | 'claude'

@@ -3,6 +3,8 @@
  * Model Gateway (`/api/model-gateway/...`) és a folytatási token végpontja. Nincs más út.
  */
 
+import { USER_URLS_HEADER } from './web-urls.ts'
+
 export const PLATFORM_CHAT_INSTALL_ID = 'platform-chat'
 const MRTR_PROTOCOL = '2026-07-28'
 const BLOCK_REASON_HEADER = 'x-excellence-block-reason'
@@ -61,6 +63,8 @@ export interface PlatformClient {
     name: string
     args: Record<string, unknown>
     approval?: { requestState: string; inputKey: string; decision: 'approve' | 'reject' }
+    /** #1021: a user saját linkjeinek hash-e (a `web_fetch` link-eredet igazolása). */
+    userUrlHashes?: string[]
   }): Promise<McpCallResult>
   streamCompletion(input: {
     token: string
@@ -151,7 +155,7 @@ async function readJsonRpc(res: Response): Promise<Record<string, unknown>> {
 
 export function createPlatformClient(platformOrigin: string, fetchImpl: typeof fetch = fetch): PlatformClient {
   async function mcp(
-    input: { token: string; tenantSlug: string; agentId?: string; sessionId?: string },
+    input: { token: string; tenantSlug: string; agentId?: string; sessionId?: string; userUrlHashes?: string[] },
     method: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
@@ -167,6 +171,7 @@ export function createPlatformClient(platformOrigin: string, fetchImpl: typeof f
         ...(name ? { 'mcp-name': name } : {}),
         ...(input.agentId ? { 'x-excellence-agent-id': input.agentId } : {}),
         ...(input.sessionId ? { 'mcp-session-id': input.sessionId } : {}),
+        ...(input.userUrlHashes?.length ? { [USER_URLS_HEADER]: input.userUrlHashes.join(',') } : {}),
         'user-agent': 'excellence-platform-chat/1.0',
       },
       body: JSON.stringify({
@@ -227,8 +232,8 @@ export function createPlatformClient(platformOrigin: string, fetchImpl: typeof f
       return (Array.isArray(result.tools) ? result.tools : []) as McpTool[]
     },
 
-    async callTool({ token, tenantSlug, agentId, sessionId, name, args, approval }) {
-      const result = await mcp({ token, tenantSlug, agentId, sessionId }, 'tools/call', {
+    async callTool({ token, tenantSlug, agentId, sessionId, name, args, approval, userUrlHashes }) {
+      const result = await mcp({ token, tenantSlug, agentId, sessionId, userUrlHashes }, 'tools/call', {
         name,
         arguments: args,
         ...(approval

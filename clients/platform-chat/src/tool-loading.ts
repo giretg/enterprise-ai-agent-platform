@@ -22,6 +22,8 @@ export const DEFAULT_CORE_TOOLS = [
   'platform.work_file.list',
   'kb_search',
   'web_search',
+  // #1021: a keresési találat megnyitása a keresés természetes folytatása.
+  'web_fetch',
 ]
 
 /** A modell-szolgáltató a függvénynevet `^[a-zA-Z0-9_-]{1,64}$` mintához köti — a visszajátszott hívásokra is. */

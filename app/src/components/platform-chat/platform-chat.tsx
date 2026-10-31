@@ -46,10 +46,13 @@ const SESSION_ERRORS: Record<string, string> = {
   unauthenticated: 'A munkamenet lejárt. Frissítsd az oldalt.',
 }
 
-function toolStatus(name: string): string {
-  const label = getToolUiLabel(name).label
+function toolStatus(name: string, detail?: unknown): string {
+  const { label, progress } = getToolUiLabel(name)
   // §6.1: nincs tool-név a felületen — ismeretlen eszköznél általános szöveg.
-  return label === name ? 'Dolgozom a kérésen…' : `${label}…`
+  if (label === name) return 'Dolgozom a kérésen…'
+  // #1021: pl. „Megnyitom az oldalt: mnb.hu…” — a részletet (domain) a worker adja.
+  const suffix = typeof detail === 'string' && detail ? `: ${detail.slice(0, 80)}` : ''
+  return `${(progress ?? label).replace(/…$/, '')}${suffix}…`
 }
 
 function suggestions(agent: ChatAgent): string[] {
@@ -367,7 +370,7 @@ export function PlatformChat({
               if (e.type === 'delta') return { ...p, text: p.text + String(e.data.text ?? ''), status: '' }
               if (e.type === 'status') return { ...p, status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
               if (e.type === 'tool') {
-                return { ...p, text: p.text && !p.text.endsWith('\n\n') ? `${p.text}\n\n` : p.text, status: e.data.phase === 'start' ? toolStatus(String(e.data.name ?? '')) : 'Gondolkodom…' }
+                return { ...p, text: p.text && !p.text.endsWith('\n\n') ? `${p.text}\n\n` : p.text, status: e.data.phase === 'start' ? toolStatus(String(e.data.name ?? ''), e.data.detail) : 'Gondolkodom…' }
               }
               if (e.type === 'approval') {
                 if (e.data.phase === 'requested') return { ...p, status: '', approval: { message: String(e.data.message ?? ''), link: e.data.link as string | undefined } }

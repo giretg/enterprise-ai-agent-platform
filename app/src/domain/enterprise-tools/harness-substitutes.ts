@@ -1,6 +1,6 @@
 /**
  * „Harness-pótló” MCP-eszközök (#1020): egy AI-kliens saját képességének céges változata
- * (webes keresés, később oldalolvasás, dokumentum-előállítás).
+ * (webes keresés, oldalolvasás, dokumentum-előállítás).
  *
  * Két külön döntés:
  * - meghívhatóság (biztonság): csak a policy — a user effektív policyja (tenant → user ∩ agent-plafon),
@@ -30,6 +30,8 @@ export type HarnessSubstitute = {
 
 export const HARNESS_SUBSTITUTES: readonly HarnessSubstitute[] = [
   { tool: 'web_search', capability: 'web_search', callableAt: ['company_egress', 'builtin'], clientBuiltinAt: ['builtin'], replacesClientToolset: true },
+  // #1021: az oldalolvasás a keresés párja (a Hermes `web_extract`-jét pótolja, ugyanazon a szinten).
+  { tool: 'web_fetch', capability: 'web_search', callableAt: ['company_egress', 'builtin'], clientBuiltinAt: ['builtin'], replacesClientToolset: true },
   // #1024: céges rendszerbe nem ír, ezért minden szinten (a Kötött pályán is) hívható; ahol a kliens maga ír fájlt, nem listázzuk.
   {
     tool: 'document_export',

@@ -711,10 +711,23 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
     }),
   loadOwnDocumentExport: (input) => loadOwnExport(documentExportStore, { ...input, now: new Date() }),
   documentExportUrl: (id) => `${resolvePublicAppOrigin()}${documentExportPath(id)}`,
-  countWebSearchCalls: ({ tenantId, agentId, since }) =>
+  countWebToolCalls: ({ tenantId, toolName, agentId, since }) =>
     prisma.auditLog.count({
-      where: { tenantId, action: 'enterprise.tool.ok', inputRef: 'web_search', targetId: agentId, createdAt: { gte: since } },
+      where: { tenantId, action: 'enterprise.tool.ok', inputRef: toolName, ...(agentId ? { targetId: agentId } : {}), createdAt: { gte: since } },
     }),
+  // #1021: link-eredet — a keresés / oldalolvasás sikeres sora a visszaadott linkek hash-ét tartja.
+  isKnownWebUrl: async ({ tenantId, userId, agentId, urlHash, since }) =>
+    (await prisma.auditLog.count({
+      where: {
+        tenantId,
+        actorId: userId,
+        targetId: agentId,
+        action: 'enterprise.tool.ok',
+        inputRef: { in: ['web_search', 'web_fetch'] },
+        createdAt: { gte: since },
+        metadata: { path: ['knownUrlHashes'], array_contains: [urlHash] },
+      },
+    })) > 0,
   readWorkFile: async (input) => {
     const found = await projectWorkService.readFile(input)
     if (!found.ok) {

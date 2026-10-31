@@ -276,11 +276,17 @@ COMPANY_WEB_SEARCH = (
     "A cég a webes keresést a céges keresőn keresztül engedi — használd az Excellence webes keresőjét "
     "(a „web_search” eszköz az Excellence-eszközök között)."
 )
+# #1021: az oldalolvasás párja — a saját `web_extract` helyett a céges `web_fetch`.
+COMPANY_WEB_FETCH = (
+    "A cég a weboldalak megnyitását a céges olvasón keresztül engedi — használd az Excellence oldalolvasóját "
+    "(a „web_fetch” eszköz az Excellence-eszközök között)."
+)
 
 
 def _block(kind, level, tool_name, source, capability):
     if kind == "web" and level == "company_egress":
-        return Decision("block", COMPANY_WEB_SEARCH, capability, level)
+        text = COMPANY_WEB_FETCH if tool_name == "web_extract" else COMPANY_WEB_SEARCH
+        return Decision("block", text, capability, level)
     # Ismeretlen vagy véglegesen tiltott eszköznél nincs szintbeli döntés, amire hivatkozhatnánk (#871).
     why = "" if kind in ("other", "denied", "unknown_axis") else f" {_why(source)}"
     text = f"{_lead(kind, level, tool_name)}{why} {ASK}"

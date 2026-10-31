@@ -210,6 +210,14 @@ class Policy(unittest.TestCase):
         self.assertNotIn("Excellence webes keresőjét", bound.message)
         self.assertEqual(p.decide(snap(p.FREE), "web_search").action, "allow")
 
+    def test_company_egress_redirects_web_extract_to_excellence_web_fetch(self):
+        # #1021: a saját oldalolvasó helyett a céges `web_fetch`.
+        own = p.decide(snap(p.STANDARD), "web_extract")
+        self.assertEqual(own.action, "block")
+        self.assertIn("web_fetch", own.message)
+        self.assertNotEqual(p.decide(snap(p.STANDARD), "mcp__excellence__web_fetch").action, "block")
+        self.assertEqual(p.decide(snap(p.FREE), "web_extract").action, "allow")
+
     def test_unknown_mcp_server_is_blocked_company_server_is_not(self):
         bound = snap(p.BOUND)
         unknown = p.decide(bound, "mcp__github__search")
