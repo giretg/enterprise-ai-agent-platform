@@ -1136,7 +1136,15 @@ export class HttpApiClient {
     }
     // Író hívás (pl. számla-kiállítás) 5xx után sem ismételhető: kettős bizonylatot okozhatna.
     const res = await this.fetchWithBackoff(new URL(request.url), request.init, READ_METHODS.has(method))
-    const result = await parseProtocolResponse(protocol, res)
+    let result: Awaited<ReturnType<typeof parseProtocolResponse>>
+    try {
+      result = await parseProtocolResponse(protocol, res)
+    } catch (e) {
+      // A válasz-feldolgozás hibája (pl. túl nagy / sérült számla-XML) tiszta, strukturált
+      // tool-hiba legyen, ne kezeletlen összeomlás — ugyanúgy, mint a kérés-építés hibája.
+      const code = (e as { code?: unknown }).code
+      throw new HttpApiError(e instanceof Error ? e.message : String(e), typeof code === 'string' ? code : 'invalid_args')
+    }
     return {
       status: res.status,
       ok: result.ok,
