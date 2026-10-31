@@ -16,6 +16,7 @@ import {
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { findOverlappingHttpApiEndpoints } from '@/domain/connector/http-api-client'
 import { WRITE_METHODS, type ConnectorConfig, type HttpMethod } from './connector-config'
+import { sealedCatalogEgressHosts } from './sealed-catalog-egress'
 
 export type CheckStatus = 'passed' | 'warned' | 'failed'
 
@@ -69,11 +70,18 @@ export function declaredEgressHosts(config: ConnectorConfig): string[] {
 }
 
 /**
- * Katalógus-sablon hostjai a tenant-listával együtt számítanak ismertnek:
- * a sablon már bízott, nem kell külön allowlist-szertartás.
+ * Katalógus-sablon fast-path: a tenant-listához CSAK a szerveroldalon lezárt
+ * sablon-hostok adódnak (templateKey → builtin/custom seed). A draft saját
+ * `egressHosts`/`baseUrl` mezői NEM trustedek — azok szerkeszthetők.
  */
 export function withCatalogTrustedEgress(tenantAllowlist: string[], config: ConnectorConfig): string[] {
-  return [...new Set([...tenantAllowlist.map((h) => h.toLowerCase()), ...declaredEgressHosts(config)])]
+  const templateKey = config.provenance?.templateKey ?? config.provider
+  return [
+    ...new Set([
+      ...tenantAllowlist.map((h) => h.toLowerCase()),
+      ...sealedCatalogEgressHosts(templateKey),
+    ]),
+  ]
 }
 
 function worst(...statuses: CheckStatus[]): CheckStatus {
