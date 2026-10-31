@@ -8,23 +8,35 @@ import { Badge, Card } from '@/components/ui/shell'
 
 const lines = (text: string) => text.split(/[\n,]/).map((d) => d.trim()).filter(Boolean)
 
-/** #1020: céges webes keresés — kulcs, domain-szabályok, napi keret, külső AI-kliensek kapcsolója. */
+type LimitKey = 'maxQueriesPerAgentDay' | 'maxQueriesPerTenantDay' | 'maxFetchesPerAgentDay' | 'maxFetchesPerTenantDay'
+
+const LIMITS: Array<{ key: LimitKey; label: string }> = [
+  { key: 'maxQueriesPerAgentDay', label: 'Keresés munkatársanként' },
+  { key: 'maxQueriesPerTenantDay', label: 'Keresés az egész cégnél' },
+  { key: 'maxFetchesPerAgentDay', label: 'Megnyitott oldal munkatársanként' },
+  { key: 'maxFetchesPerTenantDay', label: 'Megnyitott oldal az egész cégnél' },
+]
+
+const limitTexts = (config: WebSearchAdminView['config']) =>
+  Object.fromEntries(LIMITS.map(({ key }) => [key, String(config[key])])) as Record<LimitKey, string>
+
+/** #1020/#1021: céges webes keresés és oldalolvasás — kulcs, domain-szabályok, napi keretek, külső AI-kliensek kapcsolója. */
 export function WebSearchSettingsPanel({ initial, canEdit }: { initial: WebSearchAdminView; canEdit: boolean }) {
   const [view, setView] = useState(initial)
   const [apiKey, setApiKey] = useState('')
   const [generalWeb, setGeneralWeb] = useState(initial.config.allowGeneralWeb)
   const [allowed, setAllowed] = useState(initial.config.allowedDomains.join('\n'))
   const [denied, setDenied] = useState(initial.config.deniedDomains.join('\n'))
-  const [dailyText, setDailyText] = useState(String(initial.config.maxQueriesPerAgentDay))
+  const [limitText, setLimitText] = useState<Record<LimitKey, string>>(() => limitTexts(initial.config))
   const [externalClients, setExternalClients] = useState(initial.externalClients)
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
-  const daily = Number(dailyText)
+  const limits = Object.fromEntries(LIMITS.map(({ key }) => [key, Number(limitText[key])])) as Record<LimitKey, number>
 
   function save() {
     if (!canEdit || pending) return
-    if (!Number.isInteger(daily) || daily < 1) {
-      setMessage({ tone: 'error', text: 'A napi keret legalább 1 keresés legyen.' })
+    if (LIMITS.some(({ key }) => !Number.isInteger(limits[key]) || limits[key] < 1)) {
+      setMessage({ tone: 'error', text: 'Minden napi keret legalább 1 legyen.' })
       return
     }
     if (!generalWeb && lines(allowed).length === 0) {
@@ -40,7 +52,7 @@ export function WebSearchSettingsPanel({ initial, canEdit }: { initial: WebSearc
           allowGeneralWeb: generalWeb,
           allowedDomains: lines(allowed),
           deniedDomains: lines(denied),
-          maxQueriesPerAgentDay: daily,
+          ...limits,
         },
         externalClients,
       })
@@ -60,6 +72,14 @@ export function WebSearchSettingsPanel({ initial, canEdit }: { initial: WebSearc
         <p className="text-ink-soft">
           A munkatársak a cég saját keresőkulcsával kereshetnek a nyilvános weben. Minden keresés a cég naplójába kerül, a
           kártyaszámot, jelszót vagy személyes adatot tartalmazó keresést a rendszer nem küldi ki.
+        </p>
+        <p className="flex items-center text-ink-soft">
+          A keresés találatait (weboldalt vagy PDF-et) a munkatárs meg is nyithatja és elolvashatja.
+          <HelpHint>
+            Csak olyan oldalt nyit meg, amelynek a linkje keresési találat, egy már megnyitott oldalon szerepel, a felhasználó maga
+            írta be a beszélgetésbe, vagy az engedélyezett oldalak között van. Belső hálózati címet soha nem ér el. Az oldalak
+            megnyitását az AI-kliens szabályzatban a web_fetch eszköz tiltásával lehet kikapcsolni.
+          </HelpHint>
         </p>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -130,18 +150,35 @@ export function WebSearchSettingsPanel({ initial, canEdit }: { initial: WebSearc
           </label>
         </div>
 
-        <label className="block max-w-xs">
-          <span className="mb-1 block font-semibold">Napi keret munkatársanként</span>
-          <input
-            type="number"
-            min={1}
-            disabled={!canEdit}
-            value={dailyText}
-            onChange={(e) => setDailyText(e.target.value)}
-            className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-ink"
-          />
-          <span className="text-xs text-ink-soft">Keresés / 24 óra. Ennyi után a munkatárs másnapig nem keres.</span>
-        </label>
+        <div>
+          <span className="mb-1 flex items-center font-semibold">
+            Napi keretek
+            <HelpHint>
+              Gördülő 24 órára számolva. Ha egy keret elfogy, a munkatárs közli, hogy aznap már nem keres vagy nem nyit meg több
+              oldalt. A cégre vonatkozó keret a keresőszolgáltató költségének plafonja.
+            </HelpHint>
+          </span>
+          <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+            {LIMITS.map(({ key, label }) => (
+              <label key={key} className="block">
+                <span className="mb-1 block text-ink-soft">{label}</span>
+                <input
+                  type="number"
+                  min={1}
+                  disabled={!canEdit}
+                  value={limitText[key]}
+                  onChange={(e) => setLimitText((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-ink"
+                />
+              </label>
+            ))}
+          </div>
+          <p className="mt-2 text-ink-soft">
+            Használat az egész cégnél — elmúlt 24 óra: {view.usage.searchesDay} keresés, {view.usage.fetchesDay} megnyitott oldal ·
+            elmúlt 30 nap: {view.usage.searches30d} keresés, {view.usage.fetches30d} megnyitott oldal. A keresőszolgáltató díja nem
+            a modell-keretből megy.
+          </p>
+        </div>
 
         <label className="flex items-start gap-2">
           <input

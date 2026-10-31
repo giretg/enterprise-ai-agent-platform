@@ -46,8 +46,24 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   web_search_query_blocked:
     'The search query looks like it contains personal or confidential data (or is too long), so it was not sent to the web — rephrase it without such data',
   web_search_domain_not_allowed: 'The company web search rules do not allow searching these sites',
-  web_search_rate_limited: 'This agent reached its daily web search limit — try again tomorrow or ask an admin to raise it',
+  web_search_rate_limited:
+    'The daily web search limit is used up — do not search again today. Tell the user plainly that the company daily web search limit is reached and an admin can raise it in Settings → Web search',
   web_search_provider_error: 'The web search service did not answer — try again in a minute',
+  // #1021: céges oldalolvasás
+  web_fetch_not_allowed_by_policy:
+    'Opening web pages is turned off for you by the company AI policy. Tell the user plainly that the company does not allow it here, and that an admin can change this in the AI client policy',
+  web_fetch_invalid_url: 'This is not a web page address that can be opened — pass a full https:// link (no login data, no custom port)',
+  web_fetch_url_not_known:
+    'This link can only be opened if the user gave it in this conversation, a company web search returned it, or it was linked from a page you opened. Search for it with web_search first, or tell the user: "Ezt az oldalt csak akkor tudom megnyitni, ha a link a beszélgetésben szerepel vagy egy keresés találata."',
+  web_fetch_domain_not_allowed: 'The company web rules do not allow opening this site — do not retry it, choose another source',
+  web_fetch_blocked_address: 'This address points to an internal or private network (or redirects there), which is never allowed — do not retry it',
+  web_fetch_rate_limited:
+    'The daily limit for opening web pages is used up — do not open more pages today. Tell the user plainly that the company daily limit is reached and an admin can raise it in Settings → Web search',
+  web_fetch_too_large: 'The page is too large to open — choose a smaller source',
+  web_fetch_timeout: 'The page did not answer in time — try another result',
+  web_fetch_too_many_redirects: 'The page redirects too many times — try another result',
+  web_fetch_unsupported_type: 'This link is not a web page, text or PDF that can be read — choose another source',
+  web_fetch_failed: 'The page could not be opened (see detail) — try another result',
   // #1024: letölthető fájl
   document_export_not_allowed_by_policy:
     'Making downloadable files is turned off for you by the company AI policy. Tell the user plainly that the company does not allow it here, and that an admin can change this in the AI client policy',

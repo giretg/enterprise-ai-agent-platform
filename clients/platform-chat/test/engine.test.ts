@@ -19,6 +19,7 @@ import { summary, toolGroup } from '../src/tool-loading.ts'
 import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient } from '../src/platform.ts'
 import type { Conversation } from '../src/store.ts'
 import { MemoryStore } from './memory-store.ts'
+import { normalizeWebUrl, urlDomain, urlsInText, userUrlHashes, webUrlHash } from '../src/web-urls.ts'
 
 const TENANT = '22222222-2222-4222-8222-222222222222'
 const USER = '11111111-1111-4111-8111-111111111111'
@@ -48,7 +49,7 @@ const DRIVE_TOOLS: ToolSpec[] = [
 function harness(script: Script, opts: { now?: () => Date; maxSteps?: number; tools?: ToolSpec[]; coreTools?: string[]; definition?: string } = {}) {
   const store = new MemoryStore()
   const queued: Array<{ turnId: string; seq: number }> = []
-  const toolCalls: Array<{ name: string; args: Record<string, unknown>; approval?: unknown }> = []
+  const toolCalls: Array<{ name: string; args: Record<string, unknown>; approval?: unknown; userUrlHashes?: string[] }> = []
   const llmMessages: unknown[][] = []
   const llmTools: unknown[][] = []
   const platform: PlatformClient = {
@@ -57,7 +58,7 @@ function harness(script: Script, opts: { now?: () => Date; maxSteps?: number; to
     getDefinition: async () => opts.definition ?? '{"definitionId":"def-1","briefing":"Drive-asszisztens"}',
     listTools: async () => opts.tools ?? DRIVE_TOOLS,
     callTool: async (input) => {
-      toolCalls.push({ name: input.name, args: input.args, approval: input.approval })
+      toolCalls.push({ name: input.name, args: input.args, approval: input.approval, userUrlHashes: input.userUrlHashes })
       const next = script.tool.shift()
       if (!next) throw new Error('unexpected tool call')
       if (next instanceof Error) throw next
@@ -162,6 +163,47 @@ async function main() {
       const history = h.llmMessages.at(-1) as Array<{ role: string; content?: string }>
       assert.match(String(history.find((m) => m.role === 'assistant')?.content), /Elkészült fájl: „Riport\.xlsx” — exportId: e1/)
     }
+  })
+
+  await check('#1021 web_fetch: a user saját linkjei hash-elve mennek, a modell linkjei nem; az állapot a domaint mutatja', async () => {
+    const fetchTool: ToolSpec = { name: 'web_fetch', inputSchema: { type: 'object', properties: { url: {} } } }
+    const h = harness(
+      {
+        llm: [
+          say('Megnézem.'),
+          callTool('web_fetch', { url: 'https://www.mnb.hu/arfolyamok' }),
+          say('Az MNB oldala szerint…'),
+        ],
+        tool: [done('{"untrustedWebContent":"..."}')],
+      },
+      { tools: [fetchTool], coreTools: ['web_fetch'] },
+    )
+    const c = await h.conversation()
+    const first = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Nézd meg: https://www.mnb.hu/arfolyamok.', attachments: [] })
+    assert.ok(first.ok)
+    await h.drain()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'És mi a mai középárfolyam?', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal(h.toolCalls[0].name, 'web_fetch')
+    assert.deepEqual(h.toolCalls[0].userUrlHashes, [webUrlHash('https://www.mnb.hu/arfolyamok')])
+    const start = h.store.events.find((e) => e.type === 'tool' && e.payload.phase === 'start')
+    assert.equal(start?.payload.detail, 'mnb.hu')
+  })
+
+  await check('#1021 link-normalizálás: egyezik a platformmal (http→https, fragment le, port/jelszó tilos), írásjel nem része', async () => {
+    assert.equal(normalizeWebUrl('http://Example.com/a?b=1#x'), 'https://example.com/a?b=1')
+    assert.equal(normalizeWebUrl('https://example.com:8443/'), null)
+    assert.equal(normalizeWebUrl('https://user:pw@example.com/'), null)
+    // A platform-oldali teszt (`app/scripts/web-fetch.test.ts`) ugyanezt a hash-t várja.
+    assert.equal(webUrlHash(normalizeWebUrl('http://example.com/a?b=1#x')!), '6cb547ac73ee23b7a1582362e5f81431')
+    assert.deepEqual(urlsInText('Lásd (https://a.hu/x), és [doc](https://b.hu/y). Wiki: https://en.wikipedia.org/wiki/Foo_(bar)!'), [
+      'https://a.hu/x',
+      'https://b.hu/y',
+      'https://en.wikipedia.org/wiki/Foo_(bar)',
+    ])
+    assert.deepEqual(userUrlHashes([{ role: 'assistant', content: 'https://evil.example/leak' }]), [])
+    assert.equal(urlDomain('ftp://x'), null)
   })
 
   await check('újraküldés (worker elhal): a kész lépés nem fut újra, az író tool azonos idempotencia-kulcsot kap', async () => {

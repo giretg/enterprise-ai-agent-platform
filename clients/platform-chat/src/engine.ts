@@ -20,6 +20,7 @@ import {
   type TurnContext,
 } from './store.ts'
 import type { Config } from './config.ts'
+import { urlDomain, userUrlHashes } from './web-urls.ts'
 import {
   byName,
   DEFAULT_CORE_TOOLS,
@@ -103,6 +104,7 @@ function assistantText(steps: Step[]): string {
 
 /** Drive-feltöltés eszköze: ha a munkatárs eléri, a fájl-kártyán „Mentés a Drive-ra” gomb is van (#1024). */
 const DRIVE_UPLOAD_TOOL = 'google_drive_upload_file'
+const WEB_FETCH_TOOL = 'web_fetch'
 
 /** #1024: a forduló tool-lépéseinek letölthető fájljai (egy link egyszer). */
 function turnFiles(steps: Step[], context: TurnContext | null): FileCard[] {
@@ -479,7 +481,11 @@ async function runTool(deps: EngineDeps, turn: Turn, conversation: Conversation,
   const idempotencyKey = sha(turn.id, seq, call.name).slice(0, 48)
   if (hasIdempotencyParam(context, call.name) && args.idempotencyKey === undefined) args.idempotencyKey = idempotencyKey
   await deps.store.beginStep({ turnId: turn.id, seq, kind: 'tool', inputHash, idempotencyKey })
-  await deps.store.appendEvent(turn.id, 'tool', { phase: 'start', name: call.name })
+  const webFetch = call.name === WEB_FETCH_TOOL
+  const domain = webFetch ? urlDomain(args.url) : null
+  await deps.store.appendEvent(turn.id, 'tool', { phase: 'start', name: call.name, ...(domain ? { detail: domain } : {}) })
+  // #1021 D-B1: a user saját linkjei (az üzeneteiből, nem a modell kimenetéből) megnyithatók.
+  const userUrls = webFetch ? userUrlHashes(await deps.store.listMessages(conversation.id, deps.limits.historyMessages)) : []
 
   const pending = turn.pendingApproval?.seq === seq && turn.pendingApproval.decision ? turn.pendingApproval : null
   const result = await deps.platform.callTool({
@@ -489,6 +495,7 @@ async function runTool(deps: EngineDeps, turn: Turn, conversation: Conversation,
     sessionId: conversation.id,
     name: call.name,
     args,
+    ...(userUrls.length ? { userUrlHashes: userUrls } : {}),
     ...(pending ? { approval: { requestState: pending.requestState, inputKey: pending.inputKey, decision: pending.decision! } } : {}),
   })
 

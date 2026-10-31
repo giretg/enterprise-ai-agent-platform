@@ -34,6 +34,7 @@ import {
   type WebSearchConfig,
 } from '../src/domain/web-search/web-search'
 import { detectMcpClient, getMcpRequestContext } from '../src/lib/mcp-session'
+import { normalizeWebUrl } from '../src/domain/web-fetch/web-fetch'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -87,6 +88,7 @@ function deps(opts: {
   toolRules?: ToolRule[]
   definition?: AgentDefinition
   searchCount?: number
+  tenantSearchCount?: number
   audit?: Array<{ action: string; outputRef?: string | null; metadata: Record<string, unknown> }>
   searched?: unknown[]
 }): EnterpriseToolDeps {
@@ -110,10 +112,11 @@ function deps(opts: {
       throw new Error('web_search must not use an OAuth token')
     },
     ...(opts.preset ? { resolveClientPolicy: async () => policy(opts.preset!, opts.toolRules) } : {}),
-    countWebSearchCalls: async () => opts.searchCount ?? 0,
+    countWebToolCalls: async (input) => (input.agentId ? opts.searchCount ?? 0 : opts.tenantSearchCount ?? 0),
     executeWebSearch: async (effective) => {
       opts.searched?.push(effective)
-      return { results: [], provider: 'stub', domainsEffective: effective.domains, retrievedAt: 'now', notice: '', warnings: [] }
+      const results = [{ rank: 1, title: 'MNB', url: 'https://www.mnb.hu/alapkamat', domain: 'www.mnb.hu', snippet: '', sourceType: 'official' as const }]
+      return { results, provider: 'stub', domainsEffective: effective.domains, retrievedAt: 'now', notice: '', warnings: [] }
     },
     audit: {
       async append(data) {
@@ -136,7 +139,7 @@ const codeOf = (result: Awaited<ReturnType<typeof call>>) =>
 
 async function main() {
   await check('registry: web_search is callable at company_egress and builtin, client-builtin only at builtin', () => {
-    assert.deepEqual(HARNESS_SUBSTITUTES.map((row) => row.tool), ['web_search', 'document_export'])
+    assert.deepEqual(HARNESS_SUBSTITUTES.map((row) => row.tool), ['web_search', 'web_fetch', 'document_export'])
     for (const level of [...webSearch.callableAt, ...webSearch.clientBuiltinAt]) {
       assert.ok(capabilityLevels(webSearch.capability).includes(level), `${level} is not a ${webSearch.capability} level`)
     }
@@ -231,6 +234,9 @@ async function main() {
     assert.equal(ok.metadata.client, 'platform_chat')
     assert.equal(ok.outputRef, searched[0]?.queryHash)
     assert.ok(!JSON.stringify(audit).includes('MNB alapkamat'), 'the raw query must not reach the audit log')
+    // #1021: a találatok hash-e a `web_fetch` link-eredetéhez — nyers URL nélkül.
+    assert.deepEqual(ok.metadata.knownUrlHashes, [normalizeWebUrl('https://www.mnb.hu/alapkamat')!.hash])
+    assert.ok(!JSON.stringify(ok).includes('/alapkamat'), 'the raw result URL must not reach the audit log')
   })
 
   await check('AC5: Claude on a policy that allows it — callable; the agent right is still required', async () => {
@@ -245,6 +251,8 @@ async function main() {
     const searched: unknown[] = []
     assert.equal(codeOf(await call(deps({ preset: 'standard', searched }), { query: 'kártya 4111 1111 1111 1111 egyenleg' })), 'web_search_query_blocked')
     assert.equal(codeOf(await call(deps({ preset: 'standard', searched, searchCount: 3 }))), 'web_search_rate_limited')
+    // #1021: az egész cégre vonatkozó napi keret (alapból 1000).
+    assert.equal(codeOf(await call(deps({ preset: 'standard', searched, tenantSearchCount: 1000 }))), 'web_search_rate_limited')
     assert.equal(searched.length, 0)
   })
 

@@ -42,6 +42,7 @@ import {
   MAIL_SEND_TOOL,
   isEnterpriseMailTool,
   isEnterpriseMailWriteTool,
+  capabilityToolsFor,
 } from './tool-definitions'
 import { listMailAccounts, resolveMailAccounts } from '@/domain/mail/mail'
 
@@ -456,7 +457,7 @@ export async function authorizeToolCall(
       ? KB_READ_TOOLS
       : input.toolName === KB_WIKI_WRITE_TOOL
         ? [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL]
-        : [input.toolName]
+        : capabilityToolsFor(input.toolName)
   const capability = input.definition.snapshot.capabilities.find(
     (row) => accepted.includes(row.toolName) && row.allowed,
   )

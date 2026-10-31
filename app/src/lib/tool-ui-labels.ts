@@ -9,6 +9,8 @@ export type ToolUiLabel = {
   label: string
   /** Hover / tooltip leírás (1–2 mondat). */
   description: string
+  /** Állapotszöveg, amíg az eszköz fut (pl. a platform-chatben); hiányában a `label`. */
+  progress?: string
 }
 
 export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
@@ -507,7 +509,15 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   web_search: {
     label: 'Webes keresés',
     description:
-      'Keresés a nyilvános weben a cég saját keresőjével; minden keresés a cég naplójába kerül. Előtte egy adminnak be kell állítania a Beállítások → Webes keresés alatt.',
+      'Keresés a nyilvános weben a cég saját keresőjével, és a találatok (weboldal, PDF) megnyitása; minden keresés és megnyitott oldal a cég naplójába kerül. Előtte egy adminnak be kell állítania a Beállítások → Webes keresés alatt.',
+    progress: 'Keresek a weben',
+  },
+  // #1021: a „Webes keresés” joggal jár, külön nem kapcsolható
+  web_fetch: {
+    label: 'Weboldal megnyitása',
+    description:
+      'Egy keresési találat, a beszélgetésben megadott link vagy egy engedélyezett oldal megnyitása és elolvasása (weboldal vagy PDF). A belső hálózat soha nem érhető el.',
+    progress: 'Megnyitom az oldalt',
   },
   // #1024 letölthető fájl
   document_export: {
@@ -570,11 +580,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Felfedezés eredményéből connector-draft összeállítása.',
   },
 
-  // Zárt szerep — web-egress
-  web_fetch: {
-    label: 'Webes letöltés',
-    description: 'Kontrollált tartalom-letöltés URL-ről (deny-by-default, allowlist).',
-  },
+  // Zárt szerep — web-egress (a `web_fetch` címkéje fent, #1021)
   'web.research.serve': {
     label: 'Kutatás kiszolgálása',
     description: 'Web-kutatási eredmény kiszolgálása a Web-Egress szerep számára.',

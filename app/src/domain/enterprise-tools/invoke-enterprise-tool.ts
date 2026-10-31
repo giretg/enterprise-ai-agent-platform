@@ -33,6 +33,18 @@ import { executeGmailTool } from './handlers/gmail'
 import { executeHttpApiTool } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
 import { executeWebSearch as defaultExecuteWebSearch } from './handlers/web-search'
+import { executeWebFetch as defaultExecuteWebFetch, type WebFetchPage } from './handlers/web-fetch'
+import {
+  hostAllowedByWebRules,
+  hostOnAllowList,
+  knownUrlHashes,
+  normalizeWebUrl,
+  sliceContent,
+  UNTRUSTED_WEB_NOTICE,
+  WebFetchError,
+  type WebFetchSource,
+  type WebFetchTarget,
+} from '@/domain/web-fetch/web-fetch'
 import { ConnectorApiKeyMissingError } from '@/domain/connector/connector-secret-store'
 import { BraveSearchError } from '@/domain/web-search/brave-provider'
 import {
@@ -87,6 +99,11 @@ import {
   isEnterpriseSandboxTool,
   isEnterpriseWebSearchTool,
   webSearchInputSchema,
+  isEnterpriseWebFetchTool,
+  webFetchInputSchema,
+  WEB_FETCH_DEFAULT_CHARS,
+  WEB_FETCH_TOOL,
+  WEB_SEARCH_TOOL,
   isDocumentExportTool,
   documentExportInputSchema,
   isEnterpriseTool,
@@ -297,8 +314,18 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   startAuthorization?: StartDelegatedAuthorization
   /** #1020: a hívó effektív kliens-policyja (tenant → user ∩ agent-plafon). Hiányában Kötött pálya (tiltás). */
   resolveClientPolicy?: (input: { tenantId: string; userId: string; agentId: string }) => Promise<SubstitutePolicy>
-  /** #1020: az agent sikeres webes keresései a megadott időpont óta (napi keret). */
-  countWebSearchCalls?: (input: { tenantId: string; agentId: string; since: Date }) => Promise<number>
+  /**
+   * #1020/#1021: sikeres webes keresések / oldalolvasások a megadott időpont óta (napi keret). `agentId`
+   * nélkül az egész cégé.
+   */
+  countWebToolCalls?: (input: { tenantId: string; toolName: string; agentId?: string; since: Date }) => Promise<number>
+  /**
+   * #1021: ugyanez a user ugyanennél a munkatársnál kapta-e már ezt a linket céges kereséstől vagy egy
+   * megnyitott oldalról (az audit `knownUrlHashes` mezője). Hiányában csak az engedélyezett oldal és a
+   * user által igazolt link nyitható meg.
+   */
+  isKnownWebUrl?: (input: { tenantId: string; userId: string; agentId: string; urlHash: string; since: Date }) => Promise<boolean>
+  executeWebFetch?: (target: WebFetchTarget, checkRedirect: (target: WebFetchTarget) => string | null) => Promise<WebFetchPage>
   executeWebSearch?: (
     effective: WebSearchEffectiveQuery,
     config: WebSearchConfig,
@@ -724,6 +751,11 @@ export async function invokeEnterpriseTool(
     followedStaleDefinition?: boolean
     /** #1020: a hívó kliens (csak audit; a meghívhatóságot nem befolyásolja). */
     client?: McpClientName
+    /**
+     * #1021 D-B1: a kliens által igazolt, a user saját üzeneteiben szereplő linkek hash-e (`webUrlHash`).
+     * Csak hiteles kliens (platform-chat token) adhatja; a modell nem tudja befolyásolni.
+     */
+    attestedUrlHashes?: readonly string[]
   },
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, origin, confirm } = input
@@ -840,6 +872,18 @@ export async function invokeEnterpriseTool(
 
   if (isEnterpriseWebSearchTool(toolName)) {
     return invokeWebSearchTool(deps, { principal, toolName, args, definitionId, definition, client: input.client ?? 'unknown' })
+  }
+
+  if (isEnterpriseWebFetchTool(toolName)) {
+    return invokeWebFetchTool(deps, {
+      principal,
+      toolName,
+      args,
+      definitionId,
+      definition,
+      client: input.client ?? 'unknown',
+      attestedUrlHashes: input.attestedUrlHashes ?? [],
+    })
   }
 
   if (isDocumentExportTool(toolName)) {
@@ -2065,7 +2109,24 @@ async function invokeSandboxTool(
   }
 }
 
-const WEB_SEARCH_WINDOW_MS = 24 * 60 * 60 * 1000
+const WEB_TOOL_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/** Gördülő 24 órás használat munkatársanként és az egész cégre (a napi kerethez). */
+async function webToolUsage(
+  deps: EnterpriseToolDeps,
+  tenantId: string,
+  agentId: string,
+  toolName: string,
+  now: Date,
+): Promise<{ agent: number; tenant: number }> {
+  if (!deps.countWebToolCalls) return { agent: 0, tenant: 0 }
+  const since = new Date(now.getTime() - WEB_TOOL_WINDOW_MS)
+  const [agent, tenant] = await Promise.all([
+    deps.countWebToolCalls({ tenantId, toolName, agentId, since }),
+    deps.countWebToolCalls({ tenantId, toolName, since }),
+  ])
+  return { agent, tenant }
+}
 
 /**
  * #1020: céges webes keresés. Sorrend: policy (a kliensfajtától függetlenül) → agent-jog és connector
@@ -2107,15 +2168,12 @@ async function invokeWebSearchTool(
 
   const config = parseWebSearchConfig(authorized.connector.config)
   const now = (deps.now ?? (() => new Date()))()
-  const agentDayQueryCount = deps.countWebSearchCalls
-    ? await deps.countWebSearchCalls({
-        tenantId: principal.tenantId,
-        agentId: definition.agentId,
-        since: new Date(now.getTime() - WEB_SEARCH_WINDOW_MS),
-      })
-    : 0
+  const usage = await webToolUsage(deps, principal.tenantId, definition.agentId, WEB_SEARCH_TOOL, now)
   const domains = parsed.data.domains?.split(',').map((d) => d.trim()).filter(Boolean)
-  const decision = authorizeWebSearch({ ...parsed.data, domains }, config, { agentDayQueryCount })
+  const decision = authorizeWebSearch({ ...parsed.data, domains }, config, {
+    agentDayQueryCount: usage.agent,
+    tenantDayQueryCount: usage.tenant,
+  })
   if (!decision.allowed) return deny(decision.reason, { detail: decision.detail, connectorId: authorized.connectorId })
 
   const execute = deps.executeWebSearch ?? defaultExecuteWebSearch
@@ -2132,7 +2190,13 @@ async function invokeWebSearchTool(
   }
   try {
     const result = await execute(decision.effective, config, authorized.connector)
-    const payload = { ...meta, resultCount: result.results.length, resultDomains: [...new Set(result.results.map((r) => r.domain))] }
+    const payload = {
+      ...meta,
+      resultCount: result.results.length,
+      resultDomains: [...new Set(result.results.map((r) => r.domain))],
+      // #1021: a találatok a `web_fetch`-csel megnyithatók (link-eredet), nyers URL nélkül.
+      knownUrlHashes: knownUrlHashes(result.results.map((r) => r.url)),
+    }
     console.info('enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
       actorType: 'human',
@@ -2174,6 +2238,161 @@ async function invokeWebSearchTool(
     })
     return errorResult(code)
   }
+}
+
+/** A letöltés tiltásai (SSRF, domain-szabály) policy-döntések: „denied” audit; a többi hálózati hiba. */
+const WEB_FETCH_DENIED_CODES = new Set(['web_fetch_blocked_address', 'web_fetch_domain_not_allowed'])
+
+/**
+ * #1021: céges oldalolvasás. Sorrend: policy (a kliensfajtától függetlenül) → agent-jog és connector →
+ * URL-forma, domain-szabály, napi keret → link-eredet (D-B1: engedélyezett oldal, a user saját linkje,
+ * vagy céges keresés / megnyitott oldal találata) → letöltés SSRF-őrrel → olvasható szöveg „megbízhatatlan
+ * tartalom” keretben. Az audit nyers URL-t és tartalmat nem tart, csak hash-t, domaint, méretet.
+ */
+async function invokeWebFetchTool(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+    client: McpClientName
+    attestedUrlHashes: readonly string[]
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition, client } = input
+  const substitute = harnessSubstituteFor(toolName)!
+  const policy = deps.resolveClientPolicy
+    ? await deps.resolveClientPolicy({ tenantId: principal.tenantId, userId: principal.userId, agentId: definition.agentId })
+    : resolveEffectivePolicy({ tenant: null, user: null, agent: null })
+  const callability = substituteCallability(substitute, policy)
+  const policyMeta = { capability: substitute.capability, policyLevel: callability.level, client }
+  const deny = async (code: string, extra?: Record<string, unknown>) => {
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId, { ...policyMeta, ...extra })
+    return errorResult(code)
+  }
+  if (!callability.callable) return deny('web_fetch_not_allowed_by_policy', { policyReason: callability.reason })
+
+  const parsed = webFetchInputSchema.safeParse(args)
+  if (!parsed.success) {
+    const details = invalidArgsDetails(parsed.error)
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId, { ...policyMeta, ...details })
+    return errorResult('invalid_args', details)
+  }
+  const authorized = await authorizeToolCall(deps, { principal, definition, toolName, args: parsed.data as Record<string, unknown> })
+  if (!authorized.allowed) return deny(authorized.reason)
+
+  const config = parseWebSearchConfig(authorized.connector.config)
+  const target = normalizeWebUrl(parsed.data.url)
+  if (!target) return deny('web_fetch_invalid_url')
+  const urlMeta = { urlHash: target.hash, domain: target.host, connectorId: authorized.connectorId }
+  if (!hostAllowedByWebRules(target.host, config)) return deny('web_fetch_domain_not_allowed', urlMeta)
+
+  const now = (deps.now ?? (() => new Date()))()
+  const usage = await webToolUsage(deps, principal.tenantId, definition.agentId, WEB_FETCH_TOOL, now)
+  if (usage.agent >= config.maxFetchesPerAgentDay) return deny('web_fetch_rate_limited', { ...urlMeta, detail: 'max_fetches_per_agent_day' })
+  if (usage.tenant >= config.maxFetchesPerTenantDay) return deny('web_fetch_rate_limited', { ...urlMeta, detail: 'max_fetches_per_tenant_day' })
+
+  let source: WebFetchSource | null = null
+  if (hostOnAllowList(target.host, config)) source = 'allowed_domain'
+  else if (input.attestedUrlHashes.includes(target.hash)) source = 'user_message'
+  else if (
+    deps.isKnownWebUrl &&
+    (await deps.isKnownWebUrl({
+      tenantId: principal.tenantId,
+      userId: principal.userId,
+      agentId: definition.agentId,
+      urlHash: target.hash,
+      since: new Date(now.getTime() - WEB_TOOL_WINDOW_MS),
+    }))
+  ) {
+    source = 'search_or_page'
+  }
+  if (!source) return deny('web_fetch_url_not_known', urlMeta)
+
+  const meta = {
+    toolName,
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    definitionId,
+    agentId: definition.agentId,
+    ...urlMeta,
+    source,
+    ...policyMeta,
+  }
+  const checkRedirect = (next: WebFetchTarget) => (hostAllowedByWebRules(next.host, config) ? null : 'web_fetch_domain_not_allowed')
+  let page: WebFetchPage
+  try {
+    page = await (deps.executeWebFetch ?? defaultExecuteWebFetch)(target, checkRedirect)
+  } catch (error) {
+    const code = error instanceof WebFetchError ? error.code : 'tool_execution_failed'
+    const detail = error instanceof WebFetchError ? error.detail : undefined
+    if (WEB_FETCH_DENIED_CODES.has(code)) return deny(code, { ...urlMeta, ...(detail ? { detail } : {}) })
+    const payload = { ...meta, errorCode: code, ...(detail ? { detail } : {}) }
+    console.info('enterprise.tool.error', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'human',
+      actorId: principal.userId,
+      agentVersion: null,
+      action: 'enterprise.tool.error',
+      targetType: 'agent',
+      targetId: definition.agentId,
+      modelUsed: null,
+      inputRef: toolName,
+      outputRef: code,
+      policyDecision: null,
+      metadata: payload,
+      tenantId: principal.tenantId,
+    })
+    return errorResult(code, detail ? { detail } : undefined)
+  }
+
+  const slice = sliceContent(page.text, parsed.data.offset ?? 0, parsed.data.maxChars ?? WEB_FETCH_DEFAULT_CHARS)
+  const links = page.links.slice(0, 20)
+  const payload = {
+    ...meta,
+    finalDomain: page.host,
+    redirects: page.redirects,
+    contentKind: page.kind,
+    bytes: page.bytes,
+    chars: page.text.length,
+    // A megnyitott oldal linkjei (és az átirányítás célja) tovább nyithatók; nyers URL nem kerül az auditba.
+    knownUrlHashes: knownUrlHashes([page.finalUrl, ...links.map((link) => link.url)]),
+  }
+  console.info('enterprise.tool.ok', payload)
+  await writeAudit(deps.audit, {
+    actorType: 'human',
+    actorId: principal.userId,
+    agentVersion: null,
+    action: 'enterprise.tool.ok',
+    targetType: 'agent',
+    targetId: definition.agentId,
+    modelUsed: null,
+    inputRef: toolName,
+    outputRef: target.hash,
+    policyDecision: 'allowed',
+    metadata: payload,
+    tenantId: principal.tenantId,
+  })
+  const emptyNotice =
+    page.notice ?? (page.text ? undefined : 'The page has no readable text (it may need JavaScript or a login). Try another result.')
+  return textResult({
+    url: target.url,
+    ...(page.finalUrl !== target.url ? { finalUrl: page.finalUrl } : {}),
+    domain: page.host,
+    title: page.title,
+    contentType: page.kind,
+    ...(page.pageCount !== undefined ? { pageCount: page.pageCount } : {}),
+    retrievedAt: now.toISOString(),
+    notice: UNTRUSTED_WEB_NOTICE,
+    ...(emptyNotice ? { contentNotice: emptyNotice } : {}),
+    untrustedWebContent: slice.text,
+    offset: parsed.data.offset ?? 0,
+    totalChars: page.text.length,
+    ...(slice.nextOffset !== null ? { nextOffset: slice.nextOffset, truncated: true } : {}),
+    ...(links.length ? { links } : {}),
+  })
 }
 
 /** #1024: `google_drive_upload_file` `exportId`-vel — a kérő saját, élő fájlja kerül feltöltésre. */

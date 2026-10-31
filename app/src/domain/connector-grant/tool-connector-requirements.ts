@@ -90,6 +90,8 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   'sandbox.request_promotion': { connectorType: 'board', accessMode: 'write' },
   'sandbox.snapshot': { connectorType: 'board', accessMode: 'write' },
   web_search: { connectorType: 'web_search', accessMode: 'read' },
+  // #1021: az oldalolvasás a keresés connectorját (domain-szabályok, napi keret) használja.
+  web_fetch: { connectorType: 'web_search', accessMode: 'read' },
   // #395: írás-szint a kockázati besorolásból jön (invokeEnterpriseTool), nem innen.
   mcp_list_tools: { connectorType: 'mcp', accessMode: 'read' },
   mcp_call: { connectorType: 'mcp', accessMode: 'read' },
