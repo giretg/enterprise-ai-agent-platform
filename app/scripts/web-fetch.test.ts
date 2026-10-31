@@ -209,6 +209,12 @@ async function main() {
     assert.match(out.text, /\| EUR \| 395,12/)
     for (const noise of ['Menü', 'steal', '© MNB', 'Ignore previous', '.x{}']) assert.ok(!out.text.includes(noise), noise)
     assert.deepEqual(out.links, [{ text: 'Archívum', url: 'https://www.mnb.hu/arfolyam-archivum' }])
+    // Rosszindulatú oldal: lezáratlan tagek / kommentek tömege, sok „#” sem lassít (lineáris feldolgozás).
+    for (const unit of ['<nav>', '<a href="x">', '<main>', '<tr>', '<!--', '<', '# ', '<h1']) {
+      const started = Date.now()
+      htmlToReadable(unit.repeat(Math.ceil(1_000_000 / unit.length)), MNB)
+      assert.ok(Date.now() - started < 1500, `lassú feldolgozás: ${unit}`)
+    }
   })
 
   await check('AC5: PDF → oldalankénti szöveg; üres (képes) PDF → közérthető megjegyzés; ismeretlen bináris → elutasítás', async () => {

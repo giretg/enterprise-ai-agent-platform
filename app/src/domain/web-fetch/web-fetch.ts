@@ -138,19 +138,73 @@ function collapse(text: string): string {
     .replace(/[ \t\f\v ]+/g, ' ')
     .replace(/ *\n */g, '\n')
     // Üres listaelem / táblacella / címsor (ikon-menü maradéka).
-    .replace(/^(?:[-|#]+ ?)+$/gm, '')
+    .replace(/^[-|#][-|# ]*$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
-const stripTags = (html: string) => html.replace(/<[^>]*>/g, ' ')
+// A HTML megbízhatatlan bemenet: minden minta lineáris (nincs `[\s\S]*?` lezáró-keresés és egymásba ágyazott
+// kvantor), mert egy rosszindulatú oldal lezáratlan tagek tömegével különben percekre lefoglalná a szervert.
+const MAX_HTML_CHARS = 3_000_000
 
-const stripBlocks = (html: string, tags: string) => html.replace(new RegExp(`<(${tags})\\b[\\s\\S]*?<\\/\\1\\s*>`, 'gi'), ' ')
+const stripTags = (html: string) => html.replace(/<[^<>]*>/g, ' ')
+
+/** HTML-komment ki; a lezáratlan komment a szöveg végéig tart (mint a böngészőben). */
+function stripComments(html: string): string {
+  let out = ''
+  for (let i = 0; ; ) {
+    const start = html.indexOf('<!--', i)
+    if (start < 0) return out + html.slice(i)
+    const end = html.indexOf('-->', start + 4)
+    if (end < 0) return out + html.slice(i, start)
+    out += `${html.slice(i, start)} `
+    i = end + 3
+  }
+}
+
+/**
+ * `<tag …>…</tag>` elemek cseréje (a legközelebbi záró tagig). Lineáris: ha egy tagnak egy pont után nincs
+ * zárója, utána sem lesz, így azt a taget többé nem keressük.
+ */
+function replaceElements(html: string, tags: readonly string[], replace: (inner: string, openTag: string, tag: string) => string): string {
+  const lower = html.toLowerCase()
+  const open = new RegExp(`<(${tags.join('|')})(?=[\\s/>])[^<>]*>`, 'gi')
+  const unclosed = new Set<string>()
+  let out = ''
+  let last = 0
+  for (let m = open.exec(html); m; m = open.exec(html)) {
+    const tag = m[1]!.toLowerCase()
+    if (unclosed.has(tag)) continue
+    const closeAt = lower.indexOf(`</${tag}`, open.lastIndex)
+    if (closeAt < 0) {
+      unclosed.add(tag)
+      continue
+    }
+    const closeEnd = lower.indexOf('>', closeAt)
+    const end = closeEnd < 0 ? html.length : closeEnd + 1
+    out += html.slice(last, m.index) + replace(html.slice(open.lastIndex, closeAt), m[0], tag)
+    last = end
+    open.lastIndex = end
+  }
+  return out + html.slice(last)
+}
+
+const stripBlocks = (html: string, tags: readonly string[]) => replaceElements(html, tags, () => ' ')
+
+/** Az első `<tag>` és az utolsó `</tag>` közötti rész, ha van. */
+function innerOf(html: string, tag: string, closing: 'first' | 'last' = 'last'): string | null {
+  const lower = html.toLowerCase()
+  const start = lower.search(new RegExp(`<${tag}(?=[\\s/>])`))
+  if (start < 0) return null
+  const openEnd = lower.indexOf('>', start)
+  const close = closing === 'last' ? lower.lastIndexOf(`</${tag}`) : lower.indexOf(`</${tag}`, openEnd)
+  return openEnd >= 0 && close > openEnd ? html.slice(openEnd + 1, close) : null
+}
 
 /** Minden futtatható, rejtett vagy beágyazott (reklám-iframe) rész ki. */
 function stripExecutable(html: string): string {
-  return stripBlocks(html.replace(/<!--[\s\S]*?-->/g, ' '), 'script|style|noscript|template|svg|iframe|object|canvas|head|button|select|dialog')
-    .replace(/<(iframe|object|embed|input|img|link|meta)\b[^>]*>/gi, ' ')
+  return stripBlocks(stripComments(html), ['script', 'style', 'noscript', 'template', 'svg', 'iframe', 'object', 'canvas', 'head', 'button', 'select', 'dialog'])
+    .replace(/<(iframe|object|embed|input|img|link|meta)\b[^<>]*>/gi, ' ')
 }
 
 /**
@@ -159,27 +213,26 @@ function stripExecutable(html: string): string {
  */
 function mainRegion(html: string): string {
   const pick = (tag: string) => {
-    const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*)<\\/${tag}\\s*>`, 'i').exec(html)
-    return match && stripTags(match[1]!).replace(/\s+/g, '').length > 200 ? match[1]! : null
+    const inner = innerOf(html, tag)
+    return inner && stripTags(inner).replace(/\s+/g, '').length > 200 ? inner : null
   }
   const main = pick('main') ?? pick('article')
-  if (main) return stripBlocks(main, 'nav|aside|form')
-  return stripBlocks(/<body\b[^>]*>([\s\S]*)<\/body\s*>/i.exec(html)?.[1] ?? html, 'nav|header|footer|aside|form')
+  if (main) return stripBlocks(main, ['nav', 'aside', 'form'])
+  return stripBlocks(innerOf(html, 'body') ?? html, ['nav', 'header', 'footer', 'aside', 'form'])
 }
 
 /** Szerkezet megtartása szövegként: címsor `#`, listaelem `-`, bekezdés-határ üres sor. */
 function structureToText(html: string): string {
-  return html
-    // Egy táblázatsor egy sor: „| Pénznem | Árfolyam”.
-    .replace(/<tr\b[^>]*>([\s\S]*?)<\/tr\s*>/gi, (_m, row: string) => `\n${row.replace(/\s+/g, ' ')}\n`)
-    .replace(/<h([1-6])\b[^>]*>/gi, (_m, level: string) => `\n\n${'#'.repeat(Number(level))} `)
+  // Egy táblázatsor egy sor: „| Pénznem | Árfolyam”.
+  return replaceElements(html, ['tr'], (row) => `\n${row.replace(/\s+/g, ' ')}\n`)
+    .replace(/<h([1-6])\b[^<>]*>/gi, (_m, level: string) => `\n\n${'#'.repeat(Number(level))} `)
     .replace(/<\/h[1-6]\s*>/gi, '\n\n')
-    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<li\b[^<>]*>/gi, '\n- ')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/li\s*>/gi, '')
-    .replace(/<\/(tr|dd|dt)\s*>/gi, '\n')
+    .replace(/<\/(dd|dt)\s*>/gi, '\n')
     .replace(/<\/(p|div|section|article|table|blockquote|pre|ul|ol|dl|figure)\s*>/gi, '\n\n')
-    .replace(/<(td|th)\b[^>]*>/gi, ' | ')
+    .replace(/<(td|th)\b[^<>]*>/gi, ' | ')
 }
 
 const MAX_LINKS = 40
@@ -187,26 +240,30 @@ const MAX_LINKS = 40
 function extractLinks(html: string, baseUrl: string): Array<{ text: string; url: string }> {
   const links: Array<{ text: string; url: string }> = []
   const seen = new Set<string>()
-  const re = /<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a\s*>/gi
-  for (let m = re.exec(html); m && links.length < MAX_LINKS; m = re.exec(html)) {
+  const self = normalizeWebUrl(baseUrl)?.url
+  replaceElements(html, ['a'], (inner, openTag) => {
+    const href = /\bhref\s*=\s*["']([^"']+)["']/i.exec(openTag)?.[1]
+    if (!href || links.length >= MAX_LINKS) return ''
     let resolved: string
     try {
-      resolved = new URL(decodeEntities(m[1]!), baseUrl).toString()
+      resolved = new URL(decodeEntities(href), baseUrl).toString()
     } catch {
-      continue
+      return ''
     }
     const target = normalizeWebUrl(resolved)
-    if (!target || seen.has(target.url) || target.url === normalizeWebUrl(baseUrl)?.url) continue
-    const text = collapse(decodeEntities(stripTags(m[2]!))).slice(0, 120)
-    if (!text) continue
+    if (!target || seen.has(target.url) || target.url === self) return ''
+    const text = collapse(decodeEntities(stripTags(inner.slice(0, 2000)))).slice(0, 120)
+    if (!text) return ''
     seen.add(target.url)
     links.push({ text, url: target.url })
-  }
+    return ''
+  })
   return links
 }
 
-export function htmlToReadable(html: string, baseUrl: string): Omit<ReadableContent, 'kind'> {
-  const title = collapse(decodeEntities(stripTags(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html)?.[1] ?? ''))) || null
+export function htmlToReadable(raw: string, baseUrl: string): Omit<ReadableContent, 'kind'> {
+  const html = raw.slice(0, MAX_HTML_CHARS)
+  const title = collapse(decodeEntities(stripTags(innerOf(html, 'title', 'first')?.slice(0, 2000) ?? ''))) || null
   const region = mainRegion(stripExecutable(html))
   return {
     title,
