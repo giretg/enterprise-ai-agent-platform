@@ -66,6 +66,7 @@
     "test:model-gateway-jwt-key": "tsx scripts/model-gateway-jwt-key.test.ts",
     "test:model-gateway-content-filter": "tsx scripts/model-gateway-content-filter.test.ts",
     "test:model-gateway-token": "tsx scripts/model-gateway-token.test.ts",
+    "test:request-body-limit": "tsx scripts/request-body-limit.test.ts",
     "test:ai-audit": "tsx scripts/ai-audit.test.ts",
     "test:write-gate-single-use": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/write-gate-single-use.test.ts",
     "test:gateway-relay": "tsx scripts/text-tool-relay.test.ts",
