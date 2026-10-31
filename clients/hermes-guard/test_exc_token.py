@@ -1,6 +1,10 @@
 """exc-token cache + hibaágak. Futtatás: python3 clients/hermes-guard/test_exc_token.py"""
 import json, os, tempfile, time, unittest
+from unittest.mock import patch
 import exc_token as x
+
+# A fejlesztői gép valódi /etc/hermes-ét a teszt ne lássa.
+x.MANAGED_DIR = tempfile.mkdtemp()
 
 CONFIG = """model:
   provider: excellence
@@ -266,6 +270,147 @@ class T(unittest.TestCase):
         finally:
             x.urllib.request.urlopen = orig
         self.assertEqual(sent, {"tenantSlug": "t", "installId": "inst-1"})
+
+    # --- #1043: telepítés-azonosító a Bot MCP-fejlécében ---
+
+    BOT_CONFIG = (
+        "memory:\n  memory_enabled: false\n"
+        "mcp_servers:\n"
+        "  excellence:\n"
+        "    url: https://ai.example.com/api/mcp/acme\n"
+        "    auth: oauth\n"
+        "    oauth:\n      client_id: cid\n"
+        "    headers:\n"
+        "      X-Excellence-Agent-Id: 33333333-3333-4333-8333-333333333333\n"
+        "      X-Excellence-Client: hermes-managed\n"
+        "    tools:\n      include:\n        - kb_search\n"
+        "  other:\n    url: https://other.example/mcp\n    headers:\n      X-Other: 1\n"
+    )
+
+    def _root_with_bots(self, *names, config=None):
+        root = tempfile.mkdtemp()
+        for name in names:
+            os.makedirs(os.path.join(root, "profiles", name))
+            open(os.path.join(root, "profiles", name, "config.yaml"), "w").write(config or self.BOT_CONFIG)
+        return root
+
+    def _managed_id(self, value):
+        managed = tempfile.mkdtemp()
+        if value is not None:
+            open(os.path.join(managed, "excellence-install-id"), "w").write(value + "\n")
+        orig, x.MANAGED_DIR = x.MANAGED_DIR, managed
+        self.addCleanup(setattr, x, "MANAGED_DIR", orig)
+
+    def test_install_header_goes_under_own_headers_only(self):
+        out = x.with_install_header(self.BOT_CONFIG, "inst-abc-123")
+        expected = self.BOT_CONFIG.replace(
+            "      X-Excellence-Client: hermes-managed\n",
+            "      X-Excellence-Client: hermes-managed\n      X-Excellence-Install-Id: 'inst-abc-123'\n",
+        )
+        self.assertEqual(out, expected)  # a config többi része byte-ra azonos
+        self.assertEqual(x.server_block(out, "other"), x.server_block(self.BOT_CONFIG, "other"))
+        self.assertIsNone(x.with_install_header(out, "inst-abc-123"))  # idempotens
+        changed = x.with_install_header(out, "inst-new-4567")
+        self.assertEqual(changed, out.replace("'inst-abc-123'", "'inst-new-4567'"))
+
+    def test_install_header_without_headers_key_or_empty_mapping(self):
+        bare = "mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t\n    auth: oauth\nmodel:\n  provider: x\n"
+        self.assertEqual(
+            x.with_install_header(bare, "inst-abc-123"),
+            bare.replace("    auth: oauth\n", "    auth: oauth\n    headers:\n      X-Excellence-Install-Id: 'inst-abc-123'\n"),
+        )
+        empty = "mcp_servers:\r\n  excellence:\r\n    url: https://a/api/mcp/t\r\n    headers: {}\r\n"
+        self.assertEqual(
+            x.with_install_header(empty, "inst-abc-123"),
+            "mcp_servers:\r\n  excellence:\r\n    url: https://a/api/mcp/t\r\n    headers:\r\n      X-Excellence-Install-Id: 'inst-abc-123'\r\n",
+        )
+        # Nincs saját blokk, vagy flow-stílusú fejléc: nem nyúlunk hozzá.
+        self.assertIsNone(x.with_install_header("mcp_servers:\n  other:\n    url: https://o\n", "inst-abc-123"))
+        self.assertIsNone(x.with_install_header("mcp_servers:\n  excellence:\n    headers: {A: b}\n", "inst-abc-123"))
+        self.assertIsNone(x.with_install_header("tools:\n  excellence:\n    url: https://o\n", "inst-abc-123"))
+
+    def test_ensure_install_headers_restores_after_resync_on_next_model_call(self):
+        self._managed_id("inst-machine-1")
+        root = self._root_with_bots("exc-kati", "exc-reka", "plain")
+        os.makedirs(os.path.join(root, "mcp-tokens"))
+        json.dump({"access_token": "oauth-parent"}, open(os.path.join(root, "mcp-tokens", "excellence.json"), "w"))
+        kati = os.path.join(root, "profiles", "exc-kati")
+        f = lambda *a: ("jwt", 9999999999)
+        x.get_token(kati, now=lambda: 1, fetcher=f)
+        for name in ("exc-kati", "exc-reka"):
+            cfg = open(os.path.join(root, "profiles", name, "config.yaml")).read()
+            self.assertIn("X-Excellence-Install-Id: 'inst-machine-1'", cfg)
+        self.assertEqual(open(os.path.join(root, "profiles", "plain", "config.yaml")).read(), self.BOT_CONFIG)
+        # Agent Sync újraírja a configot; a következő (cache-elt) modellhívás visszateszi.
+        open(os.path.join(kati, "config.yaml"), "w").write(self.BOT_CONFIG)
+        x.get_token(kati, now=lambda: 2, fetcher=lambda *a: self.fail("cache-ből kell jönnie"))
+        self.assertIn("X-Excellence-Install-Id: 'inst-machine-1'", open(os.path.join(kati, "config.yaml")).read())
+
+    def test_no_install_id_means_no_header(self):
+        root = self._root_with_bots("exc-kati")
+        for value in (None, "", "rövid", "bad id with spaces"):
+            self._managed_id(value)
+            self.assertEqual(x.ensure_install_headers(root), 0)
+            self.assertEqual(open(os.path.join(root, "profiles", "exc-kati", "config.yaml")).read(), self.BOT_CONFIG)
+        self.assertEqual(x.ensure_install_headers(root, "inst-explicit-1"), 1)
+        self.assertEqual(x.ensure_install_headers(root, "inst-explicit-1"), 0)
+
+    def test_symlinked_profile_or_config_is_not_written(self):
+        self._managed_id("inst-machine-1")
+        root = self._root_with_bots()
+        outside = tempfile.mkdtemp()
+        open(os.path.join(outside, "config.yaml"), "w").write(self.BOT_CONFIG)
+        os.makedirs(os.path.join(root, "profiles"))
+        os.symlink(outside, os.path.join(root, "profiles", "exc-link"))
+        os.makedirs(os.path.join(root, "profiles", "exc-file"))
+        os.symlink(os.path.join(outside, "config.yaml"), os.path.join(root, "profiles", "exc-file", "config.yaml"))
+        self.assertEqual(x.ensure_install_headers(root), 0)
+        self.assertEqual(open(os.path.join(outside, "config.yaml")).read(), self.BOT_CONFIG)
+
+    def test_header_write_keeps_file_mode(self):
+        root = self._root_with_bots("exc-kati")
+        path = os.path.join(root, "profiles", "exc-kati", "config.yaml")
+        os.chmod(path, 0o600)
+        self.assertEqual(x.ensure_install_headers(root, "inst-explicit-1"), 1)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(os.listdir(os.path.dirname(path))), ["config.yaml"])
+
+    def test_header_keeps_unrelated_eof_bytes(self):
+        cfg = self.BOT_CONFIG + "model:\n  provider: x"
+        out = x.with_install_header(cfg, "inst-machine-1")
+        self.assertEqual(out, cfg.replace(
+            "      X-Excellence-Client: hermes-managed\n",
+            "      X-Excellence-Client: hermes-managed\n      X-Excellence-Install-Id: 'inst-machine-1'\n",
+        ))
+        bare = "mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t"
+        self.assertEqual(x.with_install_header(bare, "inst-machine-1"),
+                         bare + "\n    headers:\n      X-Excellence-Install-Id: 'inst-machine-1'\n")
+
+    def test_header_temp_symlink_cannot_overwrite_outside_file(self):
+        root = self._root_with_bots("exc-kati")
+        bot = os.path.join(root, "profiles", "exc-kati")
+        outside = os.path.join(root, "outside")
+        with open(outside, "w") as fh:
+            fh.write("keep me")
+        os.symlink(outside, os.path.join(bot, f"config.yaml.{os.getpid()}"))
+        self.assertEqual(x.ensure_install_headers(root, "inst-machine-1"), 1)
+        self.assertEqual(open(outside).read(), "keep me")
+        self.assertFalse(os.path.islink(os.path.join(bot, "config.yaml")))
+
+    def test_header_write_failure_keeps_config_and_cleans_temp(self):
+        root = self._root_with_bots("exc-kati", "exc-reka")
+        first = os.path.join(root, "profiles", "exc-kati", "config.yaml")
+        replace = os.replace
+        def fail_first(src, dest):
+            if dest == first:
+                raise PermissionError("read-only profile")
+            return replace(src, dest)
+        with patch.object(x.os, "replace", side_effect=fail_first):
+            self.assertEqual(x.ensure_install_headers(root, "inst-machine-1"), 1)
+        self.assertEqual(open(first).read(), self.BOT_CONFIG)
+        self.assertEqual(os.listdir(os.path.dirname(first)), ["config.yaml"])
+        self.assertIn("X-Excellence-Install-Id: 'inst-machine-1'",
+                      open(os.path.join(root, "profiles", "exc-reka", "config.yaml")).read())
 
 
 if __name__ == "__main__":

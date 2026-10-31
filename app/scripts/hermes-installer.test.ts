@@ -60,7 +60,7 @@ function samplePackage(platform: 'posix' | 'windows') {
         files: {
           'SOUL.md': '# Kati\n\nconnector to Kati\n',
           'profile.yaml': 'display_name: Kati\n',
-          'config.yaml': 'mcp_servers: {}\n',
+          'config.yaml': 'mcp_servers:\n  excellence:\n    url: https://excellence.example/api/mcp/acme\n',
           'distribution.yaml': 'name: exc-kati\n',
         },
       },
@@ -102,6 +102,11 @@ check('az egyfájlos telepítő --prefix mellett felteszi a padlót és a Guardo
     assert.equal(
       readFileSync(join(prefix, 'home/.hermes/profiles/exc-kati/mcp-tokens/excellence.json'), 'utf8'),
       '{"access_token":"oauth-parent"}\n',
+    )
+    // #1043: a Bot MCP-hívásai a gép telepítés-azonosítójával mennek.
+    assert.match(
+      readFileSync(join(prefix, 'home/.hermes/profiles/exc-kati/config.yaml'), 'utf8'),
+      /\n    headers:\n      X-Excellence-Install-Id: 'inst-test'\n$/,
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })

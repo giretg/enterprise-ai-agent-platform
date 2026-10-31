@@ -182,7 +182,8 @@ if ($HermesHome) {
     }
   }
   # A Bot az azonos MCP-URL-ű default belépőt kapja; név szerint a default `excellence` más tenanté lehet.
-  & $Python -I -X utf8 (Join-Path $Bin 'exc-token') --share $HermesHome
+  # A gép telepítés-azonosítója a Bot MCP-fejlécébe kerül (#1043, csak audit-korreláció).
+  & $Python -I -X utf8 (Join-Path $Bin 'exc-token') --share $HermesHome $pkg.installId
   if ($LASTEXITCODE -ne 0) { Fail 'A Bot-belépők szinkronja nem sikerült.' }
   Copy-Plugin $HermesHome (Join-Path $HermesHome 'plugins/excellence-guard')
   if (Test-Path -LiteralPath $profilesDir -PathType Container) {

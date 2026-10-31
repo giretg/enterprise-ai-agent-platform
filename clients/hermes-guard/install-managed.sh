@@ -210,6 +210,8 @@ for bot in bots:
             shutil.rmtree(leftover)
 # A Bot az azonos MCP-URL-ű default belépőt kapja; név szerint a default `excellence` más tenanté lehet.
 exc_token.share_all_mcp_tokens(str(pathlib.Path(home) / ".hermes"))
+# A Bot MCP-hívásai a gép telepítés-azonosítójával mennek (#1043, csak audit-korreláció).
+exc_token.ensure_install_headers(str(pathlib.Path(home) / ".hermes"), pkg["installId"])
 PYBOTS
   copy_plugin "$TARGET_HOME/.hermes/plugins/excellence-guard" "$TARGET_USER"
   if [ -d "$TARGET_HOME/.hermes/profiles" ]; then

@@ -103,10 +103,12 @@ def assert_pybots_loads_token_before_setuid() -> None:
         script_dir = root / "installer"
         script_dir.mkdir()
         (script_dir / "exc_token.py").write_text(
-            "def share_all_mcp_tokens(_home):\n    pass\n", encoding="utf-8"
+            "def share_all_mcp_tokens(_home):\n    pass\n"
+            "def ensure_install_headers(_home, _inst):\n    pass\n",
+            encoding="utf-8",
         )
         pkg_path = root / "floor.json"
-        pkg_path.write_text(json.dumps({"bots": []}), encoding="utf-8")
+        pkg_path.write_text(json.dumps({"installId": "inst-test", "bots": []}), encoding="utf-8")
         home = root / "home"
         home.mkdir()
         prelude = (
@@ -177,6 +179,11 @@ def main() -> None:
         assert (bot / "SOUL.md").read_text(encoding="utf-8").startswith("# Kati")
         assert "connector to Kati" in (bot / "SOUL.md").read_text(encoding="utf-8")
         assert (bot / "profile.yaml").read_text(encoding="utf-8") == "display_name: Kati\n"
+        # #1043: a Bot MCP-hívásai a gép telepítés-azonosítójával mennek.
+        assert (bot / "config.yaml").read_text(encoding="utf-8") == (
+            "mcp_servers:\n  excellence:\n    url: https://app.example.com/api/mcp/acme\n"
+            "    headers:\n      X-Excellence-Install-Id: 'inst-test'\n"
+        )
         assert (bot / "plugins/excellence-guard/plugin.yaml").is_file()
         assert (bot / "mcp-tokens/excellence.json").read_text(encoding="utf-8") == '{"access_token":"oauth-parent"}\n'
         assert (bot / "mcp-tokens/excellence.client.json").is_file()
@@ -214,6 +221,7 @@ def main() -> None:
         # Második futás felülír, nem halmoz.
         subprocess.run(["bash", str(SCRIPT), "--prefix", str(prefix), str(blob)], check=True)
         assert (managed / "excellence-install-id").read_text(encoding="utf-8") == "inst-test\n"
+        assert (bot / "config.yaml").read_text(encoding="utf-8").count("X-Excellence-Install-Id") == 1
     print("ok")
 
 

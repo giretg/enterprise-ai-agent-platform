@@ -128,6 +128,8 @@ A telepítő a plugin-könyvtárat (`excellence-guard/plugin.yaml`) bemásolja a
 
 A telepítő hiányzó Guard- vagy token-segéd esetén megáll, mielőtt a padlót módosítaná. A letöltött csomag hash-ét és kötelező mezőit ellenőrzi; hibás csomag nem írja felül a meglévő beállításokat. Új AI-munkatárs vagy hozzáférés-változás után töltsd le és futtasd újra, hogy a Bot-csatlakozó és a Guard bekerüljön. A telepítő nem töröl idegen (nem `exc-`) profilokat.
 
+A telepítő a Bot-profilok `config.yaml`-jában a `mcp_servers.excellence.headers` alá beírja az `X-Excellence-Install-Id` fejlécet a gép `excellence-install-id` értékével, így a Bot céges eszközhívásainál az auditban látszik, melyik gépről jöttek. Ha az Agent Sync újraírja a configot, az `exc-token` a következő modellhívásnál visszateszi. Csak a saját `excellence` blokkhoz nyúl, symlinkelt profilt nem ír, és nem menedzselt gépen (nincs azonosító) nem ír fejlécet. Az azonosító nem hiteles (a munkatárs átírhatja): csak audit-korrelációra jó, jogosultság nem épül rá.
+
 ## Átállás: a laptopokon tárolt kulcsok
 
 A managed `.env` üresre állítja az ismert szolgáltatói kulcsokat (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, és a többi a generátor listájában). Ettől a Hermes nem tud kimenni a céges átjáró mellett. A kulcs a szolgáltatónál ettől még él.
