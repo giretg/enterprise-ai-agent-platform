@@ -1,5 +1,6 @@
 """exc-token cache + hibaágak. Futtatás: python3 clients/hermes-guard/test_exc_token.py"""
 import json, os, tempfile, time, unittest
+from unittest.mock import patch
 import exc_token as x
 
 # A fejlesztői gép valódi /etc/hermes-ét a teszt ne lássa.
@@ -373,6 +374,43 @@ class T(unittest.TestCase):
         self.assertEqual(x.ensure_install_headers(root, "inst-explicit-1"), 1)
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
         self.assertEqual(sorted(os.listdir(os.path.dirname(path))), ["config.yaml"])
+
+    def test_header_keeps_unrelated_eof_bytes(self):
+        cfg = self.BOT_CONFIG + "model:\n  provider: x"
+        out = x.with_install_header(cfg, "inst-machine-1")
+        self.assertEqual(out, cfg.replace(
+            "      X-Excellence-Client: hermes-managed\n",
+            "      X-Excellence-Client: hermes-managed\n      X-Excellence-Install-Id: 'inst-machine-1'\n",
+        ))
+        bare = "mcp_servers:\n  excellence:\n    url: https://a/api/mcp/t"
+        self.assertEqual(x.with_install_header(bare, "inst-machine-1"),
+                         bare + "\n    headers:\n      X-Excellence-Install-Id: 'inst-machine-1'\n")
+
+    def test_header_temp_symlink_cannot_overwrite_outside_file(self):
+        root = self._root_with_bots("exc-kati")
+        bot = os.path.join(root, "profiles", "exc-kati")
+        outside = os.path.join(root, "outside")
+        with open(outside, "w") as fh:
+            fh.write("keep me")
+        os.symlink(outside, os.path.join(bot, f"config.yaml.{os.getpid()}"))
+        self.assertEqual(x.ensure_install_headers(root, "inst-machine-1"), 1)
+        self.assertEqual(open(outside).read(), "keep me")
+        self.assertFalse(os.path.islink(os.path.join(bot, "config.yaml")))
+
+    def test_header_write_failure_keeps_config_and_cleans_temp(self):
+        root = self._root_with_bots("exc-kati", "exc-reka")
+        first = os.path.join(root, "profiles", "exc-kati", "config.yaml")
+        replace = os.replace
+        def fail_first(src, dest):
+            if dest == first:
+                raise PermissionError("read-only profile")
+            return replace(src, dest)
+        with patch.object(x.os, "replace", side_effect=fail_first):
+            self.assertEqual(x.ensure_install_headers(root, "inst-machine-1"), 1)
+        self.assertEqual(open(first).read(), self.BOT_CONFIG)
+        self.assertEqual(os.listdir(os.path.dirname(first)), ["config.yaml"])
+        self.assertIn("X-Excellence-Install-Id: 'inst-machine-1'",
+                      open(os.path.join(root, "profiles", "exc-reka", "config.yaml")).read())
 
 
 if __name__ == "__main__":

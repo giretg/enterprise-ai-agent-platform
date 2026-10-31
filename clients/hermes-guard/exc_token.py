@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -122,8 +123,6 @@ def with_install_header(config_text, inst):
     """
     lines = config_text.splitlines(keepends=True)
     nl = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += nl
     indent = lambda ln: len(ln) - len(ln.lstrip())
     meaningful = lambda ln: ln.strip() and not ln.lstrip().startswith("#")
     start = base = None
@@ -149,6 +148,9 @@ def with_install_header(config_text, inst):
     children = [i for i in range(start + 1, end + 1) if meaningful(lines[i])]
     if not children:
         return None
+    # Csak a saját blokk utolsó sorát zárjuk le, ha a beszúrás ezt igényli.
+    if not lines[end].endswith("\n"):
+        lines[end] += nl
     child = indent(lines[children[0]])
     # Idézőjelben: egy csupa számjegyű azonosító YAML-ban szám lenne.
     entry = lambda pad: f"{' ' * pad}{INSTALL_HEADER}: '{inst}'{nl}"
@@ -192,11 +194,16 @@ def _set_install_header(bot, inst):
         return False
     if new is None:
         return False
-    tmp = f"{path}.{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, os.stat(path).st_mode & 0o777)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(new.encode("utf-8"))
-    os.replace(tmp, path)
+    mode = os.stat(path).st_mode & 0o777
+    fd, tmp = tempfile.mkstemp(prefix=".config-", dir=bot)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(new.encode("utf-8"))
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
     return True
 
 
@@ -217,7 +224,14 @@ def ensure_install_headers(home, inst=None):
         names = sorted(os.listdir(profiles))
     except OSError:
         return 0
-    return sum(1 for name in names if name.startswith("exc-") and _set_install_header(os.path.join(profiles, name), inst))
+    written = 0
+    for name in names:
+        if name.startswith("exc-"):
+            try:
+                written += _set_install_header(os.path.join(profiles, name), inst)
+            except OSError:
+                continue  # Egy hibás profil nem akadályozhatja a többi Bot helyreállítását.
+    return written
 
 
 def parent_hermes_home(home):
