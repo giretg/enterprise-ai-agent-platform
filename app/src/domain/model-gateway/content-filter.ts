@@ -6,8 +6,8 @@
  * kategóriánként `block / local_only / tokenize / warn / off`. A titkos kulcsnak nincs álneve
  * (`tokenize` blokk), de `off` / `warn` / `local_only` mentett szintje érvényesül.
  *
- * 1. Felismerés slotonként (system/user/assistant/tool üzenet, tool-argumentum): nincs üzenethatáron átnyúló
- *    hamis PAN-találat. Személynév katalógus nélkül ott, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
+ * 1. Felismerés slotonként a proxy `FORWARDED_PARAMS` mezőin (messages, tools, tool_choice, stop, …):
+ *    nincs üzenethatáron átnyúló hamis PAN-találat. Személynév katalógus nélkül ott, ahol a forma elárulja: `Kiss János <kiss@x.hu>`;
  *    a session ezután bárhol, magyar raggal is felismeri (known-value matcher).
  * 2. `tokenize` → álnév `hermes_session` hatókörben, bijektíven és stabilan; a válaszban visszaáll
  *    (response-restorer.ts). `local_only` → csak céges (saját üzemeltetésű) modell kaphatja, ha nincs: blokk.
@@ -37,7 +37,7 @@ import {
   type ValVaultRecord,
 } from '@/domain/privacy/surrogate-vault'
 import { resolveTenantPrivacyHmacKey } from '@/domain/privacy/tenant-hmac-key'
-import type { GatewayCallContext, GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
+import { FORWARDED_PARAMS, type GatewayCallContext, type GatewayPipelineHooks } from '@/domain/model-gateway/proxy'
 import { createRestoreTransform } from '@/domain/model-gateway/response-restorer'
 import { PRIVACY_CATEGORY_ALIASES } from '@/domain/privacy/privacy-category-policy'
 import { CONTENT_FILTER_CATEGORIES, CONTENT_FILTER_MODE_KEY, type ContentFilterMode } from '@/domain/client-policy/capabilities'
@@ -197,7 +197,7 @@ type Slot = { owner: Record<string, unknown> | unknown[]; key: string | number; 
 
 const SKIP_KEYS = new Set(['role', 'type', 'id', 'tool_call_id'])
 
-/** Minden string a `messages`-ben (content, content-részek, tool_calls argumentumok, reasoning…). */
+/** Minden string a bejárt fában (content, tool leírás, tool_choice név, stop-elemek…). */
 function collectSlots(value: unknown, out: Slot[] = []): Slot[] {
   if (Array.isArray(value) || (value && typeof value === 'object')) {
     const owner = value as Record<string, unknown> | unknown[]
@@ -437,8 +437,12 @@ export function createContentFilterHooks(deps: {
     async filterRequest(ctx, body) {
       try {
         const policy = filterPolicyFrom(await deps.getCapabilities?.(ctx))
+        const scanned: Record<string, unknown> = {}
+        for (const key of FORWARDED_PARAMS) {
+          if (body[key] !== undefined) scanned[key] = body[key]
+        }
         const result = await filterMessages({
-          messages: body.messages,
+          messages: scanned,
           policy,
           session: () => sessionFor(ctx),
           memo: { store: memo, scopeKey: `${ctx.tenantId}\0${ctx.userId}\0${sessionIdFor(ctx)}` },
@@ -462,7 +466,7 @@ export function createContentFilterHooks(deps: {
           logger.error({ event: 'model_gateway.content_audit_failed', error: String(error) }, 'Content-filter audit failed')
         }
         return {
-          body: { ...body, messages: result.messages },
+          body: { ...body, ...(result.messages as Record<string, unknown>) },
           ...(result.privateOnly.length
             ? { requirePrivate: { block: privateOnlyMessage(result.privateOnly), reason: `content_filter_private_only:${result.privateOnly.join(',')}` } }
             : {}),
