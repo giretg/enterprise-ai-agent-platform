@@ -298,6 +298,7 @@
     "test:agent-detail-access": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-detail-access.test.ts",
     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",
     "test:iam-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-tenant-boundary.test.ts",
+    "test:iam-invitation-tenant-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-invitation-tenant-scope.test.ts",
     "test:iam-membership-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-membership-scope.test.ts",
     "test:control-plane-nav": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/control-plane-nav.test.ts",
     "test:embed-apps": "tsx scripts/embed-apps.test.ts",
