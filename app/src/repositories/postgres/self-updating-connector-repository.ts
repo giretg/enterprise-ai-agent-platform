@@ -227,9 +227,14 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     return usage
   }
 
-  async findOpenProposalByHash(connectorId: string, tenantId: string, rawHash: string) {
+  async findOpenProposalByHash(
+    connectorId: string,
+    tenantId: string,
+    rawHash: string,
+    diffFromVersionId: string | null,
+  ) {
     const row = await prisma.connectorSpecVersion.findFirst({
-      where: { connectorId, tenantId, rawHash, status: 'proposed' },
+      where: { connectorId, tenantId, rawHash, diffFromVersionId, status: 'proposed' },
       orderBy: { versionNo: 'desc' },
     })
     return row ? versionOf(row) : null
@@ -247,8 +252,14 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     actorId: string | null
   }): Promise<SelfUpdatingSpecVersion> {
     const row = await prisma.$transaction(async (tx) => {
-      const connector = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' }, select: { id: true } })
+      const connector = await tx.connector.findFirst({
+        where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' },
+        select: { activeSpecVersionId: true },
+      })
       if (!connector) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
+      if (connector.activeSpecVersionId !== input.diffFromVersionId) {
+        throw new SelfUpdateError('INVALID_STATE', 'A jelenlegi verzió időközben megváltozott. Keress újra frissítést.')
+      }
       const latest = await tx.connectorSpecVersion.aggregate({ where: { connectorId: input.connectorId }, _max: { versionNo: true } })
       const proposal = await tx.connectorSpecVersion.create({
         data: {
