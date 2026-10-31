@@ -4,6 +4,7 @@ import type {
   ConnectorAuthMode,
   ConnectorDraft,
   ConnectorDraftReviewStatus,
+  ConnectorLifecycleState,
   ConnectorType,
 } from '@prisma/client'
 import {
@@ -21,6 +22,9 @@ import type {
   ConnectorDraftWithConnector,
   CreateConnectorDraftInput,
 } from '../interfaces'
+
+/** A provisioning-draft szerkeszthető, de a Tool Broker számára még nem éles állapotai. */
+const EDITABLE_CONNECTOR_LIFECYCLE_STATES: ConnectorLifecycleState[] = ['draft', 'validated']
 
 /** Agent-kötés dropdown és assign: ugyanaz a fail-closed szabály, mint a runtime listán. */
 function isProvisioningCatalogConnectorAssignable(
@@ -102,7 +106,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   ): Promise<ConnectorDraft> {
     return prisma.connectorDraft.update({
       where: { id: draftId },
-      data: { validationResult: result },
+      data: { validationResult: result, revision: { increment: 1 } },
     })
   }
 
@@ -113,31 +117,39 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   }): Promise<ConnectorDraft> {
     return prisma.connectorDraft.update({
       where: { id: params.draftId },
-      data: { reviewStatus: params.reviewStatus, reviewedById: params.reviewedById },
+      data: {
+        reviewStatus: params.reviewStatus,
+        reviewedById: params.reviewedById,
+        revision: { increment: 1 },
+      },
     })
   }
 
   async setSandboxTestResult(draftId: string, ok: boolean): Promise<ConnectorDraft> {
     return prisma.connectorDraft.update({
       where: { id: draftId },
-      data: { sandboxTestOk: ok },
+      data: { sandboxTestOk: ok, revision: { increment: 1 } },
     })
   }
 
   async activate(params: {
     draftId: string
+    expectedDraftRevision: number
     secretAlias: string
     authMode: ConnectorAuthMode
     secondApproverId: string | null
     config?: Prisma.InputJsonValue
-  }): Promise<Connector> {
+  }): Promise<Connector | null> {
     return prisma.$transaction(async (tx) => {
-      const draft = await tx.connectorDraft.update({
-        where: { id: params.draftId },
-        data: { secondApproverId: params.secondApproverId },
-      })
-      return tx.connector.update({
-        where: { id: draft.connectorId },
+      const activated = await tx.connector.updateMany({
+        // Az állapotátmenet maga a compare-and-set. A service a gate-eket a
+        // `expectedDraftRevision` kiolvasásakor vizsgálja; bármely gate- vagy
+        // config-módosítás ezt atomikusan növeli, ezért a régi approval nem tud
+        // egy új configot aktiválni.
+        where: {
+          lifecycleState: { in: EDITABLE_CONNECTOR_LIFECYCLE_STATES },
+          draft: { is: { id: params.draftId, revision: params.expectedDraftRevision } },
+        },
         data: {
           lifecycleState: 'active',
           secretAlias: params.secretAlias,
@@ -145,6 +157,14 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           ...(params.config !== undefined ? { config: params.config } : {}),
         },
       })
+
+      if (activated.count !== 1) return null
+
+      const draft = await tx.connectorDraft.update({
+        where: { id: params.draftId },
+        data: { secondApproverId: params.secondApproverId },
+      })
+      return tx.connector.findUnique({ where: { id: draft.connectorId } })
     })
   }
 
@@ -225,8 +245,13 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         throw new Error('only draft/validated connector config is editable')
       }
 
-      await tx.connector.update({
-        where: { id: draft.connectorId },
+      const connectorUpdated = await tx.connector.updateMany({
+        // Ha egy párhuzamos aktiválás már átállította active-ra, a konfiguráció
+        // és a gate-ek resetelése nem írhat bele az éles connectorba.
+        where: {
+          id: draft.connectorId,
+          lifecycleState: { in: EDITABLE_CONNECTOR_LIFECYCLE_STATES },
+        },
         data: {
           config: params.config,
           authMode: params.authMode,
@@ -234,6 +259,9 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           lifecycleState: 'draft',
         },
       })
+      if (connectorUpdated.count !== 1) {
+        throw new Error('only draft/validated connector config is editable')
+      }
       // A config megváltozott → a gate resetelődik, hogy újra végigfusson.
       return tx.connectorDraft.update({
         where: { id: params.draftId },
@@ -244,6 +272,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           reviewedById: null,
           secondApproverId: null,
           sandboxTestOk: null,
+          revision: { increment: 1 },
         },
         include: { connector: true },
       })
@@ -269,6 +298,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           reviewedById: null,
           secondApproverId: null,
           sandboxTestOk: null,
+          revision: { increment: 1 },
         },
       })
       // Offline: a Tool Broker `lifecycle_state != active` esetén tilt. Az agent-kötéseket
