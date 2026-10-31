@@ -53,6 +53,26 @@ A modell nem kapja meg minden lépésben az összes MCP-eszköz teljes sémájá
 A stream (`GET /turns/:id/events`) a `turn_events` táblát pollozza, `Last-Event-ID`-vel folytatható,
 és a forduló végén vagy 2 perc csend után zár (nyitva felejtett kapcsolat nem számlázódik).
 
+## Csatolmányok (#1023)
+
+A promptba fájlleírás és az első kérésnél legfeljebb 3000 karakter / 20 táblázatsor kerül.
+A korábbi csatolmányok szövege és képei nem ismétlődnek. PDF, DOCX, PPTX, JSON,
+CSV, XLSX, TXT/MD és PNG/JPG tölthető fel (20 MB/fájl, 5 fájl/üzenet).
+
+- `attachment_read`: `id`, PDF/PPTX esetén `pages: [első, utolsó]`, táblázatnál `sheet`,
+  `rows: [első, utolsó]`; 1-től számozva. `offset` és `limit` a kijelölt rész szövegét lapozza.
+- `attachment_search`: teljes fájlban keres, oldal-/sorszámot ad; `offset` a találatokat lapozza.
+- `attachment_view`: PDF-oldalt vagy képet küld a Model Gateway-en át; képet nem fogadó modellnél jelzés.
+- Az `attachment://<id>` hivatkozást csak a worker oldja fel: Drive `contentBase64`/`textContent`,
+  adattárház `fileBase64`, tudástár `contentBase64`/`content`, sandbox `inputs`.
+  A sandbox elérési útját a manifest `sandboxPath` mezője adja; továbbra is csak publikált,
+  hozzárendelt skill futtatható. Összesítéshez az eredeti fájlt kell átadni, nem a kezdőrészletet.
+
+A cél jelenlegi méretkorlátja érvényes: Drive/adattárház 10 MB, tudástár 2 MB,
+sandbox fájlonként 5 MB. A mérethatárt meghaladó fájlhoz az eszköz saját feltöltőoldalát kell használni.
+A jogosultság, az MRTR-jóváhagyás és az idempotencia változatlan; base64 nem kerül a modellkontextusba.
+A meglévő `extracted_text` mező csak a manifestet és a kezdőrészletet tárolja, migráció nem szükséges.
+
 ## Helyi futtatás
 
 ```bash

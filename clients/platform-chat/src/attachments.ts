@@ -1,20 +1,25 @@
 /**
- * Csatolmányok (§6.4, D9): CSV, XLSX, PDF, TXT/MD, PNG/JPG; fájlonként 20 MB, üzenetenként 5 fájl.
+ * Csatolmányok (§6.4, D9): CSV, XLSX, PDF, DOCX, PPTX, JSON, TXT/MD, PNG/JPG; fájlonként 20 MB, üzenetenként 5 fájl.
  * Tárolás GCS-ben (`<tenant>/<beszélgetés>/<id>`), fejlesztéskor helyi mappában.
- * A modell a kinyert szöveget kapja (CSV/XLSX: első sorok + oszlopok), a képet közvetlenül.
+ * A modell csak manifestet és kezdőrészletet kap; a teljes fájlt helyi eszközökkel olvassa.
  */
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import JSZip from 'jszip'
+import { SaxesParser } from 'saxes'
 import type { Config } from './config.ts'
 import { metadataAccessToken } from './queue.ts'
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 export const MAX_ATTACHMENTS_PER_MESSAGE = 5
-const TEXT_LIMIT = 60_000
-const PREVIEW_ROWS = 200
+const PREVIEW_CHARS = 3000
+const PREVIEW_ROWS = 20
 
 const MIME_BY_EXT: Record<string, string> = {
   csv: 'text/csv',
+  json: 'application/json',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   txt: 'text/plain',
   md: 'text/markdown',
   pdf: 'application/pdf',
@@ -78,49 +83,137 @@ export function createStorage(config: Config, fetchImpl: typeof fetch = fetch): 
   }
 }
 
-function capText(text: string): string {
-  return text.length > TEXT_LIMIT ? `${text.slice(0, TEXT_LIMIT)}\n… (a fájl további része levágva)` : text
+export type AttachmentDocument = {
+  pages?: string[]
+  sheets?: Array<{ name: string; rows: string[][]; columns: number }>
+  text?: string
 }
 
-function previewLines(text: string): string {
-  const lines = text.split(/\r?\n/)
-  const head = lines.slice(0, PREVIEW_ROWS).join('\n')
-  return lines.length > PREVIEW_ROWS ? `${head}\n… (összesen ${lines.length} sor, az első ${PREVIEW_ROWS} látszik)` : head
+async function pdfParser(data: Buffer) {
+  const [{ PDFParse }, worker] = await Promise.all([import('pdf-parse'), import('pdf-parse/worker')])
+  PDFParse.setWorker(worker.getData())
+  return new PDFParse({ data: new Uint8Array(data) })
 }
 
-/** Kinyert szöveg a modellnek; képnél null (azt közvetlenül kapja). */
-export async function extractText(data: Buffer, mime: string): Promise<string | null> {
-  if (mime.startsWith('image/')) return null
-  if (mime === 'text/csv') return capText(previewLines(data.toString('utf8')))
-  if (mime.startsWith('text/')) return capText(data.toString('utf8'))
+export async function viewPdfPage(data: Buffer, page: number): Promise<string> {
+  const parser = await pdfParser(data)
+  try {
+    const result = await parser.getScreenshot({ partial: [page], desiredWidth: 1600, imageDataUrl: true, imageBuffer: false })
+    const image = result.pages.find((p) => p.pageNumber === page)
+    if (!image) throw new Error('Nincs ilyen oldal a fájlban.')
+    return image.dataUrl
+  } finally {
+    await parser.destroy()
+  }
+}
+
+/** A teljes fájl csak a workerben él; a modell lapozott, korlátos részleteket kap. */
+export async function readDocument(data: Buffer, mime: string): Promise<AttachmentDocument> {
   if (mime === 'application/pdf') {
-    const [{ PDFParse }, worker] = await Promise.all([import('pdf-parse'), import('pdf-parse/worker')])
-    PDFParse.setWorker(worker.getData())
-    const parser = new PDFParse({ data: new Uint8Array(data) })
+    const parser = await pdfParser(data)
     try {
-      return capText((await parser.getText()).text)
+      return { pages: (await parser.getText()).pages.map((p) => p.text) }
     } finally {
       await parser.destroy()
     }
   }
-  if (mime.includes('spreadsheetml')) {
+  if (mime.includes('spreadsheetml') || mime === 'text/csv') {
     const { default: ExcelJS } = await import('exceljs')
     const workbook = new ExcelJS.Workbook()
-    await workbook.xlsx.load(data as unknown as ArrayBuffer)
-    const out: string[] = []
-    workbook.eachSheet((sheet) => {
-      out.push(`## Munkalap: ${sheet.name} (${sheet.rowCount} sor, ${sheet.columnCount} oszlop)`)
-      let n = 0
-      sheet.eachRow({ includeEmpty: false }, (row) => {
-        if (n++ >= PREVIEW_ROWS) return
-        const values = Array.isArray(row.values) ? row.values.slice(1) : []
-        out.push(values.map((v) => cellText(v)).join(';'))
-      })
-      if (sheet.rowCount > PREVIEW_ROWS) out.push(`… (az első ${PREVIEW_ROWS} sor látszik)`)
-    })
-    return capText(out.join('\n'))
+    if (mime === 'text/csv') {
+      const { Readable } = await import('node:stream')
+      const first = data.toString('utf8').split(/\r?\n/, 1)[0]
+      await workbook.csv.read(Readable.from([data]), { parserOptions: { delimiter: first.includes(';') ? ';' : ',' } })
+    } else await workbook.xlsx.load(data as unknown as ArrayBuffer)
+    let cells = 0
+    return { sheets: workbook.worksheets.map((sheet) => {
+      // ponytail: legfeljebb 2 millió cella memóriában; e fölött streaming olvasó szükséges.
+      cells += sheet.rowCount * sheet.columnCount
+      if (cells > 2_000_000) throw new Error('A táblázat túl nagy a közvetlen olvasáshoz. Használd az adattárházat.')
+      const rows: string[][] = []
+      for (let i = 1; i <= sheet.rowCount; i++) {
+        const row = sheet.getRow(i)
+        rows.push(Array.from({ length: sheet.columnCount }, (_, col) => cellText(row.getCell(col + 1).value)))
+      }
+      return { name: sheet.name, rows, columns: sheet.columnCount }
+    }) }
   }
-  return null
+  if (mime.includes('wordprocessingml') || mime.includes('presentationml')) {
+    const zip = await JSZip.loadAsync(data)
+    const names = mime.includes('wordprocessingml') ? ['word/document.xml'] : Object.keys(zip.files)
+      .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    const pages: string[] = []
+    let size = 0
+    for (const name of names) {
+      const file = zip.file(name)
+      if (!file) throw new Error('A dokumentum tartalma nem olvasható.')
+      // ponytail: XML-ként legfeljebb 40 MB; nagyobb Office-fájlhoz streaming ZIP-olvasó kell.
+      const chunks: Buffer[] = []
+      await new Promise<void>((resolve, reject) => {
+        const stream = file.nodeStream()
+        stream.on('data', (chunk: Buffer) => {
+          size += chunk.length
+          if (size > 40 * 1024 * 1024) {
+            stream.pause()
+            reject(new Error('A kicsomagolt dokumentum túl nagy.'))
+          } else chunks.push(Buffer.from(chunk))
+        }).on('error', reject).on('end', resolve).resume()
+      })
+      const content = Buffer.concat(chunks).toString('utf8')
+      const parser = new SaxesParser({ xmlns: true })
+      let text = '', inText = false
+      parser.on('opentag', (tag) => {
+        if (tag.local === 't') inText = true
+        if (tag.local === 'tab') text += '\t'
+        if (tag.local === 'br') text += '\n'
+      })
+      parser.on('text', (value) => { if (inText) text += value })
+      parser.on('closetag', (tag) => {
+        if (tag.local === 't') inText = false
+        if (tag.local === 'p') text += '\n'
+      })
+      parser.write(content).close()
+      pages.push(text)
+    }
+    return mime.includes('presentationml') ? { pages } : { text: pages.join('\n') }
+  }
+  return { text: data.toString('utf8') }
+}
+
+export function documentSummary(doc: AttachmentDocument) {
+  return {
+    ...(doc.pages ? { pages: doc.pages.length } : {}),
+    ...(doc.sheets ? { sheets: doc.sheets.map((s) => ({ name: s.name, rows: s.rows.length, columns: s.columns, headers: s.rows[0]?.slice(0, 100).map((v) => v.slice(0, 200)) })) } : {}),
+    ...(doc.text !== undefined ? { characters: doc.text.length, lines: doc.text.split(/\r?\n/).length } : {}),
+  }
+}
+
+/** A meglévő extractedText mezőben csak manifest + rövid kezdőrészlet marad; nincs migráció. */
+export async function extractText(data: Buffer, mime: string): Promise<string | null> {
+  if (mime.startsWith('image/')) return null
+  const doc = await readDocument(data, mime)
+  const preview = doc.sheets ? doc.sheets.map((s) => `## ${s.name}\n${s.rows.slice(0, PREVIEW_ROWS).map((r) => r.join(';')).join('\n')}`).join('\n')
+    : doc.pages ? doc.pages[0] ?? '' : doc.text ?? ''
+  return JSON.stringify({ attachmentManifest: 1, ...documentSummary(doc), preview: preview.slice(0, PREVIEW_CHARS) })
+}
+
+export function attachmentSandboxPath(att: { id: string; name: string }): string {
+  return `attachments/${att.id}-${att.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+}
+
+export function attachmentManifest(att: { id: string; name: string; mime: string; size: number; extractedText: string | null }, preview: boolean): string {
+  let metadata: Record<string, unknown> = {}
+  let excerpt = att.extractedText ?? ''
+  try {
+    const parsed = JSON.parse(excerpt)
+    if (parsed?.attachmentManifest === 1) {
+      const { preview: head, attachmentManifest: _version, ...rest } = parsed
+      metadata = rest
+      excerpt = typeof head === 'string' ? head : ''
+    }
+  } catch { /* Régi csatolmány: a kezdőrészlet még sima szöveg. */ }
+  return JSON.stringify({ id: att.id, reference: `attachment://${att.id}`, name: att.name, mime: att.mime, size: att.size, sandboxPath: `/work/in/${attachmentSandboxPath(att)}`, ...metadata,
+    ...(preview && excerpt ? { preview: excerpt.slice(0, PREVIEW_CHARS) } : {}) })
 }
 
 function cellText(value: unknown): string {

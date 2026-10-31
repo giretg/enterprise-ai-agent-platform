@@ -505,6 +505,23 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
       'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában. A megadott munkafájlok bemásolódnak a futtatásba; a sandboxnak nincs internetelérése.',
   },
 
+  // Platform-chat helyi csatolmány-eszközök (#1023) — a worker válaszol, nem MCP.
+  attachment_read: {
+    label: 'Csatolmány olvasása',
+    description: 'A beszélgetéshez csatolt fájl egy részletének olvasása oldal, munkalap vagy sor szerint.',
+    progress: 'Olvasom a csatolmányt',
+  },
+  attachment_search: {
+    label: 'Csatolmány keresése',
+    description: 'Szöveg keresése a csatolt fájlban, oldalszámmal vagy sorszámmal.',
+    progress: 'Keresek a csatolmányban',
+  },
+  attachment_view: {
+    label: 'Csatolmány megtekintése',
+    description: 'Egy PDF-oldal vagy csatolt kép megjelenítése a modellnek.',
+    progress: 'Megnézem a csatolmányt',
+  },
+
   // Webes kutatás
   web_search: {
     label: 'Webes keresés',

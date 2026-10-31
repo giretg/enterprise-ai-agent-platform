@@ -16,6 +16,7 @@ import {
   MAX_SANDBOX_WORK_INPUTS,
   resolvePinnedSkillScript,
   resolveSandboxWorkInputs,
+  resolveSandboxBinaryInputs,
 } from '../src/domain/code-sandbox/skill-script'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 
@@ -93,6 +94,22 @@ class FakeProvider implements SandboxProvider {
 }
 
 async function main() {
+  await check('binary inputs are byte-exact and reject traversal, shadowing and invalid base64', () => {
+    const bytes = Buffer.from([0, 255, 1, 128])
+    const inputs = resolveSandboxBinaryInputs(JSON.stringify([{ path: 'attachments/data.xlsx', contentBase64: bytes.toString('base64') }]))
+    assert.equal(inputs[0].sandboxPath, '/work/in/attachments/data.xlsx')
+    assert.deepEqual(inputs[0].bytes, bytes)
+    assert.deepEqual(resolveSandboxBinaryInputs(undefined), [])
+    for (const path of ['../secret', '/etc/passwd', 'skill/run.py', 'SKILL/run.py']) {
+      assert.throws(() => resolveSandboxBinaryInputs(JSON.stringify([{ path, contentBase64: 'eA==' }])))
+    }
+    assert.throws(() => resolveSandboxBinaryInputs('[{"path":"a","contentBase64":"!"}]'))
+    assert.throws(() => resolveSandboxBinaryInputs(JSON.stringify([{ path: 'a', contentBase64: 'eA==' }, { path: 'A', contentBase64: 'eA==' }])))
+    assert.throws(() => resolveSandboxBinaryInputs('{}'))
+    assert.throws(() => resolveSandboxBinaryInputs('{'))
+    assert.throws(() => resolveSandboxBinaryInputs(JSON.stringify([{ path: 'a', contentBase64: Buffer.alloc(6 * 1024 * 1024).toString('base64') }])))
+  })
+
   await check('unpinned skillVersionId is denied', () => {
     const result = resolvePinnedSkillScript({
       definition,

@@ -139,6 +139,7 @@ import {
 import {
   resolvePinnedSkillScript,
   resolveSandboxWorkInputs,
+  resolveSandboxBinaryInputs,
   sandboxWorkFilePrefix,
   splitSandboxArgs,
 } from '@/domain/code-sandbox/skill-script'
@@ -1970,7 +1971,7 @@ async function invokeSandboxTool(
     return errorResult(resolved.reason)
   }
 
-  const files = [
+  const files: Array<{ sandboxPath: string; bytes: Buffer }> = [
     { sandboxPath: `/work/in/skill/${resolved.script.entry.path}`, bytes: Buffer.from(resolved.script.entry.text, 'utf8') },
     { sandboxPath: '/work/run.py', bytes: Buffer.from(resolved.script.entry.text, 'utf8') },
     ...resolved.script.helpers.map((helper) => ({
@@ -2008,6 +2009,16 @@ async function invokeSandboxTool(
     }
     files.push({ sandboxPath: item.sandboxPath, bytes: Buffer.from(file.content, 'utf8') })
     mounted.push({ path: file.path, sandboxPath: item.sandboxPath })
+  }
+  try {
+    for (const file of resolveSandboxBinaryInputs(parsedArgs.inputFiles)) {
+      if (files.some((existing) => existing.sandboxPath.toLowerCase() === file.sandboxPath.toLowerCase())) throw new Error('invalid_args')
+      files.push(file)
+      mounted.push({ path: file.sandboxPath.slice('/work/in/'.length), sandboxPath: file.sandboxPath })
+    }
+  } catch {
+    await auditDenied(deps, principal, toolName, 'invalid_args', definitionId, definition.agentId)
+    return errorResult('invalid_args')
   }
   const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
   try {

@@ -1100,6 +1100,9 @@ export const sandboxRunInputSchema = z
       .describe(
         'Comma-separated work-file paths from this project (platform.work_file.list). Copied to /work/in/<path>. The sandbox has no network and no credentials. Do not pass local machine paths.',
       ),
+    inputFiles: z.string().max(28_000_000).optional().describe(
+      'Client-supplied binary input files as a JSON string: [{"path":"attachments/data.xlsx","contentBase64":"..."}]. Mounted under /work/in/. Prefer inputs for existing work files. Never generate base64 in the model; clients resolve attachment references.',
+    ),
     projectKey: z
       .string()
       .max(120)

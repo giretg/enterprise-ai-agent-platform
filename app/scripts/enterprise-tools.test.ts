@@ -1931,7 +1931,7 @@ async function main() {
     assert.deepEqual(written, ['sandbox-output/napi-riport/report.html'])
   })
 
-  await check('sandbox_run copies work-file inputs to /work/in/', async () => {
+  await check('sandbox_run copies binary attachment and work-file inputs to /work/in/', async () => {
     const result = await invokeEnterpriseTool(
       invokeDeps({
         definition: sandboxDefinition,
@@ -1950,6 +1950,9 @@ async function main() {
         executeSandboxRun: async (input) => {
           const mounted = input.files.find((file) => file.sandboxPath === '/work/in/sales.csv')
           assert.ok(mounted)
+          const binary = input.files.find((file) => file.sandboxPath === '/work/in/attachments/data.xlsx')
+          assert.ok(binary)
+          assert.deepEqual(Buffer.from(binary.bytes), Buffer.from([0, 255, 128]))
           assert.equal(Buffer.from(mounted.bytes).toString('utf8'), '10,20,30\n')
           return {
             exitCode: 0,
@@ -1984,6 +1987,7 @@ async function main() {
           skillVersionId: SKILL_VERSION_ID,
           entry: 'scripts/run_napi_marketing_riport.py',
           inputs: 'sales.csv',
+          inputFiles: JSON.stringify([{ path: 'attachments/data.xlsx', contentBase64: Buffer.from([0, 255, 128]).toString('base64') }]),
           projectKey: 'kampany',
         },
       },
@@ -1991,7 +1995,7 @@ async function main() {
     assert.equal(result.isError, undefined)
     const payload = parsePayload(result)
     assert.equal(payload.stdout, '60')
-    assert.deepEqual(payload.inputs, [{ path: 'sales.csv', sandboxPath: '/work/in/sales.csv' }])
+    assert.deepEqual(payload.inputs, [{ path: 'sales.csv', sandboxPath: '/work/in/sales.csv' }, { path: 'attachments/data.xlsx', sandboxPath: '/work/in/attachments/data.xlsx' }])
   })
 
   await check('sandbox_run missing work-file input is denied', async () => {

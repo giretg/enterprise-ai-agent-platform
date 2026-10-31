@@ -88,7 +88,14 @@ export type LlmStepOutput = {
   content: string
   toolCalls: Array<{ id: string; name: string; arguments: string }>
 }
-export type ToolStepOutput = { callId: string; name: string; text: string; isError: boolean; files?: FileCard[] }
+export type ToolStepOutput = {
+  callId: string
+  name: string
+  text: string
+  isError: boolean
+  files?: FileCard[]
+  image?: { attachmentId: string; page: number }
+}
 
 export type Step = {
   turnId: string
