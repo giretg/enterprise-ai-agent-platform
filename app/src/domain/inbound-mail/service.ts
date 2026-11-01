@@ -37,6 +37,7 @@ export type InboundMailEventRecord = {
   handoffId: string | null
   source: string
   error: string | null
+  runStartedAt: Date | null
   createdAt: Date
 }
 
@@ -57,7 +58,7 @@ export type WatchedMailbox = {
 }
 
 export type EventPatch = Partial<
-  Pick<InboundMailEventRecord, 'status' | 'action' | 'reason' | 'processedBy' | 'conversationId' | 'handoffId' | 'error' | 'responsibleUserId'>
+  Pick<InboundMailEventRecord, 'status' | 'action' | 'reason' | 'processedBy' | 'conversationId' | 'handoffId' | 'error' | 'responsibleUserId' | 'runStartedAt'>
 >
 
 export interface InboundMailStore {
@@ -71,6 +72,7 @@ export interface InboundMailStore {
   }): Promise<{ event: InboundMailEventRecord; created: boolean }>
   /** Feltételes állapotváltás: csak ha az esemény a `from` állapotok egyikében van. */
   updateEvent(id: string, patch: EventPatch, from?: readonly InboundMailStatus[]): Promise<boolean>
+  claimRun(input: { eventId: string; agentId: string; threadId: string | null; dailyRunLimit: number; now: Date; patch: EventPatch }): Promise<'claimed' | 'unavailable' | 'daily_limit' | 'thread_limit'>
   findEvent(tenantId: string, id: string): Promise<InboundMailEventRecord | null>
   knownMessageIds(connectorId: string, messageIds: string[]): Promise<Set<string>>
   /** Az agent `process` döntésű eseményei `since` óta (a napi keret és a szál-limit). */
@@ -250,7 +252,7 @@ export class InboundMailService {
         return 'new'
       }
     }
-    return this.startRun(mailbox, rule.instructions, event, mail, responsibleUserId, 'agent_run')
+    return this.startRun(mailbox, rule.instructions, event, mail, responsibleUserId, 'agent_run', rule.dailyRunLimit)
   }
 
   /** Platform-chat futás indítása; sikertelen indításnál „Csak jelezze” marad (a levél nem vész el). */
@@ -261,16 +263,20 @@ export class InboundMailService {
     mail: InboundMailHeaders,
     userId: string,
     processedBy: string,
+    dailyRunLimit: number,
   ): Promise<InboundMailStatus> {
     const { store } = this.deps
     const agent = mailbox.agent!
     // Előbb foglalás: két párhuzamos „Feldolgozás most” ne indítson két futást.
-    const claimed = await store.updateEvent(
-      event.id,
-      { status: 'claimed', action: 'process', reason: null, processedBy, responsibleUserId: userId, error: null },
-      ['new', 'failed', 'ignored'],
-    )
-    if (!claimed) return (await store.findEvent(mailbox.tenantId, event.id))?.status ?? event.status
+    const claimed = await store.claimRun({
+      eventId: event.id, agentId: agent.id, threadId: mail.threadId, dailyRunLimit, now: this.now(),
+      patch: { status: 'claimed', action: 'process', reason: null, processedBy, responsibleUserId: userId, error: null },
+    })
+    if (claimed === 'unavailable') return (await store.findEvent(mailbox.tenantId, event.id))?.status ?? event.status
+    if (claimed !== 'claimed') {
+      await store.updateEvent(event.id, { action: 'notify', reason: claimed }, ['new', 'failed', 'ignored'])
+      return event.status
+    }
     let result: RunStartResult
     try {
       result = await this.deps.effects.startRun({
@@ -337,7 +343,7 @@ export class InboundMailService {
       labels: [],
       headers: {},
     }
-    const status = await this.startRun(mailbox, rule.instructions, event, mail, userId, `user:${input.actorUserId}`)
+    const status = await this.startRun(mailbox, rule.instructions, event, mail, userId, `user:${input.actorUserId}`, rule.dailyRunLimit)
     await writeAudit(this.deps.audit, {
       actorType: 'human',
       actorId: input.actorUserId,
@@ -387,7 +393,7 @@ export class InboundMailService {
       if (event.status !== 'claimed' || !event.agentId || !event.responsibleUserId) continue
       if (!event.conversationId) {
         // Indítás közben elhalt (nincs beszélgetés) — 15 perc után visszaadjuk jelzésnek.
-        if (this.now().getTime() - event.createdAt.getTime() > 15 * 60_000) {
+        if (this.now().getTime() - (event.runStartedAt ?? event.createdAt).getTime() > 15 * 60_000) {
           await this.deps.store.updateEvent(event.id, { status: 'new', action: 'notify', reason: 'run_unavailable' }, ['claimed'])
         }
         continue

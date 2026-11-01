@@ -2128,6 +2128,7 @@ model InboundMailEvent {
   handoffId         String?                @map("handoff_id") @db.Uuid
   source            String                 @default("poll")
   error             String?
+  runStartedAt      DateTime? @map("run_started_at") @db.Timestamptz
   createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -2136,6 +2137,7 @@ model InboundMailEvent {
   agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   @@unique([connectorId, messageId])
+  @@index([agentId, runStartedAt])
   @@index([tenantId, agentId, receivedAt])
   @@index([tenantId, responsibleUserId, status])
   @@index([status, updatedAt])

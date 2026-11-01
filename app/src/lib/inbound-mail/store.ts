@@ -5,6 +5,7 @@
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { mailboxConnectorInfo } from '@/domain/agent-mailbox/agent-mailbox'
+import { THREAD_RUNS_PER_HOUR } from '@/domain/inbound-mail/inbound-mail'
 import type { InboundMailHeaders, InboundMailProvider, InboundMailRule } from '@/domain/inbound-mail/inbound-mail'
 import type {
   EventPatch,
@@ -37,6 +38,7 @@ function toRecord(row: EventRow): InboundMailEventRecord {
     handoffId: row.handoffId,
     source: row.source,
     error: row.error,
+    runStartedAt: row.runStartedAt,
     createdAt: row.createdAt,
   }
 }
@@ -133,6 +135,23 @@ export const prismaInboundMailStore: InboundMailStore = {
     })
     return result.count === 1
   },
+  async claimRun({ eventId, agentId, threadId, dailyRunLimit, now, patch }) {
+    return prisma.$transaction(async (tx) => {
+      // Agentenként sorzár: külön webhookok és kézi indítások is ugyanazt a keretet foglalják.
+      await tx.$queryRaw`SELECT id FROM agents WHERE id = ${agentId}::uuid FOR UPDATE`
+      const event = await tx.inboundMailEvent.findFirst({ where: { id: eventId, agentId, status: { in: ['new', 'failed', 'ignored'] } } })
+      if (!event) return 'unavailable'
+      const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+      const today = await tx.inboundMailEvent.count({ where: { agentId, action: 'process', runStartedAt: { gte: day } } })
+      if (today >= dailyRunLimit) return 'daily_limit'
+      if (threadId) {
+        const hourly = await tx.inboundMailEvent.count({ where: { agentId, threadId, action: 'process', runStartedAt: { gte: new Date(now.getTime() - 3600_000) } } })
+        if (hourly >= THREAD_RUNS_PER_HOUR) return 'thread_limit'
+      }
+      await tx.inboundMailEvent.update({ where: { id: eventId }, data: { ...patch, runStartedAt: now } })
+      return 'claimed'
+    })
+  },
   async findEvent(tenantId, id) {
     const row = await prisma.inboundMailEvent.findFirst({ where: { id, tenantId } })
     return row ? toRecord(row) : null
@@ -147,7 +166,7 @@ export const prismaInboundMailStore: InboundMailStore = {
   },
   countProcessed({ agentId, since, threadId }) {
     return prisma.inboundMailEvent.count({
-      where: { agentId, action: 'process', createdAt: { gte: since }, ...(threadId ? { threadId } : {}) },
+      where: { agentId, action: 'process', runStartedAt: { gte: since }, ...(threadId ? { threadId } : {}) },
     })
   },
   async loadRule(agentId) {

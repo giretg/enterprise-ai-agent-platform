@@ -6,7 +6,7 @@ import type { InboundMailHeaders } from './inbound-mail'
 
 type Fetch = typeof fetch
 const TIMEOUT_MS = 10_000
-/** Ennyi levelet nézünk meg egy lekérdezésben (polling / history). */
+/** Ennyi levelet nézünk meg egy polling-lekérdezésben. */
 export const RECENT_LIMIT = 25
 
 export class MailProviderHttpError extends Error {
@@ -242,17 +242,24 @@ export const gmail = {
     url.searchParams.set('labelId', 'INBOX')
     url.searchParams.set('maxResults', '100')
     try {
-      const body = await http(fetchImpl, url.toString(), { method: 'GET', token })
-      const ids: string[] = []
-      const history = isRecord(body) && Array.isArray(body.history) ? body.history : []
-      for (const row of history) {
-        const added = isRecord(row) && Array.isArray(row.messagesAdded) ? row.messagesAdded : []
-        for (const entry of added) {
-          const id = isRecord(entry) && isRecord(entry.message) ? str(entry.message.id) : ''
-          if (id && !ids.includes(id)) ids.push(id)
+      const ids = new Set<string>()
+      let historyId: string | null = null
+      let pageToken = ''
+      do {
+        if (pageToken) url.searchParams.set('pageToken', pageToken)
+        const body = await http(fetchImpl, url.toString(), { method: 'GET', token })
+        const history = isRecord(body) && Array.isArray(body.history) ? body.history : []
+        for (const row of history) {
+          const added = isRecord(row) && Array.isArray(row.messagesAdded) ? row.messagesAdded : []
+          for (const entry of added) {
+            const id = isRecord(entry) && isRecord(entry.message) ? str(entry.message.id) : ''
+            if (id) ids.add(id)
+          }
         }
-      }
-      return { ids: ids.slice(0, RECENT_LIMIT), historyId: isRecord(body) ? str(body.historyId) || null : null, expired: false }
+        historyId = isRecord(body) ? str(body.historyId) || null : null
+        pageToken = isRecord(body) ? str(body.nextPageToken) : ''
+      } while (pageToken)
+      return { ids: [...ids], historyId, expired: false }
     } catch (error) {
       if (error instanceof MailProviderHttpError && error.status === 404) return { ids: [], historyId: null, expired: true }
       throw error

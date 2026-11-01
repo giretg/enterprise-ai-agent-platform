@@ -104,6 +104,7 @@ class MemoryInboundStore implements InboundMailStore {
       handoffId: null,
       source: input.source,
       error: null,
+      runStartedAt: null,
       createdAt: new Date(),
     }
     this.events.set(event.id, event)
@@ -115,6 +116,16 @@ class MemoryInboundStore implements InboundMailStore {
     this.events.set(id, { ...e, ...patch })
     return true
   }
+  async claimRun(input: Parameters<InboundMailStore['claimRun']>[0]) {
+    const e = this.events.get(input.eventId)
+    if (!e || !['new', 'failed', 'ignored'].includes(e.status)) return 'unavailable' as const
+    const rows = [...this.events.values()].filter((e) => e.agentId === input.agentId && e.action === 'process' && e.runStartedAt)
+    const day = new Date(Date.UTC(input.now.getUTCFullYear(), input.now.getUTCMonth(), input.now.getUTCDate()))
+    if (rows.filter((e) => e.runStartedAt! >= day).length >= input.dailyRunLimit) return 'daily_limit' as const
+    if (input.threadId && rows.filter((e) => e.threadId === input.threadId && e.runStartedAt!.getTime() >= input.now.getTime() - 3600_000).length >= 3) return 'thread_limit' as const
+    this.events.set(e.id, { ...e, ...input.patch, runStartedAt: input.now })
+    return 'claimed' as const
+  }
   async findEvent(tenantId: string, id: string) {
     const e = this.events.get(id)
     return e && e.tenantId === tenantId ? e : null
@@ -124,7 +135,7 @@ class MemoryInboundStore implements InboundMailStore {
   }
   async countProcessed(input: { agentId: string; since: Date; threadId?: string | null }) {
     return [...this.events.values()].filter(
-      (e) => e.agentId === input.agentId && e.action === 'process' && e.createdAt >= input.since && (!input.threadId || e.threadId === input.threadId),
+      (e) => e.agentId === input.agentId && e.action === 'process' && e.runStartedAt && e.runStartedAt >= input.since && (!input.threadId || e.threadId === input.threadId),
     ).length
   }
   async loadRule() {
@@ -501,6 +512,15 @@ async function main() {
     assert.equal(m.store.only()[0].error, 'A beszélgetést törölték.')
   })
 
+  await check('Régi levél friss foglalását az egyeztetés nem oldja fel indítás közben', async () => {
+    const h = harness()
+    await h.service.ingest(mailbox(), [mail()], 'webhook')
+    const e = h.store.only()[0]
+    h.store.events.set(e.id, { ...e, conversationId: null, createdAt: new Date('2000-01-01') })
+    await h.service.reconcileClaimed()
+    assert.equal(h.store.only()[0].status, 'claimed')
+  })
+
   await check('kézi „Feldolgozás most”, „Kész”, „Figyelmen kívül”; futó levélre nem indul második futás', async () => {
     const h = harness()
     h.store.rule = rule({ mode: 'notify' })
@@ -557,6 +577,62 @@ async function main() {
     assert.equal(h.watches.get(CONNECTOR)?.cursor, '1250')
     assert.ok(h.calls.some((c) => c.url.includes('format=metadata')), 'csak metaadatot kér, törzset nem')
     assert.equal(await h.watcher.handleGmailPush({ emailAddress: ADDRESS, historyId: '1300' }), 0, 'ismételt push nem duplikál')
+  })
+
+  await check('Gmail burst: minden history-oldal és 20-nál több levél befogadása a kurzor előtt', async () => {
+    const h = harness('google')
+    h.store.rule = rule({ mode: 'notify' })
+    await h.watcher.ensureWatch(mailbox('google'))
+    h.watches.set(CONNECTOR, { ...h.watches.get(CONNECTOR)!, cursor: '100' })
+    h.respond((url) => {
+      if (url.includes('/history?')) {
+        const second = new URL(url).searchParams.get('pageToken') === 'page2'
+        return { history: [{ messagesAdded: Array.from({ length: 30 }, (_, i) => ({ message: { id: `burst-${i + (second ? 30 : 0)}` } })) }], historyId: '200', ...(second ? {} : { nextPageToken: 'page2' }) }
+      }
+      const id = /messages\/(burst-\d+)/.exec(url)?.[1]
+      return { id, internalDate: String(Date.now()), payload: { headers: [{ name: 'From', value: 'a@partner.hu' }] } }
+    })
+    assert.equal(await h.watcher.handleGmailPush({ emailAddress: ADDRESS, historyId: '200' }), 60)
+    assert.equal(h.store.only().length, 60)
+    assert.equal(h.watches.get(CONNECTOR)?.cursor, '200')
+    assert.equal(await h.watcher.handleGmailPush({ emailAddress: ADDRESS, historyId: '200' }), 0)
+  })
+
+  await check('AgentMail: hibás fejléc-lekérés nem indít futást; újrapróbálható', async () => {
+    const h = harness()
+    let fail = true
+    h.respond((url) => url.includes('/messages?')
+      ? { messages: [agentMailEvent({ messageId: 'auto' }).message] }
+      : fail ? new Response('{}', { status: 503 }) : agentMailEvent({ messageId: 'auto', headers: { 'Auto-Submitted': 'auto-replied' } }).message)
+    await assert.rejects(h.watcher.poll(mailbox()))
+    assert.equal(h.store.only().length, 0)
+    assert.equal(h.fx.runs.length, 0)
+    fail = false
+    await h.watcher.poll(mailbox())
+    assert.equal(h.store.only()[0].reason, 'auto_submitted')
+    assert.equal(h.fx.runs.length, 0)
+  })
+
+  await check('Lejárt push vagy megújítási hiba esetén működik a tartalék polling', async () => {
+    const h = harness('google')
+    const now = new Date()
+    h.respond(() => ({ messages: [] }))
+    await h.watcher.poll(mailbox('google'))
+    h.watches.set(CONNECTOR, { ...h.watches.get(CONNECTOR)!, externalId: 'gmail-watch', expiresAt: new Date(now.getTime() - 1), lastPolledAt: null })
+    const poll = () => h.watcher.pollDue({ deadline: new Date(Date.now() + 60_000), intervalMs: async () => 300_000 })
+    assert.equal((await poll()).polled, 1)
+    h.watches.set(CONNECTOR, { ...h.watches.get(CONNECTOR)!, expiresAt: new Date(now.getTime() + 86400_000), lastError: 'renewal failed', lastPolledAt: null })
+    assert.equal((await poll()).polled, 1)
+  })
+
+  await check('Régi levelek mai párhuzamos kézi indítása is fogyasztja a napi keretet', async () => {
+    const h = harness()
+    h.store.rule = rule({ mode: 'notify', dailyRunLimit: 1 })
+    await h.service.ingest(mailbox(), [mail({ threadId: 'old-a' }), mail({ threadId: 'old-b' })], 'poll')
+    for (const e of h.store.only()) h.store.events.set(e.id, { ...e, createdAt: new Date(Date.now() - 86400_000) })
+    await Promise.all(h.store.only().map((e) => h.service.processNow({ mailbox: mailbox(), eventId: e.id, actorUserId: USER })))
+    assert.equal(h.fx.runs.length, 1)
+    assert.equal(h.store.only().filter((e) => e.reason === 'daily_limit').length, 1)
   })
 
   await check('Gmail push végpont: OIDC nélkül 401, helyes tokennel 200', async () => {

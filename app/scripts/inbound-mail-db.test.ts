@@ -219,6 +219,22 @@ async function main() {
       const listed = await listAgentEvents(tenant.id, agent.id)
       assert.ok(listed.length >= 6)
     })
+    await check('Régi levelek párhuzamos feldolgozása: atomikus napi és szálkeret', async () => {
+      const box = (await loadWatchedMailbox(connector.id))!
+      for (const threadLimit of [false, true]) {
+        await prisma.inboundMailEvent.updateMany({ where: { agentId: agent.id }, data: { runStartedAt: new Date('2000-01-01') } })
+        await prisma.agentInboundMailRule.update({ where: { agentId: agent.id }, data: { mode: 'notify', dailyRunLimit: threadLimit ? 20 : 1 } })
+        const mails = Array.from({ length: 5 }, (_, i) => ({ messageId: `old-${threadLimit}-${i}`, threadId: threadLimit ? 'shared-old-thread' : `old-thread-${i}`, from: 'a@partner.hu', subject: 'Old', receivedAt: new Date(), labels: [], headers: {} }))
+        await service.ingest(box, mails, 'poll')
+        const events = await prisma.inboundMailEvent.findMany({ where: { agentId: agent.id, messageId: { in: mails.map((m) => m.messageId) } } })
+        await prisma.inboundMailEvent.updateMany({ where: { id: { in: events.map((e) => e.id) } }, data: { createdAt: new Date('2000-01-01') } })
+        const before = runs.length
+        await Promise.all(events.map((e) => service.processNow({ mailbox: box, eventId: e.id, actorUserId: user.id })))
+        assert.equal(runs.length - before, threadLimit ? 3 : 1)
+        assert.equal(await prisma.inboundMailEvent.count({ where: { id: { in: events.map((e) => e.id) }, status: 'new' } }), threadLimit ? 2 : 4)
+      }
+    })
+
   } finally {
     await prisma.handoff.deleteMany({ where: { tenantId: tenant.id } })
     await prisma.inboundMailEvent.deleteMany({ where: { tenantId: tenant.id } })

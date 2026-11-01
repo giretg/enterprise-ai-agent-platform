@@ -22,6 +22,7 @@ export type WatchState = {
   externalId: string | null
   cursor: string | null
   expiresAt: Date | null
+  lastError?: string | null
   lastPolledAt: Date | null
   createdAt: Date
 }
@@ -189,7 +190,9 @@ export class MailboxWatcher {
       const unseen = this.fresh(state, recent.filter((m) => !known.has(m.messageId))).slice(0, MAX_DETAIL_FETCH)
       // A lista nem hoz fejlécet: a hurok-őrhöz egyenként kérjük le az új leveleket.
       for (const mail of unseen) {
-        mails.push((await agentMail.getHeaders(fetchImpl, inbox.baseUrl, inbox.inboxKey, mail.messageId, this.now()).catch(() => null)) ?? mail)
+        const detail = await agentMail.getHeaders(fetchImpl, inbox.baseUrl, inbox.inboxKey, mail.messageId, this.now())
+        if (!detail) throw new Error('agentmail_missing_headers')
+        mails.push(detail)
       }
     } else if (mailbox.provider === 'google') {
       const token = await this.deps.credentials.oauthToken(mailbox)
@@ -267,7 +270,7 @@ export class MailboxWatcher {
       }
       const known = await this.deps.store.knownMessageIds(mailbox.connectorId, ids)
       const mails: InboundMailHeaders[] = []
-      for (const id of ids.filter((x) => !known.has(x)).slice(0, MAX_DETAIL_FETCH * 2)) {
+      for (const id of ids.filter((x) => !known.has(x))) {
         const mail = await gmail.getHeaders(this.fetchImpl, token, id, this.now())
         if (mail) mails.push(mail)
       }
@@ -340,7 +343,7 @@ export class MailboxWatcher {
     for (const mailbox of await this.deps.listMailboxes(input.tenantId)) {
       if (this.now() > input.deadline) break
       const state = await this.deps.watches.find(mailbox.connectorId)
-      if (state?.externalId) continue
+      if (state?.externalId && !state.lastError && (!state.expiresAt || state.expiresAt > this.now())) continue
       summary.checked++
       if (!intervals.has(mailbox.tenantId)) intervals.set(mailbox.tenantId, await input.intervalMs(mailbox.tenantId))
       const interval = intervals.get(mailbox.tenantId)!
