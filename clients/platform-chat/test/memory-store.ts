@@ -51,7 +51,7 @@ export class MemoryStore implements Store {
     if ([...this.turns.values()].some((t) => t.conversationId === input.conversationId && ACTIVE_TURN_STATUSES.includes(t.status))) return null
     const t = {
       ...input, id: randomUUID(), status: 'queued' as const, stepCount: 0, tokenUsage: {}, error: null, continuationToken: null,
-      context: null, pendingApproval: null, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
+      context: null, pendingApproval: null, pendingInput: null, pausedSeconds: 0, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
     }
     this.turns.set(t.id, t)
     return { ...t }
@@ -75,6 +75,16 @@ export class MemoryStore implements Store {
     const t = this.turns.get(id)
     if (!t || !from.includes(t.status)) return false
     Object.assign(t, patch, { status: to })
+    return true
+  }
+  async saveQuestionAnswer(input: Parameters<Store['saveQuestionAnswer']>[0]) {
+    if (this.turns.get(input.turnId)?.pendingInput?.seq !== input.pendingInput.seq) return false
+    const ok = await this.transitionTurn(input.turnId, ['awaiting_input'], 'running', {
+      pendingInput: input.pendingInput, continuationToken: input.continuationToken, pausedSeconds: input.pausedSeconds,
+    })
+    if (!ok) return false
+    for (const message of input.messages) await this.addMessage(message)
+    await this.appendEvent(input.turnId, 'question', { phase: 'answered', answer: input.display })
     return true
   }
   async claimTurn(id: string) {
