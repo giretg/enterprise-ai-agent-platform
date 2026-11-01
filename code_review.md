@@ -9,6 +9,7 @@
 - Üzleti hatás: a törlési gomb csak végrehajtható törlést jelez sikernek; az admin és a látogató ugyanazt az adatvédelmi garanciát kapja. Hiányos éles botvédelmi beállítás nem hagy nyitva számlázható, anonim AI-hívásokat. Az üzemeltetőnek `TURNSTILE_SECRET_KEY` és `NEXT_PUBLIC_TURNSTILE_SITE_KEY` beállítása szükséges a nyilvános chat indításához.
 - Ellenőrzés: új párhuzamos törlési és hiányzó-botvédelem regresszió, `test:public-chat` (33/33), TypeScript, célzott ESLint és `git diff --check` zöld. A meglévő PostgreSQL-teszt a tenant-zár kizárását ellenőrzi; élő Turnstile/provider és terheléses mérés nem futott.
 - Fennmaradó korlát: a törlés és a sikert jelző audit-bejegyzés külön adatbázis-tranzakció; audit-hiba után a törlés már megtörténhet. A tenantonkénti zár a modellválasz teljes idejére foglalt, ezért nagy forgalmú tenantnál rendelkezésre állási szűk keresztmetszet. A napi költségkeret a már elindult forduló költségével túlléphető. Ezeket a teljes éles alkalmasság előtt külön atomi könyveléssel és terhelési próbával kell rendezni.
+- PR: [#1050](https://github.com/giretg/enterprise-ai-agent-platform/pull/1050) (`codex`, `codex-automation`, `security`, `bug`).
 
 ## 2026-10-28 01:29 Europe/Budapest - Projekt-munkafájlok: párhuzamos írások kvótát léphettek túl és naplósorokat veszíthettek
 
