@@ -515,10 +515,12 @@ const gatewayDeps: GatewayOperationServiceDeps = {
     return { role: roles[userId], assumed: false }
   },
   async resolveDesignatedApprover({ tenantId, connectorId }) {
-    if (!connectorId) return null
+    if (!connectorId) return { kind: 'none' }
     const scope = await wikiService.approverScopeForConnector(tenantId, connectorId)
     const userId = scope ? (scope.kind === 'owner_user' ? scope.userId : scope.approverUserId) : null
-    return userId ? { userId, name: userId === APPROVER ? 'Ádám Approver' : 'Olga Owner' } : null
+    return userId
+      ? { kind: 'designated', userId, name: userId === APPROVER ? 'Ádám Approver' : 'Olga Owner' }
+      : { kind: 'none' }
   },
   wikiChangeSets: {
     canDecide: ({ actor, changeSetId }) => wikiService.canDecide(actor, changeSetId),
