@@ -1,5 +1,6 @@
 /** A `Store` Postgres-implementációja — csak a `platform_chat` sémát éri el (D8, külön DB-szerep). */
 import pg from 'pg'
+import { ACTIVE_TURN_STATUSES } from './store.ts'
 import type {
   Attachment,
   Conversation,
@@ -35,6 +36,8 @@ const msg = (r: Row): Message => ({
   content: r.content as string,
   attachments: (r.attachments as Message['attachments']) ?? [],
   files: (r.files as Message['files']) ?? [],
+  question: (r.question as Message['question']) ?? null,
+  plan: (r.plan as Message['plan']) ?? null,
   createdAt: r.created_at as Date,
 })
 
@@ -51,6 +54,8 @@ const turnOf = (r: Row): Turn => ({
   continuationToken: (r.continuation_token as string | null) ?? null,
   context: (r.context as Turn['context']) ?? null,
   pendingApproval: (r.pending_approval as Turn['pendingApproval']) ?? null,
+  pendingInput: (r.pending_input as Turn['pendingInput']) ?? null,
+  pausedSeconds: (r.paused_seconds as number | null) ?? 0,
   createdAt: r.created_at as Date,
   finishedAt: (r.finished_at as Date | null) ?? null,
 })
@@ -84,9 +89,11 @@ const TURN_COLUMNS: Record<string, string> = {
   continuationToken: 'continuation_token',
   context: 'context',
   pendingApproval: 'pending_approval',
+  pendingInput: 'pending_input',
+  pausedSeconds: 'paused_seconds',
   finishedAt: 'finished_at',
 }
-const JSON_COLUMNS = new Set(['token_usage', 'context', 'pending_approval'])
+const JSON_COLUMNS = new Set(['token_usage', 'context', 'pending_approval', 'pending_input'])
 
 function setClause(patch: Record<string, unknown>, offset: number): { sql: string; values: unknown[] } {
   const parts: string[] = []
@@ -161,9 +168,12 @@ export function createPgStore(pool: pg.Pool): Store {
 
     async addMessage(input) {
       const r = await one(
-        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments), JSON.stringify(input.files ?? [])],
+        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files, question, plan)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [
+          input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments), JSON.stringify(input.files ?? []),
+          input.question ? JSON.stringify(input.question) : null, input.plan?.length ? JSON.stringify(input.plan) : null,
+        ],
       )
       return msg(r!)
     },
@@ -204,8 +214,8 @@ export function createPgStore(pool: pg.Pool): Store {
     },
     async activeTurn(conversationId) {
       const r = await one(
-        `SELECT * FROM platform_chat.turns WHERE conversation_id = $1 AND status IN ('queued','running','awaiting_approval') LIMIT 1`,
-        [conversationId],
+        `SELECT * FROM platform_chat.turns WHERE conversation_id = $1 AND status = ANY($2::text[]) LIMIT 1`,
+        [conversationId, [...ACTIVE_TURN_STATUSES]],
       )
       return r ? turnOf(r) : null
     },

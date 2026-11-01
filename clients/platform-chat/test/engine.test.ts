@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  answerQuestion,
   APPROVAL_TTL_MS,
   cancelTurn,
   decideApproval,
@@ -16,6 +17,7 @@ import {
   type EngineDeps,
 } from '../src/engine.ts'
 import { summary, toolGroup } from '../src/tool-loading.ts'
+import { INTERACTION_TOOLS } from '../src/interaction-tools.ts'
 import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient } from '../src/platform.ts'
 import type { Conversation } from '../src/store.ts'
 import { MemoryStore } from './memory-store.ts'
@@ -431,7 +433,8 @@ async function main() {
   })
 
   // --- #1022: halasztott eszköz-betöltés ---
-  const names = (tools: unknown[]) => (tools as Array<{ function: { name: string } }>).map((t) => t.function.name)
+  // A #1025 kérdés-/munkaterv-eszközök minden fordulóban ott vannak; a #1022 tesztek a többit nézik.
+  const names = (tools: unknown[]) => (tools as Array<{ function: { name: string } }>).map((t) => t.function.name).filter((n) => !INTERACTION_TOOLS.includes(n))
   const systemOf = (messages: unknown[]) => (messages[0] as { content: string }).content
   const deferred = { coreTools: ['kb_search'], tools: [{ name: 'kb_search', description: 'Keresés a tudástárban.', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }, ...DRIVE_TOOLS] }
 
@@ -579,6 +582,168 @@ async function main() {
     assert.equal(toolGroup('valami'), 'Egyéb')
     assert.equal(summary('Első mondat. Második mondat.'), 'Első mondat.')
     assert.equal(summary('x'.repeat(300)).length, 120)
+  })
+
+  const PETER = {
+    question: 'Melyik Péternek küldjem a beszámolót?',
+    options: [{ label: 'Kovács Péter', description: 'kovacs.peter@acme.hu' }, { label: 'Nagy Péter', description: 'nagy.peter@acme.hu' }],
+  }
+
+  await check('#1025 kérdés-kártya: awaiting_input, nincs futó feladat; 1 óra múlva kattintás → folytatódik, jóváhagyás-kártyáig', async () => {
+    let clock = new Date('2026-11-01T10:00:00Z')
+    const h = harness({
+      llm: [
+        { content: 'Két Pétert találtam.', toolCalls: [{ id: 'q1', name: 'ask_user', arguments: JSON.stringify(PETER) }] },
+        callTool('google_drive_create_folder', { name: 'Kovács Péter' }, 'w1'),
+      ],
+      tool: [{ kind: 'input_required', requestState: 'rs', inputKey: 'ik', message: 'Mappa létrehozása: Kovács Péter' }],
+    }, { now: () => clock })
+    let minted = 0
+    const mint = h.deps.platform.continuationToken
+    h.deps.platform.continuationToken = async (input) => (minted++, mint(input))
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Küldd el a beszámolót Péternek', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    let turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'awaiting_input')
+    assert.equal(h.queued.length, 0) // várakozás közben nincs feladat
+    const asked = h.store.events.find((e) => e.type === 'question')
+    assert.equal(asked?.payload.phase, 'requested')
+    assert.deepEqual((asked?.payload.options as Array<{ label: string }>).map((o) => o.label), ['Kovács Péter', 'Nagy Péter'])
+
+    clock = new Date(clock.getTime() + 60 * 60_000) // 1 óra (a forduló korlátja 40 perc)
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat2', answer: { selected: ['Ismeretlen'] } }), 'invalid')
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: 'masik', chatToken: 'chat2', answer: { selected: ['Kovács Péter'] } }), 'not_found')
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat2', answer: { selected: ['Kovács Péter'] } }), 'ok')
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat2', answer: { selected: ['Nagy Péter'] } }), 'not_waiting')
+    assert.equal(minted, 2) // friss folytatási token a válasznál
+    await h.drain()
+    turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'awaiting_approval') // a szokásos jóváhagyás-kártya, nem max_time
+    assert.equal(turn?.pausedSeconds, 3600)
+    const toolResult = (h.llmMessages[1] as Array<{ role: string; content: string }>).at(-1)
+    assert.equal(toolResult?.role, 'tool')
+    assert.match(toolResult!.content, /„Kovács Péter”/)
+    assert.deepEqual(h.store.messages.map((m) => [m.role, m.content]), [
+      ['user', 'Küldd el a beszámolót Péternek'],
+      ['assistant', 'Két Pétert találtam.'],
+      ['user', 'Kovács Péter'],
+    ])
+    assert.equal(h.store.messages[1].question?.answer.selected[0], 'Kovács Péter')
+    // a jelen forduló kérdés–válasz üzenetei nem duplázódnak a modell előzményében
+    const second = h.llmMessages[1] as Array<{ role: string; content: string | null }>
+    assert.equal(second.filter((m) => m.role === 'user').length, 1)
+    assert.ok((h.llmTools[0] as Array<{ function: { name: string } }>).some((t) => t.function.name === 'ask_user'))
+  })
+
+  await check('#1025 szöveges válasz a kártya helyett: ugyanaz a forduló folytatódik, nem 409', async () => {
+    const h = harness({
+      llm: [{ toolCalls: [{ id: 'q1', name: 'ask_user', arguments: JSON.stringify({ ...PETER, allowOther: false }) }] }, say('Rendben, a Q3 beszámolót Nagy Péternek készítem elő.')],
+      tool: [],
+    })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Küldd el a beszámolót Péternek', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const again = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'A Nagy Péternek, a Q3-ast', attachments: [] })
+    assert.ok(again.ok)
+    assert.equal(again.turn.id, r.turn.id)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.match((h.llmMessages[1] as Array<{ content: string }>).at(-1)!.content, /saját szöveggel.*Nagy Péternek, a Q3-ast/)
+    assert.deepEqual(h.store.messages.map((m) => m.role), ['user', 'assistant', 'user', 'assistant'])
+    assert.equal(h.store.messages.at(-1)?.content, 'Rendben, a Q3 beszámolót Nagy Péternek készítem elő.')
+  })
+
+  await check('#1025 következő forduló: a korábbi kérdés és a válasz a modell előzményében', async () => {
+    const h = harness({ llm: [{ toolCalls: [{ id: 'q1', name: 'ask_user', arguments: JSON.stringify(PETER) }] }, say('Elkészítettem.'), say('ok')], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Küldd el Péternek', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Nagy Péter'], text: 'és másold Annát' } }), 'ok')
+    await h.drain()
+    assert.ok((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Köszi', attachments: [] })).ok)
+    await h.drain()
+    const history = (h.llmMessages[2] as Array<{ role: string; content: string }>).slice(1).map((m) => [m.role, m.content])
+    assert.deepEqual(history, [
+      ['user', 'Küldd el Péternek'],
+      ['assistant', '\n\n[Kérdés a felhasználónak: „Melyik Péternek küldjem a beszámolót?” — lehetőségek: Kovács Péter; Nagy Péter]'],
+      ['user', 'Nagy Péter — és másold Annát'],
+      ['assistant', 'Elkészítettem.'],
+      ['user', 'Köszi'],
+    ])
+  })
+
+  await check('#1025 fordulónként legfeljebb 3 kérdés: a 4. kérdés helyi hibát ad, nem parkol', async () => {
+    const ask = (id: string) => ({ toolCalls: [{ id, name: 'ask_user', arguments: JSON.stringify({ ...PETER, question: `Kérdés ${id}` }) }] })
+    const h = harness({ llm: [ask('a'), ask('b'), ask('c'), ask('d'), say('Feltételeztem: Kovács Péter.')], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    for (let i = 0; i < 3; i++) {
+      await h.drain()
+      assert.equal((await h.store.getTurn(r.turn.id))?.status, 'awaiting_input')
+      assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Kovács Péter'] } }), 'ok')
+    }
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.match((h.llmMessages[4] as Array<{ content: string }>).at(-1)!.content, /már 3 kérdést/)
+    assert.equal(h.store.events.filter((e) => e.type === 'question' && e.payload.phase === 'requested').length, 3)
+  })
+
+  await check('#1025 hibás kérdés (1 lehetőség): helyi hiba a modellnek, nincs parkolás', async () => {
+    const h = harness({ llm: [{ toolCalls: [{ id: 'q', name: 'ask_user', arguments: JSON.stringify({ question: 'Biztos?', options: [{ label: 'Igen' }] }) }] }, say('Rendben.')], tool: [] })
+    const c = await h.conversation()
+    assert.ok((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })).ok)
+    await h.drain()
+    assert.match((h.llmMessages[1] as Array<{ content: string }>).at(-1)!.content, /2–5 különböző lehetőséget/)
+    assert.equal(h.store.events.some((e) => e.type === 'question'), false)
+  })
+
+  await check('#1025 munkaterv: plan események élőben, a záró üzeneten megmarad, nem fogyasztja a lépéskeretet', async () => {
+    const plan = (doneCount: number) => ({
+      steps: ['Levelek átnézése', 'Összesítés', 'Táblázat', 'Drive-feltöltés'].map((title, i) => ({ title, status: i < doneCount ? 'done' : i === doneCount ? 'in_progress' : 'pending' })),
+    })
+    const step = (n: number): Partial<LlmResult> => ({
+      toolCalls: [
+        { id: `p${n}`, name: 'update_plan', arguments: JSON.stringify(plan(n)) },
+        { id: `s${n}`, name: toFunctionName('google_drive.search'), arguments: JSON.stringify({ q: `lépés ${n}` }) },
+      ],
+    })
+    const h = harness({
+      llm: [step(0), step(1), step(2), step(3), { toolCalls: [{ id: 'p4', name: 'update_plan', arguments: JSON.stringify(plan(4)) }] }, say('Kész a táblázat.')],
+      tool: [done('a'), done('b'), done('c'), done('d')],
+    }, { maxSteps: 12 })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Nézd át a leveleket és készíts táblázatot', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded') // 15 lépés, ebből 5 munkaterv → 10 ≤ 12
+    const plans = h.store.events.filter((e) => e.type === 'plan').map((e) => (e.payload.steps as Array<{ status: string }>).filter((s) => s.status === 'done').length)
+    assert.deepEqual(plans, [0, 1, 2, 3, 4])
+    const final = h.store.messages.at(-1)!
+    assert.equal(final.plan?.every((s) => s.status === 'done'), true)
+    assert.equal(h.store.events.at(-1)?.type, 'done')
+    // újracsatlakozás: a Last-Event-ID utáni események közt az utolsó munkaterv helyes
+    const lastPlan = h.store.events.filter((e) => e.type === 'plan').at(-1)!
+    assert.deepEqual((await h.store.eventsAfter(r.turn.id, lastPlan.seq - 1))[0].payload, lastPlan.payload)
+  })
+
+  await check('#1025 hibás munkaterv és Stop várakozó kérdésnél', async () => {
+    const h = harness({ llm: [{ toolCalls: [{ id: 'p', name: 'update_plan', arguments: '{"steps":[{"title":"x","status":"kész"}]}' }, { id: 'q', name: 'ask_user', arguments: JSON.stringify(PETER) }] }], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal(h.store.events.some((e) => e.type === 'plan'), false)
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'awaiting_input')
+    assert.ok(await cancelTurn(h.deps, r.turn.id, USER))
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'cancelled')
+    assert.equal(turn?.pendingInput, null)
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Kovács Péter'] } }), 'not_waiting')
   })
 
   if (failures) {

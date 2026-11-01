@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
-import { decideApproval, runStep, startTurn, toFunctionName, type EngineDeps } from '../src/engine.ts'
+import { answerQuestion, decideApproval, latestPlan, runStep, startTurn, toFunctionName, type EngineDeps } from '../src/engine.ts'
 import { createPgStore } from '../src/pg-store.ts'
 import type { PlatformClient } from '../src/platform.ts'
 
@@ -84,6 +84,30 @@ try {
   await store.renameConversation(c.id, 'Pénzügyek 2027', true)
   assert.equal((await store.listConversations({ tenantId: TENANT, userId: USER, query: 'pénzügyek', limit: 10 })).length, 1)
   assert.equal((await store.getConversation(c.id))?.titleSetByUser, true)
+
+  // #1025 kérdés-kártya + munkaterv: awaiting_input az egy-aktív-forduló indexben, oszlopok és eseménytípusok
+  const script = [
+    { content: '', toolCalls: [{ id: 'p', name: 'update_plan', arguments: '{"steps":[{"title":"Keresés","status":"in_progress"},{"title":"Levél","status":"pending"}]}' }, { id: 'q', name: 'ask_user', arguments: '{"question":"Melyik Péter?","options":[{"label":"Kovács"},{"label":"Nagy"}]}' }] },
+    { content: 'Kész.', toolCalls: [] },
+  ]
+  const askDeps: EngineDeps = { ...deps, platform: { ...platform, streamCompletion: async () => ({ ...script.shift()!, usage: null, blockReason: null }) } }
+  const r2 = await startTurn(askDeps, { conversation: c, chatToken: 'chat', content: 'Küldd Péternek', attachments: [] })
+  assert.ok(r2.ok)
+  while (queued.length) await runStep(askDeps, queued.shift()!)
+  const parked = await store.getTurn(r2.turn.id)
+  assert.equal(parked?.status, 'awaiting_input')
+  assert.equal(parked?.pendingInput?.question, 'Melyik Péter?')
+  assert.equal((await store.activeTurn(c.id))?.id, r2.turn.id)
+  assert.equal(await store.createTurn({ conversationId: c.id, tenantId: TENANT, userId: USER, agentId: AGENT }), null)
+  assert.equal(latestPlan(await store.listSteps(r2.turn.id))?.length, 2)
+  assert.equal(await answerQuestion(askDeps, { turnId: r2.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Nagy'] } }), 'ok')
+  while (queued.length) await runStep(askDeps, queued.shift()!)
+  assert.equal((await store.getTurn(r2.turn.id))?.status, 'succeeded')
+  const after = await store.listMessages(c.id)
+  assert.deepEqual(after.slice(-3).map((m) => [m.role, m.content]), [['assistant', ''], ['user', 'Nagy'], ['assistant', 'Kész.']])
+  assert.equal(after.at(-3)?.question?.answer.selected[0], 'Nagy')
+  assert.equal(after.at(-1)?.plan?.length, 2)
+  assert.deepEqual((await store.eventsAfter(r2.turn.id, 0)).filter((e) => ['plan', 'question'].includes(e.type)).map((e) => e.type), ['plan', 'question', 'question'])
 
   await store.deleteConversation(c.id)
   assert.equal(await store.getTurn(r.turn.id), null) // kaszkád

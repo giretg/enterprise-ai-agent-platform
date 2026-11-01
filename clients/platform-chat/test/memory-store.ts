@@ -51,7 +51,7 @@ export class MemoryStore implements Store {
     if ([...this.turns.values()].some((t) => t.conversationId === input.conversationId && ACTIVE_TURN_STATUSES.includes(t.status))) return null
     const t = {
       ...input, id: randomUUID(), status: 'queued' as const, stepCount: 0, tokenUsage: {}, error: null, continuationToken: null,
-      context: null, pendingApproval: null, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
+      context: null, pendingApproval: null, pendingInput: null, pausedSeconds: 0, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
     }
     this.turns.set(t.id, t)
     return { ...t }

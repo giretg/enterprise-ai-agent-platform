@@ -13,8 +13,8 @@ import {
   type BlobStorage,
 } from './attachments.ts'
 import type { Config } from './config.ts'
-import { cancelTurn, closeExpiredApproval, decideApproval, runStep, startTurn, type EngineDeps } from './engine.ts'
-import { ACTIVE_TURN_STATUSES, type Conversation } from './store.ts'
+import { answerQuestion, cancelTurn, closeExpiredApproval, decideApproval, latestPlan, runStep, startTurn, type EngineDeps } from './engine.ts'
+import { ACTIVE_TURN_STATUSES, PARKED_TURN_STATUSES, type Conversation, type Turn } from './store.ts'
 
 const SSE_POLL_MS = 300
 const SSE_IDLE_CLOSE_MS = 120_000
@@ -121,6 +121,7 @@ export function createHandler(deps: ServerDeps) {
     let activeTurn = active
     if (active && (await closeExpiredApproval(deps, active))) activeTurn = null
     const lastFailed = activeTurn ? null : await lastTurnError(c.id, messages.at(-1)?.turnId ?? null)
+    const plan = activeTurn ? latestPlan(await store.listSteps(activeTurn.id)) : null
     return {
       conversation: publicConversation(c),
       messages: messages.map((m) => ({
@@ -129,13 +130,27 @@ export function createHandler(deps: ServerDeps) {
         content: m.content,
         attachments: m.attachments,
         files: m.files,
+        ...(m.question ? { question: m.question } : {}),
+        ...(m.plan?.length ? { plan: m.plan } : {}),
         createdAt: m.createdAt.toISOString(),
       })),
       activeTurn: activeTurn
-        ? { id: activeTurn.id, status: activeTurn.status, pendingApproval: activeTurn.pendingApproval ? { message: activeTurn.pendingApproval.message, createdAt: activeTurn.pendingApproval.createdAt } : null }
+        ? {
+            id: activeTurn.id,
+            status: activeTurn.status,
+            pendingApproval: activeTurn.pendingApproval ? { message: activeTurn.pendingApproval.message, createdAt: activeTurn.pendingApproval.createdAt } : null,
+            pendingInput: publicQuestion(activeTurn),
+            plan,
+          }
         : null,
       lastError: lastFailed,
     }
+  }
+
+  /** #1025: a válaszra váró kérdés-kártya (a belső lépés-adatok nélkül). */
+  function publicQuestion(turn: Turn) {
+    const p = turn.status === 'awaiting_input' ? turn.pendingInput : null
+    return p && !p.answer ? { question: p.question, options: p.options, allowOther: p.allowOther, multiSelect: p.multiSelect, createdAt: p.createdAt } : null
   }
 
   /** Ha az utolsó forduló hibával zárult, a UI megmutatja (egy mondat + Újra). */
@@ -173,7 +188,7 @@ export function createHandler(deps: ServerDeps) {
         lastEventAt = Date.now()
       }
       const current = await store.getTurn(turnId)
-      const finished = !current || !ACTIVE_TURN_STATUSES.includes(current.status) || current.status === 'awaiting_approval'
+      const finished = !current || !ACTIVE_TURN_STATUSES.includes(current.status) || PARKED_TURN_STATUSES.includes(current.status)
       if (finished && events.length === 0) break
       if (Date.now() - lastEventAt > SSE_IDLE_CLOSE_MS) break
       await new Promise((r) => setTimeout(r, SSE_POLL_MS))
@@ -306,6 +321,16 @@ export function createHandler(deps: ServerDeps) {
         const outcome = await decideApproval(deps, { turnId, userId: claims.sub, decision })
         if (outcome === 'not_found') throw new HttpError(404, 'not_found')
         if (outcome === 'not_waiting') throw new HttpError(409, 'not_waiting')
+        return ok(200, { outcome })
+      }
+      if (method === 'POST' && parts[2] === 'answer') {
+        if (!UUID_RE.test(turnId)) throw new HttpError(400, 'bad_request')
+        const body = await readJson(req)
+        const outcome = await answerQuestion(deps, { turnId, userId: claims.sub, chatToken: claims.token, answer: { selected: body.selected, text: body.text } })
+        if (outcome === 'not_found') throw new HttpError(404, 'not_found')
+        if (outcome === 'not_waiting') throw new HttpError(409, 'not_waiting', 'Erre a kérdésre már érkezett válasz.')
+        if (outcome === 'invalid') throw new HttpError(400, 'bad_request')
+        if (outcome === 'no_access') throw new HttpError(403, 'agent_unavailable')
         return ok(200, { outcome })
       }
     }
