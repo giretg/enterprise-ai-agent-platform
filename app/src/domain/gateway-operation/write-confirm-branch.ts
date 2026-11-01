@@ -3,6 +3,7 @@ import {
   PROTOCOL_VERSION_META_KEY,
 } from '@modelcontextprotocol/server'
 import type { WriteConfirmInput } from '@/domain/enterprise-tools'
+import { canDecideGatewayOperation, type GatewayActor } from './gateway-operation-service'
 import type { GatewayOperationView } from './types'
 
 export const MRTR_PROTOCOL_VERSION = '2026-07-28'
@@ -13,6 +14,8 @@ export type WriteConfirmLinkReason =
   | 'protocol_not_2026_07_28'
   | 'elicitation_url_only'
   | 'no_form_elicitation'
+  /** Megnevezett jóváhagyó ≠ kérelmező: a chat-form gombja `approver_not_authorized` lenne (#663). */
+  | 'designated_approver_other'
 
 export type WriteConfirmOffer = {
   confirmBranch: 'form' | 'link'
@@ -51,13 +54,20 @@ export function formElicitationCapable(envelope: Record<string, unknown>): boole
 export function resolveWriteConfirmOffer(
   confirm: WriteConfirmInput | undefined,
   enqueued: { ok: false } | { ok: true; view: GatewayOperationView },
+  actor?: GatewayActor,
 ): WriteConfirmOffer | null {
   if (!confirm) return null
   if (!enqueued.ok) return { confirmBranch: 'link', confirmBranchReason: 'enqueue_failed' }
   if (enqueued.view.status !== 'awaiting_approval') {
     return { confirmBranch: 'link', confirmBranchReason: 'not_awaiting_approval' }
   }
-  if (confirm.mint) return { confirmBranch: 'form', confirmBranchReason: 'mrtr_form' }
+  if (confirm.mint) {
+    // #663: ne kínáljunk Approve gombot annak, aki nem dönthet — a Control Plane link a helyes ág.
+    if (actor && !canDecideGatewayOperation(actor, enqueued.view)) {
+      return { confirmBranch: 'link', confirmBranchReason: 'designated_approver_other' }
+    }
+    return { confirmBranch: 'form', confirmBranchReason: 'mrtr_form' }
+  }
   return {
     confirmBranch: 'link',
     confirmBranchReason: confirm.linkReason ?? 'no_form_elicitation',
