@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { getAgentMailOverview } from '@/app/actions/agentmail'
 import { getTenantMailboxOverview } from '@/app/actions/tenant-mailbox'
+import { getInboundWatchOverview } from '@/app/actions/inbound-mail'
+import { InboundWatchPanel } from './inbound-watch-panel'
 import { AgentMailPanel } from './agentmail-panel'
 import { TenantMailboxPanel } from './tenant-mailbox-panel'
 
@@ -20,10 +22,11 @@ export default async function MailboxesPage({
 }: {
   searchParams: Promise<{ error?: string; connected?: string }>
 }) {
-  const [params, overview, mailboxes] = await Promise.all([
+  const [params, overview, mailboxes, watch] = await Promise.all([
     searchParams,
     getAgentMailOverview(),
     getTenantMailboxOverview(),
+    getInboundWatchOverview(),
   ])
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -38,6 +41,7 @@ export default async function MailboxesPage({
           való. A közös postafiók és az agent beállításai határozzák meg, kell-e jóváhagyás a küldéshez.
         </p>
       </header>
+      {watch.success ? <InboundWatchPanel overview={watch.data} /> : null}
       {mailboxes.success ? (
         <TenantMailboxPanel
           overview={mailboxes.data}

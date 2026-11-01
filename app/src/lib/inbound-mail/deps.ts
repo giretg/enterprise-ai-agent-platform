@@ -16,8 +16,9 @@ import {
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
 import { agentMailApiBase, inboxIdFromConnectorBaseUrl, loadAgentMailOrgKey, loadAgentMailRegion } from '@/lib/agentmail'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
+import { readInboundMailSettings } from '@/lib/inbound-mail-settings'
 import { createInboundMailEffects } from './effects'
-import { listWatchedMailboxes, loadWatchedMailbox, prismaInboundMailStore, watchStore, type WatchRow } from './store'
+import { listClaimedForTenant, listWatchedMailboxes, loadWatchedMailbox, prismaInboundMailStore, watchStore, type WatchRow } from './store'
 
 const secretKey = (connectorId: string) => `inbound-mail-${connectorId}`
 
@@ -77,7 +78,7 @@ export function inboundMail(): { service: InboundMailService; watcher: MailboxWa
       update: (connectorId, patch) => watchStore.update(connectorId, patch),
     },
     loadMailbox: (connectorId) => loadWatchedMailbox(connectorId),
-    listMailboxes: listWatchedMailboxes,
+    listMailboxes: (tenantId) => listWatchedMailboxes(tenantId),
     credentials: {
       async agentMailInbox(connectorId) {
         const connector = await prisma.connector.findUnique({ where: { id: connectorId }, select: { config: true, secretAlias: true } })
@@ -132,5 +133,33 @@ export async function ensureInboundWatch(connectorId: string, tenantId: string):
     if (mailbox?.agent) await inboundMail().watcher.ensureWatch(mailbox)
   } catch (error) {
     console.warn('inbound_mail.ensure_watch_failed', { connectorId, error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+/** A cég beállított lekérdezési gyakorisága (ms). */
+export async function inboundPollIntervalMs(tenantId: string): Promise<number> {
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } })
+  return readInboundMailSettings(tenant?.settings).pollMinutes * 60_000
+}
+
+/** Ugyanabban a konténerben cégenként legfeljebb percenként egy ellenőrzés (oldalbetöltésenként ne kérdezzük a DB-t). */
+const TRIGGER_THROTTLE_MS = 60_000
+const lastTrigger = new Map<string, number>()
+
+/**
+ * A platform használata közben (oldalbetöltés után, a háttérben): a push nélküli postafiókok esedékes
+ * lekérdezése. Tétlen platformon nem fut — így nem ébreszti fölöslegesen az adatbázist. Fail-soft.
+ */
+export async function triggerInboundPoll(tenantId: string, now = Date.now()): Promise<void> {
+  if (now - (lastTrigger.get(tenantId) ?? 0) < TRIGGER_THROTTLE_MS) return
+  lastTrigger.set(tenantId, now)
+  try {
+    const { watcher, service } = inboundMail()
+    await watcher.pollDue({ tenantId, deadline: new Date(now + 10_000), intervalMs: inboundPollIntervalMs })
+    // A futó feldolgozások állapota (jóváhagyás után „Kész”) — szintén csak használat közben.
+    const claimed = await listClaimedForTenant(tenantId, 10)
+    if (claimed.length) await service.reconcileClaimed(claimed.length, claimed)
+  } catch (error) {
+    console.warn('inbound_mail.poll_trigger_failed', { tenantId, error: error instanceof Error ? error.message : String(error) })
   }
 }

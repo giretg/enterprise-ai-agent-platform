@@ -105,13 +105,11 @@ export function InboundMailPanel({ settings }: { settings: InboundMailSettings }
             Mi történjen, ha valaki ír a(z) <strong>{settings.mailboxAddress}</strong> címre?{' '}
             {settings.delivery.mode === 'push'
               ? 'Az új levélről azonnal értesülünk.'
-              : 'Az új leveleket 5 percenként nézzük meg.'}
+              : 'Az új leveleket időközönként nézzük meg.'}{' '}
+            <Link href="/control-plane/provisioning/agentmail" className="text-xs font-semibold text-coral underline">
+              Figyelés beállítása
+            </Link>
           </p>
-          {settings.delivery.lastError ? (
-            <p className="mt-1 text-xs text-ink-faint" title={settings.delivery.lastError}>
-              Az azonnali értesítés most nem működik, ezért 5 percenként ellenőrizzük a postafiókot.
-            </p>
-          ) : null}
         </div>
 
         <fieldset className="space-y-2">

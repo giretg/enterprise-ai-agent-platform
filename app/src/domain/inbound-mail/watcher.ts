@@ -42,7 +42,8 @@ export type WatcherDeps = {
     update(connectorId: string, patch: WatchPatch): Promise<unknown>
   }
   loadMailbox(connectorId: string): Promise<WatchedMailbox | null>
-  listMailboxes(): Promise<WatchedMailbox[]>
+  /** Figyelt postafiókok (opcionálisan egy cégé). */
+  listMailboxes(tenantId?: string): Promise<WatchedMailbox[]>
   credentials: {
     agentMailInbox(connectorId: string): Promise<{ baseUrl: string; inboxId: string; inboxKey: string } | null>
     agentMailOrg(tenantId: string): Promise<{ apiBase: string; orgKey: string } | null>
@@ -64,8 +65,6 @@ export type WatcherDeps = {
   randomSecret?: () => string
 }
 
-/** A push mellett is lefut óránként egy biztonsági lekérdezés (elveszett értesítés ellen). */
-export const SAFETY_POLL_MS = 60 * 60 * 1000
 /** Lejárat előtt ennyivel újítunk (Gmail 7 nap, Graph ~3 nap). */
 export const RENEW_BEFORE_MS = 24 * 60 * 60 * 1000
 
@@ -307,30 +306,55 @@ export class MailboxWatcher {
   }
 
   /**
-   * Ütemezett karbantartás (5 percenként): feliratkozás + megújítás, polling ott, ahol nincs push
-   * (és óránként a push mellett is), majd a futó feldolgozások állapotának átvétele.
+   * Napi karbantartás (a meglévő napi ütemezett hívásban): push-feliratkozás létrehozása és megújítása
+   * (Gmail 7 nap, Graph ~3 nap — lejárat előtt 1 nappal), biztonsági lekérdezés minden postafióknál,
+   * és a futó feldolgozások állapotának átvétele.
    */
-  async runMaintenance(input: { deadline: Date }) {
+  async runDaily(input: { deadline: Date }) {
     const summary = { mailboxes: 0, push: 0, polled: 0, created: 0, errors: 0, reconciled: { processed: 0, failed: 0, running: 0 } }
     for (const mailbox of await this.deps.listMailboxes()) {
       if (this.now() > input.deadline) break
       summary.mailboxes++
       try {
-        const mode = await this.ensureWatch(mailbox)
-        if (mode === 'push') summary.push++
-        const state = await this.deps.watches.find(mailbox.connectorId)
-        const due = !state?.lastPolledAt || this.now().getTime() - state.lastPolledAt.getTime() >= SAFETY_POLL_MS
-        if (mode === 'poll' || due) {
-          const outcomes = await this.poll(mailbox)
-          summary.polled++
-          summary.created += outcomes.filter((o) => o.created).length
-        }
+        if ((await this.ensureWatch(mailbox)) === 'push') summary.push++
+        const outcomes = await this.poll(mailbox)
+        summary.polled++
+        summary.created += outcomes.filter((o) => o.created).length
       } catch (error) {
         summary.errors++
         await this.deps.watches.update(mailbox.connectorId, { lastError: errorText(error) }).catch(() => {})
       }
     }
     if (this.now() <= input.deadline) summary.reconciled = await this.deps.service.reconcileClaimed(50)
+    return summary
+  }
+
+  /**
+   * Push nélküli postafiókok lekérdezése, ha a cég beállított gyakorisága szerint esedékes.
+   * Push-os postafiókot itt nem kérdezünk le (arra a push + a napi biztonsági lekérdezés elég).
+   * Hívója: a platform használata közben (oldalbetöltés), vagy opcionálisan egy gyakori ütemezett hívás.
+   */
+  async pollDue(input: { deadline: Date; tenantId?: string; intervalMs: (tenantId: string) => Promise<number> }) {
+    const summary = { checked: 0, polled: 0, created: 0, errors: 0 }
+    const intervals = new Map<string, number>()
+    for (const mailbox of await this.deps.listMailboxes(input.tenantId)) {
+      if (this.now() > input.deadline) break
+      const state = await this.deps.watches.find(mailbox.connectorId)
+      if (state?.externalId) continue
+      summary.checked++
+      if (!intervals.has(mailbox.tenantId)) intervals.set(mailbox.tenantId, await input.intervalMs(mailbox.tenantId))
+      const interval = intervals.get(mailbox.tenantId)!
+      if (interval <= 0) continue
+      if (state?.lastPolledAt && this.now().getTime() - state.lastPolledAt.getTime() < interval) continue
+      try {
+        const outcomes = await this.poll(mailbox)
+        summary.polled++
+        summary.created += outcomes.filter((o) => o.created).length
+      } catch (error) {
+        summary.errors++
+        await this.deps.watches.update(mailbox.connectorId, { lastError: errorText(error), lastPolledAt: this.now() }).catch(() => {})
+      }
+    }
     return summary
   }
 }

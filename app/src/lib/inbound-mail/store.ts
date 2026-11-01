@@ -91,9 +91,9 @@ export async function loadWatchedMailbox(connectorId: string, tenantId?: string)
 }
 
 /** Minden postafiók, amely valamelyik (nem nyugdíjazott) agent saját címe. */
-export async function listWatchedMailboxes(): Promise<WatchedMailbox[]> {
+export async function listWatchedMailboxes(tenantId?: string): Promise<WatchedMailbox[]> {
   const rows = await prisma.connector.findMany({
-    where: { lifecycleState: 'active', primaryForAgents: { some: { retiredAt: null } } },
+    where: { ...(tenantId ? { tenantId } : {}), lifecycleState: 'active', primaryForAgents: { some: { retiredAt: null } } },
     select: mailboxSelect,
     orderBy: { id: 'asc' },
   })
@@ -173,6 +173,11 @@ export async function listAgentEvents(tenantId: string, agentId: string, limit =
     orderBy: { receivedAt: 'desc' },
     take: limit,
   })
+  return rows.map(toRecord)
+}
+
+export async function listClaimedForTenant(tenantId: string, limit = 10) {
+  const rows = await prisma.inboundMailEvent.findMany({ where: { tenantId, status: 'claimed' }, orderBy: { updatedAt: 'asc' }, take: limit })
   return rows.map(toRecord)
 }
 

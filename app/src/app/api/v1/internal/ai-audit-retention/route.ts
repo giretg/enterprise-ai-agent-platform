@@ -9,6 +9,7 @@ import { services } from '@/domain/gateway-services'
 import { publicChatMaintenanceDeps } from '@/auth/public-chat-deps'
 import { runPublicChatMaintenance } from '@/domain/public-chat/maintenance'
 import { PostgresDocumentExportRepository } from '@/repositories/postgres/document-export-repository'
+import { inboundMail } from '@/lib/inbound-mail/deps'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -22,6 +23,7 @@ export const runtime = 'nodejs'
 /** Önfrissítő kapcsolatok napi ellenőrzése: 20 óra, hogy a Scheduler csúszása se hagyjon ki napot. */
 const SPEC_SYNC_INTERVAL_MS = 20 * 60 * 60 * 1000
 const SPEC_SYNC_BUDGET_MS = 25_000
+const INBOUND_DAILY_BUDGET_MS = 25_000
 
 export async function POST(request: Request): Promise<Response> {
   const result = await handleAiAuditRetentionRequest(
@@ -84,6 +86,20 @@ export async function POST(request: Request): Promise<Response> {
         })
       } catch (error) {
         console.error('[ai-audit-retention] self-updating connector sync failed', error)
+      }
+      // #1032 bejövő levelek: push-feliratkozás létrehozása/megújítása, napi biztonsági lekérdezés,
+      // futó feldolgozások állapota. Saját hibája nem buktatja el a retenciós sweepet.
+      try {
+        const inbound = await inboundMail().watcher.runDaily({ deadline: new Date(Date.now() + INBOUND_DAILY_BUDGET_MS) })
+        await writeAudit(repositories.audit, {
+          actorType: 'system',
+          action: 'inbound_mail.maintenance',
+          targetType: 'inbound_mail_event',
+          policyDecision: 'allowed',
+          metadata: inbound,
+        })
+      } catch (error) {
+        console.error('[ai-audit-retention] inbound mail maintenance failed', error)
       }
       return swept
     },

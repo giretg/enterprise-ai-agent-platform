@@ -625,7 +625,7 @@ async function main() {
     assert.equal((await h.watcher.poll(mailbox())).length, 0)
   })
 
-  await check('karbantartás: AgentMail webhook-feliratkozás a szervezeti kulccsal, a titok a titoktárba kerül', async () => {
+  await check('napi karbantartás: AgentMail webhook-feliratkozás a szervezeti kulccsal, a titok a titoktárba kerül', async () => {
     const h = harness()
     h.secrets.clear()
     h.respond((url, init) => {
@@ -633,14 +633,48 @@ async function main() {
       if (url.includes('/messages?limit=')) return { messages: [] }
       return {}
     })
-    const summary = await h.watcher.runMaintenance({ deadline: new Date(Date.now() + 60_000) })
+    const summary = await h.watcher.runDaily({ deadline: new Date(Date.now() + 60_000) })
     assert.equal(summary.push, 1)
+    assert.equal(summary.polled, 1, 'napi biztonsági lekérdezés a push mellett is')
     const call = h.calls.find((c) => c.url.endsWith('/webhooks'))
     assert.deepEqual((call?.body as { event_types: string[] }).event_types, ['message.received'])
     assert.equal((call?.body as { url: string }).url, `https://ai.example.com/api/webhooks/mail/agentmail?c=${CONNECTOR}`)
     assert.deepEqual((call?.body as { inbox_ids: string[] }).inbox_ids, [ADDRESS])
     assert.equal(h.secrets.get(CONNECTOR), WEBHOOK_SECRET)
     assert.equal(h.watches.get(CONNECTOR)?.externalId, 'wh_1')
+  })
+
+  await check('gyakoriság: push-os postafiókot nem kérdez le; a többit csak a cég beállított időköze után', async () => {
+    const h = harness()
+    const t0 = new Date('2026-11-01T10:00:00Z')
+    h.setNow(t0)
+    let lists = 0
+    h.respond((url) => {
+      if (url.includes('/messages?limit=')) {
+        lists++
+        return { messages: [] }
+      }
+      return {}
+    })
+    const fifteen = async () => 15 * 60_000
+    // Nincs push: első alkalommal azonnal lekérdez.
+    let r = await h.watcher.pollDue({ deadline: new Date(t0.getTime() + 60_000), intervalMs: fifteen })
+    assert.deepEqual([r.checked, r.polled, lists], [1, 1, 1])
+    h.setNow(new Date(t0.getTime() + 10 * 60_000))
+    r = await h.watcher.pollDue({ deadline: new Date(t0.getTime() + 11 * 60_000), intervalMs: fifteen })
+    assert.equal(r.polled, 0, '10 perc után még nem esedékes (15 perces beállítás)')
+    h.setNow(new Date(t0.getTime() + 16 * 60_000))
+    r = await h.watcher.pollDue({ deadline: new Date(t0.getTime() + 17 * 60_000), intervalMs: fifteen })
+    assert.equal(r.polled, 1, '15 perc után igen')
+    h.setNow(new Date(t0.getTime() + 22 * 60_000))
+    r = await h.watcher.pollDue({ deadline: new Date(t0.getTime() + 23 * 60_000), intervalMs: async () => 5 * 60_000 })
+    assert.equal(r.polled, 1, '5 percre állítva 6 perc után esedékes')
+    // Push-os postafiók: kimarad (a push + a napi biztonsági lekérdezés elég).
+    h.watches.set(CONNECTOR, { ...h.watches.get(CONNECTOR)!, externalId: 'wh_1' })
+    h.setNow(new Date(t0.getTime() + 3 * 3600_000))
+    r = await h.watcher.pollDue({ deadline: new Date(t0.getTime() + 4 * 3600_000), intervalMs: fifteen })
+    assert.deepEqual([r.checked, r.polled], [0, 0])
+    assert.equal(lists, 3)
   })
 
   await check('AC7 red-team (platform-oldal): a levél szövege/tárgya nem írja felül az utasítást, a keretből nem tör ki', () => {

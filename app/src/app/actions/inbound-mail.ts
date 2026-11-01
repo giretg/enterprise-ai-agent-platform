@@ -9,6 +9,8 @@ import { services } from '@/domain/gateway-services'
 import { fail, ok } from '@/lib/result'
 import { isPrismaMissingTable } from '@/lib/prisma-table-missing'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
+import { isInboundPollMinutes, readInboundMailSettings, withInboundMailSettings, type InboundPollMinutes } from '@/lib/inbound-mail-settings'
+import { mailboxKindLabel } from '@/domain/agent-mailbox/agent-mailbox'
 import {
   DEFAULT_INBOUND_MAIL_RULE,
   inboundReasonLabel,
@@ -22,6 +24,7 @@ import {
   listAgentEvents,
   listClaimedForAgent,
   listNewForUser,
+  listWatchedMailboxes,
   loadWatchedMailbox,
   toRule,
   watchStore,
@@ -248,5 +251,96 @@ export async function countMyInboundMailAction(): Promise<number> {
     return await countNewForUser(user.activeTenantId, user.user.id)
   } catch {
     return 0
+  }
+}
+
+export type InboundWatchOverview = {
+  pollMinutes: InboundPollMinutes
+  mailboxes: Array<{
+    connectorId: string
+    address: string | null
+    kindLabel: string
+    agentId: string
+    agentName: string
+    /** push = azonnal értesülünk; poll = időközönként nézzük meg; broken = a kapcsolat megszakadt. */
+    delivery: 'push' | 'poll' | 'broken'
+    /** Közérthető magyarázat, ha nincs azonnali értesítés. */
+    note: string | null
+    lastCheckedAt: string | null
+  }>
+}
+
+function pollNote(provider: string, lastError: string | null): string {
+  if (lastError && /disconnected|grant|401|expired/i.test(lastError)) {
+    return 'A postafiók kapcsolata megszakadt, ezért most nem látjuk az új leveleket — kösd be újra lent, a postafiókoknál.'
+  }
+  if (provider === 'google' && !process.env.GMAIL_PUSH_TOPIC) return 'Gmailnél az azonnali értesítést a platform üzemeltetője kapcsolja be.'
+  if (lastError) return 'Az azonnali értesítés most nem működik — naponta újrapróbáljuk.'
+  return 'Az azonnali értesítés bekapcsolása folyamatban (legkésőbb holnapig).'
+}
+
+/** Postafiókok oldal: melyik postafiókról értesülünk azonnal, és milyen gyakran nézzük a többit. */
+export async function getInboundWatchOverview() {
+  try {
+    const user = await requireTenantRole('admin')
+    const tenantId = user.activeTenantId
+    const [tenant, mailboxes] = await Promise.all([
+      prisma.tenant.findUnique({ where: { id: tenantId }, select: { settings: true } }),
+      listWatchedMailboxes(tenantId),
+    ])
+    const watches = await prisma.mailWatchSubscription.findMany({ where: { tenantId } })
+    const byConnector = new Map(watches.map((w) => [w.connectorId, w]))
+    return ok<InboundWatchOverview>({
+      pollMinutes: readInboundMailSettings(tenant?.settings).pollMinutes,
+      mailboxes: mailboxes.map((m) => {
+        const w = byConnector.get(m.connectorId)
+        const push = Boolean(w?.externalId)
+        const last = [w?.lastEventAt, w?.lastPolledAt].filter((d): d is Date => Boolean(d)).sort((a, b) => b.getTime() - a.getTime())[0]
+        const broken = Boolean(w?.lastError && /disconnected|grant|401|expired/i.test(w.lastError))
+        return {
+          connectorId: m.connectorId,
+          address: m.address,
+          kindLabel: mailboxKindLabel(m.provider),
+          agentId: m.agent!.id,
+          agentName: m.agent!.name,
+          delivery: broken ? 'broken' : push ? 'push' : 'poll',
+          note: push && !broken ? null : pollNote(m.provider, w?.lastError ?? null),
+          lastCheckedAt: last ? last.toISOString() : null,
+        }
+      }),
+    })
+  } catch (error) {
+    return toFail(error, 'Nem sikerült betölteni a postafiókok figyelését.')
+  }
+}
+
+export async function saveInboundPollMinutesAction(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const pollMinutes = Number((input as { pollMinutes?: unknown } | null)?.pollMinutes)
+    if (!isInboundPollMinutes(pollMinutes)) return fail('Válassz a felkínált gyakoriságok közül.')
+    const tenant = await prisma.tenant.findUnique({ where: { id: user.activeTenantId }, select: { settings: true } })
+    await prisma.tenant.update({
+      where: { id: user.activeTenantId },
+      data: { settings: withInboundMailSettings(tenant?.settings, { pollMinutes }) },
+    })
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.inbound_mail.rule',
+      targetType: 'tenant',
+      targetId: user.activeTenantId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { pollMinutes },
+      tenantId: user.activeTenantId,
+    })
+    revalidatePath('/control-plane/provisioning/agentmail')
+    return ok({ pollMinutes })
+  } catch (error) {
+    return toFail(error, 'Nem sikerült menteni a beállítást.')
   }
 }

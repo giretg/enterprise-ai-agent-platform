@@ -183,27 +183,22 @@ emberi jóváhagyásra vár. Összesítő audit-sor: `connector.self_update.sche
 
 ## 3.3 Bejövő levelek (#1032)
 
-Az agent saját címére érkező levél eseménye. **Cloud Scheduler, 5 percenként**:
+Az agent saját címére érkező levél eseménye. **Nincs szükség új, gyakori ütemezett hívásra:**
 
-```
-POST https://ai.excellencepay.com/api/v1/internal/inbound-mail
-Header: x-dispatcher-token: <DISPATCHER_CONTROL_TOKEN>
-```
-
-Ez hozza létre / újítja meg a push-feliratkozásokat (Gmail watch 7 nap, Graph ~3 nap — lejárat előtt
-1 nappal), lekérdezi a push nélküli postafiókokat (csak fejléc, modellhívás nélkül), és átveszi a futó
-feldolgozások állapotát. Push-végpontok: `/api/webhooks/mail/{agentmail|google|microsoft}`.
-
-- **AgentMail:** a webhookot a tenant szervezeti kulcsa hozza létre automatikusan; a titok a
-  connector-titoktárban (`inbound-mail-<connectorId>`). Feltétel: `NEXT_PUBLIC_APP_URL` https.
-- **Microsoft 365:** Graph-feliratkozás clientState-tel, automatikusan; ugyanaz a feltétel.
-- **Gmail (tenant-postafiók):** Pub/Sub kell. Env: `GMAIL_PUSH_TOPIC` (`projects/…/topics/…`, a
-  `gmail-api-push@system.gserviceaccount.com` publish-joggal), a push-subscription OIDC-tokennel a
-  `…/api/webhooks/mail/google` címre: `GMAIL_PUSH_AUDIENCE` (a token audience-e) és
-  `GMAIL_PUSH_SERVICE_ACCOUNT` (a push service account e-mailje). Hiányukban Gmailnél csak polling.
-- **„Dolgozza fel” mód:** a platform-chat worker kell (`PLATFORM_CHAT_WORKER_URL`), és a worker
-  `003_conversation_origin.sql` migrációja (`npm run migrate` a séma-tulajdonossal) a platform
-  deployja ELŐTT.
+- **Azonnali értesítés (push):** `/api/webhooks/mail/{agentmail|google|microsoft}`. AgentMail és
+  Microsoft 365 automatikusan feliratkozik (feltétel: `NEXT_PUBLIC_APP_URL` https). Gmailhez Pub/Sub kell:
+  `bash ops/tools/gmail-push-setup.sh` lépésenként beállítja, és kiírja a 3 env-változót
+  (`GMAIL_PUSH_TOPIC`, `GMAIL_PUSH_AUDIENCE`, `GMAIL_PUSH_SERVICE_ACCOUNT`).
+- **Napi karbantartás:** a 3.2-es napi hívás végzi (feliratkozás létrehozása/megújítása — Gmail 7 nap,
+  Graph ~3 nap, lejárat előtt 1 nappal —, biztonsági lekérdezés, futó feldolgozások állapota).
+- **Push nélküli postafiókok:** a platform használata közben nézzük meg (oldalbetöltés után, háttérben,
+  cégenként legfeljebb percenként egy ellenőrzés), a cég beállította gyakorisággal (Postafiókok oldal →
+  „Új levelek figyelése”: 5 / 15 / 30 / 60 perc). Tétlen platformon nincs ébresztés.
+- **Opcionális „éjjel is figyeljen”:** Cloud Scheduler `POST /api/v1/internal/inbound-mail`
+  (`x-dispatcher-token`), a szkript 4. lépése hozza létre választható gyakorisággal. Költséggel jár
+  (ébren tartja az adatbázist); csak akkor naplóz, ha történt valami.
+- **„Dolgozza fel” mód:** platform-chat worker (`PLATFORM_CHAT_WORKER_URL`) és a worker
+  `003_conversation_origin.sql` migrációja (`npm run migrate` a séma-tulajdonossal) a platform deployja ELŐTT.
 
 ## 4. Clerk webhook regisztrálás
 

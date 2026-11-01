@@ -1,8 +1,10 @@
 import { headers } from 'next/headers'
+import { after } from 'next/server'
 import { getTranslations } from 'next-intl/server'
 import { countUrgentCustomerPromisesAction } from '@/app/actions/customer-promise'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
 import { countMyInboundMailAction } from '@/app/actions/inbound-mail'
+import { triggerInboundPoll } from '@/lib/inbound-mail/deps'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
 import { getPlatformChatAvailabilityAction } from '@/app/actions/platform-chat'
 import { getAuthContext } from '@/auth/context'
@@ -32,6 +34,9 @@ export default async function ControlPlaneLayout({ children }: { children: React
     canSeeTasks ? getPlatformChatAvailabilityAction() : Promise.resolve(null),
     canSeeTasks ? countMyInboundMailAction() : Promise.resolve(0),
   ])
+  // #1032: a push nélküli postafiókok ellenőrzése a platform használata közben, a válasz után (nem lassít).
+  const tenantId = ctx?.activeTenantId
+  if (canSeeTasks && tenantId) after(() => triggerInboundPoll(tenantId))
   const pendingTasksCount =
     (pendingRes?.success ? pendingRes.data.operations.length : 0) +
     (inboxRes?.success ? inboxRes.data.handoffs.length : 0) +
