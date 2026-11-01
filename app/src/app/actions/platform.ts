@@ -6,16 +6,22 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser } from '@/auth'
 import { requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
+import { loadPrimaryMailboxAddresses, syncAgentMailDisplayName } from '@/lib/agent-mailbox'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok } from '@/lib/result'
+import { publicAppUrl } from '@/lib/public-app-url'
 import { parseLocalRoots, serializeLocalRoots } from '@/lib/agent-local-roots'
 import { canReadPublishedAgent, isPrivilegedAgentReader } from '@/domain/agent-definition'
+import { isKnowledgeBaseVisibleTo, scopeSnapshotToUser } from '@/lib/wiki-access'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ConnectorAccessMode } from '@prisma/client'
 import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
+import { readTenantAutonomyCeiling, writeModesAboveCeiling } from '@/lib/agent-autonomy'
+import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { ensureAgentKnowledgeBase, toolsNeedKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { ensureAgentCodeSandbox, toolsNeedCodeSandbox } from '@/lib/agent-code-sandbox'
+import { ensureAgentWebSearch, toolsNeedWebSearch } from '@/lib/agent-web-search'
 import {
   agentIdSchema,
   approveUserSchema,
@@ -27,6 +33,8 @@ import {
   redeemInvitationSchema,
   revokeInvitationSchema,
   setAgentUserAccessSchema,
+  setKbDocumentLanguageSchema,
+  setKbLanguageSchema,
   setUserAgentAccessSchema,
   suspendAgentSchema,
   suspendUserSchema,
@@ -34,12 +42,16 @@ import {
   updateAgentAvatarSchema,
   updateAgentInstructionSchema,
   updateAgentMemoryWriteModeSchema,
+  updateAgentWriteApprovalModesSchema,
   updateAgentOutputFolderSchema,
   updateAgentLocalRootsSchema,
   updateAgentProfileSchema,
   updateConnectorApproverSchema,
   updateRolePermissionSchema,
 } from '@/lib/validators/actions'
+
+const AUTONOMY_CEILING_ERROR =
+  'A cég beállítása ennél több önállóságot nem enged. Az önállóság felső korlátját egy adminisztrátor módosíthatja a Beállításokban.'
 
 export async function getMe() {
   try {
@@ -149,14 +161,13 @@ export async function inviteUser(input: { email: string; role: string }) {
     let clerkInvited = false
     if (isClerkEnabled()) {
       try {
-        const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '')
         const client = await clerkClient()
         const clerkInvitation = await client.invitations.createInvitation({
           emailAddress: email,
           publicMetadata: { enterpriseInvitationId: result.invitation.id },
           notify: true,
           ignoreExisting: true,
-          ...(appUrl ? { redirectUrl: `${appUrl}/sign-up` } : {}),
+          redirectUrl: publicAppUrl('/sign-up').href,
         })
         await services.iam.bindClerkInvitation({
           invitationId: result.invitation.id,
@@ -379,6 +390,41 @@ export async function listAgents(input?: { limit?: number; offset?: number }) {
   }
 }
 
+/** Lista / kezdőlap: agentek + van-e közzé nem tett vázlatváltozás. */
+export async function listAgentsForCatalog(input?: { limit?: number; offset?: number }) {
+  const listed = await listAgents(input)
+  if (!listed.success) return listed
+  try {
+    const user = await requireTenantRole('viewer')
+    const tenantId = user.activeTenantId
+    if (!tenantId) {
+      return ok(listed.data.map((agent) => ({ ...agent, unpublished: false })))
+    }
+    // #1029: a saját e-mail cím a kártyán.
+    const addresses = await loadPrimaryMailboxAddresses(tenantId).catch(() => new Map<string, string>())
+    const rows = await Promise.all(
+      listed.data.map(async (listedAgent) => {
+        const agent = { ...listedAgent, mailboxAddress: addresses.get(listedAgent.id) ?? null }
+        if (!agent.currentDefinitionVersionId) {
+          return { ...agent, unpublished: false }
+        }
+        try {
+          const status = await services.agentDefinitions.getPublishStatus({
+            agentId: agent.id,
+            tenantId,
+          })
+          return { ...agent, unpublished: status.stale }
+        } catch {
+          return { ...agent, unpublished: false }
+        }
+      }),
+    )
+    return ok(rows)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list agents')
+  }
+}
+
 export async function getAgent(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -401,7 +447,12 @@ export async function getAgentGovernance(input: { agentId: string }) {
       repositories.agents.findCapabilitiesForAgent(agentId),
       repositories.agents.findConnectorsForAgent(agentId),
     ])
-    return ok({ capabilities, connectors })
+    return ok({
+      capabilities,
+      connectors: connectors.filter((row) =>
+        row.connector.type !== 'knowledge_base' || isKnowledgeBaseVisibleTo(row.connector, user.user.id),
+      ),
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load agent governance')
   }
@@ -464,6 +515,15 @@ export async function updateAgentMemoryWriteMode(input: {
     const parsed = updateAgentMemoryWriteModeSchema.parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
+    const tenant = await repositories.tenants.findById(user.activeTenantId)
+    if (
+      writeModesAboveCeiling(
+        { ...modesFromAgentRow(existing), memory: parsed.memoryWriteMode },
+        readTenantAutonomyCeiling(tenant?.settings),
+      ).includes('memory')
+    ) {
+      return fail(AUTONOMY_CEILING_ERROR)
+    }
     const updated = await repositories.agents.updateMemoryWriteMode({
       agentId: parsed.agentId,
       memoryWriteMode: parsed.memoryWriteMode,
@@ -485,6 +545,81 @@ export async function updateAgentMemoryWriteMode(input: {
     return ok({ memoryWriteMode: updated.memoryWriteMode })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update memory write mode')
+  }
+}
+
+export async function updateAgentWriteApprovalModes(input: {
+  agentId: string
+  memoryWriteMode: 'approval' | 'direct'
+  httpApiWriteMode: 'approval' | 'direct'
+  gmailWriteMode: 'approval' | 'direct'
+  driveWriteMode: 'approval' | 'direct'
+  approverUserId?: string | null
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentWriteApprovalModesSchema.parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!existing) return fail('Agent not found')
+    // #957 D3: a céges felső korlát felülír — sem a varázsló, sem az adatlap nem engedhet többet.
+    const tenant = await repositories.tenants.findById(user.activeTenantId)
+    const aboveCeiling = writeModesAboveCeiling(
+      {
+        memory: parsed.memoryWriteMode,
+        httpApi: parsed.httpApiWriteMode,
+        gmail: parsed.gmailWriteMode,
+        drive: parsed.driveWriteMode,
+      },
+      readTenantAutonomyCeiling(tenant?.settings),
+    )
+    if (aboveCeiling.length > 0) {
+      return fail(AUTONOMY_CEILING_ERROR)
+    }
+    const updated = await repositories.agents.updateWriteApprovalModes({
+      agentId: parsed.agentId,
+      memoryWriteMode: parsed.memoryWriteMode,
+      httpApiWriteMode: parsed.httpApiWriteMode,
+      gmailWriteMode: parsed.gmailWriteMode,
+      driveWriteMode: parsed.driveWriteMode,
+    })
+    let approverUserId = existing.approverUserId
+    if (parsed.approverUserId !== undefined) {
+      const approver = await updateAgentApprover({
+        agentId: parsed.agentId,
+        approverUserId: parsed.approverUserId,
+      })
+      if (!approver.success) return fail(approver.error)
+      approverUserId = parsed.approverUserId
+    }
+    await services.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'agent.write_approval_modes',
+      targetType: 'agent',
+      targetId: updated.id,
+      modelUsed: null,
+      inputRef: `${parsed.memoryWriteMode},${parsed.httpApiWriteMode},${parsed.gmailWriteMode},${parsed.driveWriteMode}`,
+      outputRef: `${existing.memoryWriteMode},${existing.httpApiWriteMode},${existing.gmailWriteMode},${existing.driveWriteMode}`,
+      policyDecision: 'updated',
+      metadata: {
+        memoryWriteMode: parsed.memoryWriteMode,
+        httpApiWriteMode: parsed.httpApiWriteMode,
+        gmailWriteMode: parsed.gmailWriteMode,
+        driveWriteMode: parsed.driveWriteMode,
+      },
+      tenantId: user.activeTenantId,
+    })
+    revalidatePath(`/control-plane/agents/${parsed.agentId}`)
+    return ok({
+      memoryWriteMode: updated.memoryWriteMode,
+      httpApiWriteMode: updated.httpApiWriteMode,
+      gmailWriteMode: updated.gmailWriteMode,
+      driveWriteMode: updated.driveWriteMode,
+      approverUserId,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update write approval modes')
   }
 }
 
@@ -680,6 +815,10 @@ export async function updateAgentProfile(input: { agentId: string; name?: string
       },
       tenantId: user.activeTenantId,
     })
+    // #1029: a saját AgentMail-postafiók megjelenő neve kövesse az átnevezést (ha nincs külön megjelenő név).
+    if (existing.name !== updated.name && !updated.mailDisplayName) {
+      await syncAgentMailDisplayName(user.activeTenantId, updated.id)
+    }
     return ok({ updated: true, name: updated.name, description: updated.description })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update profile')
@@ -692,7 +831,11 @@ export async function updateAgentAvatar(input: { agentId: string; avatarUrl: str
     const parsed = updateAgentAvatarSchema.parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
-    const avatar = await repositories.agents.updateAvatar(parsed)
+    const nextAvatar = parsed.avatarUrl === '' ? null : parsed.avatarUrl
+    const avatar = await repositories.agents.updateAvatar({
+      agentId: parsed.agentId,
+      avatarUrl: nextAvatar,
+    })
     return ok({ updated: true, avatarUrl: avatar.avatarUrl })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update avatar')
@@ -729,6 +872,9 @@ export async function updateAgentCapabilities(input: {
         agents: repositories.agents,
       })
     }
+    if (toolsNeedWebSearch(tools) && user.activeTenantId) {
+      await ensureAgentWebSearch(existing, { connectors: repositories.connectors, agents: repositories.agents })
+    }
     return ok({ updated: true, updatedCount: tools.length })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update capabilities')
@@ -751,6 +897,18 @@ export async function updateAgentConnectorBinding(input: {
       .parse(input)
     const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
+    const connector = await repositories.connectors.findById(parsed.connectorId, user.activeTenantId)
+    if (!connector) return fail('Connector not found')
+    if (connector.type === 'knowledge_base') {
+      // #942 D13: privát KB-t csak a tulajdonos kapcsolhat; a szabály a service-ben él.
+      await services.wikiAccess.linkKnowledgeBase({
+        actor: { userId: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
+        agentId: parsed.agentId,
+        connectorId: parsed.connectorId,
+        accessMode: (parsed.accessMode ?? 'read') as ConnectorAccessMode,
+      })
+      return ok({ updated: true })
+    }
     await repositories.agents.upsertConnectorBinding({
       agentId: parsed.agentId,
       connectorId: parsed.connectorId,
@@ -774,7 +932,7 @@ export async function publishAgentDefinitionAction(input: { agentId: string }) {
       tenantId: user.activeTenantId,
       publishedById: user.user.id,
     })
-    return ok(definition)
+    return ok({ ...definition, snapshot: scopeSnapshotToUser(definition.snapshot, user.user.id) })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to publish agent definition')
   }
@@ -860,6 +1018,8 @@ export async function deleteAgent(input: { id: string }) {
     if (!existing) return fail('Agent not found')
     const force = isSuperadmin(user.platformRoles)
     await repositories.agents.delete(id, { force })
+    // #942 D16: a wiki marad, a nevére foglalt tálca-tételek azonnal vissza a tálcára.
+    await repositories.wikis.releaseClaimsForAgent({ agentId: id })
     await services.audit.append({
       actorType: 'human',
       actorId: user.user.id,
@@ -1015,6 +1175,53 @@ export async function attachKnowledgeCatalogDocument(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to attach catalog document')
+  }
+}
+
+/** #717 F3: a katalógus-tár keresési nyelve + dokumentum-felülírások (olvasás). */
+export async function getKnowledgeCatalogLanguage() {
+  try {
+    const user = await requireTenantRole('viewer')
+    const data = await services.knowledgeBase.getCatalogLanguage({
+      tenantId: user.activeTenantId,
+    })
+    return ok(data)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load knowledge base language')
+  }
+}
+
+/** #717 F3: tudástár-admin művelet (meglévő KB-jogosultság = admin, nem új szerep). */
+export async function setKnowledgeCatalogLanguage(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = setKbLanguageSchema.parse(input)
+    const result = await services.knowledgeBase.setCatalogLanguage({
+      tenantId: user.activeTenantId,
+      kbLanguage: parsed.kbLanguage,
+      actorId: user.user.id,
+    })
+    revalidatePath('/control-plane/knowledge')
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set knowledge base language')
+  }
+}
+
+export async function setKnowledgeCatalogDocumentLanguage(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = setKbDocumentLanguageSchema.parse(input)
+    const result = await services.knowledgeBase.setCatalogDocumentLanguage({
+      tenantId: user.activeTenantId,
+      documentId: parsed.documentId,
+      kbLanguageOverride: parsed.kbLanguageOverride,
+      actorId: user.user.id,
+    })
+    revalidatePath('/control-plane/knowledge')
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set document language')
   }
 }
 

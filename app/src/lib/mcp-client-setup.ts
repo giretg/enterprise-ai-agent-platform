@@ -1,5 +1,3 @@
-export const MCP_SETUP_SEEN_COOKIE = 'mcp_setup_seen'
-export const CONTROL_PLANE_GET_STARTED_PATH = '/control-plane/get-started'
 
 export type McpClientSetup = {
   tenantSlug: string
@@ -80,9 +78,4 @@ export function buildMcpClientSetup(input: { origin: string; tenantSlug: string 
     hermesCommand: hermesMcpSetupCommand(mcpUrl),
     hermesSyncPrompt: HERMES_SYNC_PROMPT,
   }
-}
-
-/** Tenant-home: nincs setup-cookie → landing; különben a hívó oldja a workspace-t. */
-export function firstRunGetStartedPath(setupSeenCookie: string | undefined): string | null {
-  return setupSeenCookie ? null : CONTROL_PLANE_GET_STARTED_PATH
 }

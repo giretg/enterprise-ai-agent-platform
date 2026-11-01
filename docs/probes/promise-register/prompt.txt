@@ -1,0 +1,5 @@
+Ígérd meg az ügyfélnek, hogy pénteken visszahívjuk, és rögzítsd.
+
+Ügyfél: Kovács Anna (anna@example.com).
+A visszahívás pénteken 10:00-kor legyen, Europe/Budapest időzónában.
+Ha ma már elmúlt ez az időpont, a következő pénteket válaszd.

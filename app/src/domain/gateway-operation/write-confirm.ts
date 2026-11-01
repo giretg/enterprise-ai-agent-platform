@@ -13,9 +13,13 @@ import {
   GMAIL_SEND_TOOL,
   GMAIL_TRASH_TOOL,
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+  GOOGLE_DRIVE_UPDATE_FILE_TOOL,
   GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   GOOGLE_SHEETS_WRITE_RANGE_TOOL,
   HTTP_API_REQUEST_TOOL,
+  MAIL_CREATE_DRAFT_TOOL,
+  MAIL_MARK_TOOL,
+  MAIL_SEND_TOOL,
   type EnterpriseToolMcpResult,
   type InputRequiredToolResult,
   type ToolCallPrincipal,
@@ -36,7 +40,8 @@ import {
   type GatewayOperationServiceDeps,
 } from './gateway-operation-service'
 import { resolveWriteConfirmOffer } from './write-confirm-branch'
-import { formatScalarQuery } from './pending-args-summary'
+import { findHttpApiEndpoint, parseHttpApiConfig } from '@/domain/connector/http-api-client'
+import { pendingOperationHeadline } from './pending-args-summary'
 import type { GatewayOperationView } from './types'
 
 export const WRITE_CONFIRM_KEY = 'confirm_write'
@@ -94,12 +99,22 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-function gmailComposeTarget(args: Record<string, unknown>): string {
-  if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+function gmailComposeTarget(args: Record<string, unknown>, label = 'Gmail'): string {
+  const from = str(args.account) ? `innen: ${str(args.account)}` : ''
+  if (str(args.draftId)) {
+    return [
+      label === 'Gmail' ? 'Gmail piszkozat elküldése' : 'Piszkozat elküldése',
+      from,
+      `draftId: ${str(args.draftId)}`,
+    ]
+      .filter(Boolean)
+      .join(', ')
+  }
   const parts = [
+    from,
     str(args.replyToMessageId)
-      ? `Gmail válasz a(z) ${str(args.replyToMessageId)} levélre${args.replyAll === true ? ' (mindenkinek)' : ''}`
-      : 'Gmail új levél',
+      ? `${label} válasz a(z) ${str(args.replyToMessageId)} levélre${args.replyAll === true ? ' (mindenkinek)' : ''}`
+      : `${label} új levél`,
     str(args.to) ? `címzett: ${str(args.to)}` : str(args.replyToMessageId) ? 'címzett: az eredeti feladó' : '',
     str(args.cc) ? `másolat: ${str(args.cc)}` : '',
     str(args.bcc) ? `titkos másolat: ${str(args.bcc)}` : '',
@@ -129,19 +144,52 @@ async function confirmMessage(
   let target = ''
   let content = ''
   if (view.toolName === HTTP_API_REQUEST_TOOL) {
-    const query = formatScalarQuery(args.query)
-    target = `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
+    let endpointDescription: string | null = null
+    if (view.connectorId) {
+      try {
+        const connector = await deps.findConnector(view.connectorId)
+        if (connector) {
+          const endpoint = findHttpApiEndpoint(
+            parseHttpApiConfig(connector.config),
+            str(args.method),
+            str(args.path),
+          )
+          endpointDescription = endpoint?.description?.trim() || null
+        }
+      } catch {
+        endpointDescription = null
+      }
+    }
+    target = pendingOperationHeadline(view.toolName, args, { connectorName, endpointDescription })
     content = str(args.body)
   } else if (view.toolName === GOOGLE_DRIVE_CREATE_FOLDER_TOOL) {
     target = `Google Drive mappa: ${str(args.name)}`
   } else if (view.toolName === GOOGLE_DRIVE_UPLOAD_FILE_TOOL) {
     target = `Google Drive fájl: ${str(args.name)}`
     content = str(args.textContent)
+  } else if (view.toolName === GOOGLE_DRIVE_UPDATE_FILE_TOOL) {
+    target = `Google Drive fájl felülírása: ${str(args.fileId)}`
+    content = str(args.textContent)
   } else if (view.toolName === GMAIL_SEND_TOOL || view.toolName === GMAIL_CREATE_DRAFT_TOOL) {
     target = gmailComposeTarget(args)
     // draftId send ignores compose fields at execute time — never surface args.body as "Tartalom"
     // or a decoy body would be what the human approves while a different draft is sent (#668).
     content = view.toolName === GMAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
+  } else if (view.toolName === MAIL_SEND_TOOL || view.toolName === MAIL_CREATE_DRAFT_TOOL) {
+    // #1030: mail_* a preferált küldő eszköz — a confirm nem lehet vak (to/tárgy/from nélkül).
+    target = gmailComposeTarget(args, 'Levél')
+    content = view.toolName === MAIL_SEND_TOOL && str(args.draftId) ? '' : str(args.body)
+  } else if (view.toolName === MAIL_MARK_TOOL) {
+    target = [
+      str(args.account) ? `fiók: ${str(args.account)}` : '',
+      str(args.threadId) ? `szál: ${str(args.threadId)}` : str(args.messageId) ? `levél: ${str(args.messageId)}` : '',
+      args.read === true ? 'olvasott' : '',
+      args.unread === true ? 'olvasatlan' : '',
+      args.archive === true ? 'archiválás' : '',
+      str(args.label) ? `címke: ${str(args.label)}` : '',
+    ]
+      .filter(Boolean)
+      .join(', ')
   } else if (view.toolName === GMAIL_MODIFY_LABELS_TOOL) {
     target = [
       gmailItemTarget(args),
@@ -152,6 +200,10 @@ async function confirmMessage(
       .join(', ')
   } else if (view.toolName === GMAIL_TRASH_TOOL) {
     target = `${gmailItemTarget(args)} → kuka`
+  } else if (view.toolName === 'mcp_call') {
+    // #395 D3: a jóváhagyó a belső eszköznevet és a teljes argumentumot látja.
+    target = pendingOperationHeadline(view.toolName, args, { connectorName })
+    content = args.arguments && typeof args.arguments === 'object' ? JSON.stringify(args.arguments, null, 2) : ''
   } else if (view.toolName === GOOGLE_SHEETS_WRITE_RANGE_TOOL) {
     target = `Táblázat: ${str(args.fileId)}, tartomány: ${str(args.range)}`
     content = str(args.values)

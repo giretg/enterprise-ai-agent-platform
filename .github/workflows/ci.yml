@@ -58,8 +58,20 @@ jobs:
       - name: Import-boundary guard
         run: npm run test:import-boundary
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Hermes Guard helper tests (Python)
-        run: python3 ../clients/hermes-guard/test_exc_token.py
+        run: |
+          python3 -m pip install httpx==0.28.1
+          python3 ../clients/hermes-guard/test_exc_token.py
+          python3 ../clients/hermes-guard/test_install_managed.py
+          python3 ../clients/hermes-guard/test_install_managed_ps.py
+          python3 ../clients/hermes-guard/test_guard_policy.py
+          python3 ../clients/hermes-guard/test_guard_runtime.py
+          python3 ../clients/hermes-guard/test_exc_guard.py
+          python3 ../clients/hermes-guard/test_guard_smoke.py
 
       - name: KEEP stub-DB tests
         run: |
@@ -69,6 +81,7 @@ jobs:
           npm run test:mcp-client-setup
           npm run test:health-endpoints
           npm run test:public-routes
+          npm run test:public-app-url
           npm run test:mcp-principal
           npm run test:mcp-http
           npm run test:mcp-parity
@@ -76,22 +89,63 @@ jobs:
           npm run test:mcp-tenant-context
           npm run test:agent-knowledge-placement
           npm run test:create-agent-wizard
+          npm run test:agent-setting-sections
+          npm run test:agent-hire
           npm run test:project-work
+          npm run test:handoff
+          npm run test:scheduled-task-sync-plan
+          npm run test:scheduled-task-service
+          npm run test:mini-app
+          npm run test:warehouse
           npm run test:work-file-output
           npm run test:mcp-skills
           npm run test:conversation-skill
           npm run test:agent-checkout
           npm run test:agent-local-roots
           npm run test:client-policy
+          npm run test:client-policy-admin
+          npm run test:client-policy-tool-catalog
+          npm run test:client-install
+          npm run test:platform-chat
+          npm run test:public-chat
+          npm run test:machine-floor
+          npm run test:hermes-installer
           npm run test:model-gateway-token
+          npm run test:request-body-limit
+          npm run test:model-fallback-chain
+          npm run test:model-gateway-proxy
+          npm run test:openrouter-tenant-key
+          npm run test:gemini-tenant-key
+          npm run test:model-gateway-jwt-key
+          npm run test:model-gateway-content-filter
+          npm run test:ai-audit
           npm run test:enterprise-tools
+          npm run test:harness-substitutes
+          npm run test:web-fetch
+          npm run test:document-export
+          npm run test:tenant-mailbox
+          npm run test:http-api
+          npm run test:write-approval-modes
+          npm run test:write-approval-ui
+          npm run test:pending-args-summary
+          npm run test:connector-template-icon-map
+          npm run test:linked-account
+          npm run test:drive-update-file
           npm run test:sandbox-run
           npm run test:gmail-mcp-tools
           npm run test:google-drive-api-client
+          npm run test:google-drive-scopes
+          npm run test:drive-oauth-scope-escalation
+          npm run test:google-drive-grant-metadata-cas
           npm run test:google-workspace-api-client
           npm run test:agentmail-connector
+          npm run test:agent-mailbox
+          npm run test:mail-tools
           npm run test:kb-gate
           npm run test:kb-retrieval
+          npm run test:wiki-foundation
+          npm run test:kb-wiki
+          npm run test:wiki-console
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -108,6 +162,67 @@ jobs:
           npm run test:web-discovery
           npm run test:iam-tenant-boundary
           npm run test:iam-membership-scope
+          npm run test:clerk-config
+          npm run test:clerk-invitation-membership
+          npm run test:iam-token-redeem-escalation
+          npm run test:tenant-management
+          npm run test:self-service-tenant
+
+  platform-chat-worker:
+    # #1004: a beépített platform-chat worker (külön csomag). Elfogadási feltétel 7: a CI elbukik,
+    # ha a worker importál az app/src-ből (vagy fordítva).
+    name: Platform-chat worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/platform-chat
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: owner
+          POSTGRES_PASSWORD: owner
+          POSTGRES_DB: chat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U owner"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: clients/platform-chat/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - name: Postgres-integráció (migráció + szűk worker-szerep)
+        env:
+          PGPASSWORD: owner
+        run: |
+          psql -h 127.0.0.1 -U owner -d chat -c "CREATE TABLE public.tenants (id uuid PRIMARY KEY, slug text); INSERT INTO public.tenants VALUES ('22222222-2222-4222-8222-222222222222', 'acme');"
+          PLATFORM_CHAT_MIGRATE_URL=postgresql://owner:owner@127.0.0.1:5432/chat npm run migrate
+          psql -h 127.0.0.1 -U owner -d chat -v worker_password="'worker'" -f ../../ops/platform-chat/db-role.sql
+          PLATFORM_CHAT_TEST_DATABASE_URL=postgresql://platform_chat_worker:worker@127.0.0.1:5432/chat npm run test:pg
+
+  hermes-guard-windows:
+    # #755: a natív Windows telepítő élesben (ACL, gépszintű env, .cmd → python -I → exc-guard).
+    name: Hermes Guard Windows-telepítő
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: clients/hermes-guard
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install-managed.ps1 + exc-guard + exc-token
+        run: python test_install_managed_windows.py
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)
@@ -153,6 +268,46 @@ jobs:
 
       - name: Prisma migrate status
         run: npx prisma migrate status
+
+      - name: Handoff decision concurrency
+        run: npm run test:handoff-repository
+
+      - name: Project work files (concurrent quota and append)
+        run: npm run test:project-work-file-db
+
+      # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
+      - name: Mini app repository (Postgres)
+        run: npm run test:mini-app-db
+      - name: Public chat on Postgres (#1016)
+        run: npm run test:public-chat-db
+      # #1028: tenant-postafiók grant (tulajdonos-típus CHECK, egyedi index, újracsatlakoztatás).
+      - name: Tenant mailbox grants (Postgres)
+        run: npm run test:tenant-mailbox-db
+
+      - name: AI-adattárház (#984) valódi Postgresen
+        run: npm run test:warehouse-db
+
+      # #942: privát KB végleges törlés + 30 napos sweep + tálca-SQL valódi Postgresen.
+      - name: Wiki private KB purge (Postgres)
+        run: npm run test:wiki-private-purge-db
+
+      - name: KB PDF sources and MCP images (Postgres)
+        run: npm run test:kb-pdf-source-db
+
+      # #943: wiki change-set egy tranzakcióban (rollback, chunk-csere, tálca) valódi Postgresen.
+      - name: Wiki change-set apply (Postgres)
+        run: npm run test:kb-wiki-db
+      # #978: wiki-előzmények (visszavonás, sorszám, időutazás, megőrzés, GDPR-törlés) valódi Postgresen.
+      - name: Wiki history (Postgres)
+        run: npm run test:wiki-history-db
+
+      # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
+      - name: Wiki console queries (Postgres)
+        run: npm run test:wiki-console-db
+
+      # #947: lelet-forgatókönyv végponttól végpontig (MCP HTTP + privát KB + törlés) valódi Postgresen.
+      - name: Wiki end-to-end (Postgres + MCP)
+        run: npm run test:kb-wiki-e2e
 
   security-scan:
     name: Titok-szkennelés + CodeQL

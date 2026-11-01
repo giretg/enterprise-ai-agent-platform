@@ -2,7 +2,9 @@
  * MCP HTTP handler — stub token verifier, no live Clerk (#538).
  * Futtatás: npm run test:mcp-http
  */
+import { WAREHOUSE_TOOLS } from '../src/domain/warehouse/mcp'
 import assert from 'node:assert/strict'
+import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
 import type {
   PlatformMembership,
   Tenant,
@@ -11,6 +13,7 @@ import type {
 } from '@prisma/client'
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
+import { PRESETS } from '../src/domain/client-policy/capabilities'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
 import type { McpSkillPackage } from '../src/lib/skill/mcp-skill'
 import { buildMcpSkillPackage } from '../src/lib/skill/mcp-skill'
@@ -25,6 +28,9 @@ import {
   GOOGLE_DRIVE_SEARCH_TOOL,
   KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
+  WEB_SEARCH_TOOL,
+  WEB_FETCH_TOOL,
+  DOCUMENT_EXPORT_TOOL,
   invokeEnterpriseTool,
   type EnterpriseToolDeps,
   type LiveConnectorRow,
@@ -50,7 +56,11 @@ import {
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
 } from '../src/auth/mcp-principal'
-import { PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
+import { CUSTOMER_PROMISE_TOOLS, invokeCustomerPromise } from '../src/domain/customer-promise/mcp'
+import { SCHEDULED_TASK_TOOLS } from '../src/domain/scheduled-task/mcp'
+import { CustomerPromiseService, type CustomerPromiseStore } from '../src/domain/customer-promise/customer-promise-service'
+import { MCP_WORK_FILE_LIST_TOOL, PROJECT_WORK_TOOLS } from '../src/domain/project-work/mcp'
+import { MINI_APP_TOOLS } from '../src/domain/mini-app/mcp'
 import { renderAgentBriefing, renderAgentCheckout } from '../src/lib/agent-checkout'
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -216,6 +226,7 @@ function runtimeDeps(overrides: {
   skills?: McpSkillPackage[]
   requestStateKey?: string
   driveCalls?: unknown[]
+  listLinkedAccounts?: McpRuntimeDeps['listLinkedAccounts']
 } = {}): {
   deps: McpRuntimeDeps
   audit: Array<Record<string, unknown>>
@@ -369,6 +380,7 @@ function runtimeDeps(overrides: {
         return []
       },
       invokeEnterpriseTool: (input) => invokeEnterpriseTool(enterpriseDeps, input),
+      listLinkedAccounts: overrides.listLinkedAccounts,
       requestStateKey: overrides.requestStateKey,
       getGatewayOperation: async (input) =>
         getResultToMcp(await getGatewayOperation(gatewayDeps, input)),
@@ -553,6 +565,130 @@ function writerDeps(extra: { requestStateKey?: string; driveCalls?: unknown[] } 
 }
 
 async function main() {
+  await check('#640 scheduledRunId is stripped and linked; scheduled_task tools dispatch; S1 block on get_definition', async () => {
+    const { deps } = writerDeps()
+    const links: Array<{ runId: string; toolName: string }> = []
+    const seenArgs: Array<Record<string, unknown>> = []
+    const scheduledCalls: Array<{ toolName: string; args: Record<string, unknown> }> = []
+    deps.linkScheduledRun = async ({ runId, toolName }) => { links.push({ runId, toolName }) }
+    deps.invokeEnterpriseTool = async (input) => {
+      seenArgs.push(input.args)
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    }
+    deps.invokeScheduledTask = async (input) => {
+      scheduledCalls.push({ toolName: input.toolName, args: input.args })
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] }
+    }
+    deps.readScheduledTaskBriefing = async () => ({ syncRevision: 'r1', pending: [{ taskId: 't1', title: 'Heti riport', reason: 'not_installed', clientType: 'claude_routine' }], missed: [] })
+    async function call(tool: string, args: Record<string, unknown>, headers: Record<string, string> = {}) {
+      const response = await post('acme', { jsonrpc: '2.0', id: 640, method: 'tools/call', params: { name: tool, arguments: args } }, { authorization: `Bearer ${TOKEN}`, ...headers }, deps)
+      assert.equal(response.status, 200)
+      const body = await readJson(response) as { result: { content: Array<{ text: string }> } }
+      return JSON.parse(body.result.content[0].text)
+    }
+    const RUN = '64064064-0640-4640-8640-640640640640'
+    await call(GOOGLE_DRIVE_SEARCH_TOOL, { definitionId: DEFINITION_ID, query: 'x', scheduledRunId: RUN })
+    assert.equal('scheduledRunId' in seenArgs[0], false)
+    await call(GOOGLE_DRIVE_SEARCH_TOOL, { definitionId: DEFINITION_ID, query: 'y' }, { 'x-scheduled-run-id': RUN })
+    assert.deepEqual(links, [{ runId: RUN, toolName: GOOGLE_DRIVE_SEARCH_TOOL }, { runId: RUN, toolName: GOOGLE_DRIVE_SEARCH_TOOL }])
+    await call('platform.scheduled_task.run_start', { taskId: RUN, scheduledRunId: RUN })
+    assert.equal(links.length, 2, 'scheduled_task tools are not linked to a run')
+    assert.equal(scheduledCalls[0].toolName, 'platform.scheduled_task.run_start')
+    const definition = await call(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.equal(definition.scheduledTasks.pending[0].reason, 'not_installed')
+    deps.readScheduledTaskBriefing = async () => { throw new Error('relation "scheduled_tasks" does not exist') }
+    assert.equal((await call(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })).scheduledTasks, undefined)
+  })
+
+  await check('promise HTTP tools enforce grants, ownership, tenant and argument boundaries', async () => {
+    const { deps, audit } = writerDeps()
+    const rows: import('../src/domain/customer-promise/customer-promise-service').CustomerPromiseRecord[] = []
+    const store: CustomerPromiseStore = {
+      async insertUnderLimit(input) {
+        const row = { ...input, id: crypto.randomUUID(), status: 'open' as const, claimedAt: null, claimClient: null, claimExternalId: null, resolvedAt: null, resolvedNote: null, createdAt: new Date(), updatedAt: new Date() }
+        rows.push(row)
+        return row
+      },
+      async findById(tenantId, id) { return rows.find(row => row.tenantId === tenantId && row.id === id) ?? null },
+      async list(input) { return rows.filter(row => row.tenantId === input.tenantId && row.ownerUserId === input.ownerUserId && row.agentId === input.agentId) },
+      async countUrgentForUser() { return 0 },
+      async resolve(input) {
+        const row = rows.find(row => row.id === input.id && row.tenantId === input.tenantId && ['open', 'claimed'].includes(row.status))
+        if (!row) return null
+        Object.assign(row, {status: input.status, resolvedNote: input.note, resolvedAt: input.now})
+        return row
+      },
+    }
+    let accessLevel: string | null = 'operate'
+    let currentDefinitionId = DEFINITION_ID
+    let briefingLookupFails = false
+    const promiseService = new CustomerPromiseService(store, {async append(data) { audit.push(data) }})
+    deps.invokeCustomerPromise = input => invokeCustomerPromise({
+      loadDefinition: lookup => deps.loadDefinition(lookup),
+      findCurrentDefinitionId: async () => currentDefinitionId,
+      findAgentGrant: async () => accessLevel ? {accessLevel} : null,
+      customerPromises: promiseService,
+      audit: {async append(data) { audit.push(data) }},
+    }, input)
+    deps.listCustomerPromises = async input => {
+      if (briefingLookupFails) throw new Error('relation "customer_promises" does not exist')
+      return (await promiseService.list({...input, status: 'active'})).map(row => ({id: row.id, title: row.title, dueAt: row.dueAt.toISOString(), customerName: row.customerName, customerEmail: row.customerEmail, overdue: row.overdue}))
+    }
+    async function call(tool: string, fields: Record<string, unknown>) {
+      const response = await post('acme', {jsonrpc: '2.0', id: 672, method: 'tools/call', params: {name: tool, arguments: {definitionId: DEFINITION_ID, ...fields}}}, {authorization: `Bearer ${TOKEN}`}, deps)
+      assert.equal(response.status, 200)
+      const body = await readJson(response) as {result: {isError?: boolean; content: Array<{text: string}>}}
+      return {isError: body.result.isError, ...JSON.parse(body.result.content[0].text)}
+    }
+    const fields = {title: 'Callback', commitment: 'Call the customer', dueAt: new Date(Date.now() + 86400000).toISOString()}
+    const registered = await call('platform.promise.register', fields)
+    assert.equal(registered.ok, true)
+    const promiseId = registered.row.id
+    assert.equal((await call('platform.promise.get', {promiseId})).row.id, promiseId)
+    assert.equal((await call('platform.promise.list', {})).promises.length, 1)
+    const briefing = await call(MCP_AGENT_GET_DEFINITION_TOOL, {})
+    assert.equal(briefing.customerPromises.entries[0].id, promiseId)
+    assert.match(briefing.briefing, /Open customer promises/)
+    assert.match(briefing.briefing, /Callback/)
+    briefingLookupFails = true
+    const withoutPromises = await call(MCP_AGENT_GET_DEFINITION_TOOL, {})
+    assert.equal(withoutPromises.isError, undefined)
+    assert.deepEqual(withoutPromises.customerPromises.entries, [])
+    briefingLookupFails = false
+    currentDefinitionId = '77777777-7777-4777-8777-777777777777'
+    const stale = await call('platform.promise.register', fields)
+    assert.equal(stale.code, 'agent_stale')
+    assert.equal(stale.currentDefinitionId, currentDefinitionId)
+    currentDefinitionId = DEFINITION_ID
+    assert.equal((await call('platform.promise.list', {agentId: AGENT_ID})).promises.length, 1)
+    accessLevel = 'view'
+    assert.equal((await call('platform.promise.list', {})).promises.length, 1)
+    for (const tool of CUSTOMER_PROMISE_TOOLS.filter(name => name !== 'platform.promise.list')) {
+      const denied = await call(tool, tool.endsWith('register') ? fields : {promiseId})
+      assert.equal(denied.isError, true)
+      assert.equal(denied.code, 'agent_access_denied')
+    }
+    assert.ok(audit.some(row => row.action === 'enterprise.tool.denied' && row.inputRef === 'platform.promise.register' && row.targetId === AGENT_ID))
+    accessLevel = null
+    assert.equal((await call('platform.promise.list', {})).code, 'agent_access_denied')
+    accessLevel = 'operate'
+    for (const tool of CUSTOMER_PROMISE_TOOLS) {
+      const invalid = await call(tool, tool.endsWith('register') ? {...fields, dueAt: 'tomorrow'} : tool.endsWith('list') ? {status: 'unknown'} : {promiseId: 'not-a-uuid'})
+      assert.equal(invalid.isError, true)
+      assert.equal(invalid.code, 'invalid_args')
+    }
+    assert.equal((await call('platform.promise.complete', {promiseId})).row.status, 'fulfilled')
+    assert.equal((await call('platform.promise.cancel', {promiseId})).code, 'already_resolved')
+    const second = await call('platform.promise.register', fields)
+    assert.equal((await call('platform.promise.cancel', {promiseId: second.row.id})).row.status, 'cancelled')
+    rows[0].ownerUserId = '33333333-3333-4333-8333-333333333333'
+    assert.equal((await call('platform.promise.get', {promiseId})).code, 'not_allowed')
+    rows[0].tenantId = '33333333-3333-4333-8333-333333333333'
+    assert.equal((await call('platform.promise.get', {promiseId})).code, 'not_found')
+    assert.ok(audit.some(row => row.action === 'promise.register'))
+    assert.doesNotMatch(JSON.stringify(audit.filter(row => String(row.action).startsWith('promise.'))), /Call the customer|Callback/)
+  })
+
   await check('#618 2026 + elicitation.form → input_required form', async () => {
     const { deps } = writerDeps({ requestStateKey: STATE_KEY })
     const body = await call2026(deps, { elicitation: { form: {} } })
@@ -760,6 +896,163 @@ async function main() {
     assert.match(body.result?.instructions ?? '', /Drive assistant/)
   })
 
+  await check('#1020 web_search: listing follows policy level × client kind × tenant switch', async () => {
+    const listed = async (input: {
+      preset: keyof typeof PRESETS
+      headers?: Record<string, string>
+      externalClients?: boolean
+      toolRules?: Array<{ pattern: string; action: 'allow' | 'approve' | 'deny'; source: 'tenant' | 'user' | 'agent' }>
+    }) => {
+      const { deps } = runtimeDeps({
+        tenant: tenant({ settings: input.externalClients ? { harnessSubstitutes: { externalClients: true } } : {} }),
+      })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS[input.preset], toolRules: input.toolRules ?? [] })
+      const headers = { authorization: `Bearer ${TOKEN}`, ...input.headers }
+      const res = await post('acme', { jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }, headers, deps)
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      return (body.result?.tools ?? []).some((tool) => tool.name === WEB_SEARCH_TOOL)
+    }
+    const hermes = { 'x-excellence-client': 'hermes-managed' }
+    const claude = { 'user-agent': 'Claude-User/1.0' }
+    assert.equal(await listed({ preset: 'standard', headers: hermes }), true, 'Standard Hermes → céges kereső')
+    assert.equal(await listed({ preset: 'free', headers: hermes }), false, 'Szabad Hermes → a sajátja dolgozik')
+    assert.equal(await listed({ preset: 'bound', headers: hermes }), false, 'Kötött pálya → tiltott')
+    assert.equal(await listed({ preset: 'standard', headers: claude }), false, 'Claude Desktop alapból nem kapja')
+    assert.equal(await listed({ preset: 'standard', headers: claude, externalClients: true }), true, 'tenant-kapcsolóval igen')
+    assert.equal(await listed({ preset: 'bound', headers: claude, externalClients: true }), false, 'a kapcsoló a policyt nem írja felül')
+    assert.equal(
+      await listed({ preset: 'standard', headers: hermes, toolRules: [{ pattern: 'web_search', action: 'deny', source: 'tenant' }] }),
+      false,
+      'tenant kill-switch',
+    )
+  })
+
+  await check('#1022 web_search: a bound agent is only offered it when its definition allows it', async () => {
+    const listed = async (definition: typeof SAMPLE_DEFINITION) => {
+      const { deps } = runtimeDeps({ role: 'admin' })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS.standard, toolRules: [] })
+      deps.loadDefinition = async () => definition
+      const res = await post(
+        'acme',
+        { jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} },
+        { authorization: `Bearer ${TOKEN}`, 'x-excellence-client': 'hermes-managed', 'x-excellence-agent-id': AGENT_ID },
+        deps,
+      )
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      const names = (body.result?.tools ?? []).map((tool) => tool.name)
+      // #1021: az oldalolvasás a keresés jogával együtt jár.
+      assert.equal(names.includes(WEB_FETCH_TOOL), names.includes(WEB_SEARCH_TOOL))
+      return names.includes(WEB_SEARCH_TOOL)
+    }
+    const withSearch = (connector: boolean) => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: {
+        ...SAMPLE_DEFINITION.snapshot,
+        connectors: [
+          ...SAMPLE_DEFINITION.snapshot.connectors,
+          ...(connector ? [{ connectorId: CONNECTOR_ID, type: 'web_search', accessMode: 'read' as const }] : []),
+        ],
+        capabilities: [...SAMPLE_DEFINITION.snapshot.capabilities, { toolName: WEB_SEARCH_TOOL, allowed: true }],
+      },
+    })
+    assert.equal(await listed(SAMPLE_DEFINITION), false, 'a definíció nem engedi → nem kínáljuk fel')
+    assert.equal(await listed(withSearch(false)), false, 'webes kereső kapcsolat nélkül sem')
+    assert.equal(await listed(withSearch(true)), true, 'jog + kapcsolat → listázódik')
+  })
+
+  await check('#1020 web_search: a direct tools/call reaches the policy check even when not listed', async () => {
+    const { deps } = runtimeDeps({})
+    const calls: Array<{ toolName: string; client?: string }> = []
+    deps.invokeEnterpriseTool = async (input) => {
+      calls.push({ toolName: input.toolName, client: input.client })
+      return { isError: true, content: [{ type: 'text', text: '{"code":"web_search_not_allowed_by_policy"}' }] }
+    }
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: WEB_SEARCH_TOOL, arguments: { query: 'mnb alapkamat' } } },
+      { authorization: `Bearer ${TOKEN}`, 'x-excellence-client': 'hermes-managed' },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text?: string }> } }
+    assert.equal(body.result?.isError, true)
+    assert.match(body.result?.content?.[0]?.text ?? '', /web_search_not_allowed_by_policy/)
+    assert.deepEqual(calls, [{ toolName: WEB_SEARCH_TOOL, client: 'hermes' }])
+  })
+
+  await check('#1021 web_fetch: a user-link fejlécet csak a platform-chat token adhatja át', async () => {
+    const hash = 'a'.repeat(32)
+    const chatKey = 'p'.repeat(40)
+    const browser = signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, chatKey, new Date()).token
+    const seen: Array<{ client?: string; attested?: readonly string[] }> = []
+    const run = async (token: string) => {
+      const { deps: base } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+      const deps: McpRuntimeDeps = {
+        ...base,
+        verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+        users: { ...base.users, findById: async () => user() },
+        invokeEnterpriseTool: async (input) => {
+          seen.push({ client: input.client, attested: input.attestedUrlHashes })
+          return { isError: true, content: [{ type: 'text', text: '{"code":"web_fetch_url_not_known"}' }] }
+        },
+      }
+      const res = await post(
+        'acme',
+        { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: WEB_FETCH_TOOL, arguments: { url: 'https://www.mnb.hu/' } } },
+        { authorization: `Bearer ${token}`, 'x-excellence-user-urls': `${hash},nem-hash` },
+        deps,
+      )
+      assert.equal(res.status, 200)
+    }
+    await run(browser)
+    assert.deepEqual(seen.at(-1), { client: 'platform_chat', attested: [hash] })
+    await run(TOKEN)
+    assert.deepEqual(seen.at(-1)?.attested, [], 'külső kliens fejléce nem számít')
+  })
+
+  await check('#1024 document_export: listing follows local_files level × client kind × tenant switch', async () => {
+    const listed = async (input: { preset: keyof typeof PRESETS; headers?: Record<string, string>; externalClients?: boolean }) => {
+      const { deps } = runtimeDeps({
+        grantedAgentIds: new Set([AGENT_ID]),
+        tenant: tenant({ settings: input.externalClients ? { harnessSubstitutes: { externalClients: true } } : {} }),
+      })
+      deps.loadClientPolicy = async () => ({ capabilities: PRESETS[input.preset], toolRules: [] })
+      const res = await post('acme', { jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }, { authorization: `Bearer ${TOKEN}`, ...input.headers }, deps)
+      const body = (await readJson(res)) as { result?: { tools?: Array<{ name: string }> } }
+      return (body.result?.tools ?? []).some((tool) => tool.name === DOCUMENT_EXPORT_TOOL)
+    }
+    const hermes = { 'x-excellence-client': 'hermes-managed' }
+    const claude = { 'user-agent': 'Claude-User/1.0' }
+    assert.equal(await listed({ preset: 'bound', headers: hermes }), true, 'Kötött pálya Hermes → céges fájl-készítés')
+    assert.equal(await listed({ preset: 'bound', headers: { ...hermes, 'x-excellence-agent-id': AGENT_ID } }), true, 'fájlkészítés agent-képesség nélkül is listázódik')
+    assert.equal(await listed({ preset: 'standard', headers: hermes }), true, 'Standard Hermes (csak olvas) → céges fájl-készítés')
+    assert.equal(await listed({ preset: 'free', headers: hermes }), false, 'Szabad Hermes → maga ír fájlt')
+    assert.equal(await listed({ preset: 'standard', headers: claude }), false, 'Claude Desktop alapból nem kapja')
+    assert.equal(await listed({ preset: 'standard', headers: claude, externalClients: true }), true, 'tenant-kapcsolóval igen')
+  })
+
+  await check('#1024 document_export: the download link goes out as an MCP resource_link', async () => {
+    const { deps } = runtimeDeps({})
+    deps.invokeEnterpriseTool = async () => ({
+      content: [{ type: 'text', text: '{"exportId":"x","downloadUrl":"https://app.example/api/control-plane/document-exports/x"}' }],
+      links: [{ uri: 'https://app.example/api/control-plane/document-exports/x', name: 'Riport.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 1234 }],
+    })
+    const res = await post(
+      'acme',
+      { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: DOCUMENT_EXPORT_TOOL, arguments: { format: 'xlsx', fileName: 'Riport', sheets: '[]' } } },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: Record<string, unknown> & { content?: Array<Record<string, unknown>> } }
+    assert.equal(body.result?.links, undefined, 'the internal links field is not on the wire')
+    assert.deepEqual(body.result?.content?.[1], {
+      type: 'resource_link',
+      uri: 'https://app.example/api/control-plane/document-exports/x',
+      name: 'Riport.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      size: 1234,
+    })
+  })
+
   await check('tools/list returns platform tools, Drive, knowledge base, and gateway_operation.get', async () => {
     const { deps } = runtimeDeps()
     const init = await initialize(deps)
@@ -776,7 +1069,7 @@ async function main() {
         tools?: Array<{
           name: string
           description?: string
-          inputSchema?: { properties?: Record<string, { type?: string }> }
+          inputSchema?: { properties?: Record<string, { type?: string }>; required?: string[] }
         }>
       }
       error?: unknown
@@ -795,8 +1088,15 @@ async function main() {
       MCP_SKILLS_LIST_TOOL,
       MCP_SKILL_READ_TOOL,
       MCP_SKILL_SUBMIT_TOOL,
-      ...PROJECT_WORK_TOOLS,
-      ...ENTERPRISE_TOOLS,
+      ...PROJECT_WORK_TOOLS.slice(0, -2),
+      ...CUSTOMER_PROMISE_TOOLS,
+      ...SCHEDULED_TASK_TOOLS,
+      ...PROJECT_WORK_TOOLS.slice(-2),
+      ...WAREHOUSE_TOOLS,
+      ...MINI_APP_TOOLS,
+      // #1020/#1021: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search / web_fetch nem listázódik;
+      // #1024: a document_export hívható volna, de külső kliensnek alapból nem listázzuk.
+      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL && name !== WEB_FETCH_TOOL && name !== DOCUMENT_EXPORT_TOOL),
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
     const submit = tools.find((tool) => tool.name === MCP_SKILL_SUBMIT_TOOL)
@@ -805,11 +1105,19 @@ async function main() {
     const search = tools.find((tool) => tool.name === GOOGLE_DRIVE_SEARCH_TOOL)
     assert.ok(search, 'google_drive_search missing from tools/list')
     assert.match(search.description ?? '', /fileId/i)
+    assert.equal(search.inputSchema?.properties?.account?.type, 'string')
     const schemaJson = JSON.stringify(search.inputSchema ?? {})
     assert.ok(schemaJson.length <= 16384, `search schema ${schemaJson.length} bytes exceeds Claude.ai drop limit`)
     for (const tool of tools) {
       for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
         assert.notEqual(spec.type, 'array', `${tool.name}.${field} advertised as array`)
+      }
+      if (tool.inputSchema?.properties?.definitionId) {
+        assert.equal(
+          (tool.inputSchema.required ?? []).includes('definitionId'),
+          false,
+          `${tool.name} still advertises definitionId as required`,
+        )
       }
     }
   })
@@ -852,9 +1160,46 @@ async function main() {
       organizationLabel: 'Acme',
       mcpIntro: null,
       coworkers: [PUBLISHED_LIST_ITEM],
+      linkedAccounts: [],
     })
     assert.equal(audit.filter((row) => row.action === 'mcp.auth.ok').length, 1)
     assert.ok(audit.some((row) => row.action === 'mcp.tools.call' && row.inputRef === MCP_WHOAMI_TOOL))
+  })
+
+  await check('platform.whoami lists linked Gmail/Drive nicknames', async () => {
+    const linked = [
+      { type: 'gmail', name: 'Gmail', account: 'magán', email: 'anna@gmail.com', nickname: 'magán' },
+      { type: 'gmail', name: 'Gmail', account: 'céges', email: 'anna@ceg.hu', nickname: 'céges' },
+      {
+        type: 'http_api',
+        name: 'Google Calendar',
+        account: 'céges',
+        email: 'anna@ceg.hu',
+        nickname: 'céges',
+      },
+    ]
+    const { deps } = runtimeDeps({
+      grantedAgentIds: new Set([AGENT_ID]),
+      listLinkedAccounts: async () => linked,
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 32,
+        method: 'tools/call',
+        params: { name: MCP_WHOAMI_TOOL, arguments: {} },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as {
+      result?: { content?: Array<{ type: string; text: string }>; isError?: boolean }
+    }
+    const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { linkedAccounts?: unknown }
+    assert.deepEqual(payload.linkedAccounts, linked)
   })
 
   await check('#666 mcp-session-id + user-agent pecsét az audit-sorra', async () => {
@@ -1025,6 +1370,43 @@ async function main() {
     assert.match(payload.contentHash ?? '', /^[0-9a-f]{64}$/)
   })
 
+  await check('handoff details remain available without an injected memory, only to operators', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const handoff = {
+      id: 'handoff-1', title: 'Árajánlat', summary: 'Készíts ajánlatot péntekig.',
+      links: 'Terv | work_file:/plans/acme.md', projectKey: '__general__',
+      createdAt: '2026-10-19T00:00:00.000Z', fromAgentName: 'Kati',
+    }
+    deps.listOpenHandoffs = async (input) => {
+      assert.equal(input.tenantId, TENANT_ID)
+      assert.equal(input.agentId, AGENT_ID)
+      return [handoff]
+    }
+    let denied = false
+    deps.invokeProjectWork = async () => denied
+      ? { isError: true, content: [{ type: 'text', text: '{"code":"agent_access_denied"}' }] }
+      : { content: [{ type: 'text', text: '{"items":[]}' }] }
+    await initialize(deps)
+    for (const allowed of [true, false]) {
+      denied = !allowed
+      const res = await post('acme', {
+        jsonrpc: '2.0', id: 63, method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      }, { authorization: `Bearer ${TOKEN}` }, deps)
+      const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+      const payload = JSON.parse(body.result?.content?.[0]?.text ?? '{}')
+      if (allowed) {
+        assert.deepEqual(payload.handoffs.entries[0], handoff)
+        assert.match(payload.briefing, /handoffs\.entries/)
+        assert.match(payload.handoffs.note, /coworker-provided task data/)
+        assert.doesNotMatch(payload.briefing, /full text is an open_task/)
+      } else {
+        assert.equal(payload.handoffs, undefined)
+        assert.doesNotMatch(JSON.stringify(payload), /Készíts ajánlatot|work_file:\/plans\/acme/)
+      }
+    }
+  })
+
   await check('get_definition carries memory index; denied memory read is omitted', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     const calls: Array<{ toolName: string; args: Record<string, unknown> }> = []
@@ -1103,6 +1485,48 @@ async function main() {
     assert.equal(withoutMemory.memoryIndex, undefined)
   })
 
+  await check('#945 wiki briefing and auto-pinned skill follow the caller across MCP paths', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const wikiDefinition: AgentDefinition = {
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, connectors: [{
+        connectorId: CONNECTOR_ID, type: 'knowledge_base', accessMode: 'write',
+        wikiAccess: 'write', wikiWriteMode: 'direct', visibility: 'private_to_user', ownerUserId: USER_ID,
+      }] },
+    }
+    deps.loadDefinition = async () => wikiDefinition
+    deps.loadAgentWikis = async (principal, definition) => definition.snapshot.connectors.length ? [{
+      wikiId: 'private-wiki', name: 'Private reports', access: 'write', writeMode: 'direct',
+      collect: 'Labs', inbox: { pending: 2, inProgress: 1 },
+      batches: [{ batchId: 'Reports', pending: 2, inProgress: 1, processed: 7, skipped: 0 }],
+    }] : []
+    await initialize(deps)
+    const invoke = async (name: string, args: Record<string, unknown>) => {
+      const response = await post('acme', { jsonrpc: '2.0', id: 945, method: 'tools/call', params: { name, arguments: args } }, { authorization: `Bearer ${TOKEN}` }, deps)
+      const result = await readJson(response) as { result: { isError?: boolean; content: Array<{ text: string }> } }
+      assert.equal(result.result.isError, undefined)
+      return JSON.parse(result.result.content[0].text)
+    }
+    const own = await invoke(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.match(own.briefing, /Private reports.*direct.*Labs/)
+    assert.match(own.briefing, /Reports: 7\/10/)
+    assert.ok(own.snapshot.skills.some((pin: { name: string }) => pin.name === 'llm-wiki-maintainer'))
+    const read = await invoke('platform.skills.read', { definitionId: DEFINITION_ID, uri: 'skill://llm-wiki-maintainer/SKILL.md' })
+    assert.match(read.contents[0].text, /ingest_review/)
+    const ownPrompt = await getPrompt(deps)
+    assert.match(JSON.stringify(ownPrompt), /Private reports/)
+    const checkout = await invoke(MCP_AGENT_CHECKOUT_TOOL, { agentId: AGENT_ID, harness: 'codex' })
+    assert.equal(checkout.pin.contentHash, own.contentHash)
+    assert.ok(checkout.files.some((file: { path: string }) => file.path.endsWith('/llm-wiki-maintainer/SKILL.md')))
+    // Same agent, different private owner: no private name, ID, or automatic skill.
+    wikiDefinition.snapshot.connectors[0].ownerUserId = 'other-owner'
+    const other = await invoke(MCP_AGENT_GET_DEFINITION_TOOL, { definitionId: DEFINITION_ID })
+    assert.doesNotMatch(JSON.stringify(other), /Private reports|private-wiki|llm-wiki-maintainer/)
+    assert.equal(other.snapshot.connectors.length, 0)
+    const otherPrompt = await getPrompt(deps)
+    assert.doesNotMatch(JSON.stringify(otherPrompt), /Private reports|private-wiki|llm-wiki-maintainer/)
+  })
+
   await check('#729 get_definition localRoots sibling and memory note', async () => {
     const { deps } = runtimeDeps({ role: 'admin' })
     deps.loadDefinition = async () => ({
@@ -1146,6 +1570,36 @@ async function main() {
     assert.match(payload.memoryIndex?.note ?? '', /see localRoots/)
     assert.match(payload.briefing ?? '', /across machines/)
     assert.deepEqual(payload.snapshot?.localRoots, ['~/Projects/platform'])
+  })
+
+  await check('#967 get_definition does not carry the mini app guide; tools/list declares the viewer', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    deps.loadDefinition = async () => ({
+      ...SAMPLE_DEFINITION,
+      snapshot: { ...SAMPLE_DEFINITION.snapshot, miniAppGuide: 'Céges színek: zöld' },
+    })
+    await initialize(deps)
+    const res = await post(
+      'acme',
+      {
+        jsonrpc: '2.0',
+        id: 63,
+        method: 'tools/call',
+        params: { name: MCP_AGENT_GET_DEFINITION_TOOL, arguments: { definitionId: DEFINITION_ID } },
+      },
+      { authorization: `Bearer ${TOKEN}` },
+      deps,
+    )
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    const text = body.result?.content?.[0]?.text ?? ''
+    assert.ok(text.length > 0)
+    assert.equal(text.includes('Céges színek'), false)
+    assert.equal(text.includes('miniAppGuide'), false)
+
+    const listed = await post('acme', { jsonrpc: '2.0', id: 64, method: 'tools/list', params: {} }, { authorization: `Bearer ${TOKEN}` }, deps)
+    const tools = ((await readJson(listed)) as { result?: { tools?: Array<{ name: string; _meta?: { ui?: { resourceUri?: string } } }> } }).result?.tools ?? []
+    assert.equal(tools.find((tool) => tool.name === 'platform.mini_app.create')?._meta?.ui?.resourceUri, 'ui://mini-app/viewer')
+    assert.equal(tools.find((tool) => tool.name === 'platform.mini_app.list')?._meta, undefined)
   })
 
   await check('#658 get_definition: recent session logs in briefing and recentSessionLogs block', async () => {
@@ -1443,6 +1897,24 @@ async function main() {
     )
   })
 
+  await check('kb_get_document pageImages returns numbered PNG image blocks over MCP HTTP', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    const { mixed } = await (await import('./fixtures/kb-pdf')).kbPdfFixtures()
+    const rendered = await (await import('../src/lib/kb-pdf-images')).renderPdfPages(mixed, '1-2')
+    deps.invokeEnterpriseTool = async () => ({ content: [{ type: 'text', text: JSON.stringify({ found: true, ...rendered }) }] })
+    await initialize(deps)
+    const response = await post('acme', {
+      jsonrpc: '2.0', id: 944, method: 'tools/call',
+      params: { name: 'kb_get_document', arguments: { definitionId: DEFINITION_ID, documentId: CONNECTOR_ID, pageImages: true, pages: '1-2' } },
+    }, { authorization: `Bearer ${TOKEN}` }, deps)
+    assert.equal(response.status, 200)
+    const body = await readJson(response) as { result: { content: Array<{ type: string; data?: string; mimeType?: string; text?: string }> } }
+    const images = body.result.content.filter((item) => item.type === 'image')
+    assert.equal(images.length, 2)
+    assert.ok(images.every((item) => item.mimeType === 'image/png' && item.data?.startsWith('iVBOR')))
+    assert.deepEqual(body.result.content.filter((item) => item.text?.startsWith('PDF page')).map((item) => item.text), ['PDF page 1', 'PDF page 2'])
+  })
+
   await check('google_drive_search without grant returns authorizationUrl', async () => {
     const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth?state=mcp-http'
     const { deps } = runtimeDeps({
@@ -1655,6 +2127,14 @@ async function main() {
     assert.ok(JSON.stringify(ok).includes(DEFINITION_ID))
     const def = await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, {}, AGENT_ID)
     assert.equal(def.payload.definitionId, DEFINITION_ID)
+  })
+
+  await check('#682 agent header only → work_file.list without definitionId', async () => {
+    const { deps } = runtimeDeps({ role: 'admin' })
+    await initialize(deps)
+    const files = await callWithAgentHeader(deps, MCP_WORK_FILE_LIST_TOOL, {}, AGENT_ID)
+    assert.equal(files.isError, undefined)
+    assert.equal(files.payload.ok, true)
   })
 
   await check('#682 agent header + matching definitionId → OK', async () => {
@@ -2128,7 +2608,9 @@ async function main() {
       mcpUrl: 'https://app.example.com/api/mcp/acme',
       harness: 'hermes',
     })
-    assert.ok(hermes.files.find((f) => f.path === 'SOUL.md')?.content.includes(boundBriefing))
+    const soul = hermes.files.find((f) => f.path === 'SOUL.md')?.content ?? ''
+    assert.match(soul, /platform\.agent\.get_definition/)
+    assert.ok(!soul.includes(boundBriefing))
   })
 
   await check('#653 skills are scoped to the agent, pinned version, entry skill in briefing and checkout', async () => {
@@ -2213,7 +2695,8 @@ async function main() {
     const resourceUris = (
       (await readJson(resources)) as { result?: { resources?: Array<{ uri: string }> } }
     ).result?.resources?.map((row) => row.uri)
-    assert.deepEqual(resourceUris?.sort(), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md'])
+    // #967: a mini app MCP Apps nézője minden kliensnek elérhető erőforrás.
+    assert.deepEqual(resourceUris?.sort(), ['skill://marketing-workflow/SKILL.md', 'skill://near-win-seo/SKILL.md', 'ui://mini-app/viewer'])
 
     const checkoutSkills = [workflowV1, seo].map((pkg) => ({
       skillId: pkg.skillId,
@@ -2226,7 +2709,7 @@ async function main() {
     deps.loadSkillVersions = async () => checkoutSkills
     const briefing = (await callWithAgentHeader(deps, MCP_AGENT_GET_DEFINITION_TOOL, { agentId: AGENT_ID }, '')).payload
       .briefing as string
-    assert.match(briefing, /3\. For every new task, first read the entry skill marketing-workflow \(`skill:\/\/marketing-workflow\/SKILL\.md`\)/)
+    assert.match(briefing, /4\. For every new task, first read the entry skill marketing-workflow \(`skill:\/\/marketing-workflow\/SKILL\.md`\)/)
     assert.match(briefing, /- marketing-workflow \(entry skill — read first on every new task\):[^\n]*\n- near-win-seo:/)
     const agentsMd = renderAgentCheckout({ definition: kati, skills: checkoutSkills, mcpUrl: 'https://app.example.com/api/mcp/acme' })
       .files.find((f) => f.path === 'AGENTS.md')?.content
@@ -2272,6 +2755,42 @@ async function main() {
       if (previousApp === undefined) delete process.env.NEXT_PUBLIC_APP_URL
       else process.env.NEXT_PUBLIC_APP_URL = previousApp
     }
+  })
+
+  await check('#1004 platform-chat token: tools/call a Clerk OAuth nélkül, client=platform_chat audit; folytatási token csak a saját agentjével', async () => {
+    const { deps: base, audit } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+    const chatKey = 'p'.repeat(40)
+    const now = new Date()
+    const browser = signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, chatKey, now).token
+    const turn = signChatToken({ aud: CHAT_TURN_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false, turnId: 't1', agentId: AGENT_ID }, chatKey, now).token
+    const deps: McpRuntimeDeps = {
+      ...base,
+      verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+      users: { ...base.users, findById: async () => user() },
+    }
+    const call = (token: string, headers: Record<string, string> = {}) =>
+      post('acme', { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } }, { authorization: `Bearer ${token}`, ...headers }, deps)
+    const res = await call(browser)
+    assert.equal(res.status, 200)
+    const body = (await readJson(res)) as { result?: { content?: Array<{ text: string }> } }
+    assert.equal((JSON.parse(body.result?.content?.[0]?.text ?? '{}') as { agents: Array<{ agentId: string }> }).agents[0]?.agentId, AGENT_ID)
+    const row = audit.find((a) => a.action === 'mcp.tools.call')
+    assert.equal((row?.metadata as Record<string, unknown> | undefined)?.client, 'platform_chat')
+    assert.equal((await call(turn)).status, 403) // agent-fejléc nélkül
+    assert.equal((await call(turn, { 'x-excellence-agent-id': FOREIGN_AGENT_ID })).status, 403)
+    assert.equal((await call(turn, { 'x-excellence-agent-id': AGENT_ID })).status, 200)
+    assert.equal((await call(signChatToken({ aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false }, 'x'.repeat(40), now).token)).status, 401)
+    // A worker állapotmentesen (initialize nélkül) listáz: 2026-07-28 envelope a `_meta`-ban.
+    const meta = {
+      'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientInfo': { name: 'excellence-platform-chat', version: '1.0.0' },
+      'io.modelcontextprotocol/clientCapabilities': { elicitation: { form: {} } },
+    }
+    const list = await post('acme', { jsonrpc: '2.0', id: 10, method: 'tools/list', params: { _meta: meta } }, { authorization: `Bearer ${turn}`, 'x-excellence-agent-id': AGENT_ID, 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/list' }, deps)
+    assert.equal(list.status, 200)
+    const tools = ((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []
+    assert.ok(tools.some((t) => t.name === MCP_AGENTS_LIST_TOOL))
+    assert.ok(tools.some((t) => t.name === DOCUMENT_EXPORT_TOOL), 'platform-chat: document export needs no agent capability')
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

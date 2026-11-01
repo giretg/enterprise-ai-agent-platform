@@ -1,10 +1,11 @@
 'use client'
 
 import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
-import { formatToolUiName } from '@/lib/tool-ui-labels'
+import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import {
   pendingArgsSummary,
   pendingOperationHeadline,
+  splitLabelledSections,
 } from '@/domain/gateway-operation/pending-args-summary'
 import type { TranslateFn } from '@/i18n/translate'
 import type { PendingOperationRow } from './types'
@@ -34,6 +35,59 @@ export function OperationConnectorIcon({ row }: { row: PendingOperationRow }) {
   )
 }
 
+const MEMORY_KIND_LABEL: Record<string, string> = {
+  session_log: 'Munkamenet-napló',
+  focus: 'Fókusz',
+}
+
+function MemoryWriteView({ args }: { args: Record<string, unknown> }) {
+  const text = (key: string) => (typeof args[key] === 'string' ? (args[key] as string) : '')
+  const kind = text('kind')
+  const project = text('projectKey')
+  const sections = splitLabelledSections(text('body'))
+  // replaceId/mergeIds/artifactPath change what gets overwritten — keep them visible.
+  const meta = [
+    ['felülírja', text('replaceId')],
+    ['összevonja', text('mergeIds')],
+    ['melléklet', text('artifactPath')],
+  ].filter(([, value]) => value)
+  return (
+    <div className="mt-1 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink-soft">
+          {MEMORY_KIND_LABEL[kind] ?? (kind || 'emlék')}
+        </span>
+        <span className="text-xs text-ink-faint">
+          {project && project !== '__general__' ? project : 'általános'}
+        </span>
+      </div>
+      {text('title') ? <p className="text-sm font-medium text-ink">{text('title')}</p> : null}
+      <dl className="max-h-80 space-y-2 overflow-auto rounded-lg border border-ink/10 bg-paper/60 p-3">
+        {sections.map((section, index) => (
+          <div
+            key={index}
+            className={section.label ? 'sm:grid sm:grid-cols-[7.5rem_1fr] sm:gap-3' : undefined}
+          >
+            {section.label ? (
+              <dt className="text-xs font-medium uppercase tracking-wide text-ink-faint">
+                {section.label}
+              </dt>
+            ) : null}
+            <dd className="whitespace-pre-wrap break-words text-sm leading-relaxed text-ink">
+              {section.text}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {meta.map(([label, value]) => (
+        <p key={label} className="break-all text-xs text-ink-faint">
+          {label}: <code className="font-mono">{value}</code>
+        </p>
+      ))}
+    </div>
+  )
+}
+
 export function OperationSummaryBlock({
   row,
   t,
@@ -47,33 +101,30 @@ export function OperationSummaryBlock({
 }) {
   const headline = pendingOperationHeadline(row.toolName, row.args, {
     connectorName: row.connectorName ?? undefined,
+    endpointDescription: row.endpointDescription,
   })
   if (mode === 'headline') {
     return <p className="mt-1 text-sm text-ink">{headline}</p>
   }
   if (!expanded) return null
+  if (row.toolName === 'platform.project_memory.write') return <MemoryWriteView args={row.args} />
   const details = pendingArgsSummary(row.toolName, row.args, {
     memoryKind: t('memoryKind'),
     parentRoot: t('parentRoot'),
     parentFolder: (id) => t('parentFolder', { id }),
+    endpointDescription: row.endpointDescription,
   })
   return (
-    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-ink/10 bg-paper/80 p-2 font-mono text-xs text-ink-soft">
+    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-ink">
       {details}
     </pre>
   )
 }
 
 export function OperationTitleLine({ row }: { row: PendingOperationRow }) {
-  const connector = row.connectorName
   return (
-    <div className="min-w-0">
-      <p className="font-medium text-ink">
-        {connector ? connector : formatToolUiName(row.toolName)}
-      </p>
-      <p className="text-xs text-ink-faint">
-        {connector ? formatToolUiName(row.toolName) : row.toolName}
-      </p>
-    </div>
+    <p className="font-medium text-ink">
+      {row.connectorName || getToolUiLabel(row.toolName).label}
+    </p>
   )
 }

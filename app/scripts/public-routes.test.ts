@@ -74,6 +74,7 @@ check('a saját hitelesítésű gépi belépők publikusak (token/aláírás a h
   assertPublic('/api/v1/gateway/messages')
   assertPublic('/api/v1/harness/complete')
   assertPublic('/api/v1/internal/dispatch-cycle')
+  assertPublic('/api/v1/internal/ai-audit-retention')
   assertPublic('/api/webhooks/clerk')
 })
 
@@ -133,10 +134,25 @@ check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/control-plane/iam')
   assertProtected('/api/agents')
   assertProtected('/api/v1/internal/other-endpoint')
+  assertProtected('/api/v1/internal/ai-audit-retention-admin')
+  assertProtected('/api/ai-audit/content-unlock')
+  assertProtected('/api/ai-audit/content-unlock/approve')
+})
+
+check('a cégindító varázsló Clerk-sessiont kér (#830) — csak a /sign-up publikus', () => {
+  assertProtected('/onboarding')
+  assertProtected('/onboarding?step=team')
+  assertPublic('/sign-up')
 })
 
 check('a delegált OAuth callback és az MCP done page publikus (signed state, nincs Clerk-süti)', () => {
   assertPublic('/api/connectors/oauth/callback')
+  // #967: a mini app gyors linkje token-alapú (keretoldal + tartalom); a letöltés és az állandó link védett.
+  assertPublic('/api/mini-apps/open/abc.def')
+  assertPublic('/api/mini-apps/content/abc.def')
+  assertProtected('/api/mini-apps/admin')
+  assertProtected('/api/control-plane/mini-apps/11111111-1111-4111-8111-111111111111/download')
+  assertProtected('/control-plane/mini-apps/11111111-1111-4111-8111-111111111111')
   assertPublic('/connectors/oauth/done')
   assertProtected('/connectors/oauth')
   assertProtected('/api/connectors/oauth')
@@ -156,8 +172,29 @@ check('az MCP resource URL és az OAuth well-known discovery publikus (Clerk-kap
 check('a Hermes gateway-token és policy-snapshot route publikus (saját Bearer), a testvér-route-ok nem', () => {
   assertPublic('/api/model-gateway/token')
   assertPublic('/api/client-policy/snapshot')
+  assertPublic('/api/client-policy/heartbeat')
+  assertPublic('/api/model-gateway/v1/chat/completions')
+  assertPublic('/api/ai-audit/events')
+  assertProtected('/api/ai-audit')
   assertProtected('/api/model-gateway/token/admin')
+  assertProtected('/api/model-gateway/admin')
   assertProtected('/api/client-policy')
+  assertProtected('/api/client-policy/machine-floor')
+})
+
+check('#1004 a platform-chat folytatási token publikus (chat-token Bearer), a session-végpont védett', () => {
+  assertPublic('/api/chat/continuation')
+  assertProtected('/api/chat/session')
+  assertProtected('/api/chat/continuation/admin')
+  assertProtected('/chat')
+})
+
+check('#1016 a nyilvános chat oldala és végpontja publikus, az alútjai nem', () => {
+  assertPublic('/c/acme-support')
+  assertPublic('/api/public-chat/acme-support')
+  assertProtected('/c/acme-support/admin')
+  assertProtected('/api/public-chat/acme-support/admin')
+  assertProtected('/control-plane/agents')
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

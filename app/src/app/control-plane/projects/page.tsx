@@ -1,6 +1,7 @@
 import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/lib/iam-policy'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import { listAgents } from '@/app/actions/platform'
 import { listWorkProjectsAction } from '@/app/actions/project-work'
 import { ProjectsPanel } from './projects-panel'
@@ -20,7 +21,8 @@ export default async function ProjectsPage() {
     : []
   const error = projectsRes.success ? null : projectsRes.error
   const canEdit = hasMinimumRole(ctx.activeTenantRole, 'approver')
-  const canDeleteMemory = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const canDeleteMemory =
+    hasMinimumRole(ctx.activeTenantRole, 'admin') || isSuperadmin(ctx.platformRoles)
 
   const t = await getTranslations('ControlPlane.projects')
   return (

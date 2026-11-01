@@ -18,6 +18,6 @@ export async function GET(): Promise<Response> {
     return Response.json({ status: 'ready' })
   } catch (e) {
     captureException(e, { source: 'readyz' })
-    return Response.json({ status: 'unready', error: String(e) }, { status: 503 })
+    return Response.json({ status: 'unready' }, { status: 503 })
   }
 }

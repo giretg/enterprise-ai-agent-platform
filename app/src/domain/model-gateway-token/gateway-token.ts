@@ -16,6 +16,7 @@ import {
   type McpPrincipal,
   type McpPrincipalDeps,
 } from '@/auth/mcp-principal'
+import { isReservedInstallId, PLATFORM_CHAT_INSTALL_ID, type PlatformChatAccess } from '@/domain/platform-chat/gateway'
 
 export const GATEWAY_TOKEN_TTL_SECONDS = 600
 const MIN_KEY_LENGTH = 32
@@ -38,6 +39,13 @@ export type GatewayTokenDeps = McpPrincipalDeps & {
   loadDefinition: (input: { tenantId: string; agentId: string }) => Promise<Pick<AgentDefinition, 'agentId' | 'status'> | null>
   canViewAgent: (input: { tenantId: string; userId: string; role: McpPrincipal['role']; agentId: string }) => Promise<boolean>
   policyVersion: (input: { tenantId: string; userId: string; agentId: string }) => Promise<string>
+  /** Indító jegyhez (#858): a tenant agentjei, a legrégebben létrehozott elöl. */
+  listAgentIds: (input: { tenantId: string }) => Promise<string[]>
+  /** #1004 WP-3: a platform-chat worker szerveroldali install-ja. Hiányában chat-tokenre nincs gateway-token. */
+  platformChat?: {
+    loadAccess: (input: { tenantId: string; agentId: string }) => Promise<PlatformChatAccess>
+    registerSession: (input: { tenantId: string; userId: string; agentId: string; sessionId: string; now: Date }) => Promise<void>
+  }
   now?: () => Date
 }
 
@@ -97,7 +105,11 @@ async function deny(
       targetId: meta.agentId ?? null,
       policyDecision: 'denied',
       inputRef: failure.code,
-      metadata: { code: failure.code, installId: meta.installId, reason: meta.reason },
+      metadata: {
+        code: failure.code,
+        installId: meta.installId,
+        ...(meta.reason !== undefined ? { denyReason: meta.reason } : {}),
+      },
       tenantId: meta.tenantId ?? null,
     })
   }
@@ -119,8 +131,16 @@ export async function issueGatewayToken(
   if (!key) return { ok: false, code: 'key_missing' }
 
   const b = (input.body ?? {}) as Record<string, unknown>
-  const { tenantSlug, agentId, installId } = b
-  if (typeof tenantSlug !== 'string' || typeof agentId !== 'string' || typeof installId !== 'string' || !installId || installId.length > 128) {
+  const { tenantSlug, installId } = b
+  // Hiányzó agentId = indító jegy (#858): az alap Hermes profilhoz nincs munkatárs kötve.
+  const requestedAgentId = b.agentId
+  if (
+    typeof tenantSlug !== 'string' ||
+    (requestedAgentId !== undefined && typeof requestedAgentId !== 'string') ||
+    typeof installId !== 'string' ||
+    !installId ||
+    installId.length > 128
+  ) {
     return { ok: false, code: 'bad_request' }
   }
 
@@ -134,11 +154,53 @@ export async function issueGatewayToken(
   }
   const p = resolved.principal
 
-  if (!(await agentAccessible(deps, p, agentId))) {
-    return deny(deps.audit, { ok: false, code: 'agent_not_found' }, { tenantId: p.tenantId, userId: p.userId, agentId: agentId.slice(0, 64), installId })
+  // #1004: a platform-chat principal csak a saját szerveroldali installjára kaphat tokent,
+  // Hermes kliens pedig nem bújhat ennek a nevébe (különben megkerülné a Guard-kaput).
+  const chat = p.client === 'platform_chat'
+  const sessionId = b.sessionId
+  if (!chat && isReservedInstallId(installId)) return { ok: false, code: 'bad_request' }
+  if (chat) {
+    if (
+      installId !== PLATFORM_CHAT_INSTALL_ID ||
+      typeof requestedAgentId !== 'string' ||
+      typeof sessionId !== 'string' ||
+      !sessionId ||
+      sessionId.length > 128
+    ) {
+      return { ok: false, code: 'bad_request' }
+    }
+    if (p.boundAgentId && p.boundAgentId !== requestedAgentId) {
+      return deny(deps.audit, { ok: false, code: 'forbidden' }, { tenantId: p.tenantId, userId: p.userId, agentId: requestedAgentId.slice(0, 64), installId, reason: 'platform_chat_turn_agent' })
+    }
+    const access = deps.platformChat && UUID_RE.test(requestedAgentId)
+      ? await deps.platformChat.loadAccess({ tenantId: p.tenantId, agentId: requestedAgentId })
+      : null
+    if (!access?.tenantEnabled || !access.agentEnabled) {
+      return deny(deps.audit, { ok: false, code: 'forbidden' }, { tenantId: p.tenantId, userId: p.userId, agentId: requestedAgentId.slice(0, 64), installId, reason: 'platform_chat_disabled' })
+    }
+  }
+
+  const bootstrap = requestedAgentId === undefined
+  let agentId: string | null = null
+  if (bootstrap) {
+    // ponytail: a legrégebbi elérhető agent; N lekérdezés az első találatig. Külön indító profil, ha a költség-könyvelés zavar.
+    for (const id of await deps.listAgentIds({ tenantId: p.tenantId })) {
+      if (await agentAccessible(deps, p, id)) {
+        agentId = id
+        break
+      }
+    }
+  } else if (await agentAccessible(deps, p, requestedAgentId)) {
+    agentId = requestedAgentId
+  }
+  if (!agentId) {
+    return deny(deps.audit, { ok: false, code: 'agent_not_found' }, { tenantId: p.tenantId, userId: p.userId, agentId: requestedAgentId?.slice(0, 64), installId, reason: bootstrap ? 'bootstrap_no_agent' : undefined })
   }
 
   const now = (deps.now ?? (() => new Date()))()
+  if (chat && deps.platformChat) {
+    await deps.platformChat.registerSession({ tenantId: p.tenantId, userId: p.userId, agentId, sessionId: sessionId as string, now })
+  }
   const iat = Math.floor(now.getTime() / 1000)
   const policyVersion = await deps.policyVersion({ tenantId: p.tenantId, userId: p.userId, agentId })
   const claims: GatewayTokenClaims = {
@@ -158,7 +220,7 @@ export async function issueGatewayToken(
     targetType: 'model_gateway',
     targetId: agentId,
     policyDecision: 'allowed',
-    metadata: { installId, jti: claims.jti, policyVersion, tenantSlug: p.tenantSlug, assumed: p.assumed },
+    metadata: { installId, jti: claims.jti, policyVersion, tenantSlug: p.tenantSlug, assumed: p.assumed, bootstrap, ...(chat ? { client: 'platform_chat' } : {}) },
     tenantId: p.tenantId,
   })
   return { ok: true, token: signJwt(claims, key), expiresAt: new Date(claims.exp * 1000).toISOString(), policyVersion }

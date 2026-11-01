@@ -27,6 +27,7 @@ const CALL_SITES = [
   'src/components/agents/memory-panel.tsx',
   'src/components/agents/agent-knowledge-base-panel.tsx',
   'src/app/control-plane/provisioning/provisioning-panel.tsx',
+  'src/app/control-plane/projects/project-memory-panel.tsx',
 ] as const
 
 test('ConfirmDialogHost a közös AuthProviders-ben mountolódik', () => {

@@ -1,13 +1,13 @@
 import { SignUp } from '@clerk/nextjs'
 import { AuthLocaleShell } from '@/components/auth/auth-locale-shell'
+import { signUpForceRedirectUrl } from '@/lib/control-plane-entry'
 
 export default async function SignUpPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  const params = await searchParams
-  const hasInvitationTicket = Boolean(params.__clerk_ticket || params.ticket)
+  const forceRedirectUrl = signUpForceRedirectUrl(await searchParams)
 
   return (
     <AuthLocaleShell>
@@ -15,9 +15,7 @@ export default async function SignUpPage({
         routing="path"
         path="/sign-up"
         signInUrl="/sign-in"
-        {...(!hasInvitationTicket
-          ? { forceRedirectUrl: '/control-plane/pending?registration=complete' }
-          : {})}
+        {...(forceRedirectUrl ? { forceRedirectUrl } : {})}
       />
     </AuthLocaleShell>
   )

@@ -159,7 +159,7 @@ async function syncAssignedConnectorCapabilities(
   agentId: string,
   connectorId: string,
   accessMode: 'read' | 'write',
-  connectorType: 'http_api' | 'gmail' | 'google_drive',
+  connectorType: 'http_api' | 'gmail' | 'google_drive' | 'mcp',
 ) {
   const readTools = toolsRequiringConnector(connectorType, 'read')
   const writeTools = toolsRequiringConnector(connectorType, 'write')
@@ -198,7 +198,7 @@ async function syncAssignedConnectorCapabilities(
 
 async function syncConnectorRemovalCapabilities(agentIds: string[]) {
   for (const agentId of agentIds) {
-    for (const type of ['http_api', 'gmail', 'google_drive'] as const) {
+    for (const type of ['http_api', 'gmail', 'google_drive', 'mcp'] as const) {
       const readTools = toolsRequiringConnector(type, 'read')
       const writeTools = toolsRequiringConnector(type, 'write')
       const [anyActive, writeActive] = await Promise.all([
@@ -581,6 +581,7 @@ export async function assignConnectorToAgent(input: {
   accessMode?: 'read' | 'write'
   apiKey?: string
   reason?: string
+  mailboxConfirmed?: boolean
 }) {
   try {
     const user = await requireTenantRole('admin')
@@ -590,6 +591,7 @@ export async function assignConnectorToAgent(input: {
         agentId: z.string().min(1),
         accessMode: z.enum(['read', 'write']).default('read'),
         apiKey: z.string().optional(),
+        mailboxConfirmed: z.boolean().optional(),
       })
       .parse(input)
     const connector = await prisma.connector.findFirst({
@@ -597,7 +599,12 @@ export async function assignConnectorToAgent(input: {
     })
     if (!connector) return fail('Csak aktivált, tenanton belüli kapcsolat rendelhető agenthez.')
     await services.provisioning.assignConnectorToAgent(parsed, actorOf(user))
-    if (connector.type === 'http_api' || connector.type === 'gmail' || connector.type === 'google_drive') {
+    if (
+      connector.type === 'http_api' ||
+      connector.type === 'gmail' ||
+      connector.type === 'google_drive' ||
+      connector.type === 'mcp'
+    ) {
       await syncAssignedConnectorCapabilities(
         parsed.agentId,
         parsed.connectorId,
@@ -631,7 +638,10 @@ export async function unassignConnectorFromAgent(input: {
     await services.provisioning.unassignConnectorFromAgent(parsed, actorOf(user))
     if (
       connector &&
-      (connector.type === 'http_api' || connector.type === 'gmail' || connector.type === 'google_drive')
+      (connector.type === 'http_api' ||
+        connector.type === 'gmail' ||
+        connector.type === 'google_drive' ||
+        connector.type === 'mcp')
     ) {
       await syncConnectorRemovalCapabilities([parsed.agentId])
     }
@@ -649,6 +659,24 @@ export async function updateConnectorDraftConfig(input: unknown) {
     return ok(res)
   } catch (e) {
     return toFail(e, 'Nem sikerült frissíteni a draft configját')
+  }
+}
+
+const googleAccountBindingSchema = z.object({
+  draftId: z.string().min(1),
+  accountIds: z.array(z.string().trim().min(1)).min(1).max(50),
+  managerAccountId: z.string().trim().optional(),
+})
+
+/** Tenant-admin: melyik cég-szintű Google Ads / GA4 / Search Console fiókot érheti el a konnektor. */
+export async function updateGoogleAccountBinding(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = googleAccountBindingSchema.parse(input)
+    const res = await services.provisioning.updateGoogleAccountBinding(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült menteni, melyik Google-fiókot érheti el a konnektor')
   }
 }
 

@@ -9,9 +9,14 @@ import { services } from '@/domain/gateway-services'
 import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
-import { connectorGrantIdSchema, startConnectorOAuthSchema } from '@/lib/validators/actions'
+import {
+  connectorGrantIdSchema,
+  startConnectorOAuthSchema,
+  updateConnectorGrantNicknameSchema,
+} from '@/lib/validators/actions'
 import { navSoftwareSchema } from '@/lib/nav-online-invoice-software'
 import { toGoogleOAuthPublicView, toGoogleDrivePickerPublicView } from '@/lib/platform-google-oauth-config'
+import { toGoogleAdsDeveloperTokenPublicView } from '@/lib/google-ads-developer-token'
 import { agentDisplayName } from '@/lib/agent-persona'
 import { iconDataUrlByTemplateKey, provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { GoogleDriveApiClient } from '@/domain/connector-grant/google-drive-api-client'
@@ -29,6 +34,7 @@ import {
   driveScopeProfile,
 } from '@/domain/connector-grant/google-drive-scopes'
 import { toolsRequiringConnector } from '@/domain/connector-grant/tool-connector-requirements'
+import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 
 async function loadAgentDelegatedConnectors(
   _agentId: string,
@@ -43,7 +49,7 @@ function activeDelegatedConnectorWhere(tenantId: string): Prisma.ConnectorWhereI
     authMode: 'user_delegated',
     lifecycleState: 'active',
     tenantId,
-    type: { in: ['google_drive', 'http_api', 'gmail'] },
+    type: { in: ['google_drive', 'http_api', 'gmail', 'mcp'] },
   }
 }
 
@@ -171,12 +177,16 @@ export async function getMyGoogleDriveGrantForPicker() {
       ctx.user.id,
     )
     const grants = await services.connectorGrants.listForUser(ctx.user.id, ctx.activeTenantId)
-    const driveGrant = grants.find(
-      (g) => g.status === 'active' && g.connector?.type === 'google_drive',
-    )
+    const driveGrants = grants
+      .filter((g) => g.status === 'active' && g.connector?.type === 'google_drive')
+      .map((g) => ({
+        id: g.id,
+        label: g.nickname?.trim() || g.accountLabel?.trim() || g.id,
+      }))
     const pickerConfig = await services.platformSettings.getGoogleDrivePickerConfig()
     return ok({
-      grantId: driveGrant?.id ?? null,
+      grants: driveGrants,
+      grantId: driveGrants[0]?.id ?? null,
       pickerConfigured: Boolean(pickerConfig),
     })
   } catch (e) {
@@ -291,8 +301,11 @@ export async function getGoogleDriveOAuthConfiguredStatus() {
 export async function getGoogleApiOAuthConfiguredStatus() {
   try {
     await requireTenantRole('viewer')
-    const resolved = await services.platformSettings.getGoogleApiOAuthConfig()
-    return ok({ configured: Boolean(resolved) })
+    const [resolved, adsToken] = await Promise.all([
+      services.platformSettings.getGoogleApiOAuthConfig(),
+      services.platformSettings.getGoogleAdsDeveloperToken(),
+    ])
+    return ok({ configured: Boolean(resolved), googleAdsDeveloperTokenConfigured: Boolean(adsToken) })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load Google API OAuth status')
   }
@@ -399,6 +412,27 @@ export async function upsertPlatformGoogleApiOAuth(input: {
   }
 }
 
+export async function getPlatformGoogleAdsDeveloperToken() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const resolved = await services.platformSettings.getGoogleAdsDeveloperToken()
+    return ok(toGoogleAdsDeveloperTokenPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load Google Ads developer token status')
+  }
+}
+
+export async function upsertPlatformGoogleAdsDeveloperToken(input: { developerToken: string }) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = z.object({ developerToken: z.string().trim().min(1) }).parse(input)
+    const resolved = await services.platformSettings.upsertGoogleAdsDeveloperToken(parsed, ctx.user.id)
+    return ok(toGoogleAdsDeveloperTokenPublicView(resolved))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save Google Ads developer token')
+  }
+}
+
 export async function getPlatformGoogleDrivePickerConfig() {
   try {
     await requirePlatformRole('platform_auditor')
@@ -473,8 +507,7 @@ export async function getGoogleDrivePickerSession(input: { grantId: string }) {
       actingUserId: ctx.user.id,
       tenantId: grant.tenantId ?? ctx.activeTenantId,
     })
-    const origin =
-      process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, '') ?? 'http://localhost:3000'
+    const origin = resolvePublicAppOrigin()
     return ok({
       accessToken,
       apiKey: pickerConfig.config.apiKey,
@@ -614,11 +647,14 @@ export async function startConnectorOAuth(input: {
   scopes?: string[]
   /** A grant-hiányon elakadt eszköz — ebből jön a legkisebb szükséges scope. */
   toolName?: string
+  nickname?: string
+  addAccount?: boolean
   returnTo?: { kind: 'conversation' | 'ticket'; id: string; agentId?: string; originPath?: string }
 }) {
   try {
     const ctx = await requireTenantRole('viewer')
-    const { connectorId, scopes, toolName, returnTo } = startConnectorOAuthSchema.parse(input)
+    const { connectorId, scopes, toolName, returnTo, nickname, addAccount } =
+      startConnectorOAuthSchema.parse(input)
     const connector = await prisma.connector.findUnique({ where: { id: connectorId } })
     if (!connector) return fail('Connector not found')
     if (connector.authMode !== 'user_delegated') return fail('Connector is not user_delegated')
@@ -634,10 +670,41 @@ export async function startConnectorOAuth(input: {
       ...(toolName ? { toolName } : {}),
       ...(scopes ? { requestedScopes: scopes } : {}),
       ...(returnTo ? { returnTo } : {}),
+      ...(nickname ? { nickname } : {}),
+      ...(addAccount ? { addAccount: true } : {}),
     })
     return ok(started)
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to start OAuth')
+    const message = e instanceof Error ? e.message : 'Failed to start OAuth'
+    if (message === 'nickname_taken') return fail('nickname_taken')
+    return fail(message)
+  }
+}
+
+export async function updateConnectorGrantNickname(input: {
+  grantId: string
+  nickname: string | null
+}) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const { grantId, nickname } = updateConnectorGrantNicknameSchema.parse(input)
+    const grant = await prisma.connectorGrant.findUnique({ where: { id: grantId } })
+    if (!grant) return fail('Grant not found')
+    if (grant.userId !== ctx.user.id) return fail('Forbidden')
+    if (grant.tenantId !== ctx.activeTenantId) return fail('Forbidden')
+    await services.connectorGrants.updateNickname({
+      grantId,
+      nickname,
+      actorId: ctx.user.id,
+      expectedUserId: ctx.user.id,
+      expectedTenantId: ctx.activeTenantId,
+    })
+    return ok({ saved: true })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to save nickname'
+    if (message === 'nickname_taken') return fail('nickname_taken')
+    if (message === 'invalid_nickname') return fail('invalid_nickname')
+    return fail(message)
   }
 }
 

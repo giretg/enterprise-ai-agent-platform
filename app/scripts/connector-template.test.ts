@@ -2,15 +2,21 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
-import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
+import {
+  findOverlappingHttpApiEndpoints,
+  HttpApiClient,
+  HttpApiError,
+  parseHttpApiConfig,
+} from '../src/domain/connector/http-api-client'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
-import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
+import { CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import {
   ConnectorTemplateMaterializationError,
   materializeConnectorConfig,
   selfCheckTemplateDescriptor,
 } from '../src/domain/connector-template/materializer'
 import { materializeGmailConnectorConfig } from '../src/domain/connector-template/gmail-connector-config'
+import { materializeGoogleDriveConnectorConfig } from '../src/domain/connector-template/google-drive-connector-config'
 import { parseTemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
 import { enrichOstorosborConnectorConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
 
@@ -155,6 +161,24 @@ async function main() {
     assert.ok(descriptor.activationHelp?.includes('platform Google OAuth'))
   })
 
+  await test('an explicitly empty scope selection never restores default OAuth grants', () => {
+    const gmail = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-workspace'))
+    assert.throws(
+      () => materializeGmailConnectorConfig(gmail, { authMethodKind: 'user_delegated_oauth2', instanceValues: {}, selectedScopes: [] }, {}),
+      /Válassz legalább egy Gmail-jogosultságot/,
+    )
+    const drive = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-drive'))
+    assert.throws(
+      () => materializeGoogleDriveConnectorConfig(drive, { authMethodKind: 'user_delegated_oauth2', instanceValues: {}, selectedScopes: [] }, {}),
+      /Válassz legalább egy Google Drive-jogosultságot/,
+    )
+    const microsoft = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES.find((item) => item.key === 'microsoft-365'))
+    assert.throws(
+      () => materializeConnectorConfig(microsoft, { authMethodKind: 'user_delegated_oauth2', instanceValues: { clientId: 'test-client' }, selectedScopes: [] }, { clientSecret: 'secret-ref:test' }),
+      /Válassz legalább egy hozzáférési jogosultságot/,
+    )
+  })
+
   await test('unknown selected Gmail scope is rejected', () => {
     const descriptor = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES[0])
     assert.throws(
@@ -192,7 +216,7 @@ async function main() {
   })
 
   await test('seeded GitHub custom descriptor materializes to runtime-parseable config', () => {
-    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
     assert.ok(rawDescriptor, 'missing github custom template')
     const descriptor = parseTemplateDescriptor(rawDescriptor)
     assert.ok(descriptor.activationHelp?.includes('Personal access token'))
@@ -221,10 +245,168 @@ async function main() {
     })
     assert.ok((config.proposedTools ?? []).every((tool) => tool.path.startsWith('/repos/{owner}/{repo}')))
     assert.ok(!(config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
+    assert.equal(runtime.restrictToEndpoints, true)
+  })
+
+  await test('template selection limits live GitHub paths and permits nested file reads', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: 'bearer',
+        instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' },
+        selectedEndpoints: ['get_file_contents'],
+      },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const client = new HttpApiClient(parseHttpApiConfig(config), 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/src/lib/file.ts' })).ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'POST', path: '/repos/giretg/ostorosbor-crm/issues', body: { title: 'unapproved' } }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/src/../../issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/..%2F..%2Fissues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'invalid_path',
+    )
+  })
+
+  await test('existing GitHub template connectors receive the same live endpoint limit', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      { authMethodKind: 'bearer', instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' }, selectedEndpoints: ['get_file_contents'] },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const { proposedTools, ...storedConfig } = config
+    const oldConfig = {
+      ...storedConfig,
+      restrictToEndpoints: false,
+      endpoints: proposedTools.map((tool) => ({ ...tool, path: tool.path.replace('{path...}', '{path}') })),
+    }
+    const client = new HttpApiClient(parseHttpApiConfig(oldConfig), 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/src/lib/file.ts' })).ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('GitHub template permits repository root listings and slash branch trees', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: 'bearer',
+        instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' },
+        selectedEndpoints: ['get_file_contents', 'get_repository_tree'],
+      },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const client = new HttpApiClient(parseHttpApiConfig(config), 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents' })).ok, true)
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/contents/?ref=main' })).ok, true)
+    assert.equal(
+      (await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/git/trees/feature/login?recursive=1' })).ok,
+      true,
+    )
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/git/trees/feature%2Flogin' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'invalid_path',
+    )
+  })
+
+  await test('legacy GitHub-style connectors are restricted regardless of template key', async () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    const config = materializeConnectorConfig(
+      descriptor,
+      { authMethodKind: 'bearer', instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' }, selectedEndpoints: ['get_repository_tree'] },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    const { proposedTools, ...storedConfig } = config
+    const oldConfig = {
+      ...storedConfig,
+      provenance: { ...storedConfig.provenance, templateKey: 'github-internal' },
+      restrictToEndpoints: false,
+      endpoints: proposedTools.map((tool) => ({ ...tool, path: tool.path.replace('{ref...}', '{ref}') })),
+    }
+    const runtime = parseHttpApiConfig(oldConfig)
+    assert.equal(runtime.restrictToEndpoints, true)
+    assert.ok(runtime.endpoints?.some((endpoint) => endpoint.path === '/repos/{owner}/{repo}/git/trees/{ref...}'))
+    const client = new HttpApiClient(runtime, 'stub-api-key')
+    assert.equal((await client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/git/trees/release/1.2' })).ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/repos/giretg/ostorosbor-crm/issues' }),
+      (error: unknown) => error instanceof HttpApiError && error.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('restricted endpoints match literal non-ASCII path segments', async () => {
+    const client = new HttpApiClient(
+      parseHttpApiConfig({
+        baseUrl: 'https://api.example.com/v1',
+        auth: { scheme: 'none' },
+        restrictToEndpoints: true,
+        endpoints: [{ method: 'GET', path: '/Ügyfelek/{id}' }],
+      }),
+      'stub-api-key',
+    )
+    assert.equal((await client.request({ method: 'GET', path: '/Ügyfelek/42' })).ok, true)
+  })
+
+  await test('catch-all endpoints are reported as overlapping with the paths they shadow', () => {
+    assert.deepEqual(
+      findOverlappingHttpApiEndpoints([
+        { method: 'GET', path: '/repos/{owner}/{repo}/contents/{path...}' },
+        { method: 'GET', path: '/repos/{owner}/{repo}/contents/docs/{file}' },
+        { method: 'GET', path: '/repos/{owner}/{repo}/issues' },
+      ]),
+      [['GET /repos/{owner}/{repo}/contents/{path...}', 'GET /repos/{owner}/{repo}/contents/docs/{file}']],
+    )
+  })
+
+  await test('a selection the repository scope filters to nothing is rejected', () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    assert.throws(
+      () => materializeConnectorConfig(
+        descriptor,
+        {
+          authMethodKind: 'bearer',
+          instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm' },
+          selectedEndpoints: ['list_user_repositories'],
+        },
+        { personalAccessToken: 'secret-ref:github-pat' },
+      ),
+      /a kiválasztott repository-n belüli műveletet/,
+    )
+  })
+
+  await test('empty template action selection is rejected before a connector is created', () => {
+    const descriptor = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github'))
+    assert.throws(
+      () => materializeConnectorConfig(
+        descriptor,
+        {
+          authMethodKind: 'bearer',
+          instanceValues: { repositoryAccess: '*' },
+          selectedEndpoints: [],
+        },
+        { personalAccessToken: 'secret-ref:github-pat' },
+      ),
+      /Válassz legalább egy elérhető műveletet/,
+    )
   })
 
   await test('seeded GitHub custom descriptor keeps account-wide tools in any mode', () => {
-    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
     assert.ok(rawDescriptor, 'missing github custom template')
     const config = materializeConnectorConfig(
       parseTemplateDescriptor(rawDescriptor),
@@ -236,9 +418,7 @@ async function main() {
     )
     assert.deepEqual(parseHttpApiConfig(config).githubRepositoryAccess, { mode: 'any' })
     assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
-    // WP-3 kivétel: GitHub repo-scope connectort NEM korlátozzuk endpoint-listával —
-    // azt a repository-határ őrzi, a katalógusa szándékosan tágabb.
-    assert.equal(config.restrictToEndpoints, undefined)
+    assert.equal(config.restrictToEndpoints, true)
   })
 
   await test('all seeded custom descriptors parse; marketing templates self-check', () => {
@@ -248,7 +428,7 @@ async function main() {
       'google-ads',
       'meta-ads',
     ])
-    for (const rawDescriptor of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
+    for (const rawDescriptor of CUSTOM_CONNECTOR_TEMPLATES) {
       const descriptor = parseTemplateDescriptor(rawDescriptor)
       assert.equal(descriptor.key, rawDescriptor.key)
       if (!marketingKeys.has(descriptor.key)) continue
@@ -257,27 +437,78 @@ async function main() {
     }
   })
 
-  await test('Google Ads template injects developer-token request header', () => {
-    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-ads')
+  await test('Google Ads template binds the company account; developer token stays platform-level', () => {
+    const rawDescriptor = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-ads')
     assert.ok(rawDescriptor, 'missing google-ads custom template')
+    const descriptor = parseTemplateDescriptor(rawDescriptor)
+    assert.equal(
+      descriptor.instanceFields.some((field) => field.name === 'developerToken'),
+      false,
+      'developer token is a platform setting, not a tenant template field',
+    )
     const config = materializeConnectorConfig(
-      parseTemplateDescriptor(rawDescriptor),
+      descriptor,
       {
         authMethodKind: 'user_delegated_oauth2',
         instanceValues: {
-          developerToken: 'dev-token-example',
-          loginCustomerId: '1234567890',
+          customerIds: '123-456-7890, 111-222-3333',
+          loginCustomerId: '987-654-3210',
         },
       },
       {},
     )
     assert.equal(config.baseUrl, 'https://googleads.googleapis.com')
-    assert.equal(config.requestHeaders?.['developer-token'], 'dev-token-example')
-    assert.equal(config.requestHeaders?.['login-customer-id'], '1234567890')
+    assert.deepEqual(config.googleAccountBinding, {
+      accountIds: ['1234567890', '1112223333'],
+      managerAccountId: '9876543210',
+    })
+    assert.equal(config.requestHeaders?.['developer-token'], undefined)
+    const runtime = parseHttpApiConfig(config, { allowMissingOAuthClientId: true })
+    assert.equal(runtime.requestHeaders?.['login-customer-id'], '9876543210')
+    assert.equal(runtime.googleAccount?.provider, 'google-ads')
     assert.equal(config.auth.type, 'oauth2')
     assert.equal(config.auth.scope, 'https://www.googleapis.com/auth/adwords')
     assert.equal(config.restrictToEndpoints, true)
     assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'search'))
+  })
+
+  await test('Google Analytics / Search Console templates require and normalize the bound account', () => {
+    const ga = parseTemplateDescriptor(CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-analytics'))
+    assert.deepEqual(
+      materializeConnectorConfig(
+        ga,
+        { authMethodKind: 'user_delegated_oauth2', instanceValues: { propertyIds: 'properties/123456789' } },
+        {},
+      ).googleAccountBinding,
+      { accountIds: ['123456789'] },
+    )
+    assert.throws(
+      () => materializeConnectorConfig(ga, { authMethodKind: 'user_delegated_oauth2', instanceValues: {} }, {}),
+      /missing template field: propertyIds/,
+    )
+    const sc = parseTemplateDescriptor(
+      CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'google-search-console'),
+    )
+    assert.deepEqual(
+      materializeConnectorConfig(
+        sc,
+        {
+          authMethodKind: 'user_delegated_oauth2',
+          instanceValues: { siteUrls: 'https://WWW.Example.com sc-domain:Example.hu' },
+        },
+        {},
+      ).googleAccountBinding,
+      { accountIds: ['https://www.example.com/', 'sc-domain:example.hu'] },
+    )
+    assert.throws(
+      () =>
+        materializeConnectorConfig(
+          ga,
+          { authMethodKind: 'user_delegated_oauth2', instanceValues: { propertyIds: 'UA-1234-1' } },
+          {},
+        ),
+      /GA4 property ID/,
+    )
   })
 
   await test('marketing custom templates expose documented hosts and default read tools', () => {
@@ -305,7 +536,7 @@ async function main() {
     } as const
 
     for (const [key, spec] of Object.entries(expected)) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.equal(descriptor.baseUrl, spec.baseUrl)
@@ -334,7 +565,7 @@ async function main() {
     } as const
 
     for (const [key, spec] of Object.entries(expected)) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.equal(descriptor.baseUrl, spec.baseUrl)
@@ -360,7 +591,7 @@ async function main() {
   })
 
   await test('billingo template materializes api_key header auth', () => {
-    const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'billingo')
+    const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'billingo')
     assert.ok(raw, 'missing billingo custom template')
     const config = materializeConnectorConfig(
       parseTemplateDescriptor(raw),
@@ -383,7 +614,7 @@ async function main() {
 
   await test('issue #691 szamlazz / nav / minicrm templates materialize for the runtime', () => {
     const materialize = (key: string, authMethodKind: 'bearer' | 'basic', instanceValues: Record<string, string>) => {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.ok((descriptor.activationHelp ?? '').includes('1.'))
@@ -432,7 +663,7 @@ async function main() {
     } as const
 
     for (const [key, spec] of Object.entries(expected)) {
-      const raw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
+      const raw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === key)
       assert.ok(raw, `missing ${key} custom template`)
       const descriptor = parseTemplateDescriptor(raw)
       assert.equal(descriptor.authMethods[0]?.kind, spec.auth)
@@ -442,7 +673,7 @@ async function main() {
       selfCheckTemplateDescriptor(descriptor)
     }
 
-    const pipedriveRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'pipedrive')
+    const pipedriveRaw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'pipedrive')
     assert.ok(pipedriveRaw)
     const pipedrive = materializeConnectorConfig(
       parseTemplateDescriptor(pipedriveRaw),
@@ -463,7 +694,7 @@ async function main() {
       ),
     )
 
-    const wooRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'woocommerce')
+    const wooRaw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'woocommerce')
     assert.ok(wooRaw)
     const woo = materializeConnectorConfig(
       parseTemplateDescriptor(wooRaw),
@@ -489,7 +720,7 @@ async function main() {
       ),
     )
 
-    const shopRaw = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'shoprenter')
+    const shopRaw = CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'shoprenter')
     assert.ok(shopRaw)
     const shop = materializeConnectorConfig(
       parseTemplateDescriptor(shopRaw),
@@ -791,7 +1022,7 @@ async function main() {
       'ostorosbor-crm-sales-delegated': 'ostorosbor-crm.svg',
       'ostorosbor-crm-service-insight': 'ostorosbor-crm.svg',
     }
-    for (const descriptor of [...BUILTIN_CONNECTOR_TEMPLATES, ...GLOBAL_CUSTOM_CONNECTOR_TEMPLATES]) {
+    for (const descriptor of [...BUILTIN_CONNECTOR_TEMPLATES, ...CUSTOM_CONNECTOR_TEMPLATES]) {
       const file = shared[descriptor.key] ?? `${descriptor.key}.svg`
       const path = resolve(dir, file)
       assert.ok(existsSync(path), `missing icon file for template ${descriptor.key}: ${file}`)

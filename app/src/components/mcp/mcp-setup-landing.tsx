@@ -1,16 +1,14 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { useTranslations } from 'next-intl'
+import { downloadManagedInstaller } from '@/components/client-policy/download-managed-installer'
+import { InstallerOsField } from '@/components/client-policy/installer-os-field'
+import type { InstallerPlatform } from '@/domain/client-policy/installer-filename'
 import { Card } from '@/components/ui/shell'
-import { HERMES_LINKS, MCP_SETUP_SEEN_COOKIE, type McpClientSetup } from '@/lib/mcp-client-setup'
-
-function markSetupSeen() {
-  const secure = window.location.protocol === 'https:' ? '; Secure' : ''
-  document.cookie = `${MCP_SETUP_SEEN_COOKIE}=1; Path=/; Max-Age=31536000; SameSite=Lax${secure}`
-}
+import { HERMES_LINKS, type McpClientSetup } from '@/lib/mcp-client-setup'
 
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false)
@@ -115,11 +113,174 @@ function HermesTerminalFallback({ command }: { command: string }) {
   )
 }
 
-export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup; continueHref: string }) {
+function HermesDownloadButton() {
   const t = useTranslations('GetStarted')
-  useEffect(() => {
-    markSetupSeen()
-  }, [])
+  return (
+    <a href={HERMES_LINKS.download} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
+      {t('hermesDownload')} <span aria-hidden="true">↗</span>
+    </a>
+  )
+}
+
+function HermesConnectStep({ n, setup, children }: { n: number; setup: McpClientSetup; children?: ReactNode }) {
+  const t = useTranslations('GetStarted')
+  return (
+    <HermesStep n={n} title={t('hermesStep3Title')}>
+      <p>{t('hermesStep3Body')}</p>
+      <a href={setup.hermesInstallHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
+        {t('hermesInstall')} <span aria-hidden="true">→</span>
+      </a>
+      <p className="text-xs text-ink-faint">{t('hermesStep3Manual')}</p>
+      <HermesTerminalFallback command={setup.hermesCommand} />
+      <p className="text-xs text-ink-faint">{t('hermesStep3Hint')}</p>
+      {children}
+    </HermesStep>
+  )
+}
+
+/** A Botok létrehozása és használata: a két Hermes-útban azonos, csak a sorszám más. */
+function HermesBotSteps({ n, setup }: { n: number; setup: McpClientSetup }) {
+  const t = useTranslations('GetStarted')
+  return (
+    <>
+      <HermesStep n={n} title={t('hermesStep4Title')}>
+        <p>{t('hermesStep4Body')}</p>
+        <CodeBlock value={setup.hermesSyncPrompt} copyLabel={t('copyPrompt')} />
+        <p className="text-xs text-ink-faint">{t('hermesStep4Hint')}</p>
+      </HermesStep>
+      <HermesStep n={n + 1} title={t('hermesStep5Title')}>
+        <p>{t('hermesStep5Body')}</p>
+        <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
+      </HermesStep>
+    </>
+  )
+}
+
+function HermesFooter({ enterprise }: { enterprise?: boolean }) {
+  const t = useTranslations('GetStarted')
+  return (
+    <>
+      <div className="rounded-xl border border-line bg-card p-3">
+        <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
+        <p className="mt-1">{t(enterprise ? 'hermesEntUpdateBody' : 'hermesUpdateBody')}</p>
+      </div>
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('hermesLinksTitle')}</p>
+        <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          {(
+            [
+              ['hermesLinkDocs', HERMES_LINKS.docs],
+              ['hermesLinkBotMode', HERMES_LINKS.botMode],
+              ['hermesLinkMcp', HERMES_LINKS.mcp],
+              ['hermesLinkProfiles', HERMES_LINKS.profileDistributions],
+            ] as const
+          ).map(([key, href]) => (
+            <li key={key}>
+              <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline-offset-2 hover:underline">
+                {t(key)} ↗
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </>
+  )
+}
+
+export type HermesAdminMember = { userId: string; name: string; email: string }
+
+/** Csak adminnak: `modelKeyConfigured` null, ha a kulcs állapota nem olvasható. */
+export type HermesAdminSetup = {
+  modelKeyConfigured: boolean | null
+  members: HermesAdminMember[]
+  defaultUserId?: string
+}
+
+function HermesInstallerStep({ n, admin }: { n: number; admin: HermesAdminSetup }) {
+  const t = useTranslations('GetStarted')
+  const id = useId()
+  const firstId = admin.defaultUserId && admin.members.some((m) => m.userId === admin.defaultUserId)
+    ? admin.defaultUserId
+    : admin.members[0]?.userId ?? ''
+  const [userId, setUserId] = useState(firstId)
+  const [platform, setPlatform] = useState<InstallerPlatform>('posix')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+
+  async function download() {
+    if (!userId) return
+    setPending(true)
+    setError('')
+    try {
+      await downloadManagedInstaller(userId, platform)
+    } catch {
+      setError(t('hermesEntDownloadFailed'))
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <HermesStep n={n} title={t('hermesEntInstallTitle')}>
+      <p>{t('hermesEntInstallBody')}</p>
+      {admin.members.length === 0 ? (
+        <p className="font-semibold text-coral-deep">{t('hermesEntNoMembers')}</p>
+      ) : (
+        <>
+          <label className="block text-sm" htmlFor={id}>
+            <span className="font-semibold text-ink">{t('hermesEntPickUser')}</span>
+            <select
+              id={id}
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              className="mt-1 block w-full rounded-lg border border-line bg-card px-3 py-2 text-ink"
+            >
+              {admin.members.map((member) => (
+                <option key={member.userId} value={member.userId}>
+                  {member.name} ({member.email})
+                </option>
+              ))}
+            </select>
+          </label>
+          <InstallerOsField
+            name={`${id}-os`}
+            value={platform}
+            onChange={setPlatform}
+            legend={t('hermesEntPickOs')}
+            posixLabel={t('hermesEntOsPosix')}
+            windowsLabel={t('hermesEntOsWindows')}
+          />
+          <button
+            type="button"
+            onClick={() => void download()}
+            disabled={pending || !userId}
+            className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep disabled:opacity-50"
+          >
+            {t(pending ? 'hermesEntDownloading' : 'hermesEntDownloadInstaller')}
+          </button>
+          {error ? <p role="status" className="text-sm text-coral-deep">{error}</p> : null}
+          <p>{t(platform === 'windows' ? 'hermesEntInstallRunWindows' : 'hermesEntInstallRun')}</p>
+          <CodeBlock
+            value={t(platform === 'windows' ? 'hermesEntInstallCommandWindows' : 'hermesEntInstallCommand')}
+            copyLabel={t('copyCommand')}
+          />
+          <p className="text-xs text-ink-faint">{t('hermesEntInstallHint')}</p>
+        </>
+      )}
+    </HermesStep>
+  )
+}
+
+export function McpSetupLanding({
+  setup,
+  continueHref,
+  hermesAdmin,
+}: {
+  setup: McpClientSetup
+  continueHref: string
+  hermesAdmin?: HermesAdminSetup
+}) {
+  const t = useTranslations('GetStarted')
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 pb-8">
@@ -146,67 +307,100 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
 
         <div className="space-y-3">
           <ClientCard
-            name="Hermes Desktop"
-            description={t('hermesDesc')}
+            name="Hermes Desktop Enterprise"
+            description={t('hermesEntDesc')}
             logo="/mcp-clients/hermes.svg"
             logoBackground="bg-[#ececf2]"
             badge={t('hermesBadge')}
           >
+            <p>{t('hermesEntIntro')}</p>
+            <section className="space-y-3 rounded-xl border border-coral/30 bg-card p-3">
+              <p className="font-semibold text-ink">{t('hermesEntAdminTitle')}</p>
+              {hermesAdmin ? (
+                <>
+                  <ol className="space-y-4">
+                    <HermesStep n={1} title={t('hermesEntKeyTitle')}>
+                      <p>{t('hermesEntKeyBody')}</p>
+                      {hermesAdmin.modelKeyConfigured === null ? null : (
+                        <p className={hermesAdmin.modelKeyConfigured ? 'text-xs text-ink-faint' : 'font-semibold text-coral-deep'}>
+                          {t(hermesAdmin.modelKeyConfigured ? 'hermesEntKeyOk' : 'hermesEntKeyMissing')}
+                        </p>
+                      )}
+                      <Link href="/control-plane/settings" className="font-semibold text-coral-deep underline">{t('hermesEntKeyOpen')}</Link>
+                    </HermesStep>
+                    <HermesStep n={2} title={t('hermesEntPolicyTitle')}>
+                      <p>{t('hermesEntPolicyBody')}</p>
+                      <Link href="/control-plane/ai-client-policy" className="font-semibold text-coral-deep underline">{t('hermesManagedOpen')}</Link>
+                    </HermesStep>
+                    <HermesInstallerStep n={3} admin={hermesAdmin} />
+                    <HermesStep n={4} title={t('hermesEntSecurityTitle')}>
+                      <p>{t('hermesEntSecurityBody')}</p>
+                    </HermesStep>
+                    <HermesStep n={5} title={t('hermesEntVerifyTitle')}>
+                      <p>{t('hermesEntVerifyBody')}</p>
+                    </HermesStep>
+                  </ol>
+                  <p className="text-xs text-ink-faint">{t('hermesManagedLimits')}</p>
+                </>
+              ) : (
+                <p>{t('hermesEntAdminNote')}</p>
+              )}
+            </section>
+            <section className="space-y-3">
+              <p className="font-semibold text-ink">{t('hermesEntUserTitle')}</p>
+              <ol className="space-y-4">
+                <HermesStep n={1} title={t('hermesStep1Title')}>
+                  <p>{t('hermesEntStep1Body')}</p>
+                  <HermesDownloadButton />
+                </HermesStep>
+                <HermesConnectStep n={2} setup={setup}>
+                  <p className="text-xs text-ink-faint">{t('hermesEntNoModel')}</p>
+                </HermesConnectStep>
+                <HermesStep n={3} title={t('hermesEntBotsTitle')}>
+                  <p>{t('hermesEntBotsBody')}</p>
+                  <p className="text-xs text-ink-faint">{t('hermesEntBotsHint')}</p>
+                  <details className="rounded-xl border border-line bg-card/40 text-sm text-ink-soft">
+                    <summary className="cursor-pointer px-3 py-2 font-semibold text-ink">{t('hermesEntTroubleshootTitle')}</summary>
+                    <div className="space-y-3 border-t border-line px-3 py-3">
+                      <p>{t('hermesEntTroubleshootBody')}</p>
+                      <p className="font-semibold text-ink">{t('hermesEntTroubleshootPosix')}</p>
+                      <CodeBlock value={t('hermesEntTroubleshootCommandPosix')} copyLabel={t('copyCommand')} />
+                      <p className="font-semibold text-ink">{t('hermesEntTroubleshootWindows')}</p>
+                      <CodeBlock value={t('hermesEntTroubleshootCommandWindows')} copyLabel={t('copyCommand')} />
+                    </div>
+                  </details>
+                </HermesStep>
+                <HermesStep n={4} title={t('hermesStep5Title')}>
+                  <p>{t('hermesStep5Body')}</p>
+                  <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
+                </HermesStep>
+              </ol>
+            </section>
+            <HermesFooter enterprise />
+          </ClientCard>
+
+          <ClientCard
+            name="Hermes Desktop"
+            description={t('hermesDesc')}
+            logo="/mcp-clients/hermes.svg"
+            logoBackground="bg-[#ececf2]"
+          >
             <p>{t('hermesIntro')}</p>
+            <p className="text-xs text-ink-faint">{t('hermesPersonalNote')}</p>
             <ol className="space-y-4">
               <HermesStep n={1} title={t('hermesStep1Title')}>
                 <p>{t('hermesStep1Body')}</p>
-                <a href={HERMES_LINKS.download} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
-                  {t('hermesDownload')} <span aria-hidden="true">↗</span>
-                </a>
+                <HermesDownloadButton />
               </HermesStep>
               <HermesStep n={2} title={t('hermesStep2Title')}>
                 <p>{t('hermesStep2Body')}</p>
                 <p className="text-xs text-ink-faint">{t('hermesStep2Hint')}</p>
                 <HermesTerminalFallback command="hermes model" />
               </HermesStep>
-              <HermesStep n={3} title={t('hermesStep3Title')}>
-                <p>{t('hermesStep3Body')}</p>
-                <a href={setup.hermesInstallHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-5 py-2.5 font-semibold text-white transition-colors hover:bg-coral-deep">
-                  {t('hermesInstall')} <span aria-hidden="true">→</span>
-                </a>
-                <p className="text-xs text-ink-faint">{t('hermesStep3Manual')}</p>
-                <HermesTerminalFallback command={setup.hermesCommand} />
-                <p className="text-xs text-ink-faint">{t('hermesStep3Hint')}</p>
-              </HermesStep>
-              <HermesStep n={4} title={t('hermesStep4Title')}>
-                <p>{t('hermesStep4Body')}</p>
-                <CodeBlock value={setup.hermesSyncPrompt} copyLabel={t('copyPrompt')} />
-                <p className="text-xs text-ink-faint">{t('hermesStep4Hint')}</p>
-              </HermesStep>
-              <HermesStep n={5} title={t('hermesStep5Title')}>
-                <p>{t('hermesStep5Body')}</p>
-                <p className="text-xs text-ink-faint">{t('hermesApprovalHint')}</p>
-              </HermesStep>
+              <HermesConnectStep n={3} setup={setup} />
+              <HermesBotSteps n={4} setup={setup} />
             </ol>
-            <div className="rounded-xl border border-line bg-card p-3">
-              <p className="font-semibold text-ink">{t('hermesUpdateTitle')}</p>
-              <p className="mt-1">{t('hermesUpdateBody')}</p>
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-faint">{t('hermesLinksTitle')}</p>
-              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                {(
-                  [
-                    ['hermesLinkDocs', HERMES_LINKS.docs],
-                    ['hermesLinkBotMode', HERMES_LINKS.botMode],
-                    ['hermesLinkMcp', HERMES_LINKS.mcp],
-                    ['hermesLinkProfiles', HERMES_LINKS.profileDistributions],
-                  ] as const
-                ).map(([key, href]) => (
-                  <li key={key}>
-                    <a href={href} target="_blank" rel="noopener noreferrer" className="font-semibold text-coral-deep underline-offset-2 hover:underline">
-                      {t(key)} ↗
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            <HermesFooter />
           </ClientCard>
 
           <ClientCard name="Codex" description={t('codexDesc')} logo="/mcp-clients/codex.svg" logoBackground="bg-[#e6eee9]">
@@ -259,7 +453,7 @@ export function McpSetupLanding({ setup, continueHref }: { setup: McpClientSetup
       </Card>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Link href={continueHref} onClick={markSetupSeen} className="inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-coral-deep">
+        <Link href={continueHref} className="inline-flex items-center gap-2 rounded-full bg-coral px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-coral-deep">
           {t('continue')} <span aria-hidden="true">→</span>
         </Link>
         <p className="text-sm text-ink-faint">{t('reopenHint')}</p>

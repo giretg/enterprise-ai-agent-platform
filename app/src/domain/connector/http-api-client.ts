@@ -10,7 +10,6 @@
  * eszközzel hív; az endpoint-katalógus (config.endpoints + config.description)
  * a tool loopban kerül a modell elé.
  */
-import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
 import { guardEgressUrl } from '@/domain/net/egress-guard'
@@ -26,6 +25,16 @@ import {
   type GitHubRepositoryAccess,
 } from './github-repository-access'
 import { decodeGitHubContentsBody } from './decode-github-contents-body'
+import {
+  checkGoogleAccountAllowed,
+  formatGoogleAccountId,
+  googleAccountKindLabel,
+  isGoogleAccountBindingProvider,
+  parseGoogleAccountBindingConfig,
+  type GoogleAccountBinding,
+  type GoogleAccountBindingProvider,
+} from './google-account-binding'
+import type { TenantLanguage } from '@/lib/tenant-language'
 import {
   buildHttpApiClientErrorHint,
   buildHttpApiOversizedResponseHint,
@@ -151,6 +160,12 @@ export type HttpApiConfig = {
   defaultRisk?: HttpApiRisk
   /** GitHub connector repository-határa. Hiánya visszafelé kompatibilisen `any`. */
   githubRepositoryAccess?: GitHubRepositoryAccess
+  /**
+   * Google Ads / Analytics / Search Console: a provider és a tenant által kötött fiók(ok).
+   * `binding` hiányában (régi konnektor) nincs fiókhatár, de a 401/403 hint így is a
+   * felhasználói hozzáférésre mutat.
+   */
+  googleAccount?: { provider: GoogleAccountBindingProvider; binding?: GoogleAccountBinding }
   /** Maximális válasz-méret karakterben (alap: 20000). */
   maxResponseChars?: number
   /** Önfrissítő snapshotból materializált config: minden hívásnál egress-őr. */
@@ -159,6 +174,8 @@ export type HttpApiConfig = {
   protocol?: HttpApiProtocol
   /** NAV Online Számla: a lekérdező adózó 8 jegyű törzsszáma. */
   nav?: { taxNumber: string }
+  /** A hívó által feloldott, aktuális tenant egress-policy. */
+  allowedEgressHosts?: string[]
 }
 
 const HTTP_API_RISKS = new Set<HttpApiRisk>(['read', 'write', 'danger'])
@@ -197,7 +214,7 @@ export function riskFromHttpMethod(method: string): HttpApiRisk {
 
 const READ_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
-const DEFAULT_MAX_RESPONSE_CHARS = 20_000
+export const DEFAULT_MAX_RESPONSE_CHARS = 20_000
 /** Runtime által injektált idempotencia-fejléc (kisbetűs egyeztetéshez). */
 const IDEMPOTENCY_HEADER_LOWER = 'idempotency-key'
 /**
@@ -303,6 +320,10 @@ export function parseHttpApiConfig(
     : Array.isArray(raw.proposedTools)
       ? raw.proposedTools
       : undefined
+  // A githubRepositoryAccess-t csak sablon adhatja, így a régi, korlátozás nélkül tárolt
+  // GitHub sablonkapcsolatok is a kiválasztott műveletlistára szűkülnek, sablonkulcstól függetlenül.
+  const legacyGitHubTemplate =
+    (isRecord(raw.provenance) && raw.provenance.templateKey === 'github') || isRecord(raw.githubRepositoryAccess)
   const endpoints = Array.isArray(endpointSource)
     ? endpointSource
         .filter(isRecord)
@@ -327,7 +348,8 @@ export function parseHttpApiConfig(
           const paginationResult = httpPaginationSchema.safeParse(e.pagination)
           return {
             method,
-            path: String(e.path ?? ''),
+            path: (legacyGitHubTemplate && typeof e.path === 'string' && LEGACY_GITHUB_CATCH_ALL_PATHS[e.path])
+              || String(e.path ?? ''),
             description: typeof e.description === 'string' ? e.description : undefined,
             profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
             idempotent: e.idempotent === true,
@@ -346,6 +368,20 @@ export function parseHttpApiConfig(
 
   const authProfiles = parseAuthProfiles(raw.authProfiles)
   const githubRepositoryAccess = parseGitHubRepositoryAccessConfig(raw.githubRepositoryAccess)
+  const provider = typeof raw.provider === 'string' ? raw.provider : null
+  const googleAccount = isGoogleAccountBindingProvider(provider)
+    ? (() => {
+        const binding = parseGoogleAccountBindingConfig(provider, raw.googleAccountBinding)
+        return { provider, ...(binding ? { binding } : {}) }
+      })()
+    : undefined
+  // A kötött MCC (manager) fiók a Google Ads login-customer-id fejléce — platform injektálja,
+  // a modell nem adhatja meg. Régi konnektoron a requestHeaders-ben már benne lehet.
+  const managerAccountId = googleAccount?.binding?.managerAccountId
+  const effectiveRequestHeaders =
+    managerAccountId && !headerNameSet(requestHeaders).has('login-customer-id')
+      ? { ...(requestHeaders ?? {}), 'login-customer-id': managerAccountId }
+      : requestHeaders
 
   const defaultRisk = parseHttpApiRisk(raw.defaultRisk)
   const protocol = HTTP_API_PROTOCOLS.find((p) => p === raw.protocol)
@@ -362,7 +398,7 @@ export function parseHttpApiConfig(
       typeof raw.defaultAuthProfile === 'string' && raw.defaultAuthProfile.trim()
         ? raw.defaultAuthProfile.trim()
         : undefined,
-    requestHeaders,
+    requestHeaders: effectiveRequestHeaders,
     writeHeaders,
     defaultActingUserEmail:
       typeof raw.defaultActingUserEmail === 'string' && raw.defaultActingUserEmail.trim()
@@ -370,8 +406,9 @@ export function parseHttpApiConfig(
         : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
-    restrictToEndpoints: raw.restrictToEndpoints === true,
+    restrictToEndpoints: raw.restrictToEndpoints === true || (legacyGitHubTemplate && Array.isArray(endpointSource)),
     ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
+    ...(googleAccount ? { googleAccount } : {}),
     maxResponseChars:
       typeof raw.maxResponseChars === 'number' && raw.maxResponseChars > 0
         ? raw.maxResponseChars
@@ -640,8 +677,10 @@ export type HttpApiResponse = {
   hint?: string
   /** true, ha a body truncate-elt előnézet (maxResponseChars). */
   truncated?: boolean
-  /** RFC 8288 lapozáshoz; csak a Link fejléc, más response header nem kerül tovább. */
+  /** RFC 8288 lapozáshoz: a Link fejléc. */
   linkHeader?: string
+  /** A válasz ETag fejléce (pl. If-Match-hez); más response header nem kerül tovább. */
+  etag?: string
   /** XML-protokolloknál a szolgáltató saját hibakódja (pl. Számlázz.hu `hibakod`). */
   errorCode?: string
 }
@@ -678,6 +717,11 @@ export type HttpApiCredentials =
       resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
     }
 
+type ResolveHostIps = (host: string) => Promise<string[]>
+
+const defaultResolveHostIps: ResolveHostIps = async (host) =>
+  (await lookup(host, { all: true })).map((entry) => entry.address)
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -690,10 +734,13 @@ function sleep(ms: number): Promise<void> {
 export class HttpApiClient {
   private defaultApiKey?: string
   private resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
+  private readonly language: TenantLanguage = 'hu'
 
   constructor(
     private config: HttpApiConfig,
     credentials: HttpApiCredentials,
+    private readonly resolveHostIps: ResolveHostIps = defaultResolveHostIps,
+    options?: { language?: TenantLanguage },
   ) {
     if (typeof credentials === 'string') {
       this.defaultApiKey = credentials
@@ -701,6 +748,7 @@ export class HttpApiClient {
       this.defaultApiKey = credentials.defaultApiKey
       this.resolveProfileApiKey = credentials.resolveProfileApiKey
     }
+    if (options?.language) this.language = options.language
   }
 
   private isStub(): boolean {
@@ -717,7 +765,16 @@ export class HttpApiClient {
       throw new HttpApiError('path must be relative to the connector baseUrl', 'invalid_path')
     }
     this.assertGitHubRepositoryAllowed(path)
-    const endpoint = findHttpApiEndpoint(this.config, method, path)
+    const basePath = new URL(this.config.baseUrl).pathname.replace(/\/$/, '')
+    const requestPath = this.buildUrl(path).pathname
+    if (basePath && !requestPath.startsWith(`${basePath}/`)) {
+      throw new HttpApiError('path must stay inside the connector baseUrl', 'invalid_path')
+    }
+    const endpointPath = requestPath.slice(basePath.length)
+    const endpoint = findHttpApiEndpoint(this.config, method, endpointPath)
+    if (endpoint && isCatchAllPath(endpoint.path) && /%(?:2f|5c)/i.test(endpointPath)) {
+      throw new HttpApiError('encoded path separators are not allowed', 'invalid_path')
+    }
     const continuationEndpoint = continuationOf
       ? findHttpApiEndpoint(this.config, method, continuationOf)
       : undefined
@@ -727,11 +784,11 @@ export class HttpApiClient {
           method === 'GET'
           && continuationEndpoint?.pagination?.kind === 'next_link'
           && continuationEndpoint.pagination.continuationPathTemplate
-          && httpApiPathMatches(continuationEndpoint.pagination.continuationPathTemplate, path)
+          && httpApiPathMatches(continuationEndpoint.pagination.continuationPathTemplate, endpointPath)
         ) {
           return continuationEndpoint
         }
-        const reason = explainHttpApiEndpointMiss(this.config, method, path)
+        const reason = explainHttpApiEndpointMiss(this.config, method, endpointPath)
         throw new HttpApiError(
           `endpoint not allowed: ${method} ${path} — ${reason}`,
           'endpoint_not_allowed',
@@ -778,6 +835,47 @@ export class HttpApiClient {
     }
   }
 
+  private assertGoogleAccountAllowed(path: string, body: unknown): void {
+    const google = this.config.googleAccount
+    if (!google?.binding) return
+    let pathname: string
+    try {
+      pathname = this.buildUrl(path).pathname
+    } catch {
+      throw new HttpApiError('Google API path is invalid', 'invalid_path')
+    }
+    const check = checkGoogleAccountAllowed(google.provider, google.binding, pathname, body)
+    if (check.allowed) return
+    const kind = googleAccountKindLabel(google.provider)
+    const bound = check.boundAccounts.map((id) => formatGoogleAccountId(google.provider, id)).join(', ')
+    throw new HttpApiError(
+      `${kind} not bound to this connector: ${check.target || '(missing)'}`,
+      'google_account_not_allowed',
+      undefined,
+      this.language === 'en'
+        ? `This connector may only reach the company's bound ${kind}: ${bound}. Use one of these; a tenant admin can change the binding on the connector.`
+        : `Ez a konnektor csak a cég által kötött ${kind} elérésére jogosult: ${bound}. Ezek egyikét használd; a kötést a cég adminja módosíthatja a konnektornál.`,
+    )
+  }
+
+  /** 401/403 egy Google fiókos API-n: jellemzően a felhasználó saját Google-fiókjának nincs joga. */
+  private googleAccountAccessHint(status: number): string | undefined {
+    const google = this.config.googleAccount
+    if (!google || (status !== 401 && status !== 403)) return undefined
+    const kind = googleAccountKindLabel(google.provider)
+    const bound = google.binding?.accountIds.map((id) => formatGoogleAccountId(google.provider, id)).join(', ')
+    if (this.language === 'en') {
+      return (
+        `The user's own connected Google account probably has no access to the ${kind}${bound ? ` (${bound})` : ''}. ` +
+        'Tell the user to ask the account owner for access, or reconnect with a Google account that has it — do not retry with other account IDs.'
+      )
+    }
+    return (
+      `Valószínűleg a felhasználó saját, csatlakoztatott Google-fiókjának nincs joga a(z) ${kind}${bound ? ` (${bound})` : ''} eléréséhez. ` +
+      'Kérd meg a felhasználót, hogy kérjen hozzáférést a fiók gazdájától, vagy csatlakozzon olyan Google-fiókkal, amelyiknek van — ne próbálkozz más fiókazonosítóval.'
+    )
+  }
+
   private buildUrl(path: string, query?: HttpApiRequestParams['query']): URL {
     const rel = path.startsWith('/') ? path : `/${path}`
     const url = new URL(`${this.config.baseUrl}${rel}`)
@@ -797,7 +895,12 @@ export class HttpApiClient {
       const key = this.resolveProfileApiKey
         ? await this.resolveProfileApiKey(profileName, profile.secretAlias)
         : await resolveConnectorApiKey(profile.secretAlias)
-      return buildAuthHeaders(profile.auth ?? this.config.auth, key)
+      return buildAuthHeaders(
+        profile.auth ?? this.config.auth,
+        key,
+        this.resolveHostIps,
+        this.config.allowedEgressHosts,
+      )
     }
 
     if (this.config.auth.scheme === 'none') return {}
@@ -805,7 +908,12 @@ export class HttpApiClient {
     if (!this.defaultApiKey) {
       throw new HttpApiError('http_api connector has no default API key', 'missing_api_key')
     }
-    return buildAuthHeaders(this.config.auth, this.defaultApiKey)
+    return buildAuthHeaders(
+      this.config.auth,
+      this.defaultApiKey,
+      this.resolveHostIps,
+      this.config.allowedEgressHosts,
+    )
   }
 
   private platformInjectedHeaderNames(
@@ -883,6 +991,7 @@ export class HttpApiClient {
       throw new HttpApiError(`unsupported HTTP method: ${method}`, 'invalid_method')
     }
     const endpoint = this.selectEndpoint(method, params.path, params.continuationOf)
+    this.assertGoogleAccountAllowed(params.path, params.body)
     const platformInjected = this.platformInjectedHeaderNames(method, endpoint)
     const parameterHeaders = this.buildParameterHeaders(endpoint, params.headers, platformInjected)
 
@@ -927,8 +1036,8 @@ export class HttpApiClient {
     let oversizedSoftHint: string | undefined
     const contentType = res.headers.get('content-type') ?? ''
     if (contentType.includes('application/json')) {
-      // Sikeres / parse-olható JSON: a teljes body megmarad (get_all + archive + extract).
-      // A maxResponseChars soft jelzés: ne dumpold a modell kontextusába.
+      // Parse-olt JSON a get_all lapozásnak teljesben kell. A modell/MCP plafont
+      // az executeHttpApiTool kapja (capHttpApiResultForModel) — itt ne vágjunk.
       try {
         const parsed: unknown = JSON.parse(text)
         body = decodeGitHubContentsBody(parsed)
@@ -943,6 +1052,7 @@ export class HttpApiClient {
           oversizedSoftHint = buildHttpApiOversizedResponseHint({
             originalChars: effectiveChars,
             maxChars: max,
+            language: this.language,
           })
         }
       } catch {
@@ -952,6 +1062,7 @@ export class HttpApiClient {
             originalChars: text.length,
             maxChars: max,
             preview: text.slice(0, max),
+            language: this.language,
           })
         } else {
           body = previewText
@@ -963,11 +1074,17 @@ export class HttpApiClient {
 
     const errorHint =
       !res.ok
-        ? buildHttpApiClientErrorHint({
-            status: res.status,
-            endpoint: endpoint ?? null,
-            usedQueryKeys: params.query ? Object.keys(params.query) : [],
-          })
+        ? [
+            buildHttpApiClientErrorHint({
+              status: res.status,
+              endpoint: endpoint ?? null,
+              usedQueryKeys: params.query ? Object.keys(params.query) : [],
+              language: this.language,
+            }),
+            this.googleAccountAccessHint(res.status),
+          ]
+            .filter(Boolean)
+            .join(' ') || undefined
         : undefined
     const truncationHint =
       truncated && typeof body === 'object' && body && 'hint' in (body as object)
@@ -979,6 +1096,7 @@ export class HttpApiClient {
                 originalChars: text.length,
                 maxChars: max,
                 preview: text.slice(0, Math.min(max, text.length)),
+                language: this.language,
               }).hint
             : undefined
 
@@ -987,6 +1105,7 @@ export class HttpApiClient {
       ok: res.ok,
       body,
       ...(res.headers.get('link') ? { linkHeader: res.headers.get('link')! } : {}),
+      ...(res.headers.get('etag') ? { etag: res.headers.get('etag')! } : {}),
       ...(truncated ? { truncated: true } : {}),
       ...(errorHint || truncationHint
         ? { hint: [errorHint, truncationHint].filter(Boolean).join(' ') }
@@ -1038,15 +1157,15 @@ export class HttpApiClient {
     // azonos-hostnevű, de más PORTRA mutató (pl. `:2375` belső admin/docker) vagy `https→http`
     // downgrade átirányítás különben átcsúszna a puszta hostname-egyezésen.
     const connectorOrigin = connectorUrl.origin
-    if (this.config.selfUpdatingPinned) {
-      const guard = await guardEgressUrl({
-        url: input.toString(),
-        allowlistHosts: [connectorHost],
-        resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
-      })
-      if (!guard.ok || guard.host !== connectorHost) {
-        throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
-      }
+    const guard = await guardEgressUrl({
+      url: input.toString(),
+      // A hívás a connector baseUrl-hostjára van pinelve; üres tenant-lista
+      // ne blokkolja a saját hostot (katalógus-sablon, pl. Calendar).
+      allowlistHosts: [...new Set([...(this.config.allowedEgressHosts ?? []), connectorHost])],
+      resolveHostIps: this.resolveHostIps,
+    })
+    if (!guard.ok || guard.host !== connectorHost) {
+      throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
     }
     // Host-pinning a redirecteken is: a `fetch` alapból KÖVETI a 3xx-eket, ezért egy
     // allowlistolt host egyetlen átirányítással kivihetné a hívást egy belső szolgáltatásra
@@ -1155,7 +1274,7 @@ const oauth2TokenCache = new Map<string, CachedOAuth2Token>()
 const OAUTH2_EXPIRY_SKEW_MS = 60_000
 
 function oauth2CacheKey(auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>, refreshToken: string): string {
-  return createHash('sha256').update(`${auth.tokenUrl}::${auth.clientId}::${refreshToken}`).digest('hex')
+  return `${auth.tokenUrl}\0${auth.clientId}\0${refreshToken}`
 }
 
 /**
@@ -1166,12 +1285,24 @@ function oauth2CacheKey(auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>, 
 async function resolveOAuth2AccessToken(
   auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>,
   credentialsJson: string,
+  resolveHostIps: ResolveHostIps,
+  allowedEgressHosts?: string[],
 ): Promise<string> {
   const { clientSecret, refreshToken } = parseOAuth2Credentials(credentialsJson)
   const cacheKey = oauth2CacheKey(auth, refreshToken)
   const cached = oauth2TokenCache.get(cacheKey)
   if (cached && cached.expiresAt - OAUTH2_EXPIRY_SKEW_MS > Date.now()) {
     return cached.accessToken
+  }
+
+  const tokenHost = new URL(auth.tokenUrl).hostname.toLowerCase()
+  const guard = await guardEgressUrl({
+    url: auth.tokenUrl,
+    allowlistHosts: allowedEgressHosts ?? [tokenHost],
+    resolveHostIps,
+  })
+  if (!guard.ok || guard.host !== tokenHost) {
+    throw new HttpApiError('oauth2 token endpoint is blocked by egress policy', 'egress_blocked')
   }
 
   const body = new URLSearchParams({
@@ -1181,11 +1312,15 @@ async function resolveOAuth2AccessToken(
     client_secret: clientSecret,
     ...(auth.scope ? { scope: auth.scope } : {}),
   })
-  const res = await fetch(auth.tokenUrl, {
+  const res = await fetch(guard.url, {
     method: 'POST',
+    redirect: 'manual',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   })
+  if (res.status >= 300 && res.status < 400) {
+    throw new HttpApiError('oauth2 token endpoint redirect is blocked', 'egress_blocked')
+  }
   if (!res.ok) {
     // Az OAuth-szerver error/error_description mezői NEM titkosak (RFC 6749 §5.2) —
     // ezek a diagnózishoz kellenek; a client_secret/refresh_token SOSEM kerül ide.
@@ -1208,7 +1343,12 @@ async function resolveOAuth2AccessToken(
   return data.access_token
 }
 
-async function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Promise<Record<string, string>> {
+async function buildAuthHeaders(
+  auth: HttpApiAuthConfig,
+  apiKey: string,
+  resolveHostIps: ResolveHostIps,
+  allowedEgressHosts?: string[],
+): Promise<Record<string, string>> {
   if (auth.scheme === 'none') return {}
   if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
   if (auth.scheme === 'basic') {
@@ -1216,7 +1356,7 @@ async function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Promis
     return { authorization: `Basic ${token}` }
   }
   if (auth.scheme === 'oauth2') {
-    const accessToken = await resolveOAuth2AccessToken(auth, apiKey)
+    const accessToken = await resolveOAuth2AccessToken(auth, apiKey, resolveHostIps, allowedEgressHosts)
     return { authorization: `Bearer ${accessToken}` }
   }
   return { [auth.header]: apiKey }
@@ -1290,6 +1430,11 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
 export function httpApiPathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
+  if (isCatchAllSegment(t.at(-1))) {
+    // A `{name...}` záró szegmens nulla vagy több path-szegmenst fed le (repo gyökér, `feature/x` ág).
+    const prefix = t.slice(0, -1)
+    return a.length >= prefix.length && prefix.every((seg, i) => segmentMatches(seg, a[i]))
+  }
   if (t.length !== a.length) return false
   return t.every((seg, i) => segmentMatches(seg, a[i]))
 }
@@ -1364,10 +1509,17 @@ export function findOverlappingHttpApiEndpoints(
 }
 
 function templatesOverlap(left: string, right: string): boolean {
-  const l = left.split('/').filter(Boolean)
-  const r = right.split('/').filter(Boolean)
-  if (l.length !== r.length) return false
-  return l.every((seg, i) => {
+  const lSegments = left.split('/').filter(Boolean)
+  const rSegments = right.split('/').filter(Boolean)
+  const lCatchAll = isCatchAllSegment(lSegments.at(-1))
+  const rCatchAll = isCatchAllSegment(rSegments.at(-1))
+  const l = lCatchAll ? lSegments.slice(0, -1) : lSegments
+  const r = rCatchAll ? rSegments.slice(0, -1) : rSegments
+  if (!lCatchAll && !rCatchAll && l.length !== r.length) return false
+  if (lCatchAll && !rCatchAll && r.length < l.length) return false
+  if (rCatchAll && !lCatchAll && l.length < r.length) return false
+  const shared = Math.min(l.length, r.length)
+  return l.slice(0, shared).every((seg, i) => {
     const other = r[i]
     if (!hasPathParam(seg)) return segmentMatches(other, seg)
     if (!hasPathParam(other)) return segmentMatches(seg, other)
@@ -1379,6 +1531,20 @@ function templatesOverlap(left: string, right: string): boolean {
 
 const BRACE_PARAM = /\{[^{}/]+\}/g
 
+/** A régi GitHub sablonkapcsolatok egy-szegmenses útvonalai, amelyek valójában több szegmenst fednek le. */
+const LEGACY_GITHUB_CATCH_ALL_PATHS: Record<string, string> = {
+  '/repos/{owner}/{repo}/contents/{path}': '/repos/{owner}/{repo}/contents/{path...}',
+  '/repos/{owner}/{repo}/git/trees/{ref}': '/repos/{owner}/{repo}/git/trees/{ref...}',
+}
+
+function isCatchAllSegment(segment: string | undefined): boolean {
+  return segment !== undefined && /^\{[^{}/]+\.\.\.\}$/.test(segment)
+}
+
+function isCatchAllPath(template: string): boolean {
+  return isCatchAllSegment(template.split('/').filter(Boolean).at(-1))
+}
+
 function isPathParamSegment(segment: string): boolean {
   return segment.startsWith(':') || (segment.startsWith('{') && segment.endsWith('}'))
 }
@@ -1389,12 +1555,24 @@ function hasPathParam(segment: string): boolean {
 
 function segmentMatches(templateSegment: string, actual: string): boolean {
   if (isPathParamSegment(templateSegment)) return actual.length > 0
-  if (!templateSegment.includes('{')) return templateSegment === actual
+  // A kliens a normalizált (percent-kódolt) URL-pathname-mel illeszt; a literál sablon
+  // (pl. `/Ügyfelek/{id}`) a dekódolt alakkal is egyezzen.
+  const decoded = decodePathSegment(actual)
+  if (!templateSegment.includes('{')) return templateSegment === actual || templateSegment === decoded
   const pattern = templateSegment
     .split(BRACE_PARAM)
     .map((literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('[^/]+')
-  return new RegExp(`^${pattern}$`).test(actual)
+  const regex = new RegExp(`^${pattern}$`)
+  return regex.test(actual) || regex.test(decoded)
+}
+
+function decodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
 }
 
 function templateLiteralLength(template: string): number {

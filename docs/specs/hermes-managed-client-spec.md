@@ -191,13 +191,13 @@ Jelölés: **[forrás]** = kódban/doksiban ellenőrizve · **[élő]** = ezen a
 | H-2 | `agent.disabled_toolsets` | Toolset globális eltávolítása minden platformon, a per-platform beállítás **után** alkalmazva. | **[forrás]** | — |
 | H-3 | `plugins.enabled` allowlist | Harmadik féltől származó plugin csak ennek alapján tölt be; managed pinnel a user nem kapcsolhat be saját plugint. | **[forrás][élő]** | A bundled platform-, backend-, memória- és provider-pluginok megkerülik (beépítettek). |
 | H-4 | **Shell hook** `hooks.pre_tool_call` + `fail_closed: true` + `hooks_auto_accept: true` | Külön processzként futó policy-bináris; hibánál, timeoutnál blokkol; a payload tartalmazza a `profile`-t (melyik Bot), a toolt, az argumentumokat. Managed scope-ból pinelhető. | Processz-izolált. **[forrás][élő]** | `--safe-mode` (H-9). |
-| H-5 | **Plugin hook** `pre_tool_call` | `block` / `approve` (emberi jóváhagyás) / `modify`; a `block` mindig nyer; **timeoutnál vagy kivételnél fail-closed**. | **[forrás]** | `--safe-mode`. |
+| H-5 | **Plugin hook** `pre_tool_call` | `block` / `approve` (emberi jóváhagyás) / `modify`; a `block` mindig nyer; **timeoutnál vagy kivételnél fail-closed**. MCP-toolra és `delegate_task`-ra is ez a dispatch fut (**[forrás]**, K2). | **[forrás]** | `--safe-mode`. Ha a dispatcher maga dob, a `model_tools.py` külső exceptje továbbenged — tartalék az `exc-guard` (K2). |
 | H-6 | **Prompt-hookok** `pre_llm_call` (a user eredeti szövege), `post_llm_call`, `pre/post_api_request` (a ténylegesen elküldött kérés), `pre/post_auxiliary_call`, `on_session_*`, `subagent_*`, `post_tool_call` | Teljes kliensoldali prompt- és válasz-audit. | Observer. **[forrás]** | Plugin nélkül (safe-mode) nincs. |
 | H-7 | **Middleware** `llm_request` / `llm_execution` / `tool_request` / `tool_execution` | A kimenő kérés (`messages`) átírható (kitakarás), az LLM-hívás lecserélhető szintetikus válaszra. | **Kivételnél fail-open.** **[forrás]** | Upstream rés U4. |
 | H-8 | **Terminál-backend plugin** | A `terminal`, az `execute_code` **és a fájl-toolok** saját backendre (céges sandbox) mennek. **Ismeretlen backend esetén elutasít, nem lokálisra esik vissza** (`terminal_tool_backends.py:360`). | Fail-closed. **[forrás]** | — |
 | H-9 | `--safe-mode` | Kikapcsolja a pluginokat, a shell hookokat és az MCP-t. | — | **A Guard eltűnik**; a managed pinek maradnak, a céges MCP eltűnik. Upstream rés U2. |
 | H-10 | Custom provider `providers.<id>`: `api`, `key_cmd`, `extra_headers`, `session_affinity_header` | Céges LLM-proxy natív bekötése; a `key_cmd` rövid életű tokent kér; a header viszi az agent- és session-azonosítót. | **[forrás]** | A user további providert vehet fel (dict-merge). |
-| H-11 | `/model … --provider x` (session-only) | Session szintű provider-váltás. | — | **[POC K4]** |
+| H-11 | `/model … --provider x` (session-only) | Session szintű provider-váltás. | — | A CLI elfogadhatja; a Guard 0.3.1 a végrehajtásnál (főhívás + mellékhívás HTTP) fail-closed. Élő újramérés: **[POC K4]** |
 | H-12 | Skillek: `write_approval`, `guard_agent_created` | Az agent skill-írása jóváhagyáshoz köthető. | **Nincs skill-allowlist.** | A `/skill` slash parancs tool-hívás nélkül injektál. U5. |
 | H-13 | Memory provider plugin | A lokális memória Excellence-memóriára cserélhető. | **[forrás]** | — |
 | H-14 | Böngésző-provider plugin | A böngésző felhős (céges) backendre irányítható. | **[forrás, doksi]** | **[POC]** |
@@ -248,6 +248,8 @@ A legacy platform Model Gateway-ében már működött egy kétlépcsős tartalo
 | Hatókör-szintek | tenant → agent | A §5 policy-modell: + szerep/felhasználó dimenzió |
 
 **Átvehető tanulságok** (a legacy kódkommentekben és a code-review-kban rögzítve): a tool-üzenetek határán ne keletkezzen hamis PAN-találat; a dokumentációs példa-API-kulcs ne blokkoljon; a telefonszám csak tokenizálódjon, ne emelje `sensitive`-re a beszélgetést; a debug-trace se szivárogtasson PII-t (PR #319); a PAN/IBAN egress legyen auditált (PR #342). A legacy eval-fixture-ök regressziós tesztként átvehetők.
+
+**Hermes kliens-policy szűrő (`content_filter.*`, #747):** a `secret_key` a PAN-hoz hasonlóan kikapcsolható (`block` / `local_only` / `warn` / `off`; álnév nincs). A Szabad preset teljesen ki van kapcsolva (`mode=off` semmit nem néz át). Kötött pálya és Standard alapból `block`. A felismerés ismert kulcs-prefixeket (pl. `sk-`, `ghp_`, JWT), hozzárendelést (`api_key:`, `password:`) és PEM-blokkot keres; a letöltő-URL `?token=` paramétere nem titok. A legacy APG `privacy-category-policy.ts` invariánsa (`secret_key` csak `block`) ettől független.
 
 ### 7.2 POC-ban mérendő
 
@@ -333,8 +335,8 @@ providers:
 auxiliary: { compression: {provider: main}, vision: {provider: main}, title_generation: {provider: main} }  # minden aux task
 fallback_providers: []
 ```
-- A managed `.env` az ismert provider-kulcsokat (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) üresre pineli.
-- A Guard `llm_execution` szintetikus elutasítást ad, ha a hívás nem az Excellence providerre menne.
+- A managed `.env` az ismert provider-kulcsokat (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) üresre pineli. Üres kulcs önmagában nem elég: ha a sessionben mégis van kulcs, a `/model --provider` klienst indít (K4).
+- A Guard `llm_execution` szintetikus elutasítást ad, ha a főhívás nem az Excellence providerre menne. A mellékhívás (címadás, tömörítés) **nem** megy át ezen a middleware-en (Hermes v0.22.2): a Guard 0.3.1 a `run_with_aux_hooks` funnelben és a HTTP-kapun (urllib/httpx, csak a céges Gateway host) fail-closed, mielőtt a kérés elindulna.
 - A modellt a Model Gateway választja az agent `modelConfig`-ja alapján (D12, D16). Az agent-azonosítót **a tokenből** veszi (D1), nem a user által átírható headerből. Tartalék-váltás csak a gateway-ben történik (a Hermes `fallback_providers: []` pinelve), így az is auditált és szűrt.
 - Saját ChatGPT/Codex előfizetés menedzselt módban nem használható, mert kikerül az auditból (D2).
 - MDM egress-szabály: LLM-API forgalom csak a Model Gateway felé (T2/T3).
@@ -355,13 +357,13 @@ A Guard heartbeatet küld: az effektív konfig hash-ét, a managed dir hash-ét,
 | # | Megkerülés | Hatás | Mitigáció | Maradék |
 |---|---|---|---|---|
 | B1 | `hermes --safe-mode` | Nincs Guard | A gép-padló él; az MCP kikapcsol; a sandbox-backend ismeretlen, tehát a terminál elutasít; nincs heartbeat → Open | Beszélgetés Guard nélkül, **de a Model Gateway auditál és szűr**. U2 |
-| B2 | `/model x --provider openrouter` | Audit nélküli modell | Üres kulcsok a managed `.env`-ben, Guard `llm_execution`, egress | **[POC K4]** |
+| B2 | `/model x --provider openrouter` | Audit nélküli modell | Üres kulcsok a managed `.env`-ben; Guard `llm_execution` (főhívás); HTTP-kapu + aux-funnel wrap (mellékhívás, pl. `title_generation`) | Unit: Guard 0.3.1. Élő újramérés: **[POC K4]** |
 | B3 | Saját MCP-szerver (dict-merge) | Nem engedett tool | Guard allowlist | A stdio processz elindul (user-kód, nem AI-akció). U1 |
 | B4 | Saját skill, `/skill` injekció | Nem engedett instrukció | Manifest, Model Gateway-észlelés | U5 |
 | B5 | Admin user törli az `/etc/hermes`-t | Elveszik a gép-padló | MDM drift-riasztás, heartbeat → Open | T3 |
 | B6 | Másik kliens saját kulccsal | Teljesen kívül | Céges modell, tool, adat nem érhető el | HR-policy, egress |
 | B7 | Mellékhívás más providerre | Prompt-szivárgás | `auxiliary.*: main` | **[POC K3]** |
-| B8 | Subagent tool-hívásai | Guard-kerülés? | `pre_tool_call` subagentben is (**[POC K2]**); `delegation` a policy szerint | — |
+| B8 | Subagent tool-hívásai | Guard-kerülés? | `pre_tool_call` a közös tool-dispatchen, MCP-névre és `delegate_task`-ra is (**[forrás]**, K2); `delegation` a policy szerint. A gyerek folyamat élő mérése nyitva (#754). | — |
 | B9 | A Bot profiljának kézi átírása (pl. `terminal.backend: local`) | Tiltott szint | A Guard a session backendjét a policyval veti össze, és blokkol | **[POC K9]** |
 | B10 | Guard-kivétel a middleware-ben | Fail-open | A blokkolás a fail-closed `pre_tool_call`-ban van, a szűrés a gateway-en | U4 |
 
@@ -375,7 +377,7 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 |---|---|---|---|
 | **U1** | Nincs managed MCP-szerver allowlist | `mcp.allowed_servers` (managed pinelhető) | Guard tool-szinten |
 | **U2** | A `--safe-mode` kikapcsolja a managed pluginokat és hookokat | `security.safe_mode: deny`, vagy a managed-ből pinelt pluginok és hookok maradjanak | Model Gateway + Open mód |
-| **U3** | Natív macOS/Windows managed location, MDM-profil | `get_managed_dir()` seam (előkészítve) | `/etc/hermes` macOS-en működik (kimérve); Windows **[POC]** |
+| **U3** | Natív macOS/Windows managed location, MDM-profil | `get_managed_dir()` seam (előkészítve) | `/etc/hermes` macOS-en működik (kimérve); Windows: gépszintű `HERMES_MANAGED_DIR` → `C:\ProgramData\Excellence\hermes` (#755, K8) |
 | **U4** | A middleware fail-open | `fail_closed` az `llm_execution`-re | `pre_tool_call` + gateway |
 | **U5** | Nincs skill-allowlist vagy aláírás | `skills.allowed` vagy aláírt bundle | Manifest + észlelés |
 
@@ -408,10 +410,24 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 | K5 | Plugin-backend esetén a fájl-toolok is a sandboxban futnak-e? |
 | K6 | Látszik-e a `/skill` slash-injekció a Model Gateway kérésben? |
 | K7 | `key_cmd` token-lejárat és frissítés hosszú sessionben. |
-| K8 | Windows: managed dir és shell hook (natív és WSL). |
+| K8 | Windows: managed dir és shell hook (natív és WSL). **[forrás, 2026-10-10, Hermes `a62979dc`]:** natív Windowson a `get_managed_dir()` csak a `HERMES_MANAGED_DIR`-t vagy a `/etc/hermes`-t nézi (ez az aktuális meghajtó gyökeréhez relatív), natív hely nincs (U3). A Hermes-profil `%LOCALAPPDATA%\hermes`. A shell hook `shell=False`-szal, `split_command_line`-nal fut, a `.py`-t a Hermes saját Pythonjával indítja, a `.cmd` közvetlenül fut; a `key_cmd` `shell=True`. **Megoldás (#755):** `install-managed.ps1` → `C:\ProgramData\Excellence` (ACL: SYSTEM/Administrators írhat, Users olvas), gépszintű `HERMES_MANAGED_DIR`, `.cmd` wrapper gépszintű Pythonnal (`-I -X utf8`); a padló `?platform=windows` paraméterrel kérhető. A felhasználói `HERMES_MANAGED_DIR`-t a telepítő törli, és a Guard utána sem követi (fail-closed). A posix és a Windows hash egymás mellett él. A munkatársnak a Hermes újraindítása elég, kijelentkezés nem kell. WSL = Linux-folyamat, ott az `install-managed.sh` és a posix csomag fut. Windows CI-futtatón kimérve; élő Hermes Desktop-mérés Windowson még nincs. |
 | K9 | Le tudja-e kérdezni a Guard a session tényleges terminál-backendjét és effektív konfigját (profilonként)? |
 | K10 | Mi a Hermes system promptjának stabil (cache-elt) része, és mit kell mégis tokenizálni benne (memória, context-fájlok)? |
 | K11 | A `key_cmd` helper a kiszolgált Bot-profil `HERMES_HOME`-jával fut-e (Desktop multiplex módban is), és eléri-e a profil `mcp-tokens/` tokenjét? **[forrás]:** igen (`tools/environments/local.py` `served_profile_child_env`, `mcp_oauth.py` `HERMES_HOME/mcp-tokens/`), a `key_cmd` kérésenként fut (`runtime_provider_custom.py:567`) → a helpernek cache-elnie kell. Élőben mérendő. |
+
+**V1-8 mérési eredmény (2026-10-03, K4 kiegészítés 2026-10-18).** A generátor és a telepítő kész, a V1-6 Guarddal összekötve. A helyben telepített Hermes v0.21.4+canary (`6ec05205a943cf813bd56c3c79d64bcf922dac67`) CLI konfigurációs belépési pontjai elkülönített profilban és managed könyvtárral ellenőrizve. A Desktop és a K3 (aux forgalom a gateway-naplóban) nyitva marad; a K4 élő lyuk (OpenRouter `title_generation`) a Guard 0.3.1-ben unit szinten zárva, élő újramérés hátra.
+
+| K | Eredmény |
+|---|---|
+| **K1** | A 2026-09-30-as CLI-mérés áll: a `hermes config` listázza a managed kulcsokat, a `config set` megtagadja, és a `model.base_url`-t külön kell pinelni. A generátor ezt a három modell-levelet, plusz a `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `agent.disabled_toolsets` kulcsokat kiírja. 2026-10-03: a generált 78 managed levél betöltése sikeres; a `model.provider`, `model.base_url` és `plugins.enabled` módosítását a CLI `set_config_value` megtagadta. A mérés az eredeti telepített runtime-ban, elkülönített tesztprofillal futott. A Desktop élőben nem újramérve. A shell-hook doksi (Hermes, 2026-10) szerint a hook CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. |
+| **K3** | Generátor: minden ismert aux task `provider: main`, üres `base_url` / `api_key` / `model`, üres `fallback_chain`, és a top-level `fallback_providers: []`. Az aux hívások gateway-naplója élő Hermes nélkül nem mérhető. |
+| **K4** | Generátor: az ismert provider-kulcsok a managed `.env`-ben üresek, a modell-út levelenként pinelt. **2026-10-18 élő** (Hermes v0.22.2 @ `d923a5eb`): a session `/model openai/gpt-4o-mini --provider openrouter` elfogadódik; nem-üres `OPENROUTER_API_KEY` mellett a `title_generation` OpenRouterre ment (401). A `auxiliary.*.provider: main` a váltás után az új maint követi, és a mellékhívás nem megy át az `llm_execution`-ön. **Guard 0.3.1:** végrehajtásnál fail-closed (HTTP-kapu + aux wrap); unit regresszió: külső HTTP nem indul. Élő újramérés a 0.3.1 telepítővel még hátra. |
+**V1-6 mérési eredmény (2026-10-03, Hermes v0.21.5 @ `d0288be5`).** Az eredeti V1-6 mérés forrásellenőrzés volt; a későbbi V1-8 CLI konfigurációs mérés fent szerepel. A Desktop K1 és a tool-dispatch K2 élő fele nyitva marad. A forrás a pinelt `hooks.md`, `middleware.md` és `model_tools.py`.
+
+| K | Eredmény |
+|---|---|
+| **K1** | A shell-hook doksi szerint a `hooks.pre_tool_call` CLI-n, gatewayen, Desktopon, TUI-n és dashboardon is regisztrál, amikor az agent felépül. `fail_closed: true` mellett a hiányzó bináris, a timeout és a nem-JSON stdout blokkol (P5 mechanizmus). Élő Desktop-mérés nincs. |
+| **K2** | **[forrás].** `model_tools.handle_function_call` → `_pre_dispatch_guards` → `_dispatch_pre_tool_call_hooks` minden toolnévre lefut, mielőtt a handler indulna. Az MCP-tool neve `mcp__<szerver>__<tool>` (`tools/mcp_tool_schema.py`). A `delegate_task` ugyanilyen tool-hívás; a doksi szerint a gyerek indítása előtt ez a hook blokkolja. A `skip_pre_tool_call_hook=True` ágak (`agent/tool_executor.py`, `agent/agent_runtime_helpers.py`) csak azért skipelnek, mert a hívó már lefuttatta a hookot. A gyerek-agent saját tool-hívása ugyanerre a dispatchre épül, ha a gyerek folyamat betölti a plugint — ezt élőben nem mértük (#754). Rés: ha a `_dispatch_pre_tool_call_hooks` maga dob, a `model_tools.py` külső `except` csak logol és továbbenged; ezért van az `exc-guard` `fail_closed` tartalék. A `subagent_start` nem blokkoló hook. |
 
 ---
 
@@ -433,7 +449,7 @@ Döntési szabály: **fork csak akkor, ha egy konkrét, tesztelhető követelmé
 
 ## 14. Adatvédelem, munkajog
 
-A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és előzetes tájékoztatás (a kliens jelzi: „Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek”), céltól függő retenció, szűk hozzáférés (audit-szerep, négy szem elve), érzékeny adatnál tokenizálás. Az audit-mélység paraméter (§5.2), ez az arányosságot is szolgálja. A DPIA a WP-D előfeltétele.
+A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és előzetes tájékoztatás (a kliens jelzi: „Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek”), céltól függő retenció, szűk hozzáférés (audit-szerep, négy szem elve), érzékeny adatnál tokenizálás. Az audit-mélység paraméter (§5.2), ez az arányosságot is szolgálja. A DPIA a WP-D előfeltétele; a #759 DPIA: `docs/privacy/dpia-ai-interaction-audit.md`.
 
 ---
 
@@ -445,7 +461,7 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 | D2 | Saját ChatGPT/Codex előfizetés menedzselt módban | **Nem.** Kikerülne az auditból és a szűrésből. |
 | D3 | Felülírhatja-e a specifikusabb szint a tágabb tiltását? | **Igen**, felhasználói szinten explicit, auditált kivétellel. Az agent-plafont semmi nem lépi túl, azonos szinten a tiltás nyer. |
 | D4 | Elérhetetlen Control Plane esetén a Guard | Az utolsó érvényes snapshot **1 óráig**, utána „Kötött pálya”. (A Model Gateway ugyanabban a deploymentben fut, így kiesésnél a modell sem érhető el.) |
-| D5 | Prompt-tartalom tárolása | Titkosított tartalom (meglévő `app/src/domain/privacy/aes-gcm-envelope.ts`), az audit-rekordban hivatkozással. Szerveroldali tartalom-retenció alapból 90 nap (konfig); a lokális session-DB-t v1-ben a Guard nem törli. **A DPIA után véglegesítendő.** |
+| D5 | Prompt-tartalom tárolása | Titkosított tartalom (meglévő `app/src/domain/privacy/aes-gcm-envelope.ts`), az audit-rekordban hivatkozással. Szerveroldali tartalom-retenció **véglegesítve a #759 DPIA-ban:** alapból 90 nap (`AI_AUDIT_RETENTION_DAYS`); a lokális session-DB-t v1-ben a Guard nem törli. Élő hívó: napi `POST /api/v1/internal/ai-audit-retention`. |
 | D6 | Audit-mélység „metaadat” alá? | **Nem**, a metaadat-szint az alapréteg része. |
 | D7 | Upstream PR-ok (U1, U2) | A POC-mérések után, mérési eredménnyel. |
 | D8 | Első fejlesztési szelet | **POC-szelet, élesíthető kóddal** (§17). A többi WP külön issue-kba kerül. |
@@ -458,7 +474,7 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 | D14 | Snapshot és heartbeat szállítása | REST: `GET /api/client-policy/snapshot`, `POST /api/client-policy/heartbeat`, ugyanazzal a gateway-JWT-vel, mint a modellhívás. Nem MCP-tool, mert a Guard nem LLM. |
 | D15 | A blokkolás jelzése a Hermesnek | HTTP 200, szintetikus asszisztens-üzenet hétköznapi nyelven (a legacy `formatSensitivityBlockMessage` alapján). 4xx nem, mert újrapróbálkozást vagy fallbacket vált ki (§7.2/1). |
 
-**Nem fejlesztési, de éles bekapcsolás előfeltétele:** DPIA + munkavállalói tájékoztatás (§14). A staging POC belső, tájékoztatott userekkel ezek nélkül is futhat.
+**Nem fejlesztési, de éles bekapcsolás előfeltétele:** DPIA + munkavállalói tájékoztatás (§14). A staging POC belső, tájékoztatott userekkel ezek nélkül is futhat. A műszaki DPIA, a Guard-tájékoztatás, a 90 napos retenciós sweep élő hívója és a négy-szemes tartalomolvasás: #759.
 
 ---
 
@@ -478,6 +494,8 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 - `website/docs/guides/secure-hermes-on-a-work-machine.md`
 
 **Élő mérés (2026-09-30, macOS, v0.21.5):** `HERMES_MANAGED_DIR` + pinelt `agent.disabled_toolsets`, `plugins.enabled`, `hooks.pre_tool_call`, `hooks_auto_accept`, `model.provider`. A `hermes config` mind az ötöt managed kulcsként listázta; a `model.base_url` user-értéke megmaradt (H-1b).
+
+**V1-8 generátor (2026-10-03):** a kiadott `config.yaml` a H-1b leveleket külön pineli (`model.provider`, `model.base_url`, `model.api_mode`), és ugyanezt megteszi minden aux tasknál (`provider`, `model`, `base_url`, `api_key`, `fallback_chain`). A plugin betöltési útvonala forrásból mérve: `$HERMES_HOME/plugins/<név>/` (Desktop-profil: `~/.hermes/profiles/<profil>/plugins/`). A későbbi CLI konfigurációs mérés (78 managed levél és három visszautasított módosítás) a §12 táblában szerepel; a Desktop és a valódi auxiliary/provider-váltási forgalom még mérendő.
 
 **Excellence:** `docs/hermes-integration-foundation-2026-09-26.html`; `legacy/app/api/v1/gateway/v1/chat/completions/route.ts`; #682 / PR #683, #734; #485 sandbox; #272 / #320 APG.
 

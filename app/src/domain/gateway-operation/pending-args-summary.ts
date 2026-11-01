@@ -12,6 +12,7 @@ export type PendingArgsLabels = {
   memoryKind: string
   parentRoot: string
   parentFolder: (id: string) => string
+  endpointDescription?: string | null
 }
 
 function str(value: unknown): string {
@@ -65,15 +66,45 @@ function gmailItemLines(args: Record<string, unknown>): string[] {
  * One multi-line summary for the control-plane approval card / tests.
  * Prefer `toolName` over shape heuristics so Gmail never falls through to Drive chrome.
  */
+function prettyJsonBody(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2)
+  } catch {
+    return raw
+  }
+}
+
+/**
+ * Splits a run-on "Téma: x. Folyamat: y." body into labelled sections for display.
+ * A label is a capitalised 1–3 word phrase + colon at the start or after a sentence end;
+ * text without labels comes back as one unlabelled section.
+ */
+export function splitLabelledSections(body: string): { label: string | null; text: string }[] {
+  const parts = body.split(
+    /(?:^|(?<=[.!?]\s)|(?<=\n))([A-ZÁÉÍÓÖŐÚÜŰ]\p{L}*(?: \p{L}+){0,2}):\s+/u,
+  )
+  const sections: { label: string | null; text: string }[] = []
+  if (parts[0].trim()) sections.push({ label: null, text: parts[0].trim() })
+  for (let i = 1; i < parts.length; i += 2) {
+    sections.push({ label: parts[i], text: (parts[i + 1] ?? '').trim() })
+  }
+  return sections
+}
+
 export function pendingOperationHeadline(
   toolName: string,
   args: Record<string, unknown>,
-  options?: { connectorName?: string },
+  options?: { connectorName?: string; endpointDescription?: string | null },
 ): string {
   const connectorName = str(args.connectorName) || options?.connectorName || 'HTTP API'
   if (toolName === 'http_api_request') {
+    const description = str(options?.endpointDescription) || str(args.endpointDescription)
+    if (description) return `${connectorName}: ${description}`
     const query = formatScalarQuery(args.query)
     return `${connectorName}: ${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`
+  }
+  if (toolName === 'mcp_call') {
+    return `${options?.connectorName || 'MCP-szerver'}: ${str(args.tool) || '—'}`
   }
   if (toolName === 'google_drive_upload_file') {
     return `Google Drive fájl: ${str(args.name) || '—'}`
@@ -81,10 +112,17 @@ export function pendingOperationHeadline(
   if (toolName === 'google_drive_create_folder') {
     return `Google Drive mappa: ${str(args.name) || '—'}`
   }
-  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
-    if (str(args.draftId)) return `Gmail piszkozat elküldése: ${str(args.draftId)}`
+  if (toolName === 'google_drive_update_file') {
+    return `Google Drive fájl felülírása: ${str(args.fileId) || '—'}`
+  }
+  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft' || toolName === 'mail_send' || toolName === 'mail_create_draft') {
+    const from = str(args.account)
+    if (str(args.draftId)) {
+      return from ? `Piszkozat elküldése innen: ${from}` : `Gmail piszkozat elküldése: ${str(args.draftId)}`
+    }
+    const kind = str(args.replyToMessageId) ? 'válasz' : 'új levél'
     const parts = [
-      str(args.replyToMessageId) ? `Gmail válasz` : 'Gmail új levél',
+      from ? `Levél innen: ${from}` : toolName.startsWith('mail_') ? `Levél (${kind})` : `Gmail ${kind}`,
       str(args.subject) ? `tárgy: ${str(args.subject)}` : '',
     ].filter(Boolean)
     return parts.join(', ')
@@ -102,13 +140,38 @@ export function pendingArgsSummary(
 ): string {
   if (toolName === 'http_api_request') {
     const query = formatScalarQuery(args.query)
-    const lines = [`${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`]
-    if (str(args.body)) lines.push(clip(str(args.body)))
+    const description = str(labels.endpointDescription)
+    const lines = [
+      ...(description ? [description] : []),
+      `${str(args.method)} ${str(args.path)}${query ? `?${query}` : ''}`,
+    ]
+    if (str(args.body)) lines.push(clip(prettyJsonBody(str(args.body))))
     return lines.join('\n')
   }
 
-  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft') {
-    return gmailComposeLines(args).join('\n')
+  if (toolName === 'mcp_call') {
+    // D3: a jóváhagyó a belső eszköznevet és a teljes argumentumot látja.
+    const lines = [`eszköz: ${str(args.tool) || '—'}`]
+    if (args.arguments && typeof args.arguments === 'object') {
+      lines.push(clip(JSON.stringify(args.arguments, null, 2)))
+    }
+    return lines.join('\n')
+  }
+
+  if (toolName === 'gmail_send' || toolName === 'gmail_create_draft' || toolName === 'mail_send' || toolName === 'mail_create_draft') {
+    const lines = gmailComposeLines(args)
+    // Ne találjunk ki „saját postafiók”-ot: account nélkül a execute más fiókra is eshet.
+    // A sorba állítás beégeti a feloldott fiókot (`resolvedMailAccount`).
+    if (str(args.account)) lines.unshift(`from: ${str(args.account)}`)
+    return lines.join('\n')
+  }
+  if (toolName === 'mail_mark') {
+    const lines = gmailItemLines(args)
+    if (args.read === true) lines.push('read')
+    if (args.unread === true) lines.push('unread')
+    if (args.archive === true) lines.push('archive')
+    if (str(args.label)) lines.push(`label: ${str(args.label)}`)
+    return lines.join('\n')
   }
   if (toolName === 'gmail_modify_labels') {
     const lines = gmailItemLines(args)
@@ -135,6 +198,12 @@ export function pendingArgsSummary(
     const lines = [`${str(args.fileId) || '—'} · ${str(args.range)}`]
     if (str(args.values)) lines.push(clip(str(args.values)))
     if (str(args.mode)) lines.push(`mode: ${str(args.mode)}`)
+    return lines.join('\n')
+  }
+
+  if (toolName === 'google_drive_update_file') {
+    const lines = [`${str(args.fileId) || '—'} (teljes tartalom felülírása)`]
+    if (str(args.textContent)) lines.push(clip(str(args.textContent)))
     return lines.join('\n')
   }
 
@@ -166,6 +235,16 @@ export function pendingArgsSummary(
   return Object.entries(args)
     .filter(([key]) => key !== 'definitionId' && key !== 'idempotencyKey' && key !== 'withUserId')
     .slice(0, 8)
-    .map(([key, value]) => `${key}: ${typeof value === 'string' ? clip(value) : JSON.stringify(value)}`)
+    .map(([key, value]) => {
+      if (key === 'contentBase64' || key === 'fileBase64') return `${key}: [csatolt fájl]`
+      if (key === 'inputFiles') {
+        try {
+          const files: unknown = JSON.parse(String(value))
+          if (Array.isArray(files)) return `csatolt fájlok: ${files.map((file) => typeof file?.path === 'string' ? file.path : '—').join(', ')}`
+        } catch { /* Hibás bemenetet az eszköz elutasítja; a kártyán nem jelenítünk meg bájtokat. */ }
+        return 'csatolt fájlok'
+      }
+      return `${key}: ${typeof value === 'string' ? clip(value) : JSON.stringify(value)}`
+    })
     .join('\n')
 }

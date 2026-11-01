@@ -1,3 +1,5 @@
+import type { TenantLanguage } from './tenant-language'
+
 export type KbHitSource = {
   documentId?: string
   filename?: string
@@ -25,30 +27,36 @@ function extractFilename(sourceRef: string): string | null {
 }
 
 /** §4.7/§12.3 — oldal/section/cella-szintű forrás-hivatkozás emberi ellenőrzéshez. */
-function formatSource(source: KbHitSource): string {
+function formatSource(source: KbHitSource, language: TenantLanguage): string {
   const parts: string[] = []
   if (source.filename) parts.push(source.filename)
-  if (typeof source.page === 'number') parts.push(`oldal ${source.page}`)
-  else if (source.section) parts.push(`section „${source.section}"`)
+  if (typeof source.page === 'number') parts.push(language === 'en' ? `page ${source.page}` : `oldal ${source.page}`)
+  else if (source.section) parts.push(language === 'en' ? `section "${source.section}"` : `section „${source.section}"`)
   if (source.cell) parts.push(source.cell)
   return parts.join(', ')
 }
 
-export function formatHitsForPrompt(hits: KbHit[]): string {
-  if (hits.length === 0) return '(nincs találat)'
+/**
+ * #717 B réteg: minden modellnek szóló literál a tenant nyelvén.
+ * Alapértelmezés `hu` = a mai render (byte-ra azonos).
+ */
+export function formatHitsForPrompt(hits: KbHit[], language: TenantLanguage = 'hu'): string {
+  if (hits.length === 0) return language === 'en' ? '(no hits)' : '(nincs találat)'
+  const sourceLabel = language === 'en' ? 'source' : 'forrás'
+  const fileLabel = language === 'en' ? 'FILE CONTENT' : 'FÁJL TARTALOM'
   return hits
     .map((hit, index) => {
       // OKF chunk-találat: navigálható path + oldal/section-szintű forrás-link.
       if (hit.path) {
-        const cite = hit.source ? formatSource(hit.source) : ''
+        const cite = hit.source ? formatSource(hit.source, language) : ''
         const header = `[${index + 1}] OKF: ${hit.title ?? hit.path} (${hit.path})${
-          cite ? `; forrás: ${cite}` : ''
+          cite ? `; ${sourceLabel}: ${cite}` : ''
         }`
         return `${header}\n${hit.snippet}`
       }
       const filename = hit.memoryVersion === null ? extractFilename(hit.sourceRef) : null
       const header = filename
-        ? `[${index + 1}] FÁJL TARTALOM: ${filename} (docId=${hit.docId})`
+        ? `[${index + 1}] ${fileLabel}: ${filename} (docId=${hit.docId})`
         : `[${index + 1}] docId=${hit.docId}; sourceRef=${hit.sourceRef}; memoryVersion=${hit.memoryVersion ?? 'unknown'}`
       return `${header}\n${hit.snippet}`
     })

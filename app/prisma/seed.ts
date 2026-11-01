@@ -15,44 +15,14 @@ import { ensureTenantGoogleDriveConnector } from '../src/lib/seed-google-drive-c
 import { ensureTenantAgentScaffold } from '../src/domain/agent-scaffold-materialization'
 import { repositories } from '../src/repositories/postgres'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
-import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
-import type { TemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
-import type { Prisma } from '@prisma/client'
-import { withTemplateIcon } from './template-icons'
+import {
+  CUSTOM_CONNECTOR_TEMPLATES,
+  CUSTOM_TEMPLATE_TENANT_SLUG_BY_KEY,
+} from '../src/domain/connector-template/custom-template-seeds'
+import { syncConnectorTemplates } from './template-sync'
 
 const SEED_TENANT_SLUG = process.env.SEED_TENANT_SLUG ?? 'demo'
 const SEED_CLERK_USER_ID = process.env.SEED_CLERK_USER_ID ?? 'seed-clerk-user'
-
-async function upsertTemplates(
-  origin: 'builtin' | 'custom',
-  descriptors: TemplateDescriptor[],
-) {
-  for (const descriptor of descriptors) {
-    const existing = await prisma.connectorTemplate.findFirst({
-      where: { key: descriptor.key, version: 1, tenantId: null, origin },
-    })
-    const withIcon = withTemplateIcon(descriptor, existing?.descriptor)
-    const data = {
-      displayName: withIcon.displayName,
-      description: withIcon.description ?? null,
-      descriptor: withIcon as Prisma.InputJsonValue,
-      status: 'active' as const,
-    }
-    if (!existing) {
-      await prisma.connectorTemplate.create({
-        data: {
-          key: descriptor.key,
-          version: 1,
-          origin,
-          tenantId: null,
-          ...data,
-        },
-      })
-      continue
-    }
-    await prisma.connectorTemplate.update({ where: { id: existing.id }, data })
-  }
-}
 
 async function main() {
   const tenant = await prisma.tenant.upsert({
@@ -91,40 +61,40 @@ async function main() {
     },
   })
 
-  await upsertTemplates('builtin', BUILTIN_CONNECTOR_TEMPLATES)
-  await upsertTemplates('custom', GLOBAL_CUSTOM_CONNECTOR_TEMPLATES)
+  await syncConnectorTemplates(prisma, 'builtin', BUILTIN_CONNECTOR_TEMPLATES)
+  await syncConnectorTemplates(prisma, 'custom', CUSTOM_CONNECTOR_TEMPLATES, CUSTOM_TEMPLATE_TENANT_SLUG_BY_KEY)
 
   const connector = await ensureTenantGoogleDriveConnector(prisma, tenant.id)
 
-  await prisma.connectorGrant.upsert({
-    where: {
-      tenantId_connectorId_userId: {
-        tenantId: tenant.id,
-        connectorId: connector.id,
-        userId: user.id,
+  const seedGrantWhere = {
+    tenantId: tenant.id,
+    connectorId: connector.id,
+    userId: user.id,
+    accountLabel: 'seed-placeholder',
+  }
+  const existingSeedGrant = await prisma.connectorGrant.findFirst({ where: seedGrantWhere })
+  const seedGrantData = {
+    status: 'active' as const,
+    tokenRef: `stub-seed-drive-grant:${user.id}`,
+    scopes: [
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
+    nickname: 'seed',
+  }
+  if (existingSeedGrant) {
+    await prisma.connectorGrant.update({
+      where: { id: existingSeedGrant.id },
+      data: seedGrantData,
+    })
+  } else {
+    await prisma.connectorGrant.create({
+      data: {
+        ...seedGrantWhere,
+        ...seedGrantData,
       },
-    },
-    update: {
-      status: 'active',
-      tokenRef: `stub-seed-drive-grant:${user.id}`,
-      scopes: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/drive.file',
-      ],
-    },
-    create: {
-      tenantId: tenant.id,
-      connectorId: connector.id,
-      userId: user.id,
-      status: 'active',
-      scopes: [
-        'https://www.googleapis.com/auth/drive.readonly',
-        'https://www.googleapis.com/auth/drive.file',
-      ],
-      tokenRef: `stub-seed-drive-grant:${user.id}`,
-      accountLabel: 'seed-placeholder',
-    },
-  })
+    })
+  }
 
   const agent = await prisma.agent.upsert({
     where: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },

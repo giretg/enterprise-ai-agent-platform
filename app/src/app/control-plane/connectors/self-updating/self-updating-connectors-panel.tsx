@@ -6,16 +6,14 @@ import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Badge, Card, IconButton } from '@/components/ui/shell'
 import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
+import { approveSelfUpdatingVersion, rollbackSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
 import { decommissionActiveConnector, deleteArchivedConnector } from '@/app/actions/provisioning'
 import {
   approveSelfUpdatingSource,
-  approveSelfUpdatingVersion,
   listSelfUpdatingConnectors,
   rejectSelfUpdatingVersion,
-  rollbackSelfUpdatingVersion,
   setSelfUpdatingAutoApprove,
   setTenantSelfUpdatingAutoApprove,
-  syncSelfUpdatingConnector,
   trustSelfUpdatingPartner,
   updateSelfUpdatingConnectorApiKey,
 } from '@/app/actions/self-updating-connectors'
@@ -396,8 +394,11 @@ export function TenantAutoApproveSwitch({
         <strong>Tisztán új, csak olvasási képességek automatikus átvételének engedélyezése.</strong>
         <br />
         <span className="text-xs text-ink-soft">
-          Ez önmagában nem kapcsol be semmit: minden konnektornál külön is engedélyezni kell. Törlő,
-          módosító, auth- vagy törésveszélyes változás mindig emberi jóváhagyást kér.
+          A rendszer naponta egyszer magától is megnézi, változott-e a partner API-ja — ehhez nem kell
+          a frissítés gombot megnyomni. Ha ez a beállítás és a kapcsolatnál a saját kapcsolója is be
+          van kapcsolva, a tisztán új, csak olvasási képességek ilyenkor jóváhagyás nélkül élesednek.
+          Törlő, módosító, auth- vagy törésveszélyes változás mindig emberi jóváhagyást kér: ez
+          javaslatként vár a kapcsolat lapján.
         </span>
       </span>
     </label>
@@ -485,14 +486,16 @@ export function SelfUpdatingConnectorCard({
   run,
   onReload,
   isSuperadmin = false,
+  defaultOpen = false,
 }: {
   row: SelfUpdatingConnectorRow
   pending: boolean
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
   onReload?: () => void | Promise<void>
   isSuperadmin?: boolean
+  defaultOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [syncModal, setSyncModal] = useState<SelfUpdatingSyncModalState | null>(null)
   const [syncPending, startSyncTransition] = useTransition()
   const [tab, setTab] = useState<CardTab>('status')

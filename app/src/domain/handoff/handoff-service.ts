@@ -36,7 +36,14 @@ export interface HandoffStore {
     summary: string
     links: string | null
     createdById: string
-  }): Promise<HandoffRecord>
+    /**
+     * #940: a létrehozó hívás idempotencia-kulcsa. Ha adott, és ezzel a kulccsal
+     * (tenant + küldő agent) már létezik átadás, a tárolóréteg a meglévő sort adja
+     * vissza `created: false`-szal — a hívó ilyenkor nem ismétli meg a mellékhatásokat
+     * (memória-injektálás, audit). Kulcs nélkül mindig új sor jön létre.
+     */
+    idempotencyKey?: string | null
+  }): Promise<{ handoff: HandoffRecord; created: boolean }>
   findById(id: string): Promise<HandoffRecord | null>
   listOpenForAgent(tenantId: string, agentId: string, limit?: number): Promise<HandoffRecord[]>
   listOpenForUser(tenantId: string, userId: string): Promise<HandoffRecord[]>
@@ -70,7 +77,7 @@ export function formatHandoffMemoryBody(input: { fromAgentName: string; summary:
   return `[átadás innen: ${input.fromAgentName}]\n${input.summary}${linksLine}\n(handoffId: ${input.handoffId})`
 }
 
-export type ParsedHandoffLink = { label: string; href: string; kind: 'url' | 'work_file' | 'other' }
+export type ParsedHandoffLink = { label: string; href: string; kind: 'url' | 'work_file' | 'mini_app' | 'other' }
 
 /** `"címke | https://…, terv | work_file:/path"` → kattintható elemek. */
 export function parseHandoffLinks(links: string | null): ParsedHandoffLink[] {
@@ -89,7 +96,9 @@ export function parseHandoffLinks(links: string | null): ParsedHandoffLink[] {
       ? 'url'
       : target.startsWith('work_file:')
         ? 'work_file'
-        : 'other'
+        : /^mini_app:[0-9a-f-]{36}$/i.test(target)
+          ? 'mini_app'
+          : 'other'
     return [{ label: label || target, href: target, kind }]
   })
 }

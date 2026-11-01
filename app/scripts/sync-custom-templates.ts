@@ -1,11 +1,16 @@
 /**
- * Globális custom connector-sablonok szinkronizálása a kódból a DB-be.
+ * Kódból seedelt connector-sablonok (beépített + custom) szinkronizálása a DB-be.
+ * A cégre szabott sablonok (pl. Ostorosbor CRM) csak a saját tenantjukba kerülnek.
  * Futtatás: cd app && npx tsx scripts/sync-custom-templates.ts --production
  */
 import { config } from 'dotenv'
 import { resolve } from 'node:path'
-import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
-import { withTemplateIcon } from '../prisma/template-icons'
+import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
+import {
+  CUSTOM_CONNECTOR_TEMPLATES,
+  CUSTOM_TEMPLATE_TENANT_SLUG_BY_KEY,
+} from '../src/domain/connector-template/custom-template-seeds'
+import { syncConnectorTemplates } from '../prisma/template-sync'
 
 config({ path: resolve(process.cwd(), '.env.local') })
 config({ path: resolve(process.cwd(), '.env') })
@@ -22,38 +27,8 @@ if (!useProduction && testDbUrl) {
 
 async function main() {
   const { prisma } = await import('../src/lib/db')
-  for (const seed of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
-    const existing = await prisma.connectorTemplate.findFirst({
-      where: { key: seed.key, version: 1, tenantId: null, origin: 'custom' },
-    })
-    const descriptor = withTemplateIcon(seed, existing?.descriptor)
-    if (!existing) {
-      await prisma.connectorTemplate.create({
-        data: {
-          key: descriptor.key,
-          version: 1,
-          origin: 'custom',
-          displayName: descriptor.displayName,
-          description: descriptor.description ?? null,
-          tenantId: null,
-          descriptor,
-          status: 'active',
-        },
-      })
-      console.log(`Létrehozva: ${descriptor.displayName}`)
-      continue
-    }
-    await prisma.connectorTemplate.update({
-      where: { id: existing.id },
-      data: {
-        displayName: descriptor.displayName,
-        description: descriptor.description ?? null,
-        descriptor,
-        status: 'active',
-      },
-    })
-    console.log(`Frissítve: ${descriptor.displayName} (${descriptor.key})`)
-  }
+  await syncConnectorTemplates(prisma, 'builtin', BUILTIN_CONNECTOR_TEMPLATES)
+  await syncConnectorTemplates(prisma, 'custom', CUSTOM_CONNECTOR_TEMPLATES, CUSTOM_TEMPLATE_TENANT_SLUG_BY_KEY)
 }
 
 main()

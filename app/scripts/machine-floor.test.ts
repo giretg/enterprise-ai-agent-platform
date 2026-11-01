@@ -1,0 +1,309 @@
+/**
+ * Gép-padló generátor (#771) — DB-mentes tesztek.
+ * Futtatás: npm run test:machine-floor
+ */
+import assert from 'node:assert/strict'
+import { PRESETS } from '../src/domain/client-policy/capabilities'
+import {
+  AUXILIARY_TASKS,
+  PINNED_EMPTY_ENV_KEYS,
+  buildManagedFiles,
+  disabledToolsetsForPolicies,
+  issueMachineFloor,
+  modelGatewayBaseUrl,
+  type MachineFloorStore,
+} from '../src/domain/client-policy/machine-floor'
+import type { ClientPolicyStore } from '../src/domain/client-policy/policy-service'
+import { resolveEffectivePolicy, type PolicyRow } from '../src/domain/client-policy/resolve-effective-policy'
+
+const T = '11111111-1111-4111-8111-111111111111'
+const U = '22222222-2222-4222-8222-222222222222'
+const GATEWAY = 'https://excellence.example/api/model-gateway/v1'
+let failures = 0
+
+async function check(name: string, fn: () => Promise<void> | void) {
+  try {
+    await fn()
+    console.log(`  ok  ${name}`)
+  } catch (e) {
+    failures++
+    console.error(`FAIL  ${name}\n      ${(e as Error).message}`)
+  }
+}
+
+const row = (scope: PolicyRow['scope'], scopeId: string, preset: string | null): PolicyRow => ({
+  scope,
+  scopeId,
+  preset,
+  capabilities: {},
+  toolOverrides: {},
+  version: 1,
+})
+
+function policy(preset: 'free' | 'bound' | 'standard' | null, agentPreset: 'free' | 'bound' | 'standard' | null = null) {
+  return resolveEffectivePolicy({
+    tenant: row('tenant', T, 'bound'),
+    user: preset ? row('user', U, preset) : null,
+    agent: agentPreset ? row('agent', 'agent', agentPreset) : null,
+  })
+}
+
+function memoryFloors(): MachineFloorStore & { saved: { installId: string; managedDirHash: string; windowsManagedDirHash: string } | null } {
+  const state: { saved: { installId: string; managedDirHash: string; windowsManagedDirHash: string } | null } = { saved: null }
+  return {
+    get saved() {
+      return state.saved
+    },
+    set saved(v) {
+      state.saved = v
+    },
+    async getOrCreateInstallId(input) {
+      state.saved ??= { installId: input.installId, managedDirHash: '', windowsManagedDirHash: '' }
+      return state.saved.installId
+    },
+    async save(input) {
+      const prev = state.saved ?? { installId: input.installId, managedDirHash: '', windowsManagedDirHash: '' }
+      state.saved = {
+        installId: prev.installId,
+        managedDirHash: input.platform === 'windows' ? prev.managedDirHash : input.managedDirHash,
+        windowsManagedDirHash: input.platform === 'windows' ? input.managedDirHash : prev.windowsManagedDirHash,
+      }
+    },
+    async issuedHashes(input) {
+      if (!state.saved || state.saved.installId !== input.installId) return null
+      return [state.saved.managedDirHash, state.saved.windowsManagedDirHash].filter((hash) => hash.length > 0)
+    },
+  }
+}
+
+function storeFor(agents: Record<string, 'free' | 'bound' | 'standard'>): ClientPolicyStore {
+  return {
+    async findRows(input) {
+      const agentPreset = input.agentId ? agents[input.agentId] : undefined
+      return [
+        row('tenant', input.tenantId, 'bound'),
+        row('user', input.userId, 'free'),
+        ...(agentPreset && input.agentId ? [row('agent', input.agentId, agentPreset)] : []),
+      ]
+    },
+  }
+}
+
+async function main() {
+  console.log('Gép-padló (#771)')
+
+  await check('a model pin levelenként külön kulcs, minden aux task main, a kulcsok üresek', () => {
+    const { files } = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: [], installId: 'inst-1' })
+    const yaml = files['config.yaml']
+    assert.match(yaml, /model:\n {2}provider: "excellence"\n {2}base_url: "https:\/\/excellence\.example\/api\/model-gateway\/v1"\n {2}api_mode: "chat_completions"/)
+    for (const task of AUXILIARY_TASKS) {
+      assert.match(yaml, new RegExp(`${task}:\\n {4}provider: "main"\\n {4}fallback_chain: \\[\\]`))
+    }
+    assert.doesNotMatch(yaml, /auxiliary:[\s\S]*model: ""/)
+    assert.doesNotMatch(yaml, /auxiliary:[\s\S]*api_key: ""/)
+    assert.match(yaml, /^fallback_providers: \[\]$/m)
+    assert.match(yaml, /plugins:\n {2}enabled:\n {4}- "excellence-guard"\n {2}disabled: \[\]/)
+    assert.match(yaml, /command: "\/opt\/excellence\/bin\/exc-guard"\n {6}timeout: 30\n {6}fail_closed: true/)
+    assert.match(yaml, /^hooks_auto_accept: true$/m)
+    assert.match(yaml, /redact_secrets: true/)
+    assert.match(yaml, /session_affinity_header: "X-Excellence-Session"/)
+    for (const key of ['OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']) {
+      assert.equal(PINNED_EMPTY_ENV_KEYS.includes(key as (typeof PINNED_EMPTY_ENV_KEYS)[number]), true)
+      assert.match(files['.env'], new RegExp(`^${key}=$`, 'm'))
+    }
+    assert.equal(files['excellence-install-id'], 'inst-1\n')
+  })
+
+  await check('Windows-csomag: a hook és a key_cmd a ProgramData alatti .cmd wrapper', () => {
+    const posix = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: [], installId: 'inst-1' })
+    const win = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: [], installId: 'inst-1', platform: 'windows' })
+    const yaml = win.files['config.yaml']
+    assert.match(yaml, /key_cmd: "C:\\\\ProgramData\\\\Excellence\\\\bin\\\\exc-token\.cmd model"/)
+    assert.match(yaml, /command: "C:\\\\ProgramData\\\\Excellence\\\\bin\\\\exc-guard\.cmd"\n {6}timeout: 30\n {6}fail_closed: true/)
+    assert.doesNotMatch(yaml, /\/opt\/excellence/)
+    assert.notEqual(win.managedDirHash, posix.managedDirHash)
+    assert.equal(win.files['.env'], posix.files['.env'])
+  })
+
+  await check('ugyanaz a bemenet ugyanaz a hash; a toolset-lista változtatja', () => {
+    const a = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: ['terminal'], installId: 'inst-1' })
+    const b = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: ['terminal'], installId: 'inst-1' })
+    assert.equal(a.managedDirHash, b.managedDirHash)
+    assert.equal(a.files['config.yaml'], b.files['config.yaml'])
+    const c = buildManagedFiles({ gatewayBaseUrl: GATEWAY, disabledToolsets: [], installId: 'inst-1' })
+    assert.notEqual(a.managedDirHash, c.managedDirHash)
+  })
+
+  await check('Szabad usernél nincs terminál-tiltás', () => {
+    const disabled = disabledToolsetsForPolicies([policy('free')])
+    assert.equal(disabled.includes('terminal'), false)
+    assert.equal(disabled.includes('code_execution'), false)
+    assert.deepEqual(policy('free').capabilities, PRESETS.free)
+  })
+
+  await check('csak Kötött pálya agenteknél van terminál-tiltás; a Szabad agent feloldja', () => {
+    const boundOnly = disabledToolsetsForPolicies([policy('free', 'bound'), policy('bound', 'bound')])
+    assert.equal(boundOnly.includes('terminal'), true)
+    assert.equal(boundOnly.includes('code_execution'), true)
+    assert.equal(boundOnly.includes('file'), true)
+    assert.equal(boundOnly.includes('browser'), true)
+    assert.equal(boundOnly.includes('computer_use'), true)
+    assert.equal(boundOnly.includes('web'), true)
+    assert.equal(boundOnly.includes('delegation'), true)
+    assert.equal(boundOnly.includes('cronjob'), true)
+    // A Kötött pálya memóriája Excellence, nem tiltás: a memory toolset marad.
+    assert.equal(boundOnly.includes('memory'), false)
+
+    const mixed = disabledToolsetsForPolicies([policy('free'), policy('free', 'bound')])
+    assert.equal(mixed.includes('terminal'), false)
+    assert.equal(mixed.includes('file'), false)
+  })
+
+  await check('sandboxos (Standard) agentnél a terminál a padlón marad', () => {
+    const disabled = disabledToolsetsForPolicies([policy('standard')])
+    assert.equal(disabled.includes('terminal'), false)
+    assert.equal(policy('standard').capabilities.code_execution, 'sandbox_only')
+  })
+
+  await check('#873: csak csatolmány mellett a file toolset marad; külső szolgáltatás csak Szabadban', () => {
+    const bound = policy('bound')
+    const attachments = { capabilities: { ...bound.capabilities, local_files: 'attachments_only' } }
+    assert.equal(disabledToolsetsForPolicies([attachments]).includes('file'), false)
+    for (const toolset of ['image_gen', 'video_gen', 'tts', 'connections']) {
+      assert.equal(disabledToolsetsForPolicies([bound, policy('standard')]).includes(toolset), true, toolset)
+      assert.equal(disabledToolsetsForPolicies([bound, policy('free')]).includes(toolset), false, toolset)
+    }
+  })
+
+  await check('nincs látható agent → minden kapuzott toolset tiltva', () => {
+    const disabled = disabledToolsetsForPolicies([])
+    assert.equal(disabled.includes('terminal'), true)
+    assert.equal(disabled.includes('memory'), true)
+  })
+
+  await check('kiadás: a látható agentek uniója, az installId stabil, a hash mentődik', async () => {
+    const floors = memoryFloors()
+    const deps = {
+      policyStore: storeFor({ 'agent-free': 'free', 'agent-bound': 'bound' }),
+      listVisibleAgentIds: async () => ['agent-bound', 'agent-free'],
+      floors,
+      newInstallId: () => 'inst-stable',
+    }
+    const first = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY })
+    assert.deepEqual(first.agentIds, ['agent-bound', 'agent-free'])
+    assert.deepEqual(first.bots, [])
+    assert.equal(first.disabledToolsets.includes('terminal'), false)
+    assert.equal(first.installId, 'inst-stable')
+    assert.equal(floors.saved?.managedDirHash, first.managedDirHash)
+    const second = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY })
+    assert.equal(second.installId, 'inst-stable')
+    assert.equal(second.managedDirHash, first.managedDirHash)
+  })
+
+  await check('csak Kötött pálya agent a kiadásban: terminál a yamlban', async () => {
+    const pkg = await issueMachineFloor(
+      {
+        policyStore: storeFor({ 'agent-bound': 'bound' }),
+        listVisibleAgentIds: async () => ['agent-bound'],
+        floors: memoryFloors(),
+        newInstallId: () => 'inst-bound',
+      },
+      { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY },
+    )
+    assert.equal(pkg.disabledToolsets.includes('terminal'), true)
+    assert.match(pkg.files['config.yaml'], /- "terminal"/)
+  })
+
+  await check('párhuzamos első exportok ugyanazt a mentett installId-t kapják', async () => {
+    let allocated = 0
+    const floors = memoryFloors()
+    const deps = {
+      policyStore: storeFor({ 'agent-free': 'free' }),
+      listVisibleAgentIds: async () => ['agent-free'],
+      floors,
+      newInstallId: () => `inst-${++allocated}`,
+    }
+    const [first, second] = await Promise.all([
+      issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY }),
+      issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY }),
+    ])
+    assert.equal(first.installId, second.installId)
+    assert.equal(first.managedDirHash, second.managedDirHash)
+    assert.deepEqual(await floors.issuedHashes({ tenantId: T, userId: U, installId: first.installId }), [first.managedDirHash])
+  })
+
+  await check('a Windows-csomag nem írja felül a már kiadott posix hash-t', async () => {
+    const floors = memoryFloors()
+    const deps = {
+      policyStore: storeFor({ 'agent-free': 'free' }),
+      listVisibleAgentIds: async () => ['agent-free'],
+      floors,
+      newInstallId: () => 'inst-both',
+    }
+    const posix = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY, platform: 'posix' })
+    const win = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY, platform: 'windows' })
+    assert.equal(win.installId, posix.installId)
+    assert.notEqual(win.managedDirHash, posix.managedDirHash)
+    assert.deepEqual(await floors.issuedHashes({ tenantId: T, userId: U, installId: posix.installId }), [posix.managedDirHash, win.managedDirHash])
+    const again = await issueMachineFloor(deps, { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY })
+    assert.equal(again.managedDirHash, posix.managedDirHash)
+    assert.equal(floors.saved?.windowsManagedDirHash, win.managedDirHash)
+  })
+
+  await check('mcpUrl + listVisibleBots → vékony Bot csatlakozók, a hash változatlan', async () => {
+    const floors = memoryFloors()
+    const without = await issueMachineFloor(
+      {
+        policyStore: storeFor({ 'agent-kati': 'bound' }),
+        listVisibleAgentIds: async () => ['agent-kati'],
+        floors,
+        newInstallId: () => 'inst-bots',
+      },
+      { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY },
+    )
+    const withBots = await issueMachineFloor(
+      {
+        policyStore: storeFor({ 'agent-kati': 'bound' }),
+        listVisibleAgentIds: async () => ['agent-kati'],
+        listVisibleBots: async () => [
+          {
+            agentId: 'agent-kati',
+            version: 3,
+            snapshot: {
+              name: 'Kati',
+              roleInstruction: 'POSnavigator marketing.',
+              capabilities: [{ toolName: 'gmail_send', allowed: true }],
+            },
+          },
+        ],
+        floors,
+        newInstallId: () => 'inst-bots',
+      },
+      {
+        tenantId: T,
+        userId: U,
+        gatewayBaseUrl: GATEWAY,
+        mcpUrl: 'https://excellence.example/api/mcp/acme',
+        tenantSlug: 'acme',
+      },
+    )
+    assert.equal(withBots.managedDirHash, without.managedDirHash)
+    assert.equal(withBots.bots.length, 1)
+    assert.equal(withBots.bots[0]?.profile, 'exc-kati')
+    assert.equal(withBots.bots[0]?.agentId, 'agent-kati')
+    assert.match(withBots.bots[0]?.files['SOUL.md'] ?? '', /platform\.agent\.get_definition/)
+    assert.doesNotMatch(withBots.bots[0]?.files['SOUL.md'] ?? '', /POSnavigator marketing/)
+    assert.match(withBots.bots[0]?.files['config.yaml'] ?? '', /X-Excellence-Agent-Id: agent-kati/)
+    assert.match(withBots.bots[0]?.files['config.yaml'] ?? '', /https:\/\/excellence\.example\/api\/mcp\/acme/)
+  })
+
+  await check('a gateway URL a publikus originból áll', () => {
+    assert.equal(modelGatewayBaseUrl('https://excellence.example/'), GATEWAY)
+    assert.throws(() => modelGatewayBaseUrl('not a url'), /bad_gateway_origin/)
+  })
+
+  console.log(failures === 0 ? '\nok' : `\n${failures} failed`)
+  if (failures > 0) process.exit(1)
+}
+
+void main()

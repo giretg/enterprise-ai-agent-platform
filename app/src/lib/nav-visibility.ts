@@ -35,7 +35,11 @@ export type NavVisibilityPolicy = Record<UserRole, string[]>
  * szerkesztő. Enélkül egyetlen mentéssel ki lehetne zárni a tenantot ebből a
  * beállításból — a policy visszavonhatatlanná válna.
  */
-export const NAV_KEYS_LOCKED_FOR_ADMIN: readonly string[] = ['admin', 'admin.menu-access']
+export const NAV_KEYS_LOCKED_FOR_ADMIN: readonly string[] = [
+  'admin',
+  'admin.menu-access',
+  'admin.ai-client-policy',
+]
 
 export function emptyNavVisibilityPolicy(): NavVisibilityPolicy {
   return { viewer: [], operator: [], approver: [], admin: [] }
@@ -88,8 +92,12 @@ export function withNavVisibilityPolicy(
  */
 const NAV_KEY_LEGACY_HIDDEN: Record<string, readonly string[]> = {
   'admin.agent-access': ['admin.agent-access', 'staff.access'],
-  // Fiókom / Fiókok / Adminisztráció.account → Kapcsolt fiókok (főmenü).
-  account: ['account', 'admin.account', 'admin.connectors'],
+  // Fiókom / Fiókok / Adminisztráció.account / főmenü → Beállítások / Kapcsolt fiókok.
+  'settings.account': ['settings.account', 'account', 'admin.account', 'admin.connectors'],
+  // Projektek top-level → Katalógus / Projektek.
+  'staff.projects': ['staff.projects', 'projects'],
+  // Első lépések top-level → Beállítások / AI kliens.
+  'settings.get-started': ['settings.get-started', 'get-started'],
 }
 
 export function isNavKeyHiddenFor(

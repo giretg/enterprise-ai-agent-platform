@@ -15,6 +15,7 @@ import type {
   ProjectMemoryRecord,
   ProjectMemoryStore,
   WorkFileRecord,
+  WorkFileSaveInput,
   WorkFileStore,
   WorkProjectRecord,
   WorkProjectStore,
@@ -108,6 +109,16 @@ class MemFiles implements WorkFileStore {
       (row) => row.tenantId === tenantId && row.projectKey === projectKey,
     )
     return { count: rows.length, bytes: rows.reduce((sum, row) => sum + row.byteSize, 0) }
+  }
+  async save(input: WorkFileSaveInput) {
+    const existing = await this.find(input.tenantId, input.projectKey, input.path)
+    const content = input.append ? `${existing?.content ?? ''}${input.content}` : input.content
+    const byteSize = Buffer.byteLength(content, 'utf8')
+    if (byteSize > input.maxFileBytes) return 'file_too_large' as const
+    const quota = await this.quota(input.tenantId, input.projectKey)
+    if (quota.count + (existing ? 0 : 1) > input.maxCount ||
+        quota.bytes - (existing?.byteSize ?? 0) + byteSize > input.maxProjectBytes) return 'quota_exceeded' as const
+    return this.upsert({ ...input, content, byteSize })
   }
 }
 
@@ -722,6 +733,55 @@ await check('#658 session_log: append-only, excluded from index, recent headline
   assert.equal(ids.ok && ids.items?.length, 1)
   assert.equal(memory.rows.get(first.item.id)?.status, 'active')
   assert.equal(memory.rows.get(second.item.id)?.status, 'active')
+})
+
+await check('republished mid-task: work-file read follows the current version, write stays agent_stale', async () => {
+  const OLD = '44444444-4444-4444-8444-444444444444'
+  const { svc } = harness('direct')
+  const deps = {
+    loadDefinition: async ({ definitionId }: { definitionId: string }) => ({ ...definition, definitionId }),
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const list = await invokeProjectWork(deps, {
+    principal,
+    toolName: 'platform.work_file.list',
+    args: { definitionId: OLD },
+  })
+  assert.equal(list.isError, undefined)
+  const notice = JSON.parse(list.content[1]?.text ?? '{}') as { definitionUpdated?: { currentDefinitionId: string } }
+  assert.equal(notice.definitionUpdated?.currentDefinitionId, DEF)
+  const write = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.work_file.write',
+      args: { definitionId: OLD, path: 'notes/a.md', content: 'x' },
+    }),
+  )
+  assert.equal(write.code, 'agent_stale')
+  assert.equal(write.currentDefinitionId, DEF)
+})
+
+await check('invalid_args lists the bad fields', async () => {
+  const { svc } = harness('direct')
+  const deps = {
+    loadDefinition: async () => definition,
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const payload = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.work_file.read',
+      args: { definitionId: DEF },
+    }),
+  )
+  assert.equal(payload.code, 'invalid_args')
+  assert.ok((payload.issues as Array<{ path: string }>).some((issue) => issue.path === 'path'))
 })
 
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)

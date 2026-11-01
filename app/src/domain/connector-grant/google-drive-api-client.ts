@@ -41,6 +41,13 @@ const STUB_FILES: DriveFileSummary[] = [
     modifiedTime: new Date().toISOString(),
     size: '4096',
   },
+  {
+    id: 'stub-file-text',
+    name: 'jegyzet.txt',
+    mimeType: 'text/plain',
+    modifiedTime: new Date().toISOString(),
+    size: '42',
+  },
 ]
 
 const GOOGLE_WORKSPACE_EXPORT: Record<string, string> = {
@@ -49,13 +56,48 @@ const GOOGLE_WORKSPACE_EXPORT: Record<string, string> = {
   'application/vnd.google-apps.presentation': 'text/plain',
 }
 
+/** textContent media-upload csak ezekre biztonságos — bináris/Workspace MIME-ra adatvesztés. */
+const TEXT_MEDIA_UPDATE_MIMES = new Set([
+  'text/plain',
+  'text/csv',
+  'text/html',
+  'text/css',
+  'text/markdown',
+  'text/x-markdown',
+  'text/xml',
+  'text/javascript',
+  'application/json',
+  'application/xml',
+  'application/javascript',
+  'application/ecmascript',
+  'application/x-javascript',
+  'application/sql',
+  'application/yaml',
+  'application/x-yaml',
+  'application/rtf',
+])
+
 const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_CHARS = 200_000
+
+const GOOGLE_MESSAGE_MAX = 120
+
+export function isGoogleDriveTextMediaMime(mimeType: string | undefined | null): boolean {
+  const mime = (mimeType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  if (!mime) return false
+  if (TEXT_MEDIA_UPDATE_MIMES.has(mime)) return true
+  // Szöveges altípusok (pl. text/x-python), de ne application/* találomra.
+  return mime.startsWith('text/')
+}
 
 export class GoogleDriveApiAuthError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly googleStatus?: string,
+    readonly googleReasonCodes?: string[],
+    readonly googleLocations?: string[],
+    readonly googleMessage?: string,
   ) {
     super(message)
     this.name = 'GoogleDriveApiAuthError'
@@ -67,17 +109,91 @@ export class GoogleDriveApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly googleStatus?: string,
+    readonly googleReasonCodes?: string[],
+    readonly googleLocations?: string[],
+    readonly googleMessage?: string,
   ) {
     super(message)
     this.name = 'GoogleDriveApiError'
   }
 }
 
-function driveApiError(operation: string, status: number, body?: string): Error {
-  if (status === 401 || status === 403) {
-    return new GoogleDriveApiAuthError(`${operation} auth failed: ${status}`, status)
+function pushTrimmed(target: string[], value: unknown) {
+  if (typeof value === 'string' && value) target.push(value.slice(0, 100))
+}
+
+function sanitizeGoogleMessage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const collapsed = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!collapsed) return undefined
+  return collapsed.slice(0, GOOGLE_MESSAGE_MAX)
+}
+
+function googleDriveErrorDetails(body?: string): {
+  status?: string
+  reasonCodes?: string[]
+  locations?: string[]
+  message?: string
+} {
+  if (!body) return {}
+  try {
+    const error = (JSON.parse(body) as { error?: Record<string, unknown> }).error
+    if (!error) return {}
+    const reasonCodes: string[] = []
+    const locations: string[] = []
+    const errors = Array.isArray(error.errors) ? error.errors : []
+    for (const entry of errors) {
+      if (!entry || typeof entry !== 'object') continue
+      const rec = entry as Record<string, unknown>
+      pushTrimmed(reasonCodes, rec.reason)
+      pushTrimmed(locations, rec.location)
+    }
+    const details = Array.isArray(error.details) ? error.details : []
+    for (const entry of details) {
+      if (!entry || typeof entry !== 'object') continue
+      const rec = entry as Record<string, unknown>
+      pushTrimmed(reasonCodes, rec.reason)
+      const violations = Array.isArray(rec.fieldViolations) ? rec.fieldViolations : []
+      for (const violation of violations) {
+        if (!violation || typeof violation !== 'object') continue
+        pushTrimmed(locations, (violation as Record<string, unknown>).field)
+      }
+    }
+    const googleMessage = sanitizeGoogleMessage(error.message)
+    return {
+      ...(typeof error.status === 'string' ? { status: error.status.slice(0, 100) } : {}),
+      ...(reasonCodes.length ? { reasonCodes: [...new Set(reasonCodes)].slice(0, 10) } : {}),
+      ...(locations.length ? { locations: [...new Set(locations)].slice(0, 10) } : {}),
+      ...(googleMessage ? { message: googleMessage } : {}),
+    }
+  } catch {
+    const googleMessage = sanitizeGoogleMessage(body)
+    return googleMessage ? { message: googleMessage } : {}
   }
-  return new GoogleDriveApiError(`${operation} failed: ${status}${body ? ` · ${body.slice(0, 200)}` : ''}`, status)
+}
+
+function driveApiError(operation: string, status: number, body?: string): Error {
+  const details = googleDriveErrorDetails(body)
+  if (status === 401 || status === 403) {
+    return new GoogleDriveApiAuthError(
+      `${operation} auth failed: ${status}`,
+      status,
+      details.status,
+      details.reasonCodes,
+      details.locations,
+      details.message,
+    )
+  }
+  return new GoogleDriveApiError(
+    `${operation} failed: ${status}`,
+    status,
+    undefined,
+    details.status,
+    details.reasonCodes,
+    details.locations,
+    details.message,
+  )
 }
 
 function sleep(ms: number): Promise<void> {
@@ -125,12 +241,41 @@ function parseFileSummary(raw: Record<string, unknown>): DriveFileSummary | null
   }
 }
 
+/** files.create / upload / get / patch: a Google csak a supportsAllDrives-t dokumentálja. */
 function sharedDriveParams(extra?: Record<string, string>): Record<string, string> {
   return {
     supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
     ...extra,
   }
+}
+
+/** files.list: az includeItemsFromAllDrives csak listázós query param. */
+function listDriveParams(extra?: Record<string, string>): Record<string, string> {
+  return sharedDriveParams({ includeItemsFromAllDrives: 'true', ...extra })
+}
+
+/**
+ * A modell gyakran sima szót ad `query`-ként („Birtok”), amit a Drive `q` szintaxisként
+ * 400-zal elutasít. Operátor/idézőjel nélküli szöveg → teljes-szöveges keresés.
+ */
+export function driveQueryClause(query: string): string {
+  if (/'|=|<|>|\bcontains\b|\bhas\b/i.test(query)) return `(${query})`
+  return `fullText contains '${query.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+}
+
+/** Szöveges válasz beolvasása a hívó maxBytes korlátjával (export / text-letöltés). */
+async function readTextWithinLimit(res: Response, maxBytes: number): Promise<string> {
+  const contentLength = Number(res.headers.get('content-length') ?? '')
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await res.body?.cancel().catch(() => undefined)
+    throw new GoogleDriveApiError(`A fájl túl nagy (${contentLength} bájt, max ${maxBytes}).`, 413, 'file_too_large')
+  }
+  const text = await res.text()
+  const bytes = Buffer.byteLength(text, 'utf8')
+  if (bytes > maxBytes) {
+    throw new GoogleDriveApiError(`A fájl túl nagy (${bytes} bájt, max ${maxBytes}).`, 413, 'file_too_large')
+  }
+  return text
 }
 
 export class GoogleDriveApiClient {
@@ -161,7 +306,7 @@ export class GoogleDriveApiClient {
     }
 
     const qParts: string[] = ['trashed = false']
-    if (params.query) qParts.push(`(${params.query})`)
+    if (params.query) qParts.push(driveQueryClause(params.query))
     if (params.nameContains) qParts.push(`name contains '${params.nameContains.replace(/'/g, "\\'")}'`)
     if (params.mimeTypes?.length) {
       const mimeQ = params.mimeTypes.map((m) => `mimeType='${m}'`).join(' or ')
@@ -181,7 +326,7 @@ export class GoogleDriveApiClient {
       url.searchParams.set('corpora', 'drive')
       url.searchParams.set('driveId', params.driveId)
     }
-    for (const [key, value] of Object.entries(sharedDriveParams())) {
+    for (const [key, value] of Object.entries(listDriveParams())) {
       url.searchParams.set(key, value)
     }
 
@@ -269,7 +414,7 @@ export class GoogleDriveApiClient {
       }
       const res = await fetchWithBackoff('google_drive.export', url, { headers: this.authHeaders() })
       if (!res.ok) throw driveApiError('google_drive.export', res.status, await res.text())
-      let text = await res.text()
+      let text = await readTextWithinLimit(res, maxBytes)
       let truncated = false
       if (text.length > MAX_TEXT_CHARS) {
         text = text.slice(0, MAX_TEXT_CHARS)
@@ -304,7 +449,7 @@ export class GoogleDriveApiClient {
       return this.readPdf(res, file, contentType, maxBytes, warnings)
     }
     if (contentType.startsWith('text/') || contentType.includes('json')) {
-      let text = await res.text()
+      let text = await readTextWithinLimit(res, maxBytes)
       let truncated = false
       if (text.length > MAX_TEXT_CHARS) {
         text = text.slice(0, MAX_TEXT_CHARS)
@@ -448,6 +593,7 @@ export class GoogleDriveApiClient {
 
     const boundary = `platform-${Date.now().toString(36)}`
     // ponytail: binary goes in as raw bytes (multipart/related), no base64 envelope — Drive expects the bytes.
+    // join('\r\n') a záró üres elem után NEM ad második CRLF-et; a MIME törzs elé kell a header/body üres sor.
     const chunks = [
       Buffer.from(
         [
@@ -460,7 +606,7 @@ export class GoogleDriveApiClient {
             ? `Content-Type: ${mediaType}`
             : `Content-Type: ${mediaType}; charset=UTF-8`,
           '',
-        ].join('\r\n'),
+        ].join('\r\n') + '\r\n',
         'utf8',
       ),
       params.binaryBytes
@@ -569,19 +715,28 @@ export class GoogleDriveApiClient {
     textContent: string
     expectedModifiedTime?: string
   }): Promise<{ file: DriveFileSummary; conflict: boolean }> {
+    const metadata = await this.getFile({ fileId: params.fileId })
+    if (!isGoogleDriveTextMediaMime(metadata.mimeType)) {
+      // Fail-closed: UTF-8 textContent + uploadType=media bináris/Workspace fájlt
+      // megsértene, miközben a hívás sikeresnek tűnne (adatvesztés).
+      throw new GoogleDriveApiError(
+        `google_drive.update_file: textContent not allowed for mimeType=${metadata.mimeType || '(missing)'} — use native Docs/Sheets/Slides APIs or binary artifactRef upload`,
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+      )
+    }
+
     if (params.expectedModifiedTime) {
-      const existing = await this.getFile({ fileId: params.fileId })
-      if (existing.modifiedTime && existing.modifiedTime !== params.expectedModifiedTime) {
-        return { file: existing, conflict: true }
+      // modifiedTime hiányában fail-closed: ne írjuk felül „ismeretlen" bázison.
+      if (!metadata.modifiedTime || metadata.modifiedTime !== params.expectedModifiedTime) {
+        return { file: metadata, conflict: true }
       }
     }
 
     if (this.isStub()) {
-      const file = await this.getFile({ fileId: params.fileId })
-      return { file, conflict: false }
+      return { file: metadata, conflict: false }
     }
 
-    const metadata = await this.getFile({ fileId: params.fileId })
     const url = new URL(`${UPLOAD_BASE}/files/${encodeURIComponent(params.fileId)}`)
     url.searchParams.set('uploadType', 'media')
     for (const [key, value] of Object.entries(sharedDriveParams())) {
@@ -593,7 +748,7 @@ export class GoogleDriveApiClient {
       method: 'PATCH',
       headers: {
         ...this.authHeaders(),
-        'content-type': metadata.mimeType || 'text/plain',
+        'content-type': metadata.mimeType.split(';')[0]?.trim() || 'text/plain',
       },
       body: params.textContent,
     })

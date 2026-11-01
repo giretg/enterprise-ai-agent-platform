@@ -81,7 +81,8 @@ ESLint rule. `domain/audit` is a target module.
   `platform.agent.checkout`, `platform.agent.create_draft`,
   `platform.agent.get_working_set`, `platform.agent.publish`,
   `platform.gateway_operation.get`, `google_drive_search`,
-  `google_drive_read_file`, `google_drive_create_folder`); every Drive
+  `google_drive_read_file`, `google_drive_create_folder`,
+  `mcp_list_tools`, `mcp_call`); every Drive
   `tools/call` still runs `authorizeToolCall`. Writes enqueue instead of
   calling Google until a human approves. Agent Scaffold draft tools are admin
   write (`create_draft`, `publish`) or admin/approver read (`get_working_set`);

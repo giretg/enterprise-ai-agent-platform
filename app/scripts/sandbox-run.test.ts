@@ -3,13 +3,21 @@
  * Futtatás: npm run test:sandbox-run
  */
 import assert from 'node:assert/strict'
+import { createServer, type Server } from 'node:http'
 import { CodeSandboxService } from '../src/domain/code-sandbox/code-sandbox-service'
+import { HttpSandboxProvider } from '../src/domain/code-sandbox/http-sandbox-provider'
 import {
   codeSandboxConfigSchema,
+  codeSandboxLimits,
   type SandboxHandle,
   type SandboxProvider,
 } from '../src/domain/code-sandbox/code-sandbox-types'
-import { resolvePinnedSkillScript } from '../src/domain/code-sandbox/skill-script'
+import {
+  MAX_SANDBOX_WORK_INPUTS,
+  resolvePinnedSkillScript,
+  resolveSandboxWorkInputs,
+  resolveSandboxBinaryInputs,
+} from '../src/domain/code-sandbox/skill-script'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 
 const SKILL_VERSION_ID = '99999999-9999-4999-8999-999999999999'
@@ -49,6 +57,14 @@ const attachment = {
   sha256: 'deadbeef',
 }
 
+function localPort(server: Server): number {
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    throw new Error('expected tcp listen address')
+  }
+  return address.port
+}
+
 class FakeProvider implements SandboxProvider {
   destroyed = 0
   failExec = false
@@ -78,6 +94,22 @@ class FakeProvider implements SandboxProvider {
 }
 
 async function main() {
+  await check('binary inputs are byte-exact and reject traversal, shadowing and invalid base64', () => {
+    const bytes = Buffer.from([0, 255, 1, 128])
+    const inputs = resolveSandboxBinaryInputs(JSON.stringify([{ path: 'attachments/data.xlsx', contentBase64: bytes.toString('base64') }]))
+    assert.equal(inputs[0].sandboxPath, '/work/in/attachments/data.xlsx')
+    assert.deepEqual(inputs[0].bytes, bytes)
+    assert.deepEqual(resolveSandboxBinaryInputs(undefined), [])
+    for (const path of ['../secret', '/etc/passwd', 'skill/run.py', 'SKILL/run.py']) {
+      assert.throws(() => resolveSandboxBinaryInputs(JSON.stringify([{ path, contentBase64: 'eA==' }])))
+    }
+    assert.throws(() => resolveSandboxBinaryInputs('[{"path":"a","contentBase64":"!"}]'))
+    assert.throws(() => resolveSandboxBinaryInputs(JSON.stringify([{ path: 'a', contentBase64: 'eA==' }, { path: 'A', contentBase64: 'eA==' }])))
+    assert.throws(() => resolveSandboxBinaryInputs('{}'))
+    assert.throws(() => resolveSandboxBinaryInputs('{'))
+    assert.throws(() => resolveSandboxBinaryInputs(JSON.stringify([{ path: 'a', contentBase64: Buffer.alloc(6 * 1024 * 1024).toString('base64') }])))
+  })
+
   await check('unpinned skillVersionId is denied', () => {
     const result = resolvePinnedSkillScript({
       definition,
@@ -97,6 +129,39 @@ async function main() {
     })
     assert.equal(result.ok, false)
     if (!result.ok) assert.equal(result.reason, 'invalid_args')
+  })
+
+  await check('work-file inputs land under /work/in/', () => {
+    const result = resolveSandboxWorkInputs('sales.csv, notes/summary.txt')
+    assert.deepEqual(result, {
+      ok: true,
+      inputs: [
+        { workPath: 'sales.csv', sandboxPath: '/work/in/sales.csv' },
+        { workPath: 'notes/summary.txt', sandboxPath: '/work/in/notes/summary.txt' },
+      ],
+    })
+  })
+
+  await check('work-file input rejects traversal, skill collision and duplicates', () => {
+    assert.equal(resolveSandboxWorkInputs('../secret.csv').ok, false)
+    assert.equal(resolveSandboxWorkInputs('/etc/passwd').ok, false)
+    assert.equal(resolveSandboxWorkInputs('skill/run.py').ok, false)
+    // The sandbox filesystem may case-fold; the pinned tree must stay unreachable either way.
+    assert.equal(resolveSandboxWorkInputs('Skill/run.py').ok, false)
+    assert.equal(resolveSandboxWorkInputs('SKILL/run.py').ok, false)
+    assert.equal(resolveSandboxWorkInputs('SKILL').ok, false)
+    assert.equal(resolveSandboxWorkInputs('sales.csv, sales.csv').ok, false)
+    assert.equal(resolveSandboxWorkInputs('sales.csv, sales.csv/').ok, false)
+    assert.equal(
+      resolveSandboxWorkInputs(Array.from({ length: MAX_SANDBOX_WORK_INPUTS + 1 }, (_, i) => `f${i}.csv`).join(','))
+        .ok,
+      false,
+    )
+  })
+
+  await check('work inputs plus the skill tree stay inside the sandbox file-count limit', () => {
+    // entry + /work/run.py + helpers + work inputs must not trip CODE_SANDBOX_MAX_FILES (32).
+    assert.ok(MAX_SANDBOX_WORK_INPUTS + 3 < codeSandboxLimits().maxFiles)
   })
 
   await check('pinned .py entry resolves helpers', () => {
@@ -160,6 +225,45 @@ async function main() {
     assert.equal(result.outputFiles.length, 1)
     assert.equal(result.outputFiles[0]?.path, 'report.html')
     assert.equal(provider.destroyed, 1)
+  })
+
+  await check('sandbox request never forwards scripts through a redirect', async () => {
+    let forwarded = 0
+    const destination = createServer((_request, response) => {
+      forwarded++
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ exitCode: 0, stdout: '', stderr: '', outputs: [] }))
+    })
+    const redirector = createServer((_request, response) => {
+      response.writeHead(307, { location: `http://127.0.0.1:${localPort(destination)}/stolen` })
+      response.end()
+    })
+    await new Promise<void>((resolve) => destination.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>((resolve) => redirector.listen(0, '127.0.0.1', resolve))
+    try {
+      const baseUrl = `http://127.0.0.1:${localPort(redirector)}`
+      const config = codeSandboxConfigSchema.parse({
+        provider: 'e2b_compatible',
+        region: 'europe-west1',
+        baseUrl,
+        defaultAllowEgress: false,
+      })
+      const service = new CodeSandboxService(new HttpSandboxProvider({ ...config, baseUrl }, null), config)
+      await assert.rejects(
+        () =>
+          service.execute({
+            tenantId: 'tenant',
+            scopeKey: 'scope',
+            command: ['python3', '/work/run.py'],
+            files: [{ sandboxPath: '/work/run.py', bytes: Buffer.from('private script') }],
+          }),
+        /fetch failed/,
+      )
+      assert.equal(forwarded, 0)
+    } finally {
+      redirector.close()
+      destination.close()
+    }
   })
 
   console.log(`\n${failures === 0 ? 'sandbox-run: ok' : `sandbox-run: ${failures} failed`}`)

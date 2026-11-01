@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict'
 import { GET as healthzGet } from '../src/app/api/healthz/route'
 import { GET as readyzGet } from '../src/app/api/readyz/route'
+import { GET as metricsGet } from '../src/app/api/metrics/route'
 
 // A `@/lib/db` proxy háttérben (fire-and-forget) lekérdezi az aktív DB-módot; a
 // stub DATABASE_URL elérhetetlen → várt rejection, ami nem a WP-7 tárgya. Elnyeljük,
@@ -43,7 +44,25 @@ async function main() {
     assert.equal(res.status, 503)
     const body = (await res.json()) as { status: string; error?: string }
     assert.equal(body.status, 'unready')
-    assert.ok(body.error && body.error.length > 0, 'a hibaüzenet szerepel a válaszban')
+    assert.equal(body.error, undefined, 'belső DB-hiba nem jelenhet meg a nyilvános válaszban')
+  })
+
+  await check('metrics: hiányzó token-konfiguráció esetén zárt', async () => {
+    const original = process.env.METRICS_TOKEN
+    delete process.env.METRICS_TOKEN
+    try {
+      const req = new Request('https://example.test/api/metrics')
+      assert.equal(metricsGet(req).status, 503)
+      process.env.METRICS_TOKEN = 'scrape-secret'
+      assert.equal(metricsGet(req).status, 401)
+      const authorized = new Request('https://example.test/api/metrics', {
+        headers: { authorization: 'Bearer scrape-secret' },
+      })
+      assert.equal(metricsGet(authorized).status, 200)
+    } finally {
+      if (original === undefined) delete process.env.METRICS_TOKEN
+      else process.env.METRICS_TOKEN = original
+    }
   })
 
   console.log(`\n${passed} passed, ${failed} failed`)

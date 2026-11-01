@@ -33,6 +33,9 @@ export const PUBLIC_ROUTE_PATTERNS = [
   '/api/v1/harness(.*)',
   // Cloud Scheduler → token auth a route handlerben (x-dispatcher-token), nem Clerk.
   '/api/v1/internal/dispatch-cycle(.*)',
+  // #759: AI-használati napló retenciós sweep. Szűken ez a path — a szomszédos internal
+  // route-ok védettek maradnak (lásd public-routes teszt other-endpoint).
+  '/api/v1/internal/ai-audit-retention',
   '/api/webhooks(.*)',
   // Bejövő csatorna-webhook (Telegram): a Clerk-munkamenet HELYETT a route saját, konstans
   // idejű megosztott-titok fejléce hitelesít (`x-telegram-bot-api-secret-token`).
@@ -61,9 +64,23 @@ export const PUBLIC_ROUTE_PATTERNS = [
   // Hermes Managed Client (#772): saját Bearer-hitelesítés a handlerben (MCP OAuth token,
   // illetve gateway-JWT) — a Clerk-süti nélküli Hermes-kliens ezeket hívja.
   '/api/model-gateway/token',
+  '/api/model-gateway/v1/(.*)',
   '/api/client-policy/snapshot',
+  '/api/client-policy/heartbeat',
+  '/api/ai-audit/events', // POST: gateway-JWT; GET: Clerk-munkamenet + admin szerep a handlerben
   // Delegált OAuth callback: a Google ide redirectel. MCP-consentnél nincs
   // Clerk-süti — a handler a signed OAuth state-tel hitelesít (lásd route).
   '/api/connectors/oauth/callback',
+  // #967 mini app gyors link: Clerk-süti NÉLKÜL, az aláírt token hitelesít a handlerben
+  // (keretoldal + tartalom). SZŰKEN ez a két path — a letöltés és az állandó link védett.
+  '/api/mini-apps/open/(.*)',
+  '/api/mini-apps/content/(.*)',
   '/connectors/oauth/done',
+  // #1004 platform-chat worker: a chat-tokennel (Bearer) kér folytatási tokent, Clerk-süti nélkül.
+  // SZŰKEN ez a path — a `/api/chat/session` Clerk-sessiont kér (a böngészőből hívják).
+  '/api/chat/continuation',
+  // #1016 nyilvános ügyfélszolgálati asszisztens: névtelen látogató, Clerk nélkül. A handler a
+  // `slug`-ból oldja fel a tenantot, rate-limittel, Turnstile-lal és napi kerettel véd.
+  '/c/:slug',
+  '/api/public-chat/:slug',
 ] as const

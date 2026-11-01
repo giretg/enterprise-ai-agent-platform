@@ -1,14 +1,12 @@
 'use client'
 
-import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore, useTransition } from 'react'
+import { type ChangeEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { asTranslate, type TranslateFn } from '@/i18n/translate'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
-import { Badge, Card, IconButton } from '@/components/ui/shell'
+import { Badge, Card } from '@/components/ui/shell'
 import { privacyCapabilityLevel, privacyCapabilityUi } from '@/domain/privacy/connector-privacy'
-import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import {
-  activateConnector,
   assignConnectorToAgent,
   createConnectorFromTemplateAction,
   createConnectorDraft,
@@ -34,17 +32,24 @@ import {
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
+import { GoogleConnectorLevelsPanel, type GoogleAccountViewRow } from './google-connector-levels-panel'
+import { listMcpConnectors } from '@/app/actions/mcp-connectors'
+import {
+  McpConnectorCard,
+  McpConnectorsPanel,
+  mcpHasApprovedTools,
+  type McpConnectorsData,
+} from './mcp-connectors-panel'
 import { listTenants } from '@/app/actions/tenant'
+import { activateConnector, approveSelfUpdatingVersion, syncSelfUpdatingConnector } from '@/lib/connector-update-publishing'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import {
   approveSelfUpdatingSource,
-  approveSelfUpdatingVersion,
   createSelfUpdatingConnector,
   createSelfUpdatingConnectorsFromCatalog,
   listSelfUpdatingConnectors,
   previewSelfUpdatingCatalog,
   setTenantSelfUpdatingAutoApprove,
-  syncSelfUpdatingConnector,
   trustSelfUpdatingPartner,
 } from '@/app/actions/self-updating-connectors'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
@@ -52,6 +57,25 @@ import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
 import { AGENTMAIL_TEMPLATE_KEY } from '@/domain/connector-template/builtin-templates'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import {
+  AdvancedDisclosure,
+  AppIcon,
+  BackButton,
+  DetailHeader,
+  DetailSection,
+  FilterChip,
+  HubRow,
+  HubSection,
+  IconStack,
+  InfoRows,
+  PillButton,
+  type RowTone,
+  SearchField,
+  Toggle,
+  ToolList,
+  type ToolItem,
+} from './connector-hub-ui'
 import {
   SelfUpdatingConnectorCard,
   TenantAutoApproveSwitch,
@@ -110,7 +134,7 @@ type HttpApiConfigView = {
   isDelegated: boolean
   endpoints: Array<{ method: string; path: string }>
 } | null
-type GmailConfigView = {
+type DelegatedOauthConfigView = {
   provider: string
   authUrl: string
   tokenUrl: string
@@ -140,7 +164,9 @@ type DraftRow = {
   authMode: string
   config: DraftConfig
   httpApiView: HttpApiConfigView
-  gmailView: GmailConfigView
+  delegatedOauthView: DelegatedOauthConfigView
+  /** Google Ads / Analytics / Search Console: cég-szintű fiókkötés (secret-mentes). */
+  googleAccountView?: GoogleAccountViewRow | null
   sourceType: string
   sourceHash: string
   createdAt: string | Date
@@ -237,8 +263,15 @@ type CreateStep = 'basics' | 'source' | 'review' | 'su_link' | 'su_trust' | 'su_
 const SELF_UPDATING_ACTIVATION_STEPS: CreateStep[] = ['su_link', 'su_trust', 'su_sync', 'su_version']
 type ConnectionKind = 'fixed' | 'self_updating'
 type SourceMethod = 'document' | 'manual' | 'template'
-type DraftManageStep = 'inspect' | 'validate' | 'review' | 'sandbox' | 'activate'
-type ActiveManageStep = 'inspect' | 'assign' | 'revoke'
+type HubView =
+  | { kind: 'hub' }
+  | { kind: 'template'; templateId: string }
+  | { kind: 'draft'; draftId: string }
+  | { kind: 'self_updating'; id: string }
+  | { kind: 'mcp'; id: string }
+  | { kind: 'gap'; id: string }
+  | { kind: 'catalog' }
+type HubFilter = 'all' | 'connected' | 'pending' | 'available'
 
 type TemplateDescriptor = {
   key: string
@@ -280,42 +313,47 @@ type ConnectorTemplateRow = {
   descriptor: TemplateDescriptor
 }
 
-function ProvisioningTopicShell({
-  templates,
-  connections,
-  canManageCatalog,
-  isSuperadmin,
+function WizardChoice({
+  selected,
+  title,
+  hint,
+  onClick,
 }: {
-  templates: ReactNode
-  connections: ReactNode
-  canManageCatalog: boolean
-  isSuperadmin: boolean
+  selected: boolean
+  title: string
+  hint: string
+  onClick: () => void
 }) {
-  const t = useProvT()
   return (
-    <SettingsSectionShell
-      ariaLabel={t('topicsAria')}
-      initialId="kapcsolatok"
-      sections={[
-        {
-          id: 'kapcsolatok',
-          label: t('tabConnectors'),
-          description: t('tabConnectorsDesc'),
-          content: connections,
-        },
-        {
-          id: 'sablonok',
-          label: t('tabTemplates'),
-          description: canManageCatalog
-            ? isSuperadmin
-              ? t('tabTemplatesSuper')
-              : t('tabTemplatesAdmin')
-            : t('tabTemplatesView'),
-          content: templates,
-        },
-      ]}
-    />
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`rounded-lg border px-4 py-3 text-left transition ${
+        selected ? 'border-coral/45 bg-coral/8 ring-1 ring-coral/25' : 'border-ink/12 bg-paper hover:border-coral/30'
+      }`}
+    >
+      <span className="block text-sm font-semibold">{title}</span>
+      <span className="mt-1 block text-xs text-ink-soft">{hint}</span>
+    </button>
   )
+}
+
+function authMethodLabel(kind: string, t: TranslateFn): string {
+  switch (kind) {
+    case 'api_key':
+      return t('authApiKey')
+    case 'bearer':
+      return t('authBearer')
+    case 'basic':
+      return t('authBasic')
+    case 'service_oauth2':
+      return t('authServiceOauth')
+    case 'user_delegated_oauth2':
+      return t('authUserOauth')
+    default:
+      return kind
+  }
 }
 
 function TemplateCatalogList({
@@ -494,24 +532,6 @@ function draftSourceProvenanceLabel(
   return null
 }
 
-function statusTone(s?: CheckStatus): 'neutral' | 'success' | 'warning' | 'danger' {
-  if (s === 'passed') return 'success'
-  if (s === 'warned') return 'warning'
-  if (s === 'failed') return 'danger'
-  return 'neutral'
-}
-function reviewTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' {
-  if (s === 'approved') return 'success'
-  if (s === 'rejected') return 'danger'
-  if (s === 'changes_requested') return 'warning'
-  return 'neutral'
-}
-function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' {
-  if (s === 'active') return 'success'
-  if (s === 'blocked' || s === 'archived') return 'danger'
-  return 'neutral'
-}
-
 function subscribeNever() {
   return () => {}
 }
@@ -522,12 +542,18 @@ function readInIframe() {
 
 export function ProvisioningPanel({
   canManageCatalog,
+  canManageMcp,
   isSuperadmin,
   activeTenantId,
+  mcpInitial,
+  mcpInitialError,
 }: {
   canManageCatalog: boolean
+  canManageMcp: boolean
   isSuperadmin: boolean
   activeTenantId: string | null
+  mcpInitial: McpConnectorsData | null
+  mcpInitialError?: string
 }) {
   const t = useProvT()
   const [drafts, setDrafts] = useState<DraftRow[]>([])
@@ -541,6 +567,7 @@ export function ProvisioningPanel({
   const [googleOauthConfigured, setGoogleOauthConfigured] = useState(false)
   const [googleDriveOauthConfigured, setGoogleDriveOauthConfigured] = useState(false)
   const [googleApiOauthConfigured, setGoogleApiOauthConfigured] = useState(false)
+  const [googleAdsDeveloperTokenConfigured, setGoogleAdsDeveloperTokenConfigured] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -552,8 +579,9 @@ export function ProvisioningPanel({
   // Create-form állapot
   const [name, setName] = useState('')
   const [connectionKind, setConnectionKind] = useState<ConnectionKind>('fixed')
-  // Általános konnektoron belül: sablon-katalógusból vagy egyéb kapcsolat.
-  const [fixedSource, setFixedSource] = useState<'template' | 'custom'>('template')
+  // A varázsló első lépése: semmi sincs előre kiválasztva.
+  const [startPath, setStartPath] = useState<'own' | 'mcp' | null>(null)
+  const [ownKind, setOwnKind] = useState<'openapi' | 'custom' | null>(null)
   const [selfUpdatingApiKey, setSelfUpdatingApiKey] = useState('')
   const [selfUpdatingSpecUrl, setSelfUpdatingSpecUrl] = useState('')
   // Katalógus-varázsló (gyűjtőindex → leafenkénti kapcsolatok) állapota
@@ -592,6 +620,16 @@ export function ProvisioningPanel({
   // Katalógus-szerkesztő láthatósága (csak superadmin, alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
   const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
+  const [mcpData, setMcpData] = useState(mcpInitial)
+  const router = useRouter()
+  // Melyik nézet látszik: a lista, vagy egy alkalmazás részlet-oldala.
+  const [view, setView] = useState<HubView>({ kind: 'hub' })
+  const [hubFilter, setHubFilter] = useState<HubFilter>('all')
+  const [hubQuery, setHubQuery] = useState('')
+  const openView = useCallback((next: HubView) => {
+    setView(next)
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0 })
+  }, [])
 
   // Connector sablon-katalógus
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -651,11 +689,13 @@ export function ProvisioningPanel({
       if (t.success) {
         const rows = t.data as ConnectorTemplateRow[]
         setTemplates(rows)
-        if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
       }
       if (g.success) setGoogleOauthConfigured(g.data.configured)
       if (gd.success) setGoogleDriveOauthConfigured(gd.data.configured)
-      if (ga.success) setGoogleApiOauthConfigured(ga.data.configured)
+      if (ga.success) {
+        setGoogleApiOauthConfigured(ga.data.configured)
+        setGoogleAdsDeveloperTokenConfigured(ga.data.googleAdsDeveloperTokenConfigured)
+      }
       if (su.success) {
         setSelfUpdatingRows(su.data.connectors as SelfUpdatingConnectorRow[])
         setTenantAuto(su.data.tenantAutoApproveEnabled)
@@ -678,20 +718,35 @@ export function ProvisioningPanel({
       }
       setLoadedOnce(true)
     })
-  }, [applyTemplateSelection, isSuperadmin, selectedTemplateId])
+  }, [isSuperadmin])
+
+  const reloadMcp = useCallback(async (text?: string) => {
+    const res = await listMcpConnectors()
+    if (res.success) {
+      setMcpData(res.data as McpConnectorsData)
+      if (text) setNotice(text)
+    } else {
+      setError(res.error ?? t('error'))
+    }
+  }, [t])
 
   useEffect(() => {
     reload()
   }, [reload])
 
   const run = useCallback(
-    (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => {
+    (
+      fn: () => Promise<{ success: boolean; error?: string; data?: unknown }>,
+      okMsg: string,
+      onSuccess?: (result: { success: boolean; error?: string; data?: unknown }) => void,
+    ) => {
       setError(null)
       setNotice(null)
       startTransition(async () => {
         const res = await fn()
         if (res.success) {
           setNotice(okMsg)
+          onSuccess?.(res)
           reload()
         } else {
           setError(res.error ?? 'Ismeretlen hiba')
@@ -805,9 +860,10 @@ export function ProvisioningPanel({
     const listed = new Set([
       ...drafts.map((draft) => draft.connectorId),
       ...selfUpdatingRows.map((row) => row.id),
+      ...(mcpData?.connectors ?? []).map((row) => row.id),
     ])
     return catalogRows.filter((row) => !listed.has(row.id))
-  }, [catalogRows, drafts, selfUpdatingRows])
+  }, [catalogRows, drafts, mcpData, selfUpdatingRows])
   const activeSelfUpdatingRows = selfUpdatingRows.filter((row) => row.lifecycleState === 'active')
   const archivedSelfUpdatingRows = selfUpdatingRows
     .filter((row) => row.lifecycleState !== 'active')
@@ -816,11 +872,9 @@ export function ProvisioningPanel({
   const pendingSelfUpdatingRows = activeSelfUpdatingRows
     .filter((row) => !isSelfUpdatingReady(row))
     .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
-  const inactiveCount = openDrafts.length + archivedSelfUpdatingRows.length
-  const activeItems = [
-    ...activatedDrafts.map((draft) => ({ kind: 'provisioned' as const, name: draft.name, draft })),
-    ...readySelfUpdatingRows.map((row) => ({ kind: 'self_updating' as const, name: row.name, row })),
-  ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  const mcpConnectors = mcpData?.connectors ?? []
+  const inactiveMcpRows = mcpConnectors.filter((row) => !mcpHasApprovedTools(row))
+  const activeMcpRows = mcpConnectors.filter((row) => mcpHasApprovedTools(row))
   const latestTemplateVersions = useMemo(() => {
     const versions: Record<string, number> = {}
     for (const template of templates) {
@@ -830,15 +884,19 @@ export function ProvisioningPanel({
     }
     return versions
   }, [templates])
-  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? templates[0]
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId)
   // Sablon-út: az 1. lépésben választott sablon; az alternatív úton nincs sablon.
-  const isTemplatePath = connectionKind === 'fixed' && fixedSource === 'template'
-  const effectiveName = isTemplatePath ? (selectedTemplate?.displayName ?? '') : name
+  const isTemplatePath = view.kind === 'template'
+  // Galéria: csak az aktív sablonok legfrissebb verziója.
+  const galleryTemplates = templates.filter(
+    (template) =>
+      template.status === 'active' &&
+      template.version === latestTemplateVersions[templateLineKey(template) ?? ''],
+  )
   const selectedTemplateDescriptor = selectedTemplate?.descriptor
   const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
   const isGoogleDriveTemplate = selectedTemplateDescriptor?.connectorType === 'google_drive'
   const isGoogleApiTemplate = isPlatformGoogleApiConnectorTemplateKey(selectedTemplateDescriptor?.key)
-  const isAgentMailTemplate = isTemplatePath && selectedTemplateDescriptor?.key === AGENTMAIL_TEMPLATE_KEY
   const effectiveTemplateAuthMethod =
     selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
     selectedTemplateDescriptor?.authMethods[0]?.kind ??
@@ -857,7 +915,8 @@ export function ProvisioningPanel({
     setName('')
     setCreateStep('basics')
     setConnectionKind('fixed')
-    setFixedSource('template')
+    setStartPath(null)
+    setOwnKind(null)
     setSelfUpdatingApiKey('')
     setSelfUpdatingSpecUrl('')
     setCatalogChecking(false)
@@ -973,10 +1032,26 @@ export function ProvisioningPanel({
     })
   }, [catalogLeaves, catalogSelected, catalogNames, catalogKeyMode, catalogSharedKey, catalogLeafKeys, reload])
 
-  const stepOrder: CreateStep[] =
-    connectionKind === 'self_updating'
-      ? ['basics', 'source', ...SELF_UPDATING_ACTIVATION_STEPS]
-      : ['basics', 'source', 'review']
+  const wizardSteps: Array<{ id: CreateStep; label: string }> = startPath === 'mcp'
+    ? [
+        { id: 'basics', label: t('stepKind') },
+        { id: 'source', label: t('mcpSetupStep') },
+      ]
+    : connectionKind === 'self_updating'
+      ? [
+          { id: 'basics', label: t('stepKind') },
+          { id: 'source', label: t('stepApiDoc') },
+          { id: 'su_link', label: t('suLink') },
+          { id: 'su_trust', label: t('suTrust') },
+          { id: 'su_sync', label: t('suSync') },
+          { id: 'su_version', label: t('suVersion') },
+        ]
+      : [
+          { id: 'basics', label: t('stepKind') },
+          { id: 'source', label: t('source') },
+          { id: 'review', label: t('review') },
+        ]
+  const stepOrder = wizardSteps.map((step) => step.id)
 
   const onCreate = useCallback(() => {
     if (connectionKind === 'self_updating') {
@@ -1007,26 +1082,6 @@ export function ProvisioningPanel({
       })
       return
     }
-    if (isTemplatePath) {
-      if (!selectedTemplate) {
-        setError(t('pickTemplate'))
-        return
-      }
-      run(async () => {
-        const result = await createConnectorFromTemplateAction({
-          templateId: selectedTemplate.id,
-          name: selectedTemplate.displayName,
-          authMethodKind: effectiveTemplateAuthMethod,
-          instanceValues: templateValues,
-          secretAliases: templateSecretAliases,
-          selectedScopes,
-          selectedEndpoints,
-        })
-        if (result.success) closeCreateDraftForm()
-        return result
-      }, t('draftFromTemplate'))
-      return
-    }
     let parsed: unknown
     try {
       parsed = JSON.parse(configText)
@@ -1042,9 +1097,11 @@ export function ProvisioningPanel({
         sourceContent: docText.trim() || undefined,
         generatedConfig: parsed,
       })
-      if (result.success) closeCreateDraftForm()
       return result
-    }, t('connectorCreated'))
+    }, t('connectorCreated'), (result) => {
+      closeCreateDraftForm()
+      openView({ kind: 'draft', draftId: (result.data as { draftId: string }).draftId })
+    })
   }, [
     catalogChecked,
     catalogIsCatalog,
@@ -1053,36 +1110,49 @@ export function ProvisioningPanel({
     connectionKind,
     docSourceRef,
     docText,
-    effectiveTemplateAuthMethod,
-    isTemplatePath,
     name,
+    openView,
     run,
-    selectedEndpoints,
-    selectedScopes,
-    selectedTemplate,
     selfUpdatingApiKey,
     selfUpdatingSpecUrl,
     sourceType,
-    templateSecretAliases,
-    templateValues,
     stepOrder,
     refreshSuWizardRow,
   ])
 
+  // Katalógus-alkalmazás társítása: a sablonból létrejön a kapcsolat, és rögtön
+  // a részlet-oldalára lépünk, ahol a bekapcsolás (kulcs / bejelentkezés) következik.
+  const connectTemplate = () => {
+    if (!selectedTemplate) {
+      setError(t('pickTemplate'))
+      return
+    }
+    run(
+      () =>
+        createConnectorFromTemplateAction({
+          templateId: selectedTemplate.id,
+          name: selectedTemplate.displayName,
+          authMethodKind: effectiveTemplateAuthMethod,
+          instanceValues: templateValues,
+          secretAliases: templateSecretAliases,
+          selectedScopes,
+          selectedEndpoints,
+        }),
+      t('hubConnectedNext'),
+      (result) => openView({ kind: 'draft', draftId: (result.data as { draftId: string }).draftId }),
+    )
+  }
+
   const activeStepIndex = stepOrder.indexOf(createStep)
   const suWizardProposal = suWizardRow?.versions.find((version) => version.id === suWizardVersionId) ?? null
   const canEnterSource =
-    connectionKind === 'self_updating'
-      ? name.trim().length > 0
-      : isTemplatePath
-        ? !!selectedTemplate && !isAgentMailTemplate
-        : name.trim().length > 0
+    startPath === 'mcp' || (startPath === 'own' && ownKind !== null && name.trim().length > 0)
   const selfUpdatingReady =
     canEnterSource && !!selfUpdatingSpecUrl.trim()
   const canEnterReview =
     connectionKind === 'self_updating'
       ? selfUpdatingReady
-      : canEnterSource && (isTemplatePath ? templateReady : configText.trim().length > 0)
+      : canEnterSource && configText.trim().length > 0
   const setWizardStep = (step: CreateStep) => {
     if (step === 'source' && !canEnterSource) return
     if (step === 'review' && !canEnterReview) return
@@ -1090,26 +1160,31 @@ export function ProvisioningPanel({
     if (stepOrder.indexOf(step) > suWizardMaxStepIndex) return
     setCreateStep(step)
   }
-  const createDisabledReason = pending
+  const createDisabledReason = startPath === 'mcp'
+    ? null
+    : pending
     ? t('pendingOp')
-    : connectionKind === 'fixed' && isTemplatePath && !selectedTemplate
-      ? t('pickTemplate')
-      : !isTemplatePath && connectionKind !== 'self_updating' && !name.trim()
+    : connectionKind !== 'self_updating' && !name.trim()
         ? t('needName')
         : connectionKind === 'self_updating' && !selfUpdatingSpecUrl.trim()
           ? t('needSpecUrl')
         : connectionKind === 'self_updating' && catalogChecked && catalogIsCatalog
           ? t('catalogNoSolo')
-        : connectionKind === 'fixed' && isTemplatePath && !templateReady
-          ? t('fillRequired')
-          : connectionKind === 'fixed' && !isTemplatePath && !configText.trim()
+          : connectionKind === 'fixed' && !configText.trim()
             ? t('needConfig')
             : null
   const reviewProvenanceHint = draftSourceProvenanceLabel(
     sourceType,
-    isTemplatePath ? 'template' : sourceMethod,
+    sourceMethod,
     t,
   )
+  const templateDisabledReason = pending
+    ? t('pendingOp')
+    : !selectedTemplate
+      ? t('pickTemplate')
+      : !templateReady
+        ? t('fillRequired')
+        : null
 
   const advanceSuWizard = (step: CreateStep, noticeText: string) => {
     const nextIndex = stepOrder.indexOf(step)
@@ -1204,267 +1279,614 @@ export function ProvisioningPanel({
     })
   }
 
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          {inPanelModal ? null : (
-            <h1 className="font-display text-2xl font-semibold tracking-tight">{t('title')}</h1>
-          )}
-        </div>
-        {!showCreateDraftForm ? (
-          <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
-            <Link
-              href="/control-plane/provisioning/agentmail"
-              className="inline-flex items-center rounded-md border border-ink/15 px-4 py-2 text-sm font-semibold text-ink-soft transition hover:border-coral/40 hover:text-ink"
+  // ── Főnézet adatai: minden kapcsolat egy sorként, állapot szerint csoportosítva ──
+  const templateForKey = (key?: string | null) =>
+    key ? (galleryTemplates.find((tpl) => tpl.key === key) ?? templates.find((tpl) => tpl.key === key)) : undefined
+  const draftTemplateKey = (d: DraftRow) =>
+    d.config?.provenance?.templateKey ?? d.delegatedOauthView?.provenance?.templateKey ?? null
+  type HubItem = {
+    key: string
+    name: string
+    searchText: string
+    iconDataUrl?: string | null
+    provider: string
+    subtitle: string
+    tone: RowTone
+    action: string
+    actionVariant?: 'primary' | 'soft' | 'success'
+    target: HubView
+  }
+  const draftItem = (d: DraftRow, subtitle: string, tone: RowTone, action: string): HubItem => {
+    const key = draftTemplateKey(d)
+    return {
+      key: `draft:${d.draftId}`,
+      name: d.name,
+      searchText: `${d.name} ${key ?? ''} ${d.connectorType}`,
+      iconDataUrl: templateForKey(key)?.descriptor.iconDataUrl,
+      provider: key ?? d.connectorType,
+      subtitle,
+      tone,
+      action,
+      target: { kind: 'draft', draftId: d.draftId },
+    }
+  }
+  const connectedItems: HubItem[] = [
+    ...activatedDrafts.map((d) => draftItem(d, t('hubStatusConnected'), 'success', t('hubManage'))),
+    ...readySelfUpdatingRows.map((row) => ({
+      key: `su:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} openapi`,
+      provider: 'openapi',
+      subtitle: t('hubStatusConnectedAuto'),
+      tone: 'success' as const,
+      action: t('hubManage'),
+      target: { kind: 'self_updating', id: row.id } as HubView,
+    })),
+    ...activeMcpRows.map((row) => ({
+      key: `mcp:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} mcp`,
+      provider: 'mcp',
+      subtitle: t('hubStatusConnected'),
+      tone: 'success' as const,
+      action: t('hubManage'),
+      target: { kind: 'mcp', id: row.id } as HubView,
+    })),
+  ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  const pendingDrafts = openDrafts.filter((d) => d.lifecycleState !== 'archived')
+  const archivedDrafts = openDrafts.filter((d) => d.lifecycleState === 'archived')
+  const pendingItems: HubItem[] = [
+    ...pendingDrafts.map((d) =>
+      draftItem(
+        d,
+        d.sourceType === 'template' ? t('hubStatusNeedsActivation') : t('hubStatusNeedsChecks'),
+        'warning',
+        t('hubContinue'),
+      ),
+    ),
+    ...pendingSelfUpdatingRows.map((row) => ({
+      key: `su:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} openapi`,
+      provider: 'openapi',
+      subtitle: row.loadError ? t('hubStatusBroken') : t('hubStatusNeedsApproval'),
+      tone: (row.loadError ? 'danger' : 'warning') as RowTone,
+      action: t('hubContinue'),
+      target: { kind: 'self_updating', id: row.id } as HubView,
+    })),
+    ...inactiveMcpRows.map((row) => ({
+      key: `mcp:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} mcp`,
+      provider: 'mcp',
+      subtitle: t('hubStatusMcpTools'),
+      tone: 'warning' as const,
+      action: t('hubContinue'),
+      target: { kind: 'mcp', id: row.id } as HubView,
+    })),
+    ...catalogGaps.map((row) => ({
+      key: `gap:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} ${row.type}`,
+      provider: row.type,
+      subtitle: t('hubStatusUnmanaged'),
+      tone: 'warning' as const,
+      action: t('hubReview'),
+      target: { kind: 'gap', id: row.id } as HubView,
+    })),
+  ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  const offItems: HubItem[] = [
+    ...archivedDrafts.map((d) => draftItem(d, t('hubStatusOff'), 'neutral', t('hubOpen'))),
+    ...archivedSelfUpdatingRows.map((row) => ({
+      key: `su:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} openapi`,
+      provider: 'openapi',
+      subtitle: t('hubStatusOff'),
+      tone: 'neutral' as const,
+      action: t('hubOpen'),
+      target: { kind: 'self_updating', id: row.id } as HubView,
+    })),
+  ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  // Ami már be van kötve vagy folyamatban van, az nem szerepel újra az „Elérhető" listában.
+  const usedTemplateKeys = new Set(
+    [...activatedDrafts, ...pendingDrafts].map(draftTemplateKey).filter((key): key is string => !!key),
+  )
+  const availableItems: HubItem[] = galleryTemplates
+    .filter((tpl) => !usedTemplateKeys.has(tpl.key))
+    .map((tpl) => ({
+      key: `tpl:${tpl.id}`,
+      name: tpl.displayName,
+      searchText: `${tpl.displayName} ${tpl.description ?? ''}`,
+      iconDataUrl: tpl.descriptor.iconDataUrl,
+      provider: tpl.key,
+      subtitle: tpl.description ?? '',
+      tone: 'neutral' as const,
+      action: t('hubConnect'),
+      target: { kind: 'template', templateId: tpl.id } as HubView,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'hu'))
+  const hubQueryNorm = hubQuery.trim().toLowerCase()
+  const matchesQuery = (item: HubItem) => !hubQueryNorm || item.searchText.toLowerCase().includes(hubQueryNorm)
+  const hubSections: Array<{ id: HubFilter | 'off'; title: string; hint?: string; items: HubItem[] }> = [
+    { id: 'pending' as const, title: t('hubSectionPending'), hint: t('hubSectionPendingHint'), items: pendingItems },
+    { id: 'connected' as const, title: t('hubSectionConnected'), items: connectedItems },
+    { id: 'available' as const, title: t('hubSectionAvailable'), hint: t('hubSectionAvailableHint'), items: availableItems },
+    { id: 'off' as const, title: t('hubSectionOff'), hint: t('hubSectionOffHint'), items: offItems },
+  ]
+    .filter((section) => (hubFilter === 'all' ? true : section.id === hubFilter))
+    .map((section) => ({ ...section, items: section.items.filter(matchesQuery) }))
+    .filter((section) => section.items.length > 0)
+
+  const openHubItem = (item: HubItem) => {
+    if (item.target.kind === 'template') {
+      const tpl = templates.find((row) => row.id === (item.target as { templateId: string }).templateId)
+      if (!tpl) return
+      // Az agent-postafiókoknak saját, egyszerűbb beállító oldala van.
+      if (tpl.descriptor.key === AGENTMAIL_TEMPLATE_KEY) {
+        router.push('/control-plane/provisioning/agentmail')
+        return
+      }
+      applyTemplateSelection(tpl)
+    }
+    setNotice(null)
+    openView(item.target)
+  }
+  const openOwnWizard = () => {
+    closeCreateDraftForm()
+    setShowCreateDraftForm(true)
+    setNotice(null)
+  }
+  const backToHub = () => {
+    setNotice(null)
+    openView({ kind: 'hub' })
+  }
+
+  // Ha a megnyitott kapcsolatot közben törölték/megszüntették, visszatérünk a listához.
+  const viewDraft = view.kind === 'draft' ? drafts.find((d) => d.draftId === view.draftId) : undefined
+  const viewSelfUpdating = view.kind === 'self_updating' ? selfUpdatingRows.find((r) => r.id === view.id) : undefined
+  const viewMcp = view.kind === 'mcp' ? mcpConnectors.find((r) => r.id === view.id) : undefined
+  const viewGap = view.kind === 'gap' ? catalogGaps.find((r) => r.id === view.id) : undefined
+  const viewMissing =
+    loadedOnce &&
+    !pending &&
+    ((view.kind === 'draft' && !viewDraft) ||
+      (view.kind === 'self_updating' && !viewSelfUpdating) ||
+      (view.kind === 'mcp' && !viewMcp) ||
+      (view.kind === 'gap' && !viewGap) ||
+      (view.kind === 'template' && !selectedTemplate))
+  const currentView: HubView['kind'] = viewMissing ? 'hub' : view.kind
+  const connectedIconStack = connectedItems.map((item) => ({
+    key: item.key,
+    iconDataUrl: item.iconDataUrl,
+    provider: item.provider,
+  }))
+
+  // Egy katalógus-alkalmazás oldala társítás előtt: mit tud, mihez fér hozzá, mit kell megadni.
+  const renderTemplateDetail = (template: ConnectorTemplateRow, descriptor: TemplateDescriptor) => {
+    const visibleFields = isGmailTemplate ? [] : provisioningVisibleInstanceFields(descriptor.instanceFields)
+    const isGoogleAccountTemplate = isGmailTemplate || isGoogleDriveTemplate || isGoogleApiTemplate
+    const endpointTools: ToolItem[] = descriptor.endpoints.map((endpoint) => ({
+      key: endpoint.name,
+      label: endpoint.description ?? endpoint.name,
+      detail: `${endpoint.method} ${endpoint.path}`,
+      access: endpoint.access,
+      enabled: selectedEndpoints.includes(endpoint.name),
+    }))
+    return (
+      <div className="space-y-7">
+        <BackButton label={t('back')} onClick={backToHub} />
+        <DetailHeader
+          icon={<AppIcon iconDataUrl={descriptor.iconDataUrl} provider={template.key} size="lg" />}
+          title={template.displayName}
+          status={t('hubStatusNotConnected')}
+          description={template.description ?? descriptor.description}
+          actions={
+            <PillButton
+              variant="primary"
+              disabled={!!templateDisabledReason}
+              title={templateDisabledReason ?? undefined}
+              onClick={connectTemplate}
             >
-              Agent postafiókok
-            </Link>
-            <button
-              type="button"
-              onClick={() => setShowCreateDraftForm(true)}
-              className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-card transition hover:bg-coral-deep"
-            >
-              {t('newConnector')}
-            </button>
-          </div>
+              {t('hubConnect')}
+            </PillButton>
+          }
+        />
+
+        {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
+          <p className="rounded-2xl border border-honey/30 bg-honey/8 px-4 py-3 text-sm text-ink-soft">
+            {t('driveOauthNeeded')}
+          </p>
+        ) : null}
+        {isGoogleApiTemplate && !googleApiOauthConfigured ? (
+          <p className="rounded-2xl border border-honey/30 bg-honey/8 px-4 py-3 text-sm text-ink-soft">
+            {t('googleApiOauthNeeded')}
+          </p>
+        ) : null}
+
+        <DetailSection title={t('hubHowItWorks')}>
+          <ol className="space-y-2 text-sm text-ink-soft">
+            <li>
+              <span className="font-medium text-ink">1. </span>
+              {t('hubHowStep1')}
+            </li>
+            <li>
+              <span className="font-medium text-ink">2. </span>
+              {isGoogleAccountTemplate ? t('hubHowStep2Google') : t('hubHowStep2Key')}
+            </li>
+            <li>
+              <span className="font-medium text-ink">3. </span>
+              {t('hubHowStep3')}
+            </li>
+          </ol>
+          {descriptor.activationHelp ? (
+            <p className="mt-3 whitespace-pre-line border-t border-ink/[0.07] pt-3 text-sm text-ink-soft">
+              {descriptor.activationHelp}
+            </p>
+          ) : null}
+        </DetailSection>
+
+        {descriptor.authMethods.length > 1 || visibleFields.length > 0 ? (
+          <DetailSection title={t('hubSetupTitle')} hint={t('hubSetupHint')}>
+            <div className="space-y-4">
+              {descriptor.authMethods.length > 1 ? (
+                <fieldset>
+                  <legend className="mb-2 text-sm font-medium text-ink">{t('authMethodLabel')}</legend>
+                  <div className="flex flex-wrap gap-2">
+                    {descriptor.authMethods.map((method) => (
+                      <FilterChip
+                        key={method.kind}
+                        active={effectiveTemplateAuthMethod === method.kind}
+                        onClick={() => setTemplateAuthMethod(method.kind)}
+                      >
+                        {authMethodLabel(method.kind, t)}
+                      </FilterChip>
+                    ))}
+                  </div>
+                </fieldset>
+              ) : null}
+              {visibleFields.length > 0 ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {visibleFields.map((field) => {
+                    const value =
+                      field.type === 'secret' ? templateSecretAliases[field.name] ?? '' : templateValues[field.name] ?? ''
+                    return (
+                      <label key={field.name} className="text-sm">
+                        <span className="mb-1 block font-medium text-ink">
+                          {field.label}
+                          {field.required === false ? (
+                            <span className="font-normal text-ink-soft">{t('optional')}</span>
+                          ) : null}
+                        </span>
+                        {field.type === 'enum' && field.enumValues ? (
+                          <select
+                            className="w-full rounded-xl border border-ink/15 bg-paper px-3 py-2.5"
+                            value={value}
+                            onChange={(e) => setTemplateValues((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                          >
+                            <option value="">{t('choose')}</option>
+                            {field.enumValues.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            className="w-full rounded-xl border border-ink/15 bg-paper px-3 py-2.5"
+                            value={value}
+                            onChange={(e) => {
+                              const setter = field.type === 'secret' ? setTemplateSecretAliases : setTemplateValues
+                              setter((prev) => ({ ...prev, [field.name]: e.target.value }))
+                            }}
+                            placeholder={
+                              field.type === 'secret' ? field.secretAliasHint ?? 'secret-alias' : field.example ?? field.name
+                            }
+                          />
+                        )}
+                      </label>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </DetailSection>
+        ) : null}
+
+        {descriptor.scopeCatalog.length > 0 ? (
+          <DetailSection title={t('accessTitle')} flush>
+            <ul className="divide-y divide-ink/[0.07]">
+              {descriptor.scopeCatalog.map((scope) => {
+                const checked = selectedScopes.includes(scope.value)
+                return (
+                  <li key={scope.value} className="flex items-center gap-4 px-5 py-3.5" title={scope.value}>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[15px] text-ink">{scope.label}</span>
+                      {scope.description ? (
+                        <span className="mt-0.5 block text-xs text-ink-soft">{scope.description}</span>
+                      ) : null}
+                    </span>
+                    <Toggle
+                      checked={checked}
+                      label={scope.label}
+                      onChange={(next) =>
+                        setSelectedScopes((prev) =>
+                          next ? [...new Set([...prev, scope.value])] : prev.filter((v) => v !== scope.value),
+                        )
+                      }
+                    />
+                  </li>
+                )
+              })}
+            </ul>
+          </DetailSection>
+        ) : null}
+
+        {endpointTools.length > 0 ? (
+          <section className="space-y-2">
+            <h3 className="px-1 text-sm font-medium text-ink-soft">{t('hubToolsTitle')}</h3>
+            <ToolList
+              tools={endpointTools}
+              summary={t('hubToolsEnabled', { enabled: selectedEndpoints.length, total: endpointTools.length })}
+              accessLabels={{ read: t('hubAccessRead'), write: t('hubAccessWrite') }}
+              emptyText={t('hubToolsEmpty')}
+              onToggle={(key, next) =>
+                setSelectedEndpoints((prev) =>
+                  next ? [...new Set([...prev, key])] : prev.filter((name) => name !== key),
+                )
+              }
+            />
+          </section>
+        ) : null}
+
+        <DetailSection title={t('hubInfoTitle')} flush>
+          <InfoRows
+            rows={[
+              {
+                label: t('hubInfoKind'),
+                value: isGoogleAccountTemplate ? t('hubKindGoogle') : t('hubKindApi'),
+              },
+              {
+                label: t('hubInfoAuth'),
+                value: descriptor.authMethods.map((m) => authMethodLabel(m.kind, t)).join(', ') || '—',
+              },
+              {
+                label: t('hubInfoPublisher'),
+                value: template.tenantId ? t('hubPublisherTenant') : t('hubPublisherPlatform'),
+              },
+              { label: t('hubInfoVersion'), value: `v${template.version}` },
+            ]}
+          />
+        </DetailSection>
+
+        {templateDisabledReason && !pending ? (
+          <p className="px-1 text-sm text-ink-soft">{templateDisabledReason}</p>
         ) : null}
       </div>
+    )
+  }
 
+  const hubContent = (
+    <div className="space-y-7">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {inPanelModal ? (
+          <span />
+        ) : (
+          <h1 className="font-display text-2xl font-semibold tracking-tight">{t('hubTitle')}</h1>
+        )}
+        {connectedItems.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setHubFilter('connected')}
+            className="inline-flex items-center gap-2.5 rounded-full py-1 pl-1 pr-2 text-sm text-ink-soft transition hover:bg-ink/[0.05] hover:text-ink"
+          >
+            <IconStack items={connectedIconStack} />
+            {t('hubConnectedCount', { count: connectedItems.length })}
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden>
+              <path d="m9 5 7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        ) : null}
+      </div>
+      <p className="-mt-5 max-w-3xl text-sm text-ink-soft">{t('hubIntro')}</p>
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <SearchField value={hubQuery} onChange={setHubQuery} placeholder={t('hubSearch')} />
+        <PillButton variant="soft" onClick={openOwnWizard} title={t('hubOwnConnectionHint')}>
+          <span aria-hidden className="text-base leading-none">+</span>
+          {t('hubOwnConnection')}
+        </PillButton>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterChip active={hubFilter === 'all'} onClick={() => setHubFilter('all')}>
+          {t('hubFilterAll')}
+        </FilterChip>
+        <FilterChip active={hubFilter === 'connected'} onClick={() => setHubFilter('connected')}>
+          {t('hubFilterConnected', { count: connectedItems.length })}
+        </FilterChip>
+        {pendingItems.length > 0 ? (
+          <FilterChip active={hubFilter === 'pending'} onClick={() => setHubFilter('pending')}>
+            {t('hubFilterPending', { count: pendingItems.length })}
+          </FilterChip>
+        ) : null}
+        <FilterChip active={hubFilter === 'available'} onClick={() => setHubFilter('available')}>
+          {t('hubFilterAvailable')}
+        </FilterChip>
+        <div className="ml-auto flex flex-wrap items-center gap-1 text-sm">
+          <button
+            type="button"
+            onClick={() => openView({ kind: 'catalog' })}
+            className="rounded-full px-3 py-2 text-ink-soft transition hover:bg-ink/[0.05] hover:text-ink"
+          >
+            {t('hubCatalogLink')}
+          </button>
+          <Link
+            href="/control-plane/provisioning/agentmail"
+            className="rounded-full px-3 py-2 text-ink-soft transition hover:bg-ink/[0.05] hover:text-ink"
+          >
+            {t('hubAgentMailLink')}
+          </Link>
+        </div>
+      </div>
+
+      {!loadedOnce ? (
+        <p className="text-sm text-ink-soft">{t('loading')}</p>
+      ) : hubSections.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-ink/15 px-6 py-10 text-center">
+          <p className="text-[15px] font-medium text-ink">
+            {hubQueryNorm ? t('hubEmptySearch') : hubFilter === 'connected' ? t('hubEmptyConnected') : t('hubEmpty')}
+          </p>
+          <p className="mt-1 text-sm text-ink-soft">{t('hubEmptyHint')}</p>
+          <div className="mt-4 flex justify-center gap-2">
+            {hubFilter !== 'all' || hubQueryNorm ? (
+              <PillButton
+                onClick={() => {
+                  setHubFilter('all')
+                  setHubQuery('')
+                }}
+              >
+                {t('hubShowAll')}
+              </PillButton>
+            ) : null}
+            <PillButton variant="primary" onClick={openOwnWizard}>
+              {t('hubOwnConnection')}
+            </PillButton>
+          </div>
+        </div>
+      ) : (
+        hubSections.map((section) => (
+          <HubSection key={section.id} title={section.title} hint={section.hint}>
+            {section.items.map((item) => (
+              <HubRow
+                key={item.key}
+                icon={<AppIcon iconDataUrl={item.iconDataUrl} provider={item.provider} />}
+                title={item.name}
+                subtitle={item.subtitle}
+                subtitleTone={item.tone}
+                actionLabel={item.action}
+                actionVariant={item.actionVariant}
+                onOpen={() => openHubItem(item)}
+              />
+            ))}
+          </HubSection>
+        ))
+      )}
+    </div>
+  )
+
+  return (
+    <div className="mx-auto w-full max-w-5xl space-y-6">
       <ErrorDialog message={error} onClose={() => setError(null)} />
       {notice ? (
-        <div className="rounded-lg border border-sage/40 bg-sage/10 px-4 py-3 text-sm text-sage">
+        <div className="rounded-2xl border border-sage/30 bg-sage/8 px-4 py-3 text-sm text-sage">
           {notice}
         </div>
       ) : null}
 
       {showCreateDraftForm ? (
-      <Card title={t('newConnector')}>
-        <div className="mb-4 flex justify-end">
-          <button
-            type="button"
-            onClick={closeCreateDraftForm}
-            className="rounded-md border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-ink/30 hover:text-ink"
-          >
-            {t('close')}
-          </button>
+      <div className="space-y-5">
+        <BackButton label={t('back')} onClick={closeCreateDraftForm} />
+        <div>
+          <h2 className="font-display text-2xl font-semibold tracking-tight">{t('hubOwnTitle')}</h2>
+          <p className="mt-1 text-sm text-ink-soft">{t('hubOwnBody')}</p>
         </div>
-        <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
-          <ol className="space-y-2">
-            {[
-              {
-                id: 'basics' as const,
-                label: t('basics'),
-                hint:
-                  `${connectionKind === 'self_updating'
-                    ? 'OpenAPI'
-                    : t('generalKind')}${effectiveName.trim() ? ` · ${effectiveName.trim()}` : ''}`,
-              },
-              {
-                id: 'source' as const,
-                label: t('source'),
-                hint:
-                  connectionKind === 'self_updating'
-                    ? t('sourceApiKey')
-                    : isTemplatePath
-                    ? t('templateDot', { name: selectedTemplate?.displayName ?? '—' })
-                    : sourceMethod === 'document'
-                      ? 'OpenAPI'
-                      : t('sourceManual'),
-              },
-              ...(connectionKind === 'self_updating'
-                ? [
-                    { id: 'su_link' as const, label: t('suLink'), hint: t('suLinkHint') },
-                    { id: 'su_trust' as const, label: t('suTrust'), hint: t('suTrustHint') },
-                    { id: 'su_sync' as const, label: t('suSync'), hint: t('suSyncHint') },
-                    { id: 'su_version' as const, label: t('suVersion'), hint: t('suVersionHint') },
-                  ]
-                : [
-                    {
-                      id: 'review' as const,
-                      label: t('review'),
-                      hint: configText.trim() ? t('configReady') : t('configNeeded'),
-                    },
-                  ]),
-            ].map((step, index) => {
-              const active = createStep === step.id
-              const stepIdx = stepOrder.indexOf(step.id)
-              const complete =
-                stepIdx < activeStepIndex ||
-                (step.id === 'basics' && canEnterSource) ||
-                (step.id === 'source' && canEnterReview && !suWizardConnectorId) ||
-                (step.id === 'review' && !createDisabledReason) ||
-                (step.id === 'su_link' && Boolean(suWizardRow?.urlApproved)) ||
-                (step.id === 'su_trust' && Boolean(suWizardRow?.trusted)) ||
-                (step.id === 'su_sync' && Boolean(suWizardRow?.activeSpecVersionId || suWizardVersionId)) ||
-                (step.id === 'su_version' && Boolean(suWizardRow?.activeSpecVersionId))
-              const locked =
-                (step.id === 'source' && !canEnterSource) ||
-                (step.id === 'review' && !canEnterReview) ||
-                (SELF_UPDATING_ACTIVATION_STEPS.includes(step.id) && !suWizardConnectorId) ||
-                stepIdx > suWizardMaxStepIndex
-              return (
-                <li key={step.id}>
-                  <button
-                    type="button"
-                    disabled={locked}
-                    onClick={() => setWizardStep(step.id)}
-                    className={`flex w-full items-start gap-3 rounded-md border px-3 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                      active
-                        ? 'border-coral/45 bg-coral/8'
-                        : complete
-                          ? 'border-sage/35 bg-sage/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
+        <ol className="mb-5 flex flex-wrap items-center gap-2 text-sm">
+          {wizardSteps.map((step, index) => {
+            const active = createStep === step.id
+            const complete =
+              index < activeStepIndex ||
+              (step.id === 'basics' && canEnterSource) ||
+              (step.id === 'su_link' && Boolean(suWizardRow?.urlApproved)) ||
+              (step.id === 'su_trust' && Boolean(suWizardRow?.trusted)) ||
+              (step.id === 'su_sync' && Boolean(suWizardRow?.activeSpecVersionId || suWizardVersionId)) ||
+              (step.id === 'su_version' && Boolean(suWizardRow?.activeSpecVersionId))
+            const locked =
+              (step.id === 'source' && !canEnterSource) ||
+              (step.id === 'review' && !canEnterReview) ||
+              (SELF_UPDATING_ACTIVATION_STEPS.includes(step.id) && !suWizardConnectorId) ||
+              index > suWizardMaxStepIndex
+            return (
+              <li key={step.id} className="flex items-center gap-2">
+                {index > 0 ? <span aria-hidden className="h-px w-5 bg-ink/15" /> : null}
+                <button
+                  type="button"
+                  disabled={locked}
+                  aria-current={active ? 'step' : undefined}
+                  onClick={() => setWizardStep(step.id)}
+                  className={`inline-flex items-center gap-2 font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    active ? 'text-ink' : complete ? 'text-sage' : 'text-ink-soft hover:text-ink'
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 items-center justify-center rounded-full text-xs ${
+                      active ? 'bg-coral text-card' : complete ? 'bg-sage text-card' : 'bg-night-2 text-ink-soft'
                     }`}
                   >
-                    <span
-                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                        complete ? 'bg-sage text-card' : active ? 'bg-coral text-card' : 'bg-night-2 text-ink-soft'
-                      }`}
-                    >
-                      {complete ? '✓' : index + 1}
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold">{step.label}</span>
-                      <span className="block truncate text-xs text-ink-soft">{step.hint}</span>
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ol>
+                    {complete && !active ? '✓' : index + 1}
+                  </span>
+                  {step.label}
+                </button>
+              </li>
+            )
+          })}
+        </ol>
 
-          <div className="min-w-0 rounded-md border border-ink/12 bg-wash/35 p-4">
+          <div className="min-w-0 rounded-2xl border border-ink/10 bg-paper p-4 sm:p-6">
             {createStep === 'basics' ? (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-base font-semibold">{t('step1Title')}</h3>
-                  <p className="mt-1 text-xs text-ink-soft">
-                    {t('step1Body')}
-                  </p>
+                  <p className="mt-1 text-sm text-ink-soft">{t('step1Body')}</p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => setConnectionKind('fixed')}
-                    className={`rounded-md border px-4 py-3 text-left ${
-                      connectionKind === 'fixed'
-                        ? 'border-coral/45 bg-coral/8'
-                        : 'border-ink/12 bg-paper hover:border-coral/25'
-                    }`}
-                  >
-                    <span className="block text-sm font-semibold">{t('general')}</span>
-                    <span className="mt-1 block text-xs text-ink-soft">
-                      {t('generalHint')}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConnectionKind('self_updating')}
-                    className={`rounded-md border px-4 py-3 text-left ${
-                      connectionKind === 'self_updating'
-                        ? 'border-coral/45 bg-coral/8'
-                        : 'border-ink/12 bg-paper hover:border-coral/25'
-                    }`}
-                  >
-                    <span className="block text-sm font-semibold">OpenAPI-kapcsolat</span>
-                    <span className="mt-1 block text-xs text-ink-soft">
-                      {t('openapiKindHint')}
-                    </span>
-                  </button>
+                  <WizardChoice
+                    selected={startPath === 'own' && ownKind === 'openapi'}
+                    title={t('openapiKind')}
+                    hint={t('openapiKindHint')}
+                    onClick={() => {
+                      setStartPath('own')
+                      setOwnKind('openapi')
+                      setConnectionKind('self_updating')
+                    }}
+                  />
+                  <WizardChoice
+                    selected={startPath === 'own' && ownKind === 'custom'}
+                    title={t('customConnection')}
+                    hint={t('customConnectionHint')}
+                    onClick={() => {
+                      setStartPath('own')
+                      setOwnKind('custom')
+                      setConnectionKind('fixed')
+                      setSourceMethod('document')
+                      setSourceType('api_doc')
+                    }}
+                  />
+                  {canManageMcp ? (
+                    <WizardChoice
+                      selected={startPath === 'mcp'}
+                      title={t('pathMcp')}
+                      hint={t('pathMcpHint')}
+                      onClick={() => {
+                        setStartPath('mcp')
+                        setOwnKind(null)
+                        setConnectionKind('fixed')
+                        setCreateStep('source')
+                      }}
+                    />
+                  ) : null}
                 </div>
-                {connectionKind === 'fixed' ? (
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFixedSource('template')
-                        setSourceMethod('template')
-                        setSourceType('template')
-                      }}
-                      className={`rounded-md border px-4 py-3 text-left ${
-                        fixedSource === 'template'
-                          ? 'border-coral/45 bg-coral/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold">{t('fromTemplate')}</span>
-                      <span className="mt-1 block text-xs text-ink-soft">
-                        {t('fromTemplateHint')}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFixedSource('custom')
-                        setSourceMethod('document')
-                        setSourceType('api_doc')
-                      }}
-                      className={`rounded-md border px-4 py-3 text-left ${
-                        fixedSource === 'custom'
-                          ? 'border-coral/45 bg-coral/8'
-                          : 'border-ink/12 bg-paper hover:border-coral/25'
-                      }`}
-                    >
-                      <span className="block text-sm font-semibold">{t('customConnection')}</span>
-                      <span className="mt-1 block text-xs text-ink-soft">
-                        {t('customConnectionHint')}
-                      </span>
-                    </button>
-                  </div>
-                ) : null}
-                {connectionKind === 'fixed' && fixedSource === 'template' ? (
-                  <div className="space-y-2">
-                    <label className="block text-sm">
-                      <span className="mb-1 block text-ink-soft">{t('templateCatalog')}</span>
-                      <select
-                        className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                        value={selectedTemplate?.id ?? ''}
-                        onChange={(e) => {
-                          const template = templates.find((t) => t.id === e.target.value)
-                          if (template) applyTemplateSelection(template)
-                        }}
-                      >
-                        {templates.map((template) => (
-                          <option key={template.id} value={template.id}>
-                            {template.displayName} v{template.version} ({template.origin}
-                            {template.tenantId ? ' · tenant' : ' · platform'})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {templates.length === 0 ? (
-                      <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
-                    ) : isAgentMailTemplate ? (
-                      <div className="rounded-md border border-coral/30 bg-coral/8 px-3 py-3 text-sm">
-                        <p className="text-ink">
-                          Az agent saját postafiókjait (AgentMail) egy külön, egyszerűbb oldalon állítod be:
-                          API kulcs, postafiók létrehozása, és hogy melyik agent használhatja.
-                        </p>
-                        <Link
-                          href="/control-plane/provisioning/agentmail"
-                          className="mt-2 inline-block rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-white"
-                        >
-                          Agent postafiókok beállítása →
-                        </Link>
-                      </div>
-                    ) : (
-                      <p className="text-xs text-ink-soft">
-                        {t('usesTemplateName', { name: selectedTemplate?.displayName ?? '' })}
-                      </p>
-                    )}
-                  </div>
-                ) : null}
-                {connectionKind === 'self_updating' ||
-                (connectionKind === 'fixed' && fixedSource === 'custom') ? (
+
+                {startPath === 'own' && ownKind ? (
                   <label className="block text-sm">
-                    <span className="mb-1 block text-ink-soft">{t('name')}</span>
+                    <span className="mb-1 block font-semibold">{t('connectionName')}</span>
                     <input
-                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                      className="w-full rounded-xl border border-ink/15 bg-paper px-3 py-2.5"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       placeholder="Acme CRM"
                     />
+                    <span className="mt-1 block text-xs text-ink-soft">{t('connectionNameHint')}</span>
                   </label>
                 ) : null}
               </div>
@@ -1668,6 +2090,28 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
+            {startPath === 'mcp' ? (
+              <div hidden={createStep !== 'source'} className="space-y-3">
+                <div>
+                  <h3 className="text-base font-semibold">{t('mcpSetupTitle')}</h3>
+                  <p className="mt-1 text-sm text-ink-soft">{t('mcpSetupBody')}</p>
+                </div>
+                <McpConnectorsPanel
+                  mode="setup"
+                  canManage={canManageMcp}
+                  initial={mcpData}
+                  initialError={mcpInitialError}
+                  onCreatedConnector={(connectorId, text) => {
+                    void reloadMcp().then(() => {
+                      closeCreateDraftForm()
+                      openView({ kind: 'mcp', id: connectorId })
+                      setNotice(text)
+                    })
+                  }}
+                />
+              </div>
+            ) : null}
+
             {createStep === 'su_link' && connectionKind === 'self_updating' ? (
               <div className="space-y-4">
                 <div>
@@ -1742,201 +2186,7 @@ export function ProvisioningPanel({
               </div>
             ) : null}
 
-            {createStep === 'source' && connectionKind === 'fixed' && isTemplatePath ? (
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-base font-semibold">{t('step2Template')}</h3>
-                  <p className="mt-1 text-xs text-ink-soft">
-                    {t('step2TemplateBody', { name: selectedTemplate?.displayName ?? '' })}
-                  </p>
-                </div>
-                <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <span className="block text-sm font-semibold">Konnektor-sablonok</span>
-                      <p className="mt-1 text-xs text-ink-soft">
-                        {t('templateSelfContained')}
-                      </p>
-                    </div>
-                    <Badge tone="neutral">{templates.length} sablon</Badge>
-                  </div>
-
-                  {templates.length === 0 ? (
-                    <p className="text-xs text-ink-soft">{t('noConnectorTemplates')}</p>
-                  ) : null}
-
-                  {selectedTemplateDescriptor ? (
-                          <div className="space-y-3">
-                            {isGoogleDriveTemplate && !googleDriveOauthConfigured ? (
-                              <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
-                                {t('driveOauthNeeded')}
-                              </p>
-                            ) : null}
-                            {isGoogleApiTemplate && !googleApiOauthConfigured ? (
-                              <p className="rounded-md border border-amber/35 bg-amber/10 px-3 py-2 text-xs text-ink-soft">
-                                {t('googleApiOauthNeeded')}
-                              </p>
-                            ) : null}
-                            {selectedTemplate.description ? (
-                              <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
-                            ) : null}
-                            {selectedTemplateDescriptor.activationHelp ? (
-                              <details open className="rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
-                                <summary className="cursor-pointer font-semibold text-sage">{t('setupHelp')}</summary>
-                                <p className="mt-2 whitespace-pre-line text-ink-soft">
-                                  {selectedTemplateDescriptor.activationHelp}
-                                </p>
-                              </details>
-                            ) : null}
-
-                            <div>
-                              <span className="mb-1 block text-xs font-semibold text-ink-soft">Auth method</span>
-                              <div className="flex flex-wrap gap-2">
-                                {selectedTemplateDescriptor.authMethods.map((method) => (
-                                  <label
-                                    key={method.kind}
-                                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold ${
-                                      effectiveTemplateAuthMethod === method.kind
-                                        ? 'border-coral/45 bg-coral/8'
-                                        : 'border-ink/12 bg-paper'
-                                    }`}
-                                  >
-                                    <input
-                                      type="radio"
-                                      checked={effectiveTemplateAuthMethod === method.kind}
-                                      onChange={() => setTemplateAuthMethod(method.kind)}
-                                    />
-                                    {method.kind}
-                                  </label>
-                                ))}
-                              </div>
-                            </div>
-
-                            {provisioningVisibleInstanceFields(selectedTemplateDescriptor.instanceFields)
-                              .length > 0 && !isGmailTemplate ? (
-                              <div className="grid gap-3 sm:grid-cols-2">
-                                {provisioningVisibleInstanceFields(
-                                  selectedTemplateDescriptor.instanceFields,
-                                ).map((field) => {
-                                  const value =
-                                    field.type === 'secret'
-                                      ? templateSecretAliases[field.name] ?? ''
-                                      : templateValues[field.name] ?? ''
-                                  return (
-                                    <label key={field.name} className="text-xs">
-                                      <span className="mb-1 block text-ink-soft">
-                                        {field.label}
-                                        {field.required === false ? t('optional') : ''}
-                                      </span>
-                                      {field.type === 'enum' && field.enumValues ? (
-                                        <select
-                                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                                          value={value}
-                                          onChange={(e) =>
-                                            setTemplateValues((prev) => ({ ...prev, [field.name]: e.target.value }))
-                                          }
-                                        >
-                                          <option value="">{t('choose')}</option>
-                                          {field.enumValues.map((option) => (
-                                            <option key={option} value={option}>
-                                              {option}
-                                            </option>
-                                          ))}
-                                        </select>
-                                      ) : (
-                                        <input
-                                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-                                          value={value}
-                                          onChange={(e) => {
-                                            const setter =
-                                              field.type === 'secret'
-                                                ? setTemplateSecretAliases
-                                                : setTemplateValues
-                                            setter((prev) => ({ ...prev, [field.name]: e.target.value }))
-                                          }}
-                                          placeholder={
-                                            field.type === 'secret'
-                                              ? field.secretAliasHint ?? 'secret-alias'
-                                              : field.example ?? field.name
-                                          }
-                                        />
-                                      )}
-                                    </label>
-                                  )
-                                })}
-                              </div>
-                            ) : null}
-
-                            {selectedTemplateDescriptor.scopeCatalog.length > 0 ? (
-                              <div>
-                                <span className="mb-1 block text-xs font-semibold text-ink-soft">Scope-ok</span>
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                  {selectedTemplateDescriptor.scopeCatalog.map((scope) => (
-                                    <label
-                                      key={scope.value}
-                                      className="rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs"
-                                    >
-                                      <span className="flex items-center gap-2 font-semibold">
-                                        <input
-                                          type="checkbox"
-                                          checked={selectedScopes.includes(scope.value)}
-                                          onChange={(e) =>
-                                            setSelectedScopes((prev) =>
-                                              e.target.checked
-                                                ? [...new Set([...prev, scope.value])]
-                                                : prev.filter((s) => s !== scope.value),
-                                            )
-                                          }
-                                        />
-                                        {scope.label}
-                                      </span>
-                                      <span className="mt-1 block font-mono text-[11px] text-ink-soft">
-                                        {scope.value}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-
-                            {selectedTemplateDescriptor.endpoints.length > 0 ? (
-                              <div>
-                                <span className="mb-1 block text-xs font-semibold text-ink-soft">Endpointok</span>
-                                <div className="grid gap-2 sm:grid-cols-2">
-                                  {selectedTemplateDescriptor.endpoints.map((endpoint) => (
-                                    <label
-                                      key={endpoint.name}
-                                      className="rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs"
-                                    >
-                                      <span className="flex items-center gap-2 font-semibold">
-                                        <input
-                                          type="checkbox"
-                                          checked={selectedEndpoints.includes(endpoint.name)}
-                                          onChange={(e) =>
-                                            setSelectedEndpoints((prev) =>
-                                              e.target.checked
-                                                ? [...new Set([...prev, endpoint.name])]
-                                                : prev.filter((name) => name !== endpoint.name),
-                                            )
-                                          }
-                                        />
-                                        {endpoint.name}
-                                      </span>
-                                      <span className="mt-1 block font-mono text-[11px] text-ink-soft">
-                                        {endpoint.method} {endpoint.path}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                  </div>
-                </div>
-              ) : null}
-
-              {createStep === 'source' && connectionKind === 'fixed' && !isTemplatePath ? (
+              {createStep === 'source' && connectionKind === 'fixed' && startPath === 'own' ? (
                 <div className="space-y-4">
                   <div>
                     <h3 className="text-base font-semibold">{t('step2Custom')}</h3>
@@ -2086,65 +2336,18 @@ export function ProvisioningPanel({
                 <dl className="grid gap-2 rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs sm:grid-cols-2">
                   <div>
                     <dt className="text-ink-soft">Konnektor neve</dt>
-                    <dd className="font-semibold">{effectiveName.trim() || '—'}</dd>
+                    <dd className="font-semibold">{name.trim() || '—'}</dd>
                   </div>
                   <div>
                     <dt className="text-ink-soft">{t('source')}</dt>
                     <dd className="font-semibold">
-                      {sourceMethodLabel(isTemplatePath ? 'template' : sourceMethod, t)}
+                      {sourceMethodLabel(sourceMethod, t)}
                     </dd>
                     {reviewProvenanceHint ? (
                       <dd className="mt-0.5 text-ink-soft">{reviewProvenanceHint}</dd>
                     ) : null}
                   </div>
                 </dl>
-                {isTemplatePath && selectedTemplateDescriptor ? (
-                  <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold">{selectedTemplate?.displayName}</span>
-                      <Badge tone="neutral">v{selectedTemplate?.version}</Badge>
-                      <Badge tone={selectedTemplate?.origin === 'builtin' ? 'success' : 'warning'}>
-                        {selectedTemplate?.origin}
-                      </Badge>
-                      <Badge tone="neutral">{effectiveTemplateAuthMethod}</Badge>
-                    </div>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <h4 className="font-semibold">{t('fields')}</h4>
-                        <ul className="mt-1 space-y-1">
-                          {provisioningVisibleInstanceFields(
-                            selectedTemplateDescriptor.instanceFields,
-                          ).map((field) => (
-                            <li key={field.name} className="flex justify-between gap-2">
-                              <span className="text-ink-soft">{field.label}</span>
-                              <code className="truncate">
-                                {field.type === 'secret'
-                                  ? templateSecretAliases[field.name] || '—'
-                                  : templateValues[field.name] || '—'}
-                              </code>
-                            </li>
-                          ))}
-                          {selectedTemplateDescriptor.instanceFields.some(
-                            (field) => field.hiddenInProvisioning,
-                          ) ? (
-                            <li className="text-ink-soft">
-                              {t('secretOnActivate')}
-                            </li>
-                          ) : null}
-                        </ul>
-                      </div>
-                      <div>
-                        <h4 className="font-semibold">{t('selection')}</h4>
-                        <p className="mt-1 text-ink-soft">
-                          Scope: {selectedScopes.length || 0} · endpoint: {selectedEndpoints.length || 0}
-                        </p>
-                        <p className="mt-1 text-ink-soft">
-                          {t('materializerHint')}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
                   <label className="block text-sm">
                     <span className="mb-1 flex items-center justify-between text-ink-soft">
                       <span>{t('generatedJson')}</span>
@@ -2163,7 +2366,6 @@ export function ProvisioningPanel({
                       placeholder={EXAMPLE_CONFIG}
                     />
                   </label>
-                )}
                 {createDisabledReason ? (
                   <p className="text-xs text-ink-soft">{createDisabledReason}</p>
                 ) : null}
@@ -2171,16 +2373,21 @@ export function ProvisioningPanel({
             ) : null}
 
             <div className="mt-5 flex flex-col gap-2 border-t border-ink/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
-              <button
-                type="button"
-                disabled={activeStepIndex === 0}
-                onClick={() => setCreateStep(stepOrder[Math.max(0, activeStepIndex - 1)])}
-                className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold disabled:opacity-50"
-              >
-                Vissza
-              </button>
-              {createStep === 'review' ||
-              (connectionKind === 'self_updating' && createStep === 'source') ? (
+              {activeStepIndex > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setCreateStep(stepOrder[Math.max(0, activeStepIndex - 1)])}
+                  className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold"
+                >
+                  Vissza
+                </button>
+              ) : (
+                <span />
+              )}
+              {startPath === 'mcp' && createStep === 'source' ? (
+                <span />
+              ) : createStep === 'review' ||
+              (createStep === 'source' && connectionKind === 'self_updating') ? (
                 <button
                   type="button"
                   disabled={!!createDisabledReason || pending}
@@ -2270,14 +2477,105 @@ export function ProvisioningPanel({
               )}
             </div>
           </div>
+      </div>
+      ) : currentView === 'template' && selectedTemplate && selectedTemplateDescriptor ? (
+        renderTemplateDetail(selectedTemplate, selectedTemplateDescriptor)
+      ) : currentView === 'draft' && viewDraft ? (
+        <DraftCard
+          key={viewDraft.draftId}
+          draft={viewDraft}
+          onBack={backToHub}
+          agents={agents}
+          templates={templates}
+          latestTemplateVersions={latestTemplateVersions}
+          googleOauthConfigured={googleOauthConfigured}
+          googleDriveOauthConfigured={googleDriveOauthConfigured}
+          googleApiOauthConfigured={googleApiOauthConfigured}
+          googleAdsDeveloperTokenConfigured={googleAdsDeveloperTokenConfigured}
+          pending={pending}
+          run={run}
+          isSuperadmin={isSuperadmin}
+        />
+      ) : currentView === 'self_updating' && viewSelfUpdating ? (
+        <div className="space-y-6">
+          <BackButton label={t('back')} onClick={backToHub} />
+          <DetailHeader
+            icon={<AppIcon provider="openapi" size="lg" />}
+            title={viewSelfUpdating.name}
+            status={
+              viewSelfUpdating.lifecycleState !== 'active'
+                ? t('hubStatusOff')
+                : isSelfUpdatingReady(viewSelfUpdating)
+                  ? t('hubStatusConnectedAuto')
+                  : t('hubStatusNeedsApproval')
+            }
+            statusTone={
+              viewSelfUpdating.lifecycleState !== 'active'
+                ? 'neutral'
+                : isSelfUpdatingReady(viewSelfUpdating)
+                  ? 'success'
+                  : 'warning'
+            }
+            description={t('suDetailDescription')}
+          />
+          <SelfUpdatingConnectorCard
+            row={viewSelfUpdating}
+            pending={pending}
+            run={run}
+            onReload={reload}
+            isSuperadmin={isSuperadmin}
+            defaultOpen
+          />
+          <DetailSection title={t('suOrgSetting')}>
+            <TenantAutoApproveSwitch
+              tenantAuto={tenantAuto}
+              pending={pending}
+              onToggle={(enabled) =>
+                run(
+                  () => setTenantSelfUpdatingAutoApprove({ enabled }),
+                  enabled ? t('autoApproveOn') : t('autoApproveOff'),
+                )
+              }
+            />
+          </DetailSection>
         </div>
-      </Card>
-      ) : (
-      <ProvisioningTopicShell
-        canManageCatalog={canManageCatalog}
-        isSuperadmin={isSuperadmin}
-        templates={
-          <>
+      ) : currentView === 'mcp' && viewMcp ? (
+        <div className="space-y-6">
+          <BackButton label={t('back')} onClick={backToHub} />
+          <DetailHeader
+            icon={<AppIcon provider="mcp" size="lg" />}
+            title={viewMcp.name}
+            status={mcpHasApprovedTools(viewMcp) ? t('hubStatusConnected') : t('hubStatusMcpTools')}
+            statusTone={mcpHasApprovedTools(viewMcp) ? 'success' : 'warning'}
+            description={t('mcpDetailDescription')}
+          />
+          <McpConnectorCard row={viewMcp} reload={(text) => void reloadMcp(text)} />
+        </div>
+      ) : currentView === 'gap' && viewGap ? (
+        <div className="space-y-6">
+          <BackButton label={t('back')} onClick={backToHub} />
+          <DetailHeader
+            icon={<AppIcon provider={viewGap.type} size="lg" />}
+            title={viewGap.name}
+            status={t('hubStatusUnmanaged')}
+            statusTone="warning"
+            description={t('unmanagedHint')}
+          />
+          <CatalogGapCard row={viewGap} pending={pending} run={run} />
+        </div>
+      ) : currentView === 'catalog' ? (
+        <div className="space-y-6">
+          <BackButton label={t('back')} onClick={backToHub} />
+          <div>
+            <h2 className="font-display text-2xl font-semibold tracking-tight">{t('templateCard')}</h2>
+            <p className="mt-1 text-sm text-ink-soft">
+              {canManageCatalog
+                ? isSuperadmin
+                  ? t('tabTemplatesSuper')
+                  : t('tabTemplatesAdmin')
+                : t('tabTemplatesView')}
+            </p>
+          </div>
       {canManageCatalog && !templateEditorOpen ? (
         <div className="space-y-4">
           <button
@@ -2511,150 +2809,11 @@ export function ProvisioningPanel({
           <TemplateCatalogList templates={templates} pending={pending} canManage={false} />
         </Card>
       ) : null}
-          </>
-        }
-        connections={
-          <div className="space-y-6">
-      <Card title={loadedOnce ? t('activeTitleCount', { count: activeItems.length }) : t('activeTitle')}>
-        {!loadedOnce ? (
-          <p className="text-sm text-ink-soft">{t('loading')}</p>
-        ) : activeItems.length === 0 ? (
-          <p className="text-sm text-ink-soft">{t('noActive')}</p>
-        ) : (
-          <div className="space-y-3">
-            {activeItems.map((item) =>
-              item.kind === 'self_updating' ? (
-                <SelfUpdatingConnectorCard
-                  key={item.row.id}
-                  row={item.row}
-                  pending={pending}
-                  run={run}
-                  onReload={reload}
-                  isSuperadmin={isSuperadmin}
-                />
-              ) : (
-                <DraftCard
-                  key={item.draft.draftId}
-                  draft={item.draft}
-                  agents={agents}
-                  templates={templates}
-                  latestTemplateVersions={latestTemplateVersions}
-                  googleOauthConfigured={googleOauthConfigured}
-                  googleDriveOauthConfigured={googleDriveOauthConfigured}
-                  googleApiOauthConfigured={googleApiOauthConfigured}
-                  pending={pending}
-                  run={run}
-                  isSuperadmin={isSuperadmin}
-                />
-              ),
-            )}
-          </div>
-        )}
-        {selfUpdatingRows.length > 0 ? (
-          <div className="mt-4 border-t border-ink/10 pt-4">
-            <TenantAutoApproveSwitch
-              tenantAuto={tenantAuto}
-              pending={pending}
-              onToggle={(enabled) =>
-                run(
-                  () => setTenantSelfUpdatingAutoApprove({ enabled }),
-                  enabled
-                    ? t('autoApproveOn')
-                    : t('autoApproveOff'),
-                )
-              }
-            />
-          </div>
-        ) : null}
-      </Card>
-
-      {loadedOnce && (pendingSelfUpdatingRows.length > 0 || catalogGaps.length > 0) ? (
-      <Card
-        title={
-          pendingSelfUpdatingRows.length > 0 && catalogGaps.length > 0
-            ? t('pendingAndGaps', { count: pendingSelfUpdatingRows.length + catalogGaps.length })
-            : pendingSelfUpdatingRows.length > 0
-              ? t('pendingOpenApi', { count: pendingSelfUpdatingRows.length })
-              : t('unmanagedActive', { count: catalogGaps.length })
-        }
-      >
-        {pendingSelfUpdatingRows.length > 0 ? (
-          <div className="space-y-3">
-            {pendingSelfUpdatingRows.length > 0 && catalogGaps.length > 0 ? (
-              <p className="text-sm text-ink-soft">
-                {t('pendingHintMixed')}
-              </p>
-            ) : (
-              <p className="text-sm text-ink-soft">
-                {t('pendingHint')}
-              </p>
-            )}
-            {pendingSelfUpdatingRows.map((row) => (
-              <SelfUpdatingConnectorCard
-                key={row.id}
-                row={row}
-                pending={pending}
-                run={run}
-                onReload={reload}
-                isSuperadmin={isSuperadmin}
-              />
-            ))}
-          </div>
-        ) : null}
-        {catalogGaps.length > 0 ? (
-          <div className={pendingSelfUpdatingRows.length > 0 ? 'mt-6 space-y-3 border-t border-ink/10 pt-4' : 'space-y-3'}>
-            {pendingSelfUpdatingRows.length > 0 ? (
-              <h3 className="text-sm font-semibold text-ink">
-                {t('unmanagedActive', { count: catalogGaps.length })}
-              </h3>
-            ) : null}
-            <p className="text-sm text-ink-soft">{t('gapsHint')}</p>
-            {catalogGaps.map((row) => (
-              <CatalogGapCard key={row.id} row={row} pending={pending} run={run} />
-            ))}
-          </div>
-        ) : null}
-      </Card>
-      ) : null}
-
-      <Card title={loadedOnce ? t('inactiveTitleCount', { count: inactiveCount }) : t('inactiveTitle')}>
-        {!loadedOnce ? (
-          <p className="text-sm text-ink-soft">{t('loading')}</p>
-        ) : inactiveCount === 0 ? (
-          <p className="text-sm text-ink-soft">{t('noInactive')}</p>
-        ) : (
-          <div className="space-y-3">
-            {archivedSelfUpdatingRows.map((row) => (
-              <SelfUpdatingConnectorCard
-                key={row.id}
-                row={row}
-                pending={pending}
-                run={run}
-                onReload={reload}
-                isSuperadmin={isSuperadmin}
-              />
-            ))}
-            {openDrafts.map((d) => (
-              <DraftCard
-                key={d.draftId}
-                draft={d}
-                agents={agents}
-                templates={templates}
-                latestTemplateVersions={latestTemplateVersions}
-                googleOauthConfigured={googleOauthConfigured}
-                googleDriveOauthConfigured={googleDriveOauthConfigured}
-                googleApiOauthConfigured={googleApiOauthConfigured}
-                pending={pending}
-                run={run}
-                isSuperadmin={isSuperadmin}
-              />
-            ))}
-          </div>
-        )}
-      </Card>
-          </div>
-        }
-      />
+        </div>
+      ) : currentView !== 'hub' && !loadedOnce ? (
+        <p className="text-sm text-ink-soft">{t('loading')}</p>
+      ) : (
+        hubContent
       )}
     </div>
   )
@@ -2721,177 +2880,98 @@ function CatalogGapCard({
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
-  const [open, setOpen] = useState(false)
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [decommReason, setDecommReason] = useState('')
-  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
-  const [decommApprover, setDecommApprover] = useState('')
   const t = useProvT()
-  const toggleOpen = () => setOpen((current) => !current)
 
   return (
-    <div className="rounded-lg border border-honey/40 bg-honey/5 text-sm">
-      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        <button type="button" className="font-semibold hover:underline" onClick={toggleOpen}>
-          {open ? '▾' : '▸'} {row.name}
-        </button>
-        <Badge tone="neutral">{row.type}</Badge>
-        {row.connectorMode === 'self_updating' ? <Badge tone="warning">OpenAPI</Badge> : null}
-        <Badge tone="warning">{t('unmanaged')}</Badge>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className="rounded-md border border-ink/20 px-2.5 py-1 text-xs font-semibold"
-            onClick={toggleOpen}
-            aria-expanded={open}
-          >
-            {open ? t('close') : t('details')}
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
-            onClick={() => setOpen(true)}
-          >
+    <div className="space-y-3 rounded-2xl border border-coral/30 bg-coral/5 p-5">
+      <h3 className="text-[15px] font-semibold text-coral">{t('decommissionTitle')}</h3>
+      <p className="text-sm text-ink-soft">{t('decommissionGapBody')}</p>
+      <label className="block text-sm">
+        <span className="mb-1 block font-medium text-ink">{t('reason')}</span>
+        <input
+          className="w-full rounded-xl border border-ink/15 bg-paper px-3 py-2.5"
+          value={decommReason}
+          onChange={(e) => setDecommReason(e.target.value)}
+          placeholder={t('reasonGapPlaceholder')}
+        />
+      </label>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        {confirmDecomm ? (
+          <>
+            <span className="mr-auto text-sm font-medium text-coral">{t('confirmDecommNamed', { name: row.name })}</span>
+            <PillButton onClick={() => setConfirmDecomm(false)}>{t('cancel')}</PillButton>
+            <PillButton
+              variant="danger"
+              disabled={pending}
+              onClick={() =>
+                run(async () => {
+                  const res = await decommissionActiveConnector({
+                    connectorId: row.id,
+                    reason: decommReason.trim() || 'provisioning: kezelés nélküli aktív kapcsolat megszüntetése',
+                  })
+                  if (!res.success) return res
+                  setConfirmDecomm(false)
+                  return res
+                }, t('decommissionedArchived'))
+              }
+            >
+              {t('yesDecommission')}
+            </PillButton>
+          </>
+        ) : (
+          <PillButton variant="danger" onClick={() => setConfirmDecomm(true)}>
             {t('decommission')}
-          </button>
-        </div>
+          </PillButton>
+        )}
       </div>
-      {open ? (
-        <div className="space-y-3 border-t border-honey/30 px-4 py-3">
-          <p className="text-xs text-ink-soft">
-            {t('unmanagedHint')}
-          </p>
-          <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-            <h4 className="mb-2 font-semibold text-coral">{t('decommissionTitle')}</h4>
-            <p className="text-xs text-ink-soft">
-              {t('decommissionGapBody')}
-            </p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <label className="text-xs sm:col-span-2">
-                <span className="mb-1 block text-ink-soft">{t('reason')}</span>
-                <input
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommReason}
-                  onChange={(e) => setDecommReason(e.target.value)}
-                  placeholder={t('reasonGapPlaceholder')}
-                />
-              </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                <select
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommCriticality}
-                  onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                >
-                  <option value="L1">L1</option>
-                  <option value="L2">L2 (dual-control)</option>
-                  <option value="L3">L3 (dual-control)</option>
-                </select>
-              </label>
-              <label className="text-xs">
-                <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
-                <input
-                  className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                  value={decommApprover}
-                  onChange={(e) => setDecommApprover(e.target.value)}
-                  placeholder={t('userIdPlaceholder')}
-                />
-              </label>
-            </div>
-            {!confirmDecomm ? (
-              <button
-                type="button"
-                className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
-                onClick={() => setConfirmDecomm(true)}
-              >
-                {t('decommission')}
-              </button>
-            ) : (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold text-coral">
-                  {t('confirmDecommNamed', { name: row.name })}
-                </span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(async () => {
-                      const res = await decommissionActiveConnector({
-                        connectorId: row.id,
-                        criticality: decommCriticality,
-                        approverId: decommApprover.trim() || undefined,
-                        reason:
-                          decommReason.trim() ||
-                          'provisioning: kezelés nélküli aktív kapcsolat megszüntetése',
-                      })
-                      if (!res.success) return res
-                      setConfirmDecomm(false)
-                      return res
-                    }, t('decommissionedArchived'))
-                  }
-                  className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                >
-                  {t('yesDecommission')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmDecomm(false)}
-                  className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
-                >
-                  {t('cancel')}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
 
 function DraftCard({
   draft,
+  onBack,
   agents,
   templates,
   latestTemplateVersions,
   googleOauthConfigured,
   googleDriveOauthConfigured,
   googleApiOauthConfigured,
+  googleAdsDeveloperTokenConfigured,
   pending,
   run,
   isSuperadmin,
 }: {
   draft: DraftRow
+  onBack: () => void
   agents: AgentOption[]
   templates: ConnectorTemplateRow[]
   latestTemplateVersions: Record<string, number>
   googleOauthConfigured: boolean
   googleDriveOauthConfigured: boolean
   googleApiOauthConfigured: boolean
+  googleAdsDeveloperTokenConfigured: boolean
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
   isSuperadmin: boolean
 }) {
   const t = useProvT()
-  const [open, setOpen] = useState(false)
+  const revokeRef = useRef<HTMLDivElement>(null)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
-  const [clientId, setClientId] = useState(() => draft.gmailView?.clientId ?? '')
-  const [approverId, setApproverId] = useState('')
-  const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
+  const [clientId, setClientId] = useState(() => draft.delegatedOauthView?.clientId ?? '')
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [agentApiKey, setAgentApiKey] = useState('')
-  const [draftStep, setDraftStep] = useState<DraftManageStep>('inspect')
-  const [activeStep, setActiveStep] = useState<ActiveManageStep>('inspect')
+  const templateFastPath = draft.sourceType === 'template'
   // Javítás: draft-config inline szerkesztése (a gate resetelődik mentéskor).
   const [editingConfig, setEditingConfig] = useState(false)
   const [configDraft, setConfigDraft] = useState('')
-  // Takarítás / megszüntetés megerősítése.
-  const [confirmDelete, setConfirmDelete] = useState(false)
+  // Kikapcsolás (megszüntetés) megerősítése.
+  const [showRevoke, setShowRevoke] = useState(false)
   const [decommReason, setDecommReason] = useState('')
-  const [decommApprover, setDecommApprover] = useState('')
-  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
   const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
@@ -2899,8 +2979,8 @@ function DraftCard({
   const v = draft.validationResult
   const cfg = draft.config
   const [actingUserEmail, setActingUserEmail] = useState(() => cfg?.defaultActingUserEmail ?? '')
-  const gmailView = draft.gmailView
-  const provenance = cfg?.provenance ?? gmailView?.provenance
+  const delegatedOauthView = draft.delegatedOauthView
+  const provenance = cfg?.provenance ?? delegatedOauthView?.provenance
   const templateVersionKey = templateLineKey({
     key: provenance?.templateKey,
     origin: provenance?.templateOrigin,
@@ -2963,6 +3043,19 @@ function DraftCard({
     !!secretAlias.trim() &&
     !isResolvableSecretAlias(secretAlias.trim())
 
+  // Google Ads / Analytics / Search Console: a cégnek ki kell választania a fiókot, Ads-nél
+  // a platformon kell developer token (vagy egy régi, cég-szintű tartalék).
+  const googleAccountView = draft.googleAccountView ?? null
+  const googleAccountBlocker = !googleAccountView
+    ? null
+    : !googleAccountView.bound
+      ? t('googleBindingRequired')
+      : googleAccountView.provider === 'google-ads' &&
+          !googleAdsDeveloperTokenConfigured &&
+          !googleAccountView.legacyDeveloperToken
+        ? t('googleAdsTokenRequired')
+        : null
+
   const buildActivationInput = (confirmKeyless?: boolean) => ({
     draftId: draft.draftId,
     ...(isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector
@@ -2977,8 +3070,6 @@ function DraftCard({
     ...(isOstorosborCrm && actingUserEmail.trim()
       ? { defaultActingUserEmail: actingUserEmail.trim() }
       : {}),
-    criticality,
-    approverId: approverId.trim() || undefined,
   })
 
   const handleActivate = () => {
@@ -2986,6 +3077,7 @@ function DraftCard({
     if (isGmailConnector && !googleOauthConfigured) return
     if (isGoogleDriveConnector && !googleDriveOauthConfigured) return
     if (isPlatformGoogleApiConnector && !googleApiOauthConfigured) return
+    if (googleAccountBlocker) return
     if (!isPlatformGoogleConnector && !hasActivationCredentials) {
       void (async () => {
         const confirmed = await confirmDialog({
@@ -3003,43 +3095,13 @@ function DraftCard({
     run(() => activateConnector(buildActivationInput()), t('activated'))
   }
 
-  const writeTools = useMemo(
-    () => (cfg?.proposedTools ?? []).filter((t) => t.access === 'write'),
-    [cfg],
-  )
   const selectedAgent = agents.find((agent) => agent.id === agentId)
   const validationReady = !!v && v.status !== 'failed'
   const reviewApproved = draft.reviewStatus === 'approved'
   const sandboxReady = draft.sandboxTestOk === true
-  const activationReady = validationReady && sandboxReady && reviewApproved
-  const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: t('inspect'), hint: t('inspectHint'), done: !!cfg || !!draft.httpApiView || !!gmailView },
-    { id: 'validate', label: t('validate'), hint: v ? v.status : t('notRunYet'), done: validationReady },
-    {
-      id: 'sandbox',
-      label: 'Sandbox',
-      hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : t('notRunYet'),
-      done: sandboxReady,
-    },
-    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
-    {
-      id: 'activate',
-      label: t('activateStep'),
-      hint: activationReady ? t('ready') : t('needPrereqs'),
-      done: isActive,
-    },
-  ]
-  const activeSteps: Array<{ id: ActiveManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: t('status'), hint: t('activeConnector'), done: true },
-    { id: 'assign', label: t('assign'), hint: t('assignHint'), done: false },
-    { id: 'revoke', label: t('decommission'), hint: t('decommissionHint'), done: false },
-  ]
-  const visibleSteps = isActive ? activeSteps : draftSteps
-  const selectedStep = isActive ? activeStep : draftStep
-  const setSelectedStep = (step: DraftManageStep | ActiveManageStep) => {
-    if (isActive) setActiveStep(step as ActiveManageStep)
-    else setDraftStep(step as DraftManageStep)
-  }
+  const activationReady = templateFastPath
+    ? v?.status !== 'failed'
+    : validationReady && sandboxReady && reviewApproved
   const startConfigEdit = () => {
     if (!cfg) return
     setConfigDraft(JSON.stringify(cfg, null, 2))
@@ -3060,61 +3122,17 @@ function DraftCard({
       })
       if (!res.success) return res
       setEditingConfig(false)
-      setDraftStep('validate')
       return res
     }, t('configUpdated'))
   }
-  const configEditor = !isActive && cfg ? (
-    <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-      <div className="flex items-center justify-between">
-        <h4 className="font-semibold">{t('editConfig')}</h4>
-        {!editingConfig ? (
-          <button
-            type="button"
-            className="text-xs font-semibold text-sage hover:underline"
-            onClick={startConfigEdit}
-          >
-            {t('edit')}
-          </button>
-        ) : null}
-      </div>
-      {editingConfig ? (
-        <div className="mt-2 space-y-2">
-          <p className="text-xs text-honey">{t('editResetsGates')}</p>
-          <textarea
-            className="h-64 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
-            value={configDraft}
-            onChange={(e) => setConfigDraft(e.target.value)}
-          />
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={pending}
-              onClick={saveConfigEdit}
-              className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-            >
-              {t('saveConfig')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setEditingConfig(false)}
-              className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
-            >
-              {t('cancel')}
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  ) : null
 
+  const isArchived = draft.lifecycleState === 'archived'
   const canDeleteDraft =
     !isActive &&
     (draft.lifecycleState === 'draft' ||
       draft.lifecycleState === 'validated' ||
-      (isSuperadmin && draft.lifecycleState === 'archived'))
-  const toggleOpen = () => setOpen((current) => !current)
-  const handleDeleteFromList = async () => {
+      (isSuperadmin && isArchived))
+  const handleDelete = async () => {
     const confirmed = await confirmDialog({
       title: t('deleteConnectorTitle'),
       description: t('deleteNeverActivated'),
@@ -3124,889 +3142,513 @@ function DraftCard({
     if (!confirmed) return
     run(() => deleteConnectorDraft({ draftId: draft.draftId }), t('connectorDeleted'))
   }
+  const openRevoke = () => {
+    setShowRevoke(true)
+    requestAnimationFrame(() => revokeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+  }
+
+  const activationBlocked =
+    pending ||
+    !activationReady ||
+    hasInvalidSecretAlias ||
+    (isOstorosborCrm && !actingUserEmail.trim()) ||
+    (isGmailConnector && !googleOauthConfigured) ||
+    (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
+    (isPlatformGoogleApiConnector && !googleApiOauthConfigured) ||
+    Boolean(googleAccountBlocker)
+
+  const activateAndConsent = () => {
+    void (async () => {
+      if (!isPlatformGoogleConnector && !hasActivationCredentials) {
+        const confirmed = await confirmDialog({
+          title: t('activateKeylessTitle'),
+          description: t('activateKeylessShort'),
+          confirmLabel: t('activate'),
+          tone: 'danger',
+        })
+        if (!confirmed) return
+      }
+      run(async () => {
+        const activated = await activateConnector(
+          buildActivationInput(!isGmailConnector && !hasActivationCredentials),
+        )
+        if (!activated.success) return { success: false, error: activated.error }
+        const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
+        if (!consent.success) return { success: false, error: consent.error }
+        if (!('stub' in consent.data && consent.data.stub)) {
+          navigateToOAuth(consent.data.url)
+        }
+        return { success: true }
+      }, t('activatedConsent'))
+    })()
+  }
+
+  const startConsent = () =>
+    run(async () => {
+      const res = await startConnectorOAuth({ connectorId: draft.connectorId })
+      if (!res.success) return { success: false, error: res.error }
+      if (!('stub' in res.data && res.data.stub)) {
+        navigateToOAuth(res.data.url)
+      }
+      return { success: true }
+    }, t('consentStarted'))
+
+  const testWithKey = () =>
+    run(async () => {
+      const res = await testConnectorDraftWithCredentials(buildActivationInput())
+      if (!res.success) return res
+      const detail = res.data.detail ?? (res.data.ok ? 'ok' : 'fail')
+      setAuthTestDetail(
+        res.data.ok
+          ? t('keyTestOk', { code: res.data.statusCode ?? 200 })
+          : t('keyTestFail', { detail }),
+      )
+      return { success: res.data.ok, error: res.data.ok ? undefined : detail }
+    }, t('keyTestSuccess'))
+
+  const runSandbox = () =>
+    run(async () => {
+      const res = await testConnectorDraft({ draftId: draft.draftId })
+      if (!res.success) return { success: false, error: res.error ?? t('sandboxFailed') }
+      const body = res.data as { ok?: boolean; detail?: string; statusCode?: number }
+      if (!body.ok) {
+        const extra = [body.detail, body.statusCode != null ? `HTTP ${body.statusCode}` : null]
+          .filter(Boolean)
+          .join(' · ')
+        return { success: false, error: extra ? t('sandboxFailedDetail', { extra }) : t('sandboxFailed') }
+      }
+      return { success: true }
+    }, t('sandboxOk'))
+
+  // Az alkalmazás eszközei: a javasolt műveletek, vagy (régi/OAuth kapcsolatnál) a végpontok / hozzáférések.
+  const toolItems: ToolItem[] = cfg
+    ? cfg.proposedTools.map((tool) => ({
+        key: tool.name,
+        label: tool.description?.trim() || tool.name,
+        detail: `${tool.method} ${tool.path}`,
+        access: tool.access,
+        enabled: true,
+      }))
+    : draft.httpApiView
+      ? draft.httpApiView.endpoints.map((endpoint) => ({
+          key: `${endpoint.method} ${endpoint.path}`,
+          label: `${endpoint.method} ${endpoint.path}`,
+          enabled: true,
+        }))
+      : delegatedOauthView
+        ? delegatedOauthView.scopes.map((scope) => ({
+            key: scope,
+            label: scope.replace('https://www.googleapis.com/auth/', ''),
+            enabled: true,
+          }))
+        : []
+  const writeCount = toolItems.filter((tool) => tool.access === 'write').length
+  const toolSummary =
+    writeCount > 0
+      ? t('hubToolsSummaryWrite', { count: toolItems.length, write: writeCount })
+      : t('hubToolsSummary', { count: toolItems.length })
+
+  const statusText = isActive
+    ? t('hubStatusConnected')
+    : isArchived
+      ? t('hubStatusOff')
+      : templateFastPath
+        ? t('hubStatusNeedsActivation')
+        : t('hubStatusNeedsChecks')
+  const statusToneValue: RowTone = isActive ? 'success' : isArchived ? 'neutral' : 'warning'
+  const kindLabel = isGmailConnector
+    ? 'Gmail'
+    : isGoogleDriveConnector
+      ? 'Google Drive'
+      : isPlatformGoogleApiConnector
+        ? t('hubKindGoogle')
+        : t('hubKindApi')
+  const sourceLabel = provenance?.templateKey
+    ? t('hubSourceTemplate', { version: provenance.templateVersion ?? '?' })
+    : draft.sourceType === 'openapi' || draft.sourceType === 'api_doc'
+      ? t('sourceOpenApi')
+      : t('sourceManual')
+  const privacyUi = cfg ? privacyCapabilityUi(privacyCapabilityLevel(cfg.privacy)) : null
+  const redirectUri = `${typeof window !== 'undefined' ? window.location.origin : process.env.NEXT_PUBLIC_APP_URL ?? ''}/api/connectors/oauth/callback`
+  const inputClass = 'w-full rounded-xl border border-ink/15 bg-paper px-3 py-2.5 text-sm'
+
+  const activationFields = isGmailConnector || isGoogleDriveConnector || isPlatformGoogleApiConnector ? (
+    <div className="space-y-1 text-sm">
+      {(isGmailConnector ? googleOauthConfigured : isGoogleDriveConnector ? googleDriveOauthConfigured : googleApiOauthConfigured) ? (
+        <p className="flex items-center gap-2 text-sage">
+          <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
+          {isGmailConnector ? t('gmailOauthOk') : isGoogleDriveConnector ? t('driveOauthOk') : t('googleApiOauthOk')}
+        </p>
+      ) : (
+        <p className="text-honey">
+          {isGmailConnector ? t('gmailOauthNeed') : isGoogleDriveConnector ? t('driveOauthNeed') : t('googleApiOauthNeed')}
+        </p>
+      )}
+      {googleAccountBlocker ? <p className="text-honey">{googleAccountBlocker}</p> : null}
+    </div>
+  ) : (
+    <div className="grid gap-4">
+      {credentialFields?.map((field) => (
+        <label key={field.name} className="text-sm">
+          <span className="mb-1 block font-medium text-ink">{field.label}</span>
+          <input
+            type={field.secret ? 'password' : 'text'}
+            autoComplete="off"
+            className={inputClass}
+            value={credentialValues[field.name] ?? ''}
+            onChange={(e) => {
+              const next = { ...credentialValues, [field.name]: e.target.value }
+              setCredentialValues(next)
+              setApiKey(credentialFields.every((f) => next[f.name]?.trim()) ? JSON.stringify(next) : '')
+            }}
+          />
+        </label>
+      ))}
+      {credentialFields ? null : (
+        <label className="text-sm">
+          <span className="mb-1 block font-medium text-ink">
+            {isUserDelegated ? t('oauthClientSecret') : t('apiKey')}
+          </span>
+          <input
+            type="password"
+            autoComplete="new-password"
+            className={inputClass}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={isUserDelegated ? t('oauthSecretPlaceholder') : t('rawKeyPlaceholder')}
+          />
+          <span className="mt-1 block text-xs text-ink-soft">
+            {isUserDelegated ? t('oauthSecretHint') : t('rawKeyHint')}
+          </span>
+        </label>
+      )}
+      {isOauth2 ? (
+        <label className="text-sm">
+          <span className="mb-1 block font-medium text-ink">{t('oauthClientId')}</span>
+          <input
+            className={inputClass}
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder={t('clientIdPlaceholder')}
+          />
+        </label>
+      ) : null}
+      {isUserDelegated ? (
+        <div className="text-sm">
+          <span className="mb-1 block font-medium text-ink">
+            {t('redirectUriLabel')} <span className="font-normal text-ink-soft">{t('addToOauthApp')}</span>
+          </span>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 select-all truncate rounded-xl border border-ink/15 bg-wash/50 px-3 py-2.5 font-mono text-xs">
+              {redirectUri}
+            </code>
+            <PillButton onClick={() => void navigator.clipboard.writeText(redirectUri)}>{t('copy')}</PillButton>
+          </div>
+        </div>
+      ) : null}
+      {isOstorosborCrm ? (
+        <label className="text-sm">
+          <span className="mb-1 block font-medium text-ink">{t('actingUser')}</span>
+          <input
+            type="email"
+            className={inputClass}
+            value={actingUserEmail}
+            onChange={(e) => setActingUserEmail(e.target.value)}
+            placeholder="pl. ertekesito@ceg.hu"
+          />
+          {!actingUserEmail.trim() ? <span className="mt-1 block text-xs text-honey">{t('actingUserNeeded')}</span> : null}
+        </label>
+      ) : null}
+      <details className="text-sm">
+        <summary className="cursor-pointer text-ink-soft">{t('existingSecret')}</summary>
+        <div className="mt-2 space-y-2">
+          <p className="text-xs text-ink-soft">{t('existingSecretHint')}</p>
+          <input
+            className={`${inputClass} disabled:opacity-40`}
+            value={secretAlias}
+            onChange={(e) => setSecretAlias(e.target.value)}
+            placeholder="env:ACME_CRM_API_KEY"
+            disabled={!!apiKey.trim()}
+          />
+          {hasInvalidSecretAlias ? <p className="text-xs text-coral">{t('badAlias')}</p> : null}
+        </div>
+      </details>
+    </div>
+  )
 
   return (
-    <div className="rounded-lg border border-ink/12 bg-paper">
-      <div className="flex items-center gap-3 px-4 py-3">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink/10 bg-white text-ink-soft">
-          <ConnectorTemplateIcon
+    <div className="space-y-7">
+      <BackButton label={t('back')} onClick={onBack} />
+      <DetailHeader
+        icon={
+          <AppIcon
             iconDataUrl={templateDescriptor?.iconDataUrl}
             provider={provenance?.templateKey ?? draft.connectorType ?? ''}
-            className="h-5 w-5"
+            size="lg"
           />
-        </span>
-        <h3 className="min-w-0 truncate font-semibold">{draft.name}</h3>
-        <Badge tone="neutral">
-          {`Létrehozva: ${new Date(draft.createdAt).toLocaleString('hu-HU')}`}
-        </Badge>
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <IconButton
-            icon="info"
-            label={open ? t('close') : t('details')}
-            active={open}
-            onClick={toggleOpen}
-          />
-          {canDeleteDraft ? (
-            <IconButton
-              icon="trash"
-              label={t('delete')}
-              tone="danger"
-              disabled={pending}
-              onClick={() => void handleDeleteFromList()}
-            />
-          ) : null}
-          {isActive ? (
-            <IconButton
-              icon="power"
-              label={t('decommission')}
-              tone="danger"
-              onClick={() => {
-                setOpen(true)
-                setActiveStep('revoke')
-              }}
-            />
-          ) : null}
-        </div>
-      </div>
-
-      {open ? (
-        <div className="space-y-4 border-t border-ink/10 px-4 py-4 text-sm">
-          <div className="flex flex-wrap items-center gap-2 rounded-md border border-ink/12 bg-wash/35 px-3 py-2">
-            <span className="text-xs font-semibold text-ink-soft">{t('status')}</span>
-            <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
+        }
+        title={draft.name}
+        status={statusText}
+        statusTone={statusToneValue}
+        description={templateDescriptor?.description}
+        actions={
+          <>
             {isActive ? (
-              <Badge tone="success">{t('reviewClosed')}</Badge>
-            ) : (
-              <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
-            )}
-            {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
-              <Badge tone="neutral">validation: —</Badge>
-            )}
-            {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
-            {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
-            {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
-            {provenance?.templateKey ? (
-              <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
-                {provenance.templateKey} v{provenance.templateVersion ?? '?'}
-              </Badge>
+              <PillButton onClick={openRevoke}>{t('hubTurnOff')}</PillButton>
             ) : null}
+            {canDeleteDraft ? (
+              <PillButton disabled={pending} onClick={() => void handleDelete()}>
+                {t('hubRemove')}
+              </PillButton>
+            ) : null}
+          </>
+        }
+      />
+
+      {googleAccountView && !isArchived ? (
+        <GoogleConnectorLevelsPanel
+          draftId={draft.draftId}
+          view={googleAccountView}
+          googleApiOauthConfigured={googleApiOauthConfigured}
+          googleAdsDeveloperTokenConfigured={googleAdsDeveloperTokenConfigured}
+          pending={pending}
+          run={run}
+        />
+      ) : null}
+
+      {/* Kapcsolat: élő állapot, vagy a bekapcsoláshoz szükséges adatok */}
+      <DetailSection title={t('hubConnectionTitle')}>
+        {isActive ? (
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="min-w-0 flex-1">
+              <p className="text-[15px] text-ink">{t('hubConnectionLive')}</p>
+              <p className="mt-0.5 text-sm text-ink-soft">
+                {isUserDelegated ? t('hubConnectionLiveDelegated') : t('hubConnectionLiveShared')}
+              </p>
+            </div>
+            {draft.connectorType === 'http_api' && isUserDelegated ? (
+              <PillButton variant="success" disabled={pending} onClick={startConsent}>
+                {t('startAutoConsent')}
+              </PillButton>
+            ) : (
+              <span className="text-sm font-medium text-sage">{t('hubStatusConnected')}</span>
+            )}
           </div>
-          <div className="grid gap-4 lg:grid-cols-[14rem_1fr]">
-            <ol className="space-y-2">
-              {visibleSteps.map((step, index) => {
-                const active = selectedStep === step.id
-                return (
-                  <li key={step.id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedStep(step.id)}
-                      className={`flex w-full items-start gap-3 rounded-md border px-3 py-3 text-left transition ${
-                        active
-                          ? 'border-coral/45 bg-coral/8'
-                          : step.done
-                            ? 'border-sage/35 bg-sage/8'
-                            : 'border-ink/12 bg-paper hover:border-coral/25'
-                      }`}
-                    >
-                      <span
-                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                          step.done
-                            ? 'bg-sage text-card'
-                            : active
-                              ? 'bg-coral text-card'
-                              : 'bg-night-2 text-ink-soft'
-                        }`}
+        ) : isArchived ? (
+          <p className="text-[15px] text-ink-soft">{t('hubConnectionOff')}</p>
+        ) : (
+          <div className="space-y-5">
+            {!templateFastPath ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-ink">{t('hubChecksTitle')}</p>
+                <p className="text-xs text-ink-soft">{t('hubChecksHint')}</p>
+                <ul className="mt-2 divide-y divide-ink/[0.07] rounded-xl border border-ink/10">
+                  <CheckRow
+                    done={validationReady}
+                    failed={v?.status === 'failed'}
+                    label={t('hubCheckValidate')}
+                    hint={
+                      !v
+                        ? t('hubCheckValidateHint')
+                        : v.status === 'failed'
+                          ? t('hubCheckValidateFailed')
+                          : v.status === 'warned'
+                            ? t('hubCheckValidateWarned')
+                            : t('hubCheckOk')
+                    }
+                    action={
+                      <PillButton
+                        disabled={pending}
+                        onClick={() => run(() => validateConnectorDraft({ draftId: draft.draftId }), t('validated'))}
                       >
-                        {step.done ? '✓' : index + 1}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-semibold">{step.label}</span>
-                        <span className="block truncate text-xs text-ink-soft">{step.hint}</span>
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ol>
-
-            <div className="min-w-0 space-y-4 rounded-md border border-ink/12 bg-wash/35 p-4">
-          {selectedStep === 'inspect' ? (
-            <>
-          {/* Diff-nézet — a generált deskriptor (§4.3) */}
-          {cfg ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <h4 className="mb-1 font-semibold">{t('egressHosts')}</h4>
-                <ul className="font-mono text-xs">
-                  {cfg.egressHosts.map((h) => (
-                    <li key={h}>{h}</li>
-                  ))}
-                </ul>
-                <h4 className="mb-1 mt-3 font-semibold">Auth</h4>
-                <p className="text-xs text-ink-soft">
-                  {cfg.authMode} · {cfg.auth.type}
-                  {cfg.auth.headerName ? ` · ${cfg.auth.headerName}` : ''}
-                  <br />
-                  secret-alias (javasolt): <code>{cfg.auth.secretAliasSuggested ?? '—'}</code>
-                </p>
-                {(() => {
-                  const ui = privacyCapabilityUi(privacyCapabilityLevel(cfg.privacy))
-                  return (
-                    <p className="mt-3">
-                      <Badge tone={ui.tone} title={ui.title}>
-                        {ui.label}
-                      </Badge>
-                    </p>
-                  )
-                })()}
-              </div>
-              <div>
-                <h4 className="mb-1 font-semibold">Scope-ok</h4>
-                <div className="flex flex-wrap gap-1">
-                  {cfg.scopesSuggested.length === 0 ? (
-                    <span className="text-xs text-ink-soft">—</span>
-                  ) : (
-                    cfg.scopesSuggested.map((s) => (
-                      <Badge key={s} tone="neutral">
-                        {s}
-                      </Badge>
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : gmailView ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <h4 className="mb-1 font-semibold">Gmail OAuth</h4>
-                <p className="text-xs text-ink-soft">
-                  {draft.authMode} · provider: {gmailView.provider}
-                </p>
-                <ul className="mt-2 space-y-1 font-mono text-xs">
-                  <li>
-                    <span className="text-ink-soft">authUrl:</span> {gmailView.authUrl}
-                  </li>
-                  <li>
-                    <span className="text-ink-soft">tokenUrl:</span> {gmailView.tokenUrl}
-                  </li>
-                  {gmailView.userInfoUrl ? (
-                    <li>
-                      <span className="text-ink-soft">userInfoUrl:</span> {gmailView.userInfoUrl}
-                    </li>
-                  ) : null}
-                  <li>
-                    <span className="text-ink-soft">clientId:</span>{' '}
-                    {gmailView.clientId?.trim() ? (
-                      <code>{gmailView.clientId}</code>
-                    ) : (
-                      <span className="text-ink-soft">{t('platformGoogleOauth')}</span>
-                    )}
-                  </li>
-                </ul>
-              </div>
-              <div>
-                <h4 className="mb-1 font-semibold">Scope-ok</h4>
-                <div className="flex flex-wrap gap-1">
-                  {gmailView.scopes.length === 0 ? (
-                    <span className="text-xs text-ink-soft">—</span>
-                  ) : (
-                    gmailView.scopes.map((scope) => (
-                      <Badge key={scope} tone="neutral">
-                        {scope.replace('https://www.googleapis.com/auth/', '')}
-                      </Badge>
-                    ))
-                  )}
-                </div>
-                <p className="mt-3 text-xs text-ink-soft">
-                  scopeTransform: <code>{gmailView.scopeTransform}</code>
-                </p>
-                {gmailView.provenance?.templateKey ? (
-                  <p className="mt-1 text-xs text-ink-soft">
-                    sablon: {gmailView.provenance.templateKey}
-                    {gmailView.provenance.templateVersion
-                      ? ` v${gmailView.provenance.templateVersion}`
-                      : ''}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          ) : draft.httpApiView ? (
-            // Fallback: a config nem provisioning-ConnectorConfig alakú (pl. az
-            // „API-kapcsolat" szerkesztőn átírt http_api config). Secret-mentes read-only nézet.
-            <div className="rounded-md bg-honey/5 p-3 text-xs">
-              <p className="mb-2 text-ink-soft">
-                {t('httpApiViaEditor')}
-                {draft.httpApiView.isDelegated
-                  ? ` ${t('delegatedOauth')}`
-                  : ''}
-              </p>
-              {draft.httpApiView.baseUrl ? (
-                <p>
-                  <span className="text-ink-soft">Base URL:</span>{' '}
-                  <code>{draft.httpApiView.baseUrl}</code>
-                </p>
-              ) : null}
-              {draft.httpApiView.authScheme ? (
-                <p>
-                  <span className="text-ink-soft">Auth:</span> {draft.authMode} ·{' '}
-                  {draft.httpApiView.isDelegated ? 'oauth2 (auto-consent)' : draft.httpApiView.authScheme}
-                </p>
-              ) : null}
-              {draft.httpApiView.endpoints.length > 0 ? (
-                <ul className="mt-1 font-mono">
-                  {draft.httpApiView.endpoints.map((e) => (
-                    <li key={`${e.method} ${e.path}`}>
-                      {e.method} {e.path}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ) : (
-            <p className="text-coral">{t('unreadableConfig')}</p>
-          )}
-
-          {cfg ? (
-            <div>
-              <h4 className="mb-1 font-semibold">Javasolt toolok</h4>
-              <table className="w-full text-left text-xs">
-                <thead className="text-ink-soft">
-                  <tr>
-                    <th className="py-1">{t('name')}</th>
-                    <th>Method</th>
-                    <th>Path</th>
-                    <th>Access</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cfg.proposedTools.map((tool) => (
-                    <tr
-                      key={tool.name}
-                      className={tool.access === 'write' ? 'bg-honey/10' : undefined}
-                    >
-                      <td className="py-1 font-mono">{tool.name}</td>
-                      <td>{tool.method}</td>
-                      <td className="font-mono">{tool.path}</td>
-                      <td>
-                        <Badge tone={tool.access === 'write' ? 'warning' : 'neutral'}>
-                          {tool.access}
-                        </Badge>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-
-          <p className="text-xs text-ink-soft">
-            {t('sourceHash', { type: draft.sourceType })} <code>{draft.sourceHash}</code>
-          </p>
-
-          {provenance?.templateKey ? (
-            <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">Sablon provenance</span>
-                <Badge tone={provenance.templateOrigin === 'builtin' ? 'success' : 'warning'}>
-                  {provenance.templateOrigin ?? 'template'}
-                </Badge>
-                <Badge tone="neutral">v{provenance.templateVersion ?? '?'}</Badge>
-                {templateOutdated ? (
-                  <Badge tone="warning">{t('newerTemplate', { version: latestTemplateVersion })}</Badge>
-                ) : null}
-              </div>
-              <p className="mt-2 font-mono text-[11px] text-ink-soft">
-                {provenance.templateKey}
-                {provenance.templateId ? ` · ${provenance.templateId}` : ''}
-              </p>
-              {provenance.materializedAt ? (
-                <p className="mt-1 text-ink-soft">{t('materialized', { at: provenance.materializedAt })}</p>
-              ) : null}
-            </div>
-          ) : null}
-
-          {/* Javítás: aktív connector visszanyitása draftba szerkesztéshez (auditált). */}
-          {isActive ? (
-            <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-1 font-semibold">{t('editFix')}</h4>
-              <p className="mb-2 text-xs text-ink-soft">
-                {t('cannotEditLive')}
-              </p>
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() =>
-                  run(
-                    () => reopenConnector({ draftId: draft.draftId }),
-                    t('reopened'),
-                  )
-                }
-                className="rounded-md border border-honey/50 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
-              >
-                {t('reopenDraft')}
-              </button>
-            </div>
-          ) : null}
-
-          {/* Javítás: draft/validated config inline szerkesztése (a gate resetelődik). */}
-          {configEditor}
-
-          {/* Takarítás: sosem aktivált draft hard-delete-je (auditált). */}
-          {canDeleteDraft ? (
-            <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-              <h4 className="mb-1 font-semibold text-coral">{t('deleteDraft')}</h4>
-              <p className="mb-2 text-xs text-ink-soft">
-                {t('deleteDraftBody')}
-              </p>
-              {!confirmDelete ? (
-                <button
-                  type="button"
-                  className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
-                  onClick={() => setConfirmDelete(true)}
-                >
-                  {t('deleteDraft')}
-                </button>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-semibold text-coral">{t('confirmIrreversible')}</span>
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() =>
-                      run(
-                        () => deleteConnectorDraft({ draftId: draft.draftId }),
-                        t('draftDeleted'),
+                        {v ? t('hubRunAgain') : t('runValidate')}
+                      </PillButton>
+                    }
+                  >
+                    {v && (v.errors.length > 0 || v.warnings.length > 0 || (v.unknownHosts?.length ?? 0) > 0) ? (
+                      <div className="mt-2 space-y-2 text-xs">
+                        {v.errors.length > 0 ? (
+                          <ul className="list-disc pl-5 text-coral">
+                            {v.errors.map((e, i) => (
+                              <li key={i}>{e}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {v.warnings.length > 0 ? (
+                          <ul className="list-disc pl-5 text-honey">
+                            {v.warnings.map((w, i) => (
+                              <li key={i}>{w}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {(v.checks.egressAllowlist === 'warned' || v.checks.egressAllowlist === 'failed') &&
+                        (v.unknownHosts?.length ?? 0) > 0 ? (
+                          <div>
+                            <p className="text-ink-soft">{t('newEgressHosts')}</p>
+                            <div className="mt-1 flex flex-wrap gap-2">
+                              {v.unknownHosts!.map((h) => (
+                                <button
+                                  key={h}
+                                  type="button"
+                                  disabled={pending}
+                                  className="rounded-full border border-ink/15 bg-paper px-3 py-1 font-mono text-xs hover:bg-honey/15 disabled:opacity-50"
+                                  onClick={() =>
+                                    run(async () => {
+                                      const ext = await extendEgressAllowlist({ host: h, draftId: draft.draftId })
+                                      if (!ext.success) return ext
+                                      return validateConnectorDraft({ draftId: draft.draftId })
+                                    }, t('egressAdded', { host: h }))
+                                  }
+                                >
+                                  + {h}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </CheckRow>
+                  <CheckRow
+                    done={sandboxReady}
+                    failed={draft.sandboxTestOk === false}
+                    label={t('hubCheckSandbox')}
+                    hint={
+                      draft.sandboxTestOk === true
+                        ? t('hubCheckOk')
+                        : draft.sandboxTestOk === false
+                          ? t('hubCheckSandboxFailed')
+                          : t('hubCheckSandboxHint')
+                    }
+                    action={
+                      <PillButton disabled={pending} onClick={runSandbox}>
+                        {draft.sandboxTestOk == null ? t('sandboxTest') : t('hubRunAgain')}
+                      </PillButton>
+                    }
+                  />
+                  <CheckRow
+                    done={reviewApproved}
+                    failed={draft.reviewStatus === 'rejected'}
+                    label={t('hubCheckReview')}
+                    hint={
+                      reviewApproved
+                        ? t('hubCheckOk')
+                        : draft.reviewStatus === 'rejected'
+                          ? t('hubCheckReviewRejected')
+                          : draft.reviewStatus === 'changes_requested'
+                            ? t('hubCheckReviewChanges')
+                            : t('hubCheckReviewHint')
+                    }
+                    action={
+                      reviewApproved ? null : (
+                        <div className="flex flex-wrap gap-2">
+                          <PillButton
+                            variant="success"
+                            disabled={pending}
+                            onClick={() =>
+                              run(
+                                () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'approve' }),
+                                t('approved'),
+                              )
+                            }
+                          >
+                            {t('approve')}
+                          </PillButton>
+                          <PillButton
+                            disabled={pending}
+                            onClick={() =>
+                              run(
+                                () =>
+                                  reviewConnectorDraft({ draftId: draft.draftId, decision: 'changes_requested' }),
+                                t('changesRequested'),
+                              )
+                            }
+                          >
+                            {t('requestChanges')}
+                          </PillButton>
+                        </div>
                       )
                     }
-                    className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                  >
-                    {t('yesDelete')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDelete(false)}
-                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
-                  >
-                    {t('cancel')}
-                  </button>
-                </div>
+                  />
+                </ul>
+              </div>
+            ) : null}
+
+            {activationHelp ? (
+              <div className="rounded-xl bg-wash/60 px-4 py-3 text-sm">
+                <p className="font-medium text-ink">{t('setupHelp')}</p>
+                <p className="mt-1 whitespace-pre-line text-ink-soft">{activationHelp}</p>
+              </div>
+            ) : null}
+
+            {templateFastPath && v?.status === 'failed' ? (
+              <div className="text-sm text-coral">
+                <p>{t('catalogActivateBlocked')}</p>
+                {v.errors.length > 0 ? (
+                  <ul className="mt-2 list-disc pl-5">
+                    {v.errors.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {activationFields}
+
+            {!isPlatformGoogleConnector && !hasActivationCredentials ? (
+              <p className="text-xs text-honey">{t('keylessWarn')}</p>
+            ) : null}
+            {authTestDetail ? <p className="text-xs text-ink-soft">{t('keyTest', { detail: authTestDetail })}</p> : null}
+            {!templateFastPath && !activationReady ? (
+              <p className="text-xs text-ink-soft">{t('activatePrereqs')}</p>
+            ) : null}
+
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-ink/[0.07] pt-4">
+              {hasActivationCredentials && !isPlatformGoogleConnector ? (
+                <PillButton disabled={activationBlocked} onClick={testWithKey}>
+                  {t('testWithKey')}
+                </PillButton>
+              ) : null}
+              {isUserDelegated ? (
+                <>
+                  <PillButton disabled={activationBlocked} onClick={handleActivate}>
+                    {t('activate')}
+                  </PillButton>
+                  <PillButton variant="primary" disabled={activationBlocked} onClick={activateAndConsent}>
+                    {t('activateAndConsent')}
+                  </PillButton>
+                </>
+              ) : (
+                <PillButton variant="primary" disabled={activationBlocked} onClick={handleActivate}>
+                  {t('activate')}
+                </PillButton>
               )}
             </div>
-          ) : null}
-            </>
-          ) : null}
+          </div>
+        )}
+      </DetailSection>
 
-          {!isActive && selectedStep === 'validate' ? (
-            <>
-          {/* Validációs eredmény */}
-          {v ? (
-            <div>
-              <h4 className="mb-1 font-semibold">{t('deterministicValidation')}</h4>
-              <div className="flex flex-wrap gap-1">
-                {Object.entries(v.checks).map(([k, s]) => (
-                  <Badge key={k} tone={statusTone(s)}>
-                    {k}: {s}
-                  </Badge>
-                ))}
-              </div>
-              {v.errors.length > 0 ? (
-                <ul className="mt-2 list-disc pl-5 text-xs text-coral">
-                  {v.errors.map((e, i) => (
-                    <li key={i}>{e}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {v.warnings.length > 0 ? (
-                <ul className="mt-2 list-disc pl-5 text-xs text-honey">
-                  {v.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {v.warnings.length > 0 && cfg ? (
-                <div className="mt-3 rounded border border-honey/40 bg-honey/5 p-2">
-                  <p className="text-xs text-ink-soft">
-                    {t('warningsFixable')}
-                  </p>
-                  {!editingConfig ? (
-                    <button
-                      type="button"
-                      className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 text-xs font-semibold text-honey"
-                      onClick={startConfigEdit}
-                    >
-                      {t('editConfig')}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-              {(v.checks.egressAllowlist === 'warned' || v.checks.egressAllowlist === 'failed') &&
-              (v.unknownHosts?.length ?? 0) > 0 ? (
-                <div className="mt-2 rounded border border-honey/40 bg-honey/5 p-2">
-                  <p className="text-xs text-ink-soft">{t('newEgressHosts')}</p>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {v.unknownHosts!.map((h) => (
-                      <button
-                        key={h}
-                        type="button"
-                        disabled={pending}
-                        className="rounded border border-ink/20 bg-paper px-2 py-1 font-mono text-xs hover:bg-honey/20 disabled:opacity-50"
-                        onClick={() =>
-                          run(async () => {
-                            const ext = await extendEgressAllowlist({ host: h, draftId: draft.draftId })
-                            if (!ext.success) return ext
-                            return validateConnectorDraft({ draftId: draft.draftId })
-                          }, t('egressAdded', { host: h }))
-                        }
-                      >
-                        + {h}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
+      <section className="space-y-2">
+        <h3 className="px-1 text-sm font-medium text-ink-soft">{t('hubToolsTitle')}</h3>
+        <ToolList
+          tools={toolItems}
+          summary={toolSummary}
+          accessLabels={{ read: t('hubAccessRead'), write: t('hubAccessWrite') }}
+          emptyText={t('hubToolsEmpty')}
+        />
+      </section>
+
+      {isActive ? (
+        <DetailSection title={t('hubAgentsTitle')} hint={t('hubAgentsHint')}>
+          {agents.length === 0 ? (
+            <p className="text-sm text-ink-soft">{t('hubAgentsEmpty')}</p>
           ) : (
-            <div>
-              <h4 className="mb-1 font-semibold">{t('deterministicValidation')}</h4>
-              <p className="text-xs text-ink-soft">
-                {t('notValidatedYet')}
-              </p>
-            </div>
-          )}
-          {configEditor}
-            </>
-          ) : null}
-
-          {!isActive && selectedStep === 'validate' ? (
-            <div className="flex flex-wrap gap-2 border-t border-ink/10 pt-3">
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() =>
-                  run(() => validateConnectorDraft({ draftId: draft.draftId }), t('validated'))
-                }
-                className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-              >
-                {t('runValidate')}
-              </button>
-            </div>
-          ) : null}
-
-          {!isActive && selectedStep === 'review' ? (
-            <div className="space-y-3 border-t border-ink/10 pt-3">
-              <div>
-                <h4 className="font-semibold">{t('reviewDecision')}</h4>
-                <p className="mt-1 text-xs text-ink-soft">
-                  {t('reviewBody')}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(
-                      () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'approve' }),
-                      t('approved'),
-                    )
-                  }
-                  className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-                >
-                  {t('approve')}
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(
-                      () =>
-                        reviewConnectorDraft({ draftId: draft.draftId, decision: 'changes_requested' }),
-                      t('changesRequested'),
-                    )
-                  }
-                  className="rounded-md border border-honey/40 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
-                >
-                  {t('requestChanges')}
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() =>
-                    run(
-                      () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'reject' }),
-                      t('rejected'),
-                    )
-                  }
-                  className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral disabled:opacity-50"
-                >
-                  {t('reject')}
-                </button>
-              </div>
-            </div>
-          ) : null}
-
-          {!isActive && selectedStep === 'sandbox' ? (
-            <div className="space-y-3 border-t border-ink/10 pt-3">
-              <div>
-                <h4 className="font-semibold">Sandbox konnektor-teszt</h4>
-                <p className="mt-1 text-xs text-ink-soft">
-                  {t('sandboxBody')}
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() =>
-                  run(async () => {
-                    const res = await testConnectorDraft({ draftId: draft.draftId })
-                    if (!res.success) return { success: false, error: res.error ?? 'Sandbox-teszt sikertelen' }
-                    const body = res.data as { ok?: boolean; detail?: string; statusCode?: number }
-                    if (!body.ok) {
-                      const extra = [
-                        body.detail,
-                        body.statusCode != null ? `HTTP ${body.statusCode}` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')
-                      return {
-                        success: false,
-                        error: `Sandbox-teszt sikertelen${extra ? `: ${extra}` : ''}`,
-                      }
-                    }
-                    return { success: true }
-                  }, 'Sandbox-teszt sikeres.')
-                }
-                className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-              >
-                Sandbox-teszt
-              </button>
-            </div>
-          ) : null}
-
-          {isActive && selectedStep === 'inspect' && draft.connectorType === 'http_api' && isUserDelegated ? (
-            <div className="flex flex-wrap gap-2 border-t border-ink/10 pt-3">
-              <button
-                type="button"
-                disabled={pending}
-                onClick={() =>
-                  run(async () => {
-                    const res = await startConnectorOAuth({ connectorId: draft.connectorId })
-                    if (!res.success) return { success: false, error: res.error }
-                    if (!('stub' in res.data && res.data.stub)) {
-                      navigateToOAuth(res.data.url)
-                    }
-                    return { success: true }
-                  }, t('consentStarted'))
-                }
-                className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-              >
-                {t('startAutoConsent')}
-              </button>
-            </div>
-          ) : null}
-
-          {/* Aktiválás — emberi admin-aktus */}
-          {!isActive && selectedStep === 'activate' ? (
-            <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-2 font-semibold">{t('activateHuman')}</h4>
-              {activationHelp ? (
-                <div className="mb-3 rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
-                  <p className="mb-1 font-semibold text-sage">{t('setupHelp')}</p>
-                  <p className="whitespace-pre-line text-ink-soft">{activationHelp}</p>
-                </div>
-              ) : null}
-              {!activationReady ? (
-                <p className="mb-3 text-xs text-honey">
-                  {t('activatePrereqs')}
-                </p>
-              ) : null}
-              <div className="grid gap-2 sm:grid-cols-2">
-                {isGmailConnector ? (
-                  <div className="text-xs sm:col-span-2">
-                    {googleOauthConfigured ? (
-                      <p className="flex items-center gap-2 text-sage">
-                        <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        {t('gmailOauthOk')}
-                      </p>
-                    ) : (
-                      <p className="text-honey">
-                        {t('gmailOauthNeed')}
-                      </p>
-                    )}
-                  </div>
-                ) : isGoogleDriveConnector ? (
-                  <div className="text-xs sm:col-span-2">
-                    {googleDriveOauthConfigured ? (
-                      <p className="flex items-center gap-2 text-sage">
-                        <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        {t('driveOauthOk')}
-                      </p>
-                    ) : (
-                      <p className="text-honey">
-                        {t('driveOauthNeed')}
-                      </p>
-                    )}
-                  </div>
-                ) : isPlatformGoogleApiConnector ? (
-                  <div className="text-xs sm:col-span-2">
-                    {googleApiOauthConfigured ? (
-                      <p className="flex items-center gap-2 text-sage">
-                        <span aria-hidden className="h-2 w-2 rounded-full bg-sage" />
-                        {t('googleApiOauthOk')}
-                      </p>
-                    ) : (
-                      <p className="text-honey">
-                        {t('googleApiOauthNeed')}
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                {credentialFields?.map((field) => (
-                  <label key={field.name} className="text-xs sm:col-span-2">
-                    <span className="mb-1 block text-ink-soft">{field.label}</span>
-                    <input
-                      type={field.secret ? 'password' : 'text'}
-                      autoComplete="off"
-                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                      value={credentialValues[field.name] ?? ''}
-                      onChange={(e) => {
-                        const next = { ...credentialValues, [field.name]: e.target.value }
-                        setCredentialValues(next)
-                        setApiKey(credentialFields.every((f) => next[f.name]?.trim()) ? JSON.stringify(next) : '')
-                      }}
-                    />
-                  </label>
-                ))}
-                <label className={`text-xs sm:col-span-2 ${credentialFields ? 'hidden' : ''}`}>
-                  <span className="mb-1 block text-ink-soft">
-                    {isUserDelegated ? t('oauthClientSecret') : t('apiKey')}
-                  </span>
-                  <input
-                    type="password"
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={
-                      isUserDelegated
-                        ? t('oauthSecretPlaceholder')
-                        : t('rawKeyPlaceholder')
-                    }
-                  />
-                  <span className="mt-1 block text-ink/50">
-                    {isUserDelegated ? t('oauthSecretHint') : t('rawKeyHint')}
-                  </span>
-                </label>
-                <details className="text-xs sm:col-span-2">
-                  <summary className="cursor-pointer text-ink-soft">
-                    {t('existingSecret')}
-                  </summary>
-                  <div className="mt-2 rounded-md border border-ink/12 bg-wash/40 p-2">
-                    <p className="mb-2 text-ink/60">{t('existingSecretHint')}</p>
-                    <input
-                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
-                      value={secretAlias}
-                      onChange={(e) => setSecretAlias(e.target.value)}
-                      placeholder="env:ACME_CRM_API_KEY"
-                      disabled={!!apiKey.trim()}
-                    />
-                    {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim()) ? (
-                      <p className="mt-1 text-coral">{t('badAlias')}</p>
-                    ) : null}
-                  </div>
-                </details>
-                {isOstorosborCrm ? (
-                  <label className="text-xs sm:col-span-2">
-                    <span className="mb-1 block text-ink-soft">
-                      {t('actingUser')}
-                    </span>
-                    <input
-                      type="email"
-                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                      value={actingUserEmail}
-                      onChange={(e) => setActingUserEmail(e.target.value)}
-                      placeholder="pl. ertekesito@ceg.hu"
-                    />
-                    {!actingUserEmail.trim() ? (
-                      <p className="mt-1 text-honey">
-                        {t('actingUserNeeded')}
-                      </p>
-                    ) : null}
-                  </label>
-                ) : null}
-                {isUserDelegated ? (
-                  <div className="text-xs sm:col-span-2">
-                    <span className="mb-1 block text-ink-soft">
-                      Authorized redirect URI{' '}
-                      <span className="text-ink/50">{t('addToOauthApp')}</span>
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <code className="flex-1 rounded-md border border-ink/15 bg-wash px-2 py-1.5 font-mono text-xs select-all">
-                        {(typeof window !== 'undefined'
-                          ? window.location.origin
-                          : process.env.NEXT_PUBLIC_APP_URL ?? '')}
-                        /api/connectors/oauth/callback
-                      </code>
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-md border border-ink/15 px-2 py-1.5 text-xs hover:bg-ink/5"
-                        onClick={() =>
-                          void navigator.clipboard.writeText(
-                            `${typeof window !== 'undefined' ? window.location.origin : process.env.NEXT_PUBLIC_APP_URL ?? ''}/api/connectors/oauth/callback`,
-                          )
-                        }
-                      >
-                        {t('copy')}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                {isOauth2 ? (
-                  <label className="text-xs sm:col-span-2">
-                    <span className="mb-1 block text-ink-soft">
-                      OAuth client ID (nem titok → config)
-                    </span>
-                    <input
-                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                      value={clientId}
-                      onChange={(e) => setClientId(e.target.value)}
-                      placeholder={t('clientIdPlaceholder')}
-                    />
-                  </label>
-                ) : null}
-                  </>
-                )}
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={criticality}
-                    onChange={(e) => setCriticality(e.target.value as typeof criticality)}
-                  >
-                    <option value="L1">L1</option>
-                    <option value="L2">L2 (dual-control)</option>
-                    <option value="L3">L3 (dual-control)</option>
-                  </select>
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('secondApproverReviewer')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={approverId}
-                    onChange={(e) => setApproverId(e.target.value)}
-                    placeholder={t('userIdPlaceholder')}
-                  />
-                </label>
-              </div>
-              {!isGmailConnector && !hasActivationCredentials ? (
-                <p className="mt-2 text-xs text-honey">{t('keylessWarn')}</p>
-              ) : null}
-              {authTestDetail ? (
-                <p className="mt-2 text-xs text-ink-soft">{t('keyTest', { detail: authTestDetail })}</p>
-              ) : null}
-              <div className="mt-2 flex flex-wrap gap-2">
-                {hasActivationCredentials && !isPlatformGoogleConnector ? (
-                  <button
-                    type="button"
-                    disabled={
-                      pending ||
-                      !activationReady ||
-                      hasInvalidSecretAlias ||
-                      (isOstorosborCrm && !actingUserEmail.trim())
-                    }
-                    onClick={() =>
-                      run(async () => {
-                        const res = await testConnectorDraftWithCredentials(buildActivationInput())
-                        if (!res.success) return res
-                        const detail = res.data.detail ?? (res.data.ok ? 'ok' : 'fail')
-                        setAuthTestDetail(
-                          res.data.ok
-                            ? `sikeres (${res.data.statusCode ?? 200})`
-                            : `sikertelen — ${detail}`,
-                        )
-                        return {
-                          success: res.data.ok,
-                          error: res.data.ok ? undefined : detail,
-                        }
-                      }, 'Kulcsos teszt sikeres.')
-                    }
-                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-                  >
-                    Kulccsal teszt
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  disabled={
-                    pending ||
-                    !activationReady ||
-                    hasInvalidSecretAlias ||
-                    (isGmailConnector && !googleOauthConfigured) ||
-                    (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
-                    (isPlatformGoogleApiConnector && !googleApiOauthConfigured)
-                  }
-                  onClick={handleActivate}
-                  className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                >
-                  {t('activate')}
-                </button>
-                {isUserDelegated ? (
-                  <button
-                    type="button"
-                    disabled={
-                      pending ||
-                      !activationReady ||
-                      hasInvalidSecretAlias ||
-                      (isGmailConnector && !googleOauthConfigured) ||
-                      (isGoogleDriveConnector && !googleDriveOauthConfigured) ||
-                      (isPlatformGoogleApiConnector && !googleApiOauthConfigured)
-                    }
-                    onClick={() => {
-                      void (async () => {
-                        if (!isPlatformGoogleConnector && !hasActivationCredentials) {
-                          const confirmed = await confirmDialog({
-                            title: t('activateKeylessTitle'),
-                            description: t('activateKeylessShort'),
-                            confirmLabel: t('activate'),
-                            tone: 'danger',
-                          })
-                          if (!confirmed) return
-                        }
-                        run(async () => {
-                          const activated = await activateConnector(
-                            buildActivationInput(!isGmailConnector && !hasActivationCredentials),
-                          )
-                          if (!activated.success) return { success: false, error: activated.error }
-
-                          const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
-                          if (!consent.success) return { success: false, error: consent.error }
-                          if (!('stub' in consent.data && consent.data.stub)) {
-                            navigateToOAuth(consent.data.url)
-                          }
-                          return { success: true }
-                        }, t('activatedConsent'))
-                      })()
-                    }}
-                    className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-                  >
-                    {t('activateAndConsent')}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
-          {isActive && selectedStep === 'assign' ? (
-            <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
-              <h4 className="mb-2 font-semibold">{t('assignToAgent')}</h4>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">Agent</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={agentId}
-                    onChange={(e) => setAgentId(e.target.value)}
-                  >
+            <div className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
+                <label className="text-sm">
+                  <span className="mb-1 block font-medium text-ink">{t('agent')}</span>
+                  <select className={inputClass} value={agentId} onChange={(e) => setAgentId(e.target.value)}>
                     <option value="">{t('chooseAgent')}</option>
                     {agents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
@@ -4015,139 +3657,296 @@ function DraftCard({
                     ))}
                   </select>
                 </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('access')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={accessMode}
-                    onChange={(e) => setAccessMode(e.target.value as typeof accessMode)}
-                  >
-                    <option value="read">read</option>
-                    <option value="write">write</option>
-                  </select>
-                </label>
-                <label className="text-xs sm:col-span-2">
-                  <span className="mb-1 block text-ink-soft">
-                    Per-agent API kulcs{' '}
-                    <span className="font-normal text-ink-soft/70">
-                      {t('perAgentKeyHint')}
-                    </span>
-                  </span>
+                <fieldset className="text-sm">
+                  <legend className="mb-1 block font-medium text-ink">{t('access')}</legend>
+                  <div className="flex gap-2">
+                    <FilterChip active={accessMode === 'read'} onClick={() => setAccessMode('read')}>
+                      {t('hubAccessReadOnly')}
+                    </FilterChip>
+                    <FilterChip active={accessMode === 'write'} onClick={() => setAccessMode('write')}>
+                      {t('hubAccessReadWrite')}
+                    </FilterChip>
+                  </div>
+                </fieldset>
+              </div>
+              <details className="text-sm">
+                <summary className="cursor-pointer text-ink-soft">{t('perAgentKey')}</summary>
+                <div className="mt-2 space-y-1">
                   <input
                     type="password"
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                    autoComplete="new-password"
+                    className={inputClass}
                     value={agentApiKey}
                     onChange={(e) => setAgentApiKey(e.target.value)}
                     placeholder={t('agentOwnedKey')}
                   />
-                </label>
-              </div>
-              <button
-                type="button"
-                disabled={pending || !agentId.trim()}
-                onClick={() =>
-                  run(
-                    () =>
-                      assignConnectorToAgent({
-                        connectorId: draft.connectorId,
-                        agentId,
-                        accessMode,
-                        ...(agentApiKey.trim() ? { apiKey: agentApiKey.trim() } : {}),
-                      }),
-                    selectedAgent ? t('assignedNamed', { name: selectedAgent.name }) : t('assigned'),
-                  )
-                }
-                className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-              >
-                {t('assign')}
-              </button>
-            </div>
-          ) : null}
-
-          {isActive && selectedStep === 'revoke' ? (
-            <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
-              <h4 className="mb-2 font-semibold text-coral">{t('decommissionTitle')}</h4>
-              <p className="text-xs text-ink-soft">{t('decommissionActiveBody')}</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <label className="text-xs sm:col-span-2">
-                  <span className="mb-1 block text-ink-soft">{t('reason')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommReason}
-                    onChange={(e) => setDecommReason(e.target.value)}
-                    placeholder={t('reasonActivePlaceholder')}
-                  />
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('criticality')}</span>
-                  <select
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommCriticality}
-                    onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
-                  >
-                    <option value="L1">L1</option>
-                    <option value="L2">L2 (dual-control)</option>
-                    <option value="L3">L3 (dual-control)</option>
-                  </select>
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">{t('secondApproverYou')}</span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
-                    value={decommApprover}
-                    onChange={(e) => setDecommApprover(e.target.value)}
-                    placeholder={t('userIdPlaceholder')}
-                  />
-                </label>
-              </div>
-              {!confirmDecomm ? (
-                <button
-                  type="button"
-                  className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
-                  onClick={() => setConfirmDecomm(true)}
-                >
-                  {t('decommission')}
-                </button>
-              ) : (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-semibold text-coral">
-                    {t('confirmDecomm')}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() =>
-                      run(async () => {
-                        const res = await decommissionConnector({
-                          draftId: draft.draftId,
-                          criticality: decommCriticality,
-                          approverId: decommApprover.trim() || undefined,
-                          reason: decommReason.trim() || undefined,
-                        })
-                        if (!res.success) return res
-                        setConfirmDecomm(false)
-                        return res
-                      }, t('connectorDecommissioned'))
-                    }
-                    className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-                  >
-                    {t('yesDecommission')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDecomm(false)}
-                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
-                  >
-                    {t('cancel')}
-                  </button>
+                  <p className="text-xs text-ink-soft">{t('perAgentKeyHint')}</p>
                 </div>
-              )}
+              </details>
+              <div className="flex justify-end">
+                <PillButton
+                  variant="primary"
+                  disabled={pending || !agentId.trim()}
+                  onClick={() =>
+                    run(
+                      () =>
+                        assignConnectorToAgent({
+                          connectorId: draft.connectorId,
+                          agentId,
+                          accessMode,
+                          ...(agentApiKey.trim() ? { apiKey: agentApiKey.trim() } : {}),
+                        }),
+                      selectedAgent ? t('assignedNamed', { name: selectedAgent.name }) : t('assigned'),
+                    )
+                  }
+                >
+                  {t('assign')}
+                </PillButton>
+              </div>
             </div>
-          ) : null}
-            </div>
+          )}
+        </DetailSection>
+      ) : null}
+
+      {isActive && showRevoke ? (
+        <div ref={revokeRef} className="space-y-3 rounded-2xl border border-coral/30 bg-coral/5 p-5">
+          <h3 className="text-[15px] font-semibold text-coral">{t('decommissionTitle')}</h3>
+          <p className="text-sm text-ink-soft">{t('decommissionActiveBody')}</p>
+          <label className="block text-sm">
+            <span className="mb-1 block font-medium text-ink">{t('reason')}</span>
+            <input
+              className={inputClass}
+              value={decommReason}
+              onChange={(e) => setDecommReason(e.target.value)}
+              placeholder={t('reasonActivePlaceholder')}
+            />
+          </label>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <PillButton
+              onClick={() => {
+                setShowRevoke(false)
+                setConfirmDecomm(false)
+              }}
+            >
+              {t('cancel')}
+            </PillButton>
+            {!confirmDecomm ? (
+              <PillButton variant="danger" onClick={() => setConfirmDecomm(true)}>
+                {t('hubTurnOff')}
+              </PillButton>
+            ) : (
+              <PillButton
+                variant="danger"
+                disabled={pending}
+                onClick={() =>
+                  run(async () => {
+                    const res = await decommissionConnector({
+                      draftId: draft.draftId,
+                      reason: decommReason.trim() || undefined,
+                    })
+                    if (!res.success) return res
+                    setConfirmDecomm(false)
+                    setShowRevoke(false)
+                    return res
+                  }, t('connectorDecommissioned'))
+                }
+              >
+                {t('yesDecommission')}
+              </PillButton>
+            )}
           </div>
         </div>
       ) : null}
+
+      <DetailSection title={t('hubInfoTitle')} flush>
+        <InfoRows
+          rows={[
+            { label: t('status'), value: statusText },
+            { label: t('hubInfoKind'), value: kindLabel },
+            {
+              label: t('hubInfoAuth'),
+              value: isUserDelegated ? t('hubAuthPerUser') : t('hubAuthShared'),
+            },
+            {
+              label: t('hubInfoSource'),
+              value: templateOutdated
+                ? `${sourceLabel} · ${t('newerTemplate', { version: latestTemplateVersion ?? '' })}`
+                : sourceLabel,
+            },
+            ...(privacyUi ? [{ label: t('hubInfoPrivacy'), value: privacyUi.label, title: privacyUi.title }] : []),
+            { label: t('hubInfoCreated'), value: new Date(draft.createdAt).toLocaleString('hu-HU') },
+          ]}
+        />
+      </DetailSection>
+
+      <AdvancedDisclosure title={t('hubAdvanced')} hint={t('hubAdvancedHint')}>
+        {cfg ? (
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <h4 className="mb-1 font-medium">{t('egressHosts')}</h4>
+              <ul className="font-mono text-xs text-ink-soft">
+                {cfg.egressHosts.map((h) => (
+                  <li key={h}>{h}</li>
+                ))}
+              </ul>
+              <h4 className="mb-1 mt-3 font-medium">{t('hubAdvancedAuth')}</h4>
+              <p className="text-xs text-ink-soft">
+                {cfg.authMode} · {cfg.auth.type}
+                {cfg.auth.headerName ? ` · ${cfg.auth.headerName}` : ''}
+                {cfg.auth.secretAliasSuggested ? (
+                  <>
+                    <br />
+                    secret-alias: <code>{cfg.auth.secretAliasSuggested}</code>
+                  </>
+                ) : null}
+              </p>
+            </div>
+            <div>
+              <h4 className="mb-1 font-medium">{t('hubAdvancedScopes')}</h4>
+              <div className="flex flex-wrap gap-1">
+                {cfg.scopesSuggested.length === 0 ? (
+                  <span className="text-xs text-ink-soft">—</span>
+                ) : (
+                  cfg.scopesSuggested.map((scope) => (
+                    <Badge key={scope} tone="neutral">
+                      {scope}
+                    </Badge>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        ) : delegatedOauthView ? (
+          <ul className="space-y-1 font-mono text-xs text-ink-soft">
+            <li>provider: {delegatedOauthView.provider}</li>
+            <li>authUrl: {delegatedOauthView.authUrl}</li>
+            <li>tokenUrl: {delegatedOauthView.tokenUrl}</li>
+            {delegatedOauthView.userInfoUrl ? <li>userInfoUrl: {delegatedOauthView.userInfoUrl}</li> : null}
+            <li>
+              clientId:{' '}
+              {delegatedOauthView.clientId?.trim() ? delegatedOauthView.clientId : t('platformGoogleOauth')}
+            </li>
+            <li>scopeTransform: {delegatedOauthView.scopeTransform}</li>
+          </ul>
+        ) : draft.httpApiView ? (
+          <div className="space-y-1 text-xs text-ink-soft">
+            <p>{t('httpApiViaEditor')}</p>
+            {draft.httpApiView.baseUrl ? (
+              <p>
+                Base URL: <code>{draft.httpApiView.baseUrl}</code>
+              </p>
+            ) : null}
+            {draft.httpApiView.authScheme ? (
+              <p>
+                Auth: {draft.authMode} · {draft.httpApiView.isDelegated ? 'oauth2' : draft.httpApiView.authScheme}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-coral">{t('unreadableConfig')}</p>
+        )}
+
+        <p className="text-xs text-ink-soft">
+          {t('sourceHash', { type: draft.sourceType })} <code className="break-all">{draft.sourceHash}</code>
+          {provenance?.templateKey ? (
+            <>
+              <br />
+              {t('templateLabel', { key: provenance.templateKey })} v{provenance.templateVersion ?? '?'}
+              {provenance.materializedAt ? ` · ${t('materialized', { at: provenance.materializedAt })}` : ''}
+            </>
+          ) : null}
+        </p>
+
+        {isActive ? (
+          <div className="rounded-xl border border-ink/10 p-4">
+            <h4 className="mb-1 font-medium">{t('editFix')}</h4>
+            <p className="mb-3 text-xs text-ink-soft">{t('cannotEditLive')}</p>
+            <PillButton
+              disabled={pending}
+              onClick={() => run(() => reopenConnector({ draftId: draft.draftId }), t('reopened'))}
+            >
+              {t('reopenDraft')}
+            </PillButton>
+          </div>
+        ) : null}
+
+        {!isActive && cfg ? (
+          <div className="rounded-xl border border-ink/10 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="font-medium">{t('editConfig')}</h4>
+              {!editingConfig ? <PillButton onClick={startConfigEdit}>{t('edit')}</PillButton> : null}
+            </div>
+            {editingConfig ? (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-honey">{t('editResetsGates')}</p>
+                <textarea
+                  className="h-64 w-full rounded-xl border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+                  value={configDraft}
+                  onChange={(e) => setConfigDraft(e.target.value)}
+                />
+                <div className="flex flex-wrap justify-end gap-2">
+                  <PillButton onClick={() => setEditingConfig(false)}>{t('cancel')}</PillButton>
+                  <PillButton variant="primary" disabled={pending} onClick={saveConfigEdit}>
+                    {t('saveConfig')}
+                  </PillButton>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {!isActive && !templateFastPath && !isArchived && draft.reviewStatus !== 'rejected' ? (
+          <div className="flex justify-end">
+            <PillButton
+              variant="danger"
+              disabled={pending}
+              onClick={() =>
+                run(() => reviewConnectorDraft({ draftId: draft.draftId, decision: 'reject' }), t('rejected'))
+              }
+            >
+              {t('reject')}
+            </PillButton>
+          </div>
+        ) : null}
+      </AdvancedDisclosure>
     </div>
+  )
+}
+
+/** Egy bekapcsolás előtti ellenőrzési lépés: pipa / hiba jelzés, rövid magyarázat, gomb. */
+function CheckRow({
+  done,
+  failed,
+  label,
+  hint,
+  action,
+  children,
+}: {
+  done: boolean
+  failed?: boolean
+  label: string
+  hint: string
+  action?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <li className="px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <span
+          aria-hidden
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+            done ? 'bg-sage text-card' : failed ? 'bg-coral text-card' : 'bg-ink/10 text-ink-soft'
+          }`}
+        >
+          {done ? '✓' : failed ? '!' : '·'}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[15px] text-ink">{label}</span>
+          <span className={`block text-xs ${failed ? 'text-coral' : 'text-ink-soft'}`}>{hint}</span>
+        </span>
+        {action}
+      </div>
+      {children}
+    </li>
   )
 }

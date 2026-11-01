@@ -16,6 +16,7 @@ import {
   GENERIC_SCOPE_DENIED_REASON,
   registeredDelegatedProviderTypes,
 } from './delegated-oauth-registry'
+import type { TenantLanguage } from '@/lib/tenant-language'
 
 /**
  * A grant-kapu okai. A `connector_scope_not_granted` a kanonikus scope-hiány;
@@ -48,6 +49,10 @@ export type OAuthReturnTo =
   | {
       /** MCP-kliensből indított consent — platform-login nélkül a done page-re. */
       kind: 'mcp'
+    }
+  | {
+      /** #1028: tenant-postafiók bekötése az admin Postafiókok oldaláról. */
+      kind: 'mailboxes'
     }
 
 export type ConnectorGrantNeededCard = {
@@ -85,7 +90,8 @@ export function isAuthorizationLinkReason(reason: string | null | undefined): bo
   return (
     isConnectorGrantNeededReason(reason) ||
     reason === 'google_drive_auth_failed' ||
-    reason === 'gmail_auth_failed'
+    reason === 'gmail_auth_failed' ||
+    reason === 'mcp_auth_failed'
   )
 }
 
@@ -154,6 +160,9 @@ export function oauthReturnPath(
   if (returnTo.kind === 'mcp') {
     return withQuery(MCP_OAUTH_DONE_PATH, result?.error ? { error: result.error } : { connected: '1' })
   }
+  if (returnTo.kind === 'mailboxes') {
+    return withQuery(TENANT_MAILBOXES_PATH, result?.error ? { error: result.error } : { connected: '1' })
+  }
 
   // A feltételes ágak együtt union típust kapnak (az egymás ágában nem létező
   // kulcsok opcionálisak lennének), miközben a query builder csak tényleges
@@ -205,7 +214,7 @@ function withQuery(pathname: string, extra: Record<string, string>): string {
 export function isSafeOAuthReturnTo(value: unknown): value is OAuthReturnTo {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const rec = value as Record<string, unknown>
-  if (rec.kind === 'mcp') return true
+  if (rec.kind === 'mcp' || rec.kind === 'mailboxes') return true
   if (rec.kind !== 'conversation' && rec.kind !== 'ticket') return false
   if (typeof rec.id !== 'string' || !isUuid(rec.id)) return false
   if (rec.agentId !== undefined && (typeof rec.agentId !== 'string' || !isUuid(rec.agentId))) {
@@ -221,6 +230,8 @@ function isUuid(value: string): boolean {
   )
 }
 
+export const TENANT_MAILBOXES_PATH = '/control-plane/provisioning/agentmail'
+
 export const CONNECTOR_GRANT_NEEDED_CHAT_PROMPT =
   'A felhasználó megadta a kért fiók-hozzáférést (OAuth). ' +
   'A korábban elutasított delegált eszközök most már futtathatók. ' +
@@ -229,6 +240,29 @@ export const CONNECTOR_GRANT_NEEDED_CHAT_PROMPT =
 
 export const CONNECTOR_GRANT_NEEDED_TICKET_NOTE =
   'Hozzáférés megadva — folytasd a feladatot a korábban elutasított külső fiókos lépéssel; ne kezdd elölről.'
+
+/**
+ * #717 B réteg: a fenti két modellnek szóló szöveg a tenant nyelvén.
+ * Alapértelmezés `hu` = a fenti konstansok.
+ */
+export function connectorGrantNeededChatPrompt(language: TenantLanguage = 'hu'): string {
+  if (language === 'en') {
+    return (
+      'The user has granted the requested account access (OAuth). ' +
+      'The previously refused delegated tools can now run. ' +
+      'Continue the task: call the needed tool again and finish what you started. ' +
+      "Don't ask for access again, don't say the account is not connected."
+    )
+  }
+  return CONNECTOR_GRANT_NEEDED_CHAT_PROMPT
+}
+
+export function connectorGrantNeededTicketNote(language: TenantLanguage = 'hu'): string {
+  if (language === 'en') {
+    return 'Access granted — continue the task with the previously refused external-account step; do not start over.'
+  }
+  return CONNECTOR_GRANT_NEEDED_TICKET_NOTE
+}
 
 export function readConnectorGrantNeedsFromPayload(payload: unknown): ConnectorGrantNeededCard[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return []

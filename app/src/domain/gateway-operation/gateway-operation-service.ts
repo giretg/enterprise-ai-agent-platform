@@ -1,3 +1,4 @@
+import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, isPrivilegedAgentReader, type AgentDefinition } from '@/domain/agent-definition'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import {
@@ -13,8 +14,25 @@ import {
 import { executeGoogleDriveTool } from '@/domain/enterprise-tools/handlers/google-drive'
 import { executeHttpApiTool } from '@/domain/enterprise-tools/handlers/http-api'
 import { executeGmailTool } from '@/domain/enterprise-tools/handlers/gmail'
+import { executeMailTool } from '@/domain/mail/providers'
+import {
+  checkMcpCallGate,
+  executeMcpTool as defaultExecuteMcpTool,
+  mcpErrorCode,
+  type ExecuteMcpToolInput,
+  type McpGateDeps,
+} from '@/domain/enterprise-tools/handlers/mcp'
+import { auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
+import type { McpCallResult } from '@/domain/connector/mcp-client'
+import { mcpResultForModel } from '@/domain/connector/mcp-tools'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
 import { HttpApiError } from '@/domain/connector/http-api-client'
+import {
+  TENANT_MAILBOX_DISCONNECTED,
+  connectorUsesGrantToken,
+  tenantMailboxOf,
+} from '@/domain/connector-grant/tenant-mailbox'
+import { tenantLanguageOrDefault, type TenantLanguage } from '@/lib/tenant-language'
 import {
   authorizeToolCall,
   asUuid,
@@ -32,7 +50,11 @@ import {
   isEnterpriseDriveWriteTool,
   isEnterpriseGmailWriteTool,
   isEnterpriseHttpWriteTool,
+  isEnterpriseMailWriteTool,
   isEnterpriseWriteTool,
+  KB_WIKI_WRITE_TOOL,
+  kbWikiWriteOperationArgsSchema,
+  MCP_CALL_TOOL,
   schemaForEnterpriseTool,
 } from '@/domain/enterprise-tools/tool-definitions'
 import {
@@ -47,8 +69,10 @@ import type {
   GatewayOperationView,
 } from './types'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
+import { redactMetadata } from '@/lib/audit/kb-private-redaction'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
+import { isPrivateKnowledgeBase } from '@/lib/wiki-access'
 
 export type GatewayActor = ToolCallPrincipal
 
@@ -56,8 +80,9 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
-  DefinitionPinDeps & {
+export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
+  DefinitionPinDeps &
+  McpGateDeps & {
   loadDefinition: (input: {
     tenantId: string
     definitionId: string
@@ -95,6 +120,7 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     args: Record<string, unknown>,
     accessToken: string,
   ) => Promise<unknown>
+  executeMailTool?: typeof executeMailTool
   executeHttpApiTool?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -102,19 +128,69 @@ export type GatewayOperationServiceDeps = AuthorizeToolCallDeps &
     accessToken?: string,
     actingUser?: { id: string; email: string; tenantId: string | null } | null,
     agent?: { id: string; version?: number },
+    /** #717: a modellnek szóló http_api hintek nyelve. */
+    language?: TenantLanguage,
+    allowedEgressHosts?: string[],
   ) => Promise<unknown>
+  /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
+  resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
+  resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
   resolveActingUser?: (input: { userId: string }) => Promise<{ id: string; email: string } | null>
   startAuthorization?: StartDelegatedAuthorization
   recordCreatedDriveFiles?: (input: {
     grantId: string
     files: Array<{ fileId: string; name: string; mimeType: string }>
   }) => Promise<void>
+  /** #395: külső MCP-hívás jóváhagyás után; tesztben cserélhető. */
+  executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
   commitProjectMemory?: (input: {
     tenantId: string
     agentId: string
     args: Record<string, unknown>
   }) => Promise<MemoryView>
+  /**
+   * #943 `kb_wiki_write`: a change-set a wikiben él, a gateway-sor csak a kártya.
+   * Hiányában a wiki-műveletről senki nem dönthet (fail-closed).
+   */
+  wikiChangeSets?: {
+    /** D4/D13: csak a wiki gazdája; privátnál admin sem. */
+    canDecide(input: { actor: GatewayActor; changeSetId: string }): Promise<boolean>
+    apply(input: {
+      requester: GatewayActor
+      definition: AgentDefinition
+      changeSetId: string
+    }): Promise<{ ok: true; result: unknown } | { ok: false; code: string }>
+    reject(input: { tenantId: string; changeSetId: string; actorUserId: string | null }): Promise<void>
+  }
   audit?: AuditSink
+}
+
+function wikiChangeSetIdOf(row: { toolName: string; argsJson: unknown }): string | null {
+  if (row.toolName !== KB_WIKI_WRITE_TOOL) return null
+  return asUuid(asRecord(row.argsJson).changeSetId) ?? null
+}
+
+/** D13: privát wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
+function wikiApplyResultJson(connector: { visibility?: unknown }, result: unknown): unknown {
+  if (!isPrivateKnowledgeBase(connector)) return result
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return { privateKb: true }
+  const row = result as Record<string, unknown>
+  const pageCount = Array.isArray(row.pages) ? row.pages.length : undefined
+  const rest = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'pages'))
+  return { ...redactMetadata(rest), ...(pageCount !== undefined ? { pageCount } : {}), privateKb: true }
+}
+
+/** #943: a wiki-kártyáról csak a change-set rögzített jóváhagyó-köre dönthet. */
+async function wikiDecisionError(
+  deps: GatewayOperationServiceDeps,
+  row: GatewayOperationRecord,
+  actor: GatewayActor,
+): Promise<GatewayOperationErr | null> {
+  if (row.toolName !== KB_WIKI_WRITE_TOOL) return null
+  const changeSetId = wikiChangeSetIdOf(row)
+  if (!changeSetId || !deps.wikiChangeSets) return err('approver_not_authorized')
+  const allowed = await deps.wikiChangeSets.canDecide({ actor, changeSetId })
+  return allowed ? null : err('approver_not_authorized')
 }
 
 const MESSAGES: Record<string, string> = {
@@ -222,7 +298,8 @@ export function toGatewayOperationView(row: GatewayOperationRecord): GatewayOper
     designatedApproverUserId: row.designatedApproverUserId,
     designatedApproverName: row.designatedApproverName,
     errorCode: row.errorCode,
-    result: row.status === 'succeeded' ? row.resultJson : null,
+    // Failed HTTP writes may still carry the upstream body (e.g. 412 + ETag) for retry.
+    result: row.status === 'succeeded' || row.status === 'failed' ? row.resultJson : null,
     approval: row.approval
       ? {
           decision: row.approval.decision,
@@ -373,7 +450,11 @@ async function loadAuthorizedWrite(
     ...ids,
   })
   const memoryWrite = isProjectMemoryWriteTool(toolName)
-  if (!memoryWrite && !isEnterpriseWriteTool(toolName)) return fail('tool_not_configured')
+  // mcp_call: a kockázati besorolás (write/danger) küldte ide az invokeEnterpriseTool (#395 §3.3).
+  const wikiWrite = toolName === KB_WIKI_WRITE_TOOL
+  if (!memoryWrite && !wikiWrite && !isEnterpriseWriteTool(toolName) && toolName !== MCP_CALL_TOOL) {
+    return fail('tool_not_configured')
+  }
 
   const definitionId = asUuid(args.definitionId)
   if (!definitionId) return fail('definition_not_found')
@@ -410,7 +491,11 @@ async function loadAuthorizedWrite(
     return fail('idempotency_key_required', ids)
   }
 
-  const schema = memoryWrite ? schemaForProjectWorkTool(toolName) : schemaForEnterpriseTool(toolName)
+  const schema = memoryWrite
+    ? schemaForProjectWorkTool(toolName)
+    : wikiWrite
+      ? kbWikiWriteOperationArgsSchema
+      : schemaForEnterpriseTool(toolName)
   if (!schema) return fail('tool_not_configured', ids)
   const parsed = schema.safeParse(args)
   if (!parsed.success) return fail('invalid_args', ids)
@@ -435,11 +520,17 @@ async function loadAuthorizedWrite(
     return fail(authorized.reason, { ...ids, connectorId: authorized.connectorId })
   }
 
+  // #1030: feloldott fiók beégetése — HITL és execute ugyanazt a postafiókot lássa.
+  const stampedArgs =
+    authorized.resolvedMailAccount && isEnterpriseMailWriteTool(toolName)
+      ? { ...parsedArgs, account: authorized.resolvedMailAccount }
+      : parsedArgs
+
   return {
     ok: true,
     definition,
     connectorId: authorized.connectorId,
-    parsedArgs,
+    parsedArgs: stampedArgs,
   }
 }
 
@@ -595,6 +686,7 @@ export type GatewayPendingOperationRow = GatewayPendingOperation & {
   connectorName: string | null
   connectorIconDataUrl: string | null
   connectorIconProvider: string
+  endpointDescription: string | null
 }
 
 export type GatewayOperationHistoryRow = GatewayPendingOperationRow
@@ -640,9 +732,11 @@ export async function rejectGatewayOperation(
   if (!operationId) return err('operation_not_found')
 
   const decidedAt = new Date()
+  let rejectedChangeSetId: string | null = null
   const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
-    const denied = pendingDecisionError(row, input.tenantId, input.actor)
+    const denied = pendingDecisionError(row, input.tenantId, input.actor) ?? (await wikiDecisionError(deps, row, input.actor))
     if (denied) return denied
+    rejectedChangeSetId = wikiChangeSetIdOf(row)
     const updated = await save({
       status: 'rejected',
       approval: {
@@ -672,6 +766,14 @@ export async function rejectGatewayOperation(
         ...(input.reason ? { reasonHash: computeDiffHash(input.reason) } : {}),
       },
     })
+    if (rejectedChangeSetId && deps.wikiChangeSets) {
+      // A change-set is elutasított lesz, a lezárt tálca-tétel visszakerül.
+      await deps.wikiChangeSets.reject({
+        tenantId: input.tenantId,
+        changeSetId: rejectedChangeSetId,
+        actorUserId: input.actor.userId,
+      })
+    }
   }
   return claimed
 }
@@ -691,7 +793,7 @@ export async function approveGatewayOperation(
 
   const decidedAt = new Date()
   const claimed = await deps.operations.withLockedOperation(operationId, async (row, save) => {
-    const denied = pendingDecisionError(row, input.tenantId, input.actor)
+    const denied = pendingDecisionError(row, input.tenantId, input.actor) ?? (await wikiDecisionError(deps, row, input.actor))
     if (denied) return denied
     await save({
       status: 'approved',
@@ -746,10 +848,21 @@ async function executeApprovedOperation(
 ): Promise<GatewayOperationRecord> {
   const args = asRecord(operation.argsJson)
 
-  const fail = async (code: string) => {
+  const fail = async (code: string, resultJson?: unknown) => {
+    const changeSetId = wikiChangeSetIdOf(operation)
+    if (changeSetId && deps.wikiChangeSets) {
+      // A kártya innentől nem `awaiting_approval`, Control Plane már nem rejectelhet.
+      // A tálca-tétel `processed` maradna, ha a change-setet nem zárjuk le itt.
+      await deps.wikiChangeSets.reject({
+        tenantId: operation.tenantId,
+        changeSetId,
+        actorUserId: null,
+      })
+    }
     const updated = await deps.operations.update(operation.id, {
       status: 'failed',
       errorCode: code,
+      ...(resultJson !== undefined ? { resultJson } : {}),
     })
     console.info('gateway.operation.failed', {
       operationId: operation.id,
@@ -776,7 +889,14 @@ async function executeApprovedOperation(
       },
       tenantId: operation.tenantId,
     })
-    return updated ?? { ...operation, status: 'failed' as GatewayOperationStatus, errorCode: code }
+    return (
+      updated ?? {
+        ...operation,
+        status: 'failed' as GatewayOperationStatus,
+        errorCode: code,
+        ...(resultJson !== undefined ? { resultJson } : {}),
+      }
+    )
   }
 
   const live = await deps.resolveRequester({
@@ -859,16 +979,60 @@ async function executeApprovedOperation(
     args,
   })
   if (!authorized.allowed) return fail(authorized.reason)
+  // #1030: sorba állításkor rögzített postafiók — primary-váltás ne küldjön máshonnan.
+  if (
+    isEnterpriseMailWriteTool(operation.toolName) &&
+    operation.connectorId &&
+    authorized.connectorId !== operation.connectorId
+  ) {
+    return fail('mailbox_changed')
+  }
 
-  const delegated = authorized.connector.authMode === 'user_delegated'
-  const grant = delegated
-    ? await deps.findActiveGrant({
-        tenantId: operation.tenantId,
-        connectorId: authorized.connectorId,
-        userId: operation.principalUserId,
-      })
-    : null
-  if (delegated && !grant) return fail('connector_grant_missing')
+  if (operation.toolName === KB_WIKI_WRITE_TOOL) {
+    const changeSetId = wikiChangeSetIdOf(operation)
+    if (!changeSetId || !deps.wikiChangeSets) return fail('tool_not_configured')
+    let applied: Awaited<ReturnType<NonNullable<GatewayOperationServiceDeps['wikiChangeSets']>['apply']>>
+    try {
+      applied = await deps.wikiChangeSets.apply({ requester, definition, changeSetId })
+    } catch {
+      return fail('tool_execution_failed')
+    }
+    if (!applied.ok) return fail(applied.code)
+    const resultJson = wikiApplyResultJson(authorized.connector, applied.result)
+    const updated = await deps.operations.update(operation.id, {
+      status: 'succeeded',
+      resultJson,
+      errorCode: null,
+    })
+    const payload = {
+      operationId: operation.id,
+      connectorId: authorized.connectorId,
+      tenantId: operation.tenantId,
+      changeSetId,
+    }
+    console.info('gateway.operation.succeeded', payload)
+    await writeAudit(deps.audit, {
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'gateway.operation.succeeded',
+      targetType: 'gateway_operation',
+      targetId: operation.id,
+      modelUsed: null,
+      inputRef: operation.toolName,
+      outputRef: changeSetId,
+      policyDecision: 'allowed',
+      metadata: payload,
+      tenantId: operation.tenantId,
+    })
+    return updated ?? { ...operation, status: 'succeeded', resultJson, errorCode: null }
+  }
+
+  // #1028: tenant-postafióknál a grant a tenanté, nem a kérelmezőé.
+  const delegated = connectorUsesGrantToken(authorized.connector)
+  const mailbox = tenantMailboxOf(authorized.connector)
+  const grant = delegated ? authorized.grant ?? null : null
+  if (delegated && !grant) return fail(mailbox ? TENANT_MAILBOX_DISCONNECTED : 'connector_grant_missing')
 
   if (grant && isEnterpriseDriveWriteTool(operation.toolName)) {
     try {
@@ -895,18 +1059,35 @@ async function executeApprovedOperation(
         tenantId: operation.tenantId,
       })
     } catch {
+      if (mailbox) return fail(TENANT_MAILBOX_DISCONNECTED)
       return fail(
         authorized.connector.type === 'http_api'
           ? 'http_api_error'
-          : authorized.connector.type === 'gmail'
+          : authorized.connector.type === 'mcp'
+            ? 'mcp_auth_failed'
+            : authorized.connector.type === 'gmail'
             ? 'gmail_auth_failed'
             : 'google_drive_auth_failed',
       )
     }
   }
 
+  if (operation.toolName === MCP_CALL_TOOL) {
+    return executeApprovedMcpCall(deps, operation, args, authorized.connector, accessToken, fail)
+  }
+
   try {
-    const result = isEnterpriseHttpWriteTool(operation.toolName)
+    const result = isEnterpriseMailWriteTool(operation.toolName)
+      ? await (deps.executeMailTool ?? executeMailTool)({
+          toolName: operation.toolName,
+          args,
+          connector: authorized.connector,
+          accessToken,
+          account: typeof args.account === 'string' && args.account.trim()
+            ? args.account.trim()
+            : authorized.connector.name || authorized.connector.id,
+        })
+      : isEnterpriseHttpWriteTool(operation.toolName)
       ? await (deps.executeHttpApiTool ?? executeHttpApiTool)(
           operation.toolName,
           args,
@@ -914,6 +1095,11 @@ async function executeApprovedOperation(
           accessToken,
           await resolveHttpActingUser(deps, operation.principalUserId, operation.tenantId),
           { id: definition.agentId, version: definition.version },
+          // #717: a hintek/hibák a tenant nyelvén.
+          await tenantLanguageOrDefault(deps.resolveTenantLanguage, operation.tenantId),
+          deps.resolveEgressAllowlist
+            ? await deps.resolveEgressAllowlist(authorized.connector.tenantId)
+            : undefined,
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
@@ -922,6 +1108,18 @@ async function executeApprovedOperation(
           args,
           accessToken ?? '',
         )
+    // Sync MCP path marks `ok: false` as isError; approved execute must not claim success
+    // when If-Match/upstream rejected the write (e.g. 412) without throwing.
+    if (
+      isEnterpriseHttpWriteTool(operation.toolName) &&
+      result !== null &&
+      typeof result === 'object' &&
+      'ok' in result &&
+      (result as { ok: unknown }).ok === false
+    ) {
+      return fail('http_api_error', result)
+    }
+    if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: result })) return fail(TENANT_MAILBOX_DISCONNECTED)
     const updated = await deps.operations.update(operation.id, {
       status: 'succeeded',
       resultJson: result,
@@ -943,6 +1141,7 @@ async function executeApprovedOperation(
       connectorId: authorized.connectorId,
       tenantId: operation.tenantId,
       ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
+      ...(mailbox ? { mailbox: grant?.accountLabel ?? mailbox.address ?? null, requestedBy: operation.principalUserId } : {}),
     }
     console.info('gateway.operation.succeeded', payload)
     await writeAudit(deps.audit, {
@@ -961,14 +1160,89 @@ async function executeApprovedOperation(
     })
     return updated ?? { ...operation, status: 'succeeded', resultJson: result, errorCode: null }
   } catch (error) {
+    if (await expireRejectedTenantMailbox(deps, { connector: authorized.connector, grantId: grant?.id, userId: operation.principalUserId, tenantId: operation.tenantId, outcome: error })) return fail(TENANT_MAILBOX_DISCONNECTED)
     return fail(mapWriteError(error))
   }
+}
+
+/**
+ * #395: jóváhagyott `mcp_call`. A kaput újra lefuttatjuk — a jóváhagyás óta
+ * visszavont domain vagy újrajóváhagyásra váró eszköz nem futhat. Timeout
+ * esetén nincs újrapróbálás, a kimenetel bizonytalan (D11).
+ */
+async function executeApprovedMcpCall(
+  deps: GatewayOperationServiceDeps,
+  operation: GatewayOperationRecord,
+  args: Record<string, unknown>,
+  connector: LiveConnectorRow,
+  accessToken: string | undefined,
+  fail: (code: string) => Promise<GatewayOperationRecord>,
+): Promise<GatewayOperationRecord> {
+  const tool = typeof args.tool === 'string' ? args.tool : ''
+  const gate = await checkMcpCallGate(deps, { connector, tool })
+  if (!gate.ok) return fail(gate.code)
+  const serverRequests = new Set<string>()
+  const audit = () =>
+    auditMcpServerRequests(
+      deps,
+      { userId: operation.principalUserId, tenantId: operation.tenantId },
+      operation.agentId,
+      connector.id,
+      serverRequests,
+    )
+  let result: McpCallResult
+  try {
+    result = await (deps.executeMcpTool ?? defaultExecuteMcpTool)({
+      connector,
+      accessToken,
+      tool,
+      arguments: asRecord(args.arguments),
+      allowedHosts: gate.allowedHosts,
+      onServerRequest: (method) => serverRequests.add(method),
+    })
+  } catch (error) {
+    await audit()
+    return fail(mcpErrorCode(error, gate.risk))
+  }
+  await audit()
+  if (result.isError) return fail('mcp_tool_error')
+  const resultJson = mcpResultForModel(result)
+  const updated = await deps.operations.update(operation.id, {
+    status: 'succeeded',
+    resultJson,
+    errorCode: null,
+  })
+  const payload = {
+    operationId: operation.id,
+    connectorId: connector.id,
+    tenantId: operation.tenantId,
+    mcpTool: tool,
+    risk: gate.risk,
+  }
+  console.info('gateway.operation.succeeded', payload)
+  await writeAudit(deps.audit, {
+    actorType: 'system',
+    actorId: null,
+    agentVersion: null,
+    action: 'gateway.operation.succeeded',
+    targetType: 'gateway_operation',
+    targetId: operation.id,
+    modelUsed: null,
+    inputRef: operation.toolName,
+    outputRef: tool,
+    policyDecision: 'allowed',
+    metadata: payload,
+    tenantId: operation.tenantId,
+  })
+  return updated ?? { ...operation, status: 'succeeded', resultJson, errorCode: null }
 }
 
 function mapWriteError(error: unknown): string {
   if (error instanceof GoogleDriveWriteAccessError) return 'drive_write_not_allowed'
   if (error instanceof GoogleDriveApiAuthError) return 'google_drive_auth_failed'
-  if (error instanceof GoogleDriveApiError) return 'google_drive_api_error'
+  if (error instanceof GoogleDriveApiError) {
+    return error.code === 'file_modified' ? 'drive_file_modified' : 'google_drive_api_error'
+  }
   if (error instanceof GmailApiAuthError) return 'gmail_auth_failed'
   if (error instanceof GmailApiError) return 'gmail_api_error'
   if (error instanceof HttpApiError) return error.code === 'missing_api_key' ? 'missing_api_key' : 'http_api_error'

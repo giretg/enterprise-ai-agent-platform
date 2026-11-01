@@ -31,6 +31,16 @@ env:
     secret: PLATFORM_DIRECT_URL
     availability:
       - BUILD
+  # 2026-09-23 health-check: a kód többször élesbe ment a hozzá tartozó migráció
+  # nélkül (09-17 agent_turns, 09-19/20 connectors, 09-22 skills + agents) → P2022,
+  # 500-as MCP-hívások, amíg valaki kézzel le nem futtatta a `migrate deploy`-t.
+  # "1" = a build a `next build` ELŐTT lefuttatja a függő migrációkat (DIRECT_URL);
+  # ha a migráció elbukik, a build is elbukik, a régi revízió marad élesben.
+  # Visszaállítás: "0" (vagy a blokk törlése) → a régi, kézi migrálás.
+  - variable: PRISMA_MIGRATE_ON_BUILD
+    value: "1"
+    availability:
+      - BUILD
   - variable: DATABASE_URL_TEST
     secret: DATABASE_URL_TEST
     availability:
@@ -41,6 +51,11 @@ env:
     availability:
       - BUILD
       - RUNTIME
+  # Hermes Managed Client: gateway-JWT, rövid életű céges modellhozzáférés.
+  - variable: MODEL_GATEWAY_JWT_KEY
+    secret: MODEL_GATEWAY_JWT_KEY
+    availability:
+      - RUNTIME
   - variable: GEMINI_API_KEY
     secret: GEMINI_API_KEY
   - variable: OPENROUTER_API_KEY
@@ -49,6 +64,16 @@ env:
     value: "https://openrouter.ai/api/v1"
   - variable: OPENROUTER_APP_TITLE
     value: "Enterprise AI Agent Platform"
+  # #1004 platform-chat: a worker (Cloud Run) címe és a vele közös chat-token titok.
+  # Az App Hosting EZT a gyökér-fájlt olvassa, nem az app/apphosting.yaml-t.
+  - variable: PLATFORM_CHAT_WORKER_URL
+    value: "https://platform-chat-j7drz42rma-ez.a.run.app"
+    availability:
+      - RUNTIME
+  - variable: PLATFORM_CHAT_TOKEN_SECRET
+    secret: PLATFORM_CHAT_TOKEN_SECRET
+    availability:
+      - RUNTIME
   - variable: CLERK_SECRET_KEY
     secret: CLERK_SECRET_KEY
   - variable: CLERK_WEBHOOK_SIGNING_SECRET
@@ -62,7 +87,8 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
-  # Cloud Scheduler → POST /api/v1/internal/dispatch-cycle (x-dispatcher-token).
+  # Cloud Scheduler → POST /api/v1/internal/dispatch-cycle és
+  # POST /api/v1/internal/ai-audit-retention (x-dispatcher-token).
   - variable: DISPATCHER_CONTROL_TOKEN
     secret: DISPATCHER_CONTROL_TOKEN
     availability:

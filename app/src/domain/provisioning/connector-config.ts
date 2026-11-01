@@ -7,6 +7,7 @@
  */
 import { z } from 'zod'
 import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
+import { parseGoogleAccountBindingConfig } from '@/domain/connector/google-account-binding'
 import {
   PRIVACY_UNLISTED_DEFAULTS,
   connectorFieldsPrivacySchema,
@@ -151,8 +152,7 @@ const connectorConfigObjectSchema = z.object({
   /**
    * Ha true: futásidőben CSAK a `proposedTools`-ban felsorolt (method+path) hívható
    * (endpoint-allowlist, WP-3/B3). A runtime http-api-kliens ezt a `restrictToEndpoints`
-   * mezőt olvassa. GitHub repo-scope connectoron tudatosan nem állítjuk (a repo-határ
-   * saját őrrel véd), ezért opcionális.
+   * mezőt olvassa. A repository- és fiókkorlátok ezzel együtt érvényesülnek.
    */
   restrictToEndpoints: z.boolean().optional(),
   /** Sablonozható fejlécek minden hívásra (pl. X-Agent-Id, X-Connector-Call-Id). */
@@ -160,6 +160,17 @@ const connectorConfigObjectSchema = z.object({
   /** CRM acting user fallback, ha a runtime actingUser.email hiányzik (Ostorosbor). */
   defaultActingUserEmail: z.string().email().optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
+  /**
+   * Tenant-szintű Google-fiókkötés (Google Ads / Analytics / Search Console): MELYIK cégfiókot
+   * érheti el a konnektor. Futásidejű határ is. A platform OAuth app és a developer token NEM
+   * ide tartozik (PlatformSetting), a felhasználó saját belépése pedig a ConnectorGrant.
+   */
+  googleAccountBinding: z
+    .object({
+      accountIds: z.array(z.string().min(1)).min(1),
+      managerAccountId: z.string().min(1).optional(),
+    })
+    .optional(),
   /** XML-alapú API adaptere (Számlázz.hu Agent, NAV Online Számla); hiányában JSON REST. */
   protocol: z.enum(HTTP_API_PROTOCOLS).optional(),
   /** NAV Online Számla: a lekérdező adózó 8 jegyű törzsszáma. */
@@ -207,6 +218,17 @@ const connectorConfigObjectSchema = z.object({
  * + `tokenize` tiltás (§5.4) csak itt kényszeríthető ki.
  */
 export const connectorConfigSchema = connectorConfigObjectSchema.superRefine((cfg, ctx) => {
+  if (cfg.googleAccountBinding) {
+    try {
+      parseGoogleAccountBindingConfig(cfg.provider, cfg.googleAccountBinding)
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['googleAccountBinding'],
+        message: error instanceof Error ? error.message : 'Invalid Google account binding',
+      })
+    }
+  }
   if (!cfg.fields) return
   refineTokenizeReversibility(cfg.fields, readConnectorEntityTypes(cfg), ctx, ['fields'])
 })

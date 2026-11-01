@@ -2,29 +2,24 @@ import { redirect } from 'next/navigation'
 import { getTranslations } from 'next-intl/server'
 import { getAuthContext } from '@/auth/context'
 import { Card } from '@/components/ui/shell'
-import { SignupNoticeDialog } from '@/components/auth/signup-notice-dialog'
 import {
   CONTROL_PLANE_PLATFORM_HOME,
   DEFAULT_AGENT_WORKSPACE_FALLBACK,
+  ONBOARDING_PATH,
 } from '@/lib/control-plane-entry'
 
 /**
- * GET /me "várj a jóváhagyásra" nézet (Feature-spec IAM-RBAC §7/B, §6).
- * `pending` + `role = NULL` fiók csak ezt látja — admin-jóváhagyásig semmilyen
- * védett végponthoz nem fér (N-IAM-3).
+ * Várakozó / felfüggesztett nézet. #830 D6 óta a meghívó nélküli új fiók NEM ide
+ * jön, hanem az onboardingra (saját cég vagy meghívó elfogadása). Ez a képernyő
+ * a felfüggesztett fióknak marad, és annak az edge-esetnek, amikor a Clerk-session
+ * mögött nincs belső fiók (pl. nem igazolt e-mail, nem engedett domain).
  *
- * Aktív szerep NEM elég a visszairányításhoz: tenant-tagság nélkül a gyökér
- * újra ide küldene (loop → üres képernyő). Csak tenant- vagy platform-kontextus
- * léphet tovább.
+ * Aktív szerep NEM elég a visszairányításhoz: csak tenant- vagy platform-kontextus
+ * léphet tovább, különben a gyökér újra ide küldene (loop → üres képernyő).
  */
-export default async function PendingApprovalPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ registration?: string }>
-}) {
+export default async function PendingApprovalPage() {
   const ctx = await getAuthContext()
   const user = ctx?.user ?? null
-  const params = await searchParams
 
   if (ctx?.kind === 'tenant') {
     redirect(DEFAULT_AGENT_WORKSPACE_FALLBACK)
@@ -32,31 +27,21 @@ export default async function PendingApprovalPage({
   if (ctx?.kind === 'platform') {
     redirect(CONTROL_PLANE_PLATFORM_HOME)
   }
+  if (user && user.status !== 'suspended') {
+    redirect(ONBOARDING_PATH)
+  }
 
-  const hasRole = Boolean(user?.status === 'active' && user.role)
   const t = await getTranslations('ControlPlane.pending')
-  const email = user?.email ?? ''
+  const suspended = user?.status === 'suspended'
 
   return (
-    <>
-      <div className="mx-auto max-w-xl">
-        <Card title={hasRole ? t('titleNoMembership') : t('titleAwaiting')}>
-          <p className="text-sm text-ink-soft">
-            {hasRole
-              ? t('bodyNoMembership', { email })
-              : user
-                ? t('bodyAwaitingKnown', { email })
-                : t('bodyAwaitingUnknown')}
-          </p>
-          {user?.status === 'suspended' && (
-            <p className="mt-3 text-sm text-coral-deep">{t('suspended')}</p>
-          )}
-          <p className="mt-4 text-xs text-ink-faint">{t('hint')}</p>
-        </Card>
-      </div>
-      {params.registration === 'complete' && user?.status === 'pending' && user.role === null ? (
-        <SignupNoticeDialog />
-      ) : null}
-    </>
+    <div className="mx-auto max-w-xl">
+      <Card title={suspended ? t('titleSuspended') : t('titleNoAccount')}>
+        <p className="text-sm text-ink-soft">
+          {suspended ? t('bodySuspended', { email: user?.email ?? '' }) : t('bodyNoAccount')}
+        </p>
+        <p className="mt-4 text-xs text-ink-faint">{t('hint')}</p>
+      </Card>
+    </div>
   )
 }

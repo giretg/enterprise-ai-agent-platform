@@ -10,12 +10,22 @@
  * agent_connectors / RBAC / Secret Manager elérhetetlen. Az aktiválás és a
  * hozzárendelés agent-aktorral SOHA → `PROVISIONING_FORBIDDEN` + provisioning.access_denied.
  */
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { createHash } from 'crypto'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
+import {
+  buildGoogleAccountBinding,
+  GoogleAccountBindingError,
+  googleAccountKindLabel,
+  isGoogleAccountBindingProvider,
+  parseGoogleAccountBindingConfig,
+  type GoogleAccountBinding,
+  type GoogleAccountBindingProvider,
+} from '@/domain/connector/google-account-binding'
 import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
@@ -36,7 +46,12 @@ import {
   ConnectorConfigParseError,
   type ConnectorConfig,
 } from './connector-config'
-import { validateDraftConfig, type ValidationResult } from './draft-validator'
+import {
+  declaredEgressHosts,
+  validateDraftConfig,
+  withCatalogTrustedEgress,
+  type ValidationResult,
+} from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { validateGoogleDriveDraftConfig } from './google-drive-draft-validator'
 import { ProvisioningError } from './errors'
@@ -75,6 +90,16 @@ export interface ProvisioningDeps {
   drafts: ConnectorDraftRepository
   /** A tenant engedélyezett egress-célhostjai (deny-by-default egress-policy, §7.2/§14.2). */
   resolveEgressAllowlist: (tenantId: string | null) => Promise<string[]>
+  /**
+   * Bérlő egress-allowlistjének bővítése (aktiváláskor a konnektor deklarált címeire).
+   * Ha nincs bekötve, az aktiválás nem vesz fel címet automatikusan.
+   */
+  extendEgressAllowlist?: (
+    tenantId: string | null,
+    host: string,
+    actorId: string,
+    provenance?: { draftId?: string },
+  ) => Promise<{ ok: true; added: boolean; host: string } | { ok: false; reason: string }>
   /** Banki preset: allowlist-only egress + minden aktiválás dual-control (§7.3/§14). */
   resolveBankPreset: (tenantId: string | null) => Promise<boolean>
   /** Sandbox connection-test adapter (§8.4); ha nincs bekötve → a teszt nem sikeresnek minősül. */
@@ -119,6 +144,11 @@ export interface ProvisioningDeps {
    */
   resolvePlatformGoogleOAuth?: (service?: 'gmail' | 'drive' | 'api') => Promise<{ configured: boolean }>
   /**
+   * Google Ads developer token: PLATFORM-szintű (superadmin), nem tenant-adat. Hiányzó
+   * resolver = nincs beállítva (fail-closed), kivéve a régi, tenant-configban tárolt fejlécet.
+   */
+  resolvePlatformGoogleAdsDeveloperToken?: () => Promise<{ configured: boolean }>
+  /**
    * Aktiválás után a forrás privacy-katalógusának behúzása (issue #320). Best-effort:
    * a hibája nem bukhatja el az aktiválást, de a kimenete auditálva van. Enélkül az új
    * kapcsolat a kézzel bemásolt (vagy hiányzó) mezőjelöléssel indulna.
@@ -132,6 +162,10 @@ function sha256Hex(content: string): string {
 }
 
 const PRIVILEGED_HUMAN_ROLES: ReadonlySet<UserRole> = new Set<UserRole>(['admin'])
+
+function isTemplateSource(sourceType: string): boolean {
+  return sourceType === 'template'
+}
 
 export class ProvisioningService {
   constructor(private deps: ProvisioningDeps) {}
@@ -225,6 +259,14 @@ export class ProvisioningService {
       policyDecision: 'allowed',
     })
 
+    if (isTemplateSource(input.sourceType) && actor.type === 'user') {
+      try {
+        await this.ensureCatalogTemplateGates(draft.id, actor)
+      } catch {
+        // A draft megmarad; az aktiválás újra megpróbálja a kapukat.
+      }
+    }
+
     return {
       connectorId: draft.connectorId,
       draftId: draft.id,
@@ -251,10 +293,13 @@ export class ProvisioningService {
       )
     } else {
       const config = parseStoredConfig(draft.connector.config)
-      const [egressAllowlist, bankPreset] = await Promise.all([
+      const [tenantAllowlist, bankPreset] = await Promise.all([
         this.deps.resolveEgressAllowlist(actor.tenantId),
         this.deps.resolveBankPreset(actor.tenantId),
       ])
+      const egressAllowlist = isTemplateSource(draft.sourceType)
+        ? withCatalogTrustedEgress(tenantAllowlist, config)
+        : tenantAllowlist
       validationResult = validateDraftConfig(config, { egressAllowlist, bankPreset })
     }
 
@@ -331,6 +376,10 @@ export class ProvisioningService {
     )
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
+    const catalogTemplate = isTemplateSource(draft.sourceType)
+    const platformGoogleApi = isPlatformGoogleApiConnectorTemplateKey(
+      readConnectorTemplateKey(draft.connector.config),
+    )
     if (draft.connector.type as string === 'gmail' || draft.connector.type === 'google_drive') {
       const config =
         draft.connector.type as string === 'gmail'
@@ -348,6 +397,17 @@ export class ProvisioningService {
             ? 'gmail_oauth_metadata_check'
             : 'google_drive_oauth_metadata_check',
       }
+    } else if (platformGoogleApi) {
+      const config = parseStoredConfig(draft.connector.config)
+      const authUrlOk = /^https?:\/\//i.test(config.auth.authUrl?.trim() ?? '')
+      const tokenUrlOk = /^https?:\/\//i.test(config.auth.tokenUrl?.trim() ?? '')
+      const scopesOk = config.scopesSuggested.length > 0
+      result = {
+        ok: authUrlOk && tokenUrlOk && scopesOk,
+        detail: 'platform_google_oauth_metadata_check',
+      }
+    } else if (catalogTemplate) {
+      result = { ok: true, detail: 'catalog_template_trusted' }
     } else if (this.deps.sandboxTester) {
       const config = parseStoredConfig(draft.connector.config)
       result = await this.deps.sandboxTester.test({
@@ -437,20 +497,27 @@ export class ProvisioningService {
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
     const user = await this.requireHumanAdmin(actor, 'activateConnector')
-    const draft = await this.loadDraftForTenant(input.draftId, actor)
+    let draft = await this.loadDraftForTenant(input.draftId, actor)
+    if (isTemplateSource(draft.sourceType)) {
+      draft = await this.ensureCatalogTemplateGates(draft.id, actor)
+    }
     const isGmail = draft.connector.type as string === 'gmail'
     const isGoogleDrive = draft.connector.type === 'google_drive'
     const usesPlatformGoogleApiOAuth = isPlatformGoogleApiConnectorTemplateKey(
       readConnectorTemplateKey(draft.connector.config),
     )
 
-    // Előfeltételek (§8.5, P5): nem-failed validáció + sikeres sandbox-teszt +
-    // approved review + (secretAlias VAGY apiKey).
+    if (!isGmail && !isGoogleDrive) {
+      draft = await this.allowDeclaredEgressHosts(draft, actor, user.userId)
+    }
+
+    // Előfeltételek (§8.5, P5): egress-allowlist passed (write/scope warned maradhat) +
+    // sikeres sandbox-teszt + approved review + (secretAlias VAGY apiKey).
     const validation = draft.validationResult as ValidationResult | null
-    if (!validation || validation.status === 'failed') {
+    if (!validation || validation.status === 'failed' || validation.checks.egressAllowlist !== 'passed') {
       throw new ProvisioningError(
         'DRAFT_VALIDATION_FAILED',
-        'validation_result must be passed/warned (not failed)',
+        'validation_result must pass the tenant egress allowlist before activation',
       )
     }
     if (draft.sandboxTestOk !== true) {
@@ -482,9 +549,12 @@ export class ProvisioningService {
           isGoogleDrive
             ? 'A Google Drive connector a platform Google Drive OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google Drive OAuth oldalon.'
             : usesPlatformGoogleApiOAuth
-              ? 'A Google API konnektorok (Analytics / Search Console / Ads / Calendar / Sheets) a platform Google API OAuth alkalmazását használják — állítsd be a Platform · Beállítások → Google API OAuth oldalon.'
+              ? 'A Google API konnektorok (Analytics / Search Console / Ads / Calendar / Sheets) a platform közös Google API OAuth alkalmazását használják, amelyet a platform üzemeltetője állít be (Platform · Beállítások → Google API). Ez nem cég-szintű beállítás.'
               : 'A Gmail connector a platform Google OAuth alkalmazását használja — állítsd be a Platform · Beállítások → Google OAuth oldalon.',
         )
+      }
+      if (usesPlatformGoogleApiOAuth) {
+        await this.assertGoogleAccountActivationReady(draft.connector.config)
       }
     } else if (!hasCredentials) {
       if (!input.confirmKeyless) {
@@ -663,6 +733,11 @@ export class ProvisioningService {
 
     const connector = await this.deps.drafts.activate({
       draftId: draft.id,
+      // A credential-próba és a Secret Store-írás között egy másik admin
+      // szerkesztheti a configot. A repository ezt a monotonikus revíziót a
+      // tényleges lifecycle-váltással egy tranzakcióban ellenőrzi, így új,
+      // még nem validált config nem aktiválódhat régi approval alapján.
+      expectedDraftRevision: draft.revision,
       secretAlias: resolvedAlias,
       authMode,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
@@ -678,6 +753,13 @@ export class ProvisioningService {
           }
         : {}),
     })
+
+    if (!connector) {
+      throw new ProvisioningError(
+        'DRAFT_CHANGED_DURING_ACTIVATION',
+        'draft changed while activation was in progress; validate, review, and test the latest config again',
+      )
+    }
 
     await this.appendAudit(actor, 'provisioning.connector.activate', connector.id, {
       draft_id: draft.id,
@@ -738,7 +820,7 @@ export class ProvisioningService {
   // ── §8.6 assignConnectorToAgent (EMBERI admin-aktus — agent NEM hívhatja) ──
 
   async assignConnectorToAgent(
-    input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode; apiKey?: string },
+    input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode; apiKey?: string; mailboxConfirmed?: boolean },
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string }> {
     await this.requireHumanAdmin(actor, 'assignConnectorToAgent')
@@ -749,6 +831,21 @@ export class ProvisioningService {
       throw new ProvisioningError(
         'CONNECTOR_NOT_ACTIVE',
         'only an active connector can be assigned to an agent',
+      )
+    }
+    if (tenantMailboxOf({ authMode: connector.authMode ?? '', config: connector.config }) && !input.mailboxConfirmed) {
+      throw new ProvisioningError(
+        'PROVISIONING_INVALID_INPUT',
+        'A közös postafiókot a Postafiókok oldalon rendeld hozzá az agenthez, a hozzáférési figyelmeztetés elfogadásával.',
+      )
+    }
+    if (
+      tenantMailboxOf({ authMode: connector.authMode ?? '', config: connector.config })?.readOnly &&
+      input.accessMode === 'write'
+    ) {
+      throw new ProvisioningError(
+        'TENANT_MAILBOX_READ_ONLY',
+        'Ez a közös postafiók csak olvasásra van bekötve, ezért agent nem kaphat rá küldési jogot.',
       )
     }
     if (!(await this.deps.drafts.isAssignableToAgent(input.connectorId))) {
@@ -898,6 +995,88 @@ export class ProvisioningService {
    * Aktív connector visszanyitása draftba, hogy javítható legyen. A connector offline lesz
    * (Tool Broker deny), a gate resetelődik. A javítás után újra végig kell menni a kapun.
    */
+  /**
+   * Tenant-szintű Google-fiókkötés: MELYIK cégfiókot érheti el a Google Ads / Analytics /
+   * Search Console konnektor. Emberi admin-aktus, auditált. Aktív konnektoron is módosítható,
+   * újranyitás nélkül: a felhasználók saját Google-belépése (grant) érvényes marad.
+   */
+  async updateGoogleAccountBinding(
+    input: { draftId: string; accountIds: string[]; managerAccountId?: string | null },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string; binding: GoogleAccountBinding }> {
+    await this.requireHumanAdmin(actor, 'updateGoogleAccountBinding')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+    const provider = readConnectorProvider(draft.connector.config)
+    if (!isGoogleAccountBindingProvider(provider)) {
+      throw new ProvisioningError(
+        'GOOGLE_ACCOUNT_BINDING_UNSUPPORTED',
+        'Fiókkötés csak Google Ads, Google Analytics és Search Console konnektoron állítható.',
+      )
+    }
+    if (draft.connector.lifecycleState === 'archived') {
+      throw new ProvisioningError('CONNECTOR_NOT_ACTIVE', 'archived connector cannot be changed')
+    }
+    let binding: GoogleAccountBinding
+    try {
+      binding = buildGoogleAccountBinding(provider, input)
+    } catch (error) {
+      if (error instanceof GoogleAccountBindingError) {
+        throw new ProvisioningError('PROVISIONING_INVALID_INPUT', error.message)
+      }
+      throw error
+    }
+    const previous = (() => {
+      try {
+        return parseGoogleAccountBindingConfig(
+          provider,
+          (draft.connector.config as Record<string, unknown> | null)?.googleAccountBinding,
+        )
+      } catch {
+        return undefined
+      }
+    })()
+
+    await this.deps.drafts.setGoogleAccountBinding({ draftId: draft.id, binding })
+    await this.appendAudit(actor, 'provisioning.connector.google_account_binding', draft.connectorId, {
+      draft_id: draft.id,
+      connector_id: draft.connectorId,
+      provider,
+      previous_account_ids: previous?.accountIds ?? null,
+      account_ids: binding.accountIds,
+      manager_account_id: binding.managerAccountId ?? null,
+      policyDecision: 'allowed',
+    })
+    return { connectorId: draft.connectorId, binding }
+  }
+
+  /** Aktiválási kapu a Google fiókos konnektorokra: cégfiók kiválasztva + platform-előfeltételek. */
+  private async assertGoogleAccountActivationReady(config: unknown): Promise<void> {
+    const provider = readConnectorProvider(config)
+    if (!isGoogleAccountBindingProvider(provider)) return
+    const raw = (config as Record<string, unknown> | null)?.googleAccountBinding
+    let binding: GoogleAccountBinding | undefined
+    try {
+      binding = parseGoogleAccountBindingConfig(provider, raw)
+    } catch {
+      binding = undefined
+    }
+    if (!binding) {
+      throw new ProvisioningError(
+        'GOOGLE_ACCOUNT_BINDING_MISSING',
+        `Add meg, melyik ${googleAccountKindLabel(provider)} érheti el ez a konnektor (a konnektor „Melyik fiók?” részénél).`,
+      )
+    }
+    if (provider !== 'google-ads') return
+    const platformToken = this.deps.resolvePlatformGoogleAdsDeveloperToken
+      ? await this.deps.resolvePlatformGoogleAdsDeveloperToken()
+      : { configured: false }
+    if (platformToken.configured || hasLegacyDeveloperTokenHeader(config)) return
+    throw new ProvisioningError(
+      'PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING',
+      'A Google Ads konnektorhoz a platform üzemeltetőjének be kell állítania a Google Ads developer tokent (Platform · Beállítások → Google API). Ez nem cég-szintű adat.',
+    )
+  }
+
   async reopenConnector(
     input: { draftId: string },
     actor: ProvisioningActor,
@@ -1276,12 +1455,13 @@ export class ProvisioningService {
       authMode: d.connector.authMode,
       // A diff-nézethez: a generált deskriptor (§4.3). A secret SOSEM része — csak alias-név.
       config: safeParseStoredConfig(d.connector.config),
-      // Gmail connector config (provider + oauth) — secret-mentes nézet.
-      gmailView:
-        d.connector.type as string === 'gmail' ? safeGmailConfigView(d.connector.config) : null,
+      // Gmail / Google Drive (provider + oauth) — secret-mentes nézet.
+      delegatedOauthView: safeDelegatedOauthView(d.connector.type, d.connector.config),
       // Fallback nézet, ha a config nem provisioning-ConnectorConfig alakú (pl. az
       // API-szerkesztőn átírt http_api config). Secret-mentes.
       httpApiView: safeHttpApiView(d.connector.config),
+      // Google Ads / Analytics / Search Console: melyik cégfiókot éri el (tenant-szint).
+      googleAccountView: safeGoogleAccountView(d.connector.config),
       sourceType: d.sourceType,
       sourceHash: d.sourceHash,
       createdAt: d.createdAt,
@@ -1289,6 +1469,80 @@ export class ProvisioningService {
   }
 
   // ── belső segédek ─────────────────────────────────────────────────────────
+
+  /**
+   * Katalógus-sablon: a hostok és a config már bízott, a kapukat a rendszer
+   * zárja — a tenant adminnak csak be kell kapcsolnia.
+   */
+  /**
+   * Aktiválás = jóváhagyás: a konnektor deklarált kimenő címei bekerülnek a bérlő
+   * allowlistjére, külön megerősítés nélkül. Banki preset alatt marad a kézi
+   * host-jóváhagyás. A bővítés után a validáció újrafut, hogy az aktiválási kapu
+   * már az új allowlisttel döntsön.
+   */
+  private async allowDeclaredEgressHosts(
+    draft: Awaited<ReturnType<ProvisioningService['loadDraftForTenant']>>,
+    actor: ProvisioningActor,
+    approverId: string,
+  ) {
+    if (!this.deps.extendEgressAllowlist) return draft
+    if (await this.deps.resolveBankPreset(actor.tenantId)) return draft
+
+    const config = parseStoredConfig(draft.connector.config)
+    const allowed = new Set(
+      (await this.deps.resolveEgressAllowlist(actor.tenantId)).map((h) => h.toLowerCase()),
+    )
+    const missing = declaredEgressHosts(config).filter((h) => !allowed.has(h.toLowerCase()))
+    if (missing.length === 0) return draft
+
+    for (const host of missing) {
+      const res = await this.deps.extendEgressAllowlist(actor.tenantId, host, approverId, {
+        draftId: draft.id,
+      })
+      if (!res.ok) {
+        throw new ProvisioningError(
+          'EGRESS_HOST_REJECTED',
+          `a(z) ${host} cím nem vehető fel a kimenő-cím listára (${res.reason})`,
+        )
+      }
+      if (res.added) {
+        await this.appendAudit(actor, 'connector.egress_allowlist.extend', draft.connectorId, {
+          draft_id: draft.id,
+          host: res.host,
+          source: 'activation',
+          policyDecision: 'allowed',
+        })
+      }
+    }
+
+    await this.validateConnectorDraft({ draftId: draft.id }, actor)
+    return this.loadDraftForTenant(draft.id, actor)
+  }
+
+  private async ensureCatalogTemplateGates(draftId: string, actor: ProvisioningActor) {
+    let draft = await this.loadDraftForTenant(draftId, actor)
+    const validation = draft.validationResult as ValidationResult | null
+    if (!validation || validation.status === 'failed' || validation.checks.egressAllowlist !== 'passed') {
+      await this.validateConnectorDraft({ draftId }, actor)
+      draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    const checked = draft.validationResult as ValidationResult | null
+    if (!checked || checked.status === 'failed' || checked.checks.egressAllowlist !== 'passed') {
+      throw new ProvisioningError(
+        'DRAFT_VALIDATION_FAILED',
+        'validation_result must pass before a template connector can be turned on',
+      )
+    }
+    if (draft.sandboxTestOk !== true) {
+      await this.testConnectorDraft({ draftId }, actor)
+      draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    if (draft.reviewStatus !== 'approved') {
+      await this.reviewConnectorDraft({ draftId, decision: 'approve' }, actor)
+      draft = await this.loadDraftForTenant(draftId, actor)
+    }
+    return draft
+  }
 
   /**
    * Kemény padló (§6.2, §6.3): a privilegizált aktusokat (review/test/activate/assign)
@@ -1403,6 +1657,21 @@ export class ProvisioningService {
   }
 }
 
+function readConnectorProvider(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const provider = (raw as Record<string, unknown>).provider
+  return typeof provider === 'string' ? provider : readConnectorTemplateKey(raw)
+}
+
+function hasLegacyDeveloperTokenHeader(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false
+  const headers = (raw as Record<string, unknown>).requestHeaders
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return false
+  return Object.entries(headers as Record<string, unknown>).some(
+    ([name, value]) => name.toLowerCase() === 'developer-token' && typeof value === 'string' && value.trim() !== '',
+  )
+}
+
 function readConnectorTemplateKey(raw: unknown): string | undefined {
   if (!raw || typeof raw !== 'object') return undefined
   const provenance = (raw as Record<string, unknown>).provenance
@@ -1480,7 +1749,7 @@ export type HttpApiConfigView = {
   endpoints: Array<{ method: string; path: string }>
 }
 
-export type GmailConfigView = {
+export type DelegatedOauthConfigView = {
   provider: string
   authUrl: string
   tokenUrl: string
@@ -1497,27 +1766,47 @@ export type GmailConfigView = {
   }
 }
 
-function safeGmailConfigView(raw: unknown): GmailConfigView | null {
+function toDelegatedOauthView(config: {
+  provider: string
+  oauth: {
+    authUrl: string
+    tokenUrl: string
+    userInfoUrl?: string
+    clientId?: string
+    scopes: string[]
+    scopeTransform: string
+  }
+  provenance?: DelegatedOauthConfigView['provenance']
+}): DelegatedOauthConfigView {
+  return {
+    provider: config.provider,
+    authUrl: config.oauth.authUrl,
+    tokenUrl: config.oauth.tokenUrl,
+    userInfoUrl: config.oauth.userInfoUrl,
+    clientId: config.oauth.clientId,
+    scopes: config.oauth.scopes,
+    scopeTransform: config.oauth.scopeTransform,
+    provenance: config.provenance
+      ? {
+          templateId: config.provenance.templateId,
+          templateKey: config.provenance.templateKey,
+          templateVersion: config.provenance.templateVersion,
+          templateOrigin: config.provenance.templateOrigin,
+          materializedAt: config.provenance.materializedAt,
+        }
+      : undefined,
+  }
+}
+
+function safeDelegatedOauthView(connectorType: string, raw: unknown): DelegatedOauthConfigView | null {
   try {
-    const config = normalizeGmailConnectorConfig(raw)
-    return {
-      provider: config.provider,
-      authUrl: config.oauth.authUrl,
-      tokenUrl: config.oauth.tokenUrl,
-      userInfoUrl: config.oauth.userInfoUrl,
-      clientId: config.oauth.clientId,
-      scopes: config.oauth.scopes,
-      scopeTransform: config.oauth.scopeTransform,
-      provenance: config.provenance
-        ? {
-            templateId: config.provenance.templateId,
-            templateKey: config.provenance.templateKey,
-            templateVersion: config.provenance.templateVersion,
-            templateOrigin: config.provenance.templateOrigin,
-            materializedAt: config.provenance.materializedAt,
-          }
-        : undefined,
+    if (connectorType === 'gmail') {
+      return toDelegatedOauthView(normalizeGmailConnectorConfig(raw))
     }
+    if (connectorType === 'google_drive') {
+      return toDelegatedOauthView(normalizeGoogleDriveConnectorConfig(raw))
+    }
+    return null
   } catch {
     return null
   }
@@ -1528,6 +1817,43 @@ function safeGmailConfigView(raw: unknown): GmailConfigView | null {
  * olvasata a provisioning diff-nézet fallbackjéhez — amikor a config NEM a provisioning
  * ConnectorConfig alakú (pl. az „API-kapcsolat" szerkesztőn keresztül lett átírva).
  */
+export type GoogleAccountView = {
+  provider: GoogleAccountBindingProvider
+  accountIds: string[]
+  managerAccountId: string | null
+  /** Régi konnektor: a cég még nem választott fiókot → az agent bármelyiket elérheti, amit a user. */
+  bound: boolean
+  /** Régi, cég-configban tárolt developer token (a platform-szintű beállítás felülírja). */
+  legacyDeveloperToken: boolean
+}
+
+function safeGoogleAccountView(raw: unknown): GoogleAccountView | null {
+  const provider = readConnectorProvider(raw)
+  if (!isGoogleAccountBindingProvider(provider)) return null
+  const cfg = raw as Record<string, unknown>
+  let binding: GoogleAccountBinding | undefined
+  try {
+    binding = parseGoogleAccountBindingConfig(provider, cfg.googleAccountBinding)
+  } catch {
+    binding = undefined
+  }
+  const legacyManager = (() => {
+    const headers = cfg.requestHeaders
+    if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null
+    const entry = Object.entries(headers as Record<string, unknown>).find(
+      ([name]) => name.toLowerCase() === 'login-customer-id',
+    )
+    return typeof entry?.[1] === 'string' && entry[1].trim() ? entry[1].trim() : null
+  })()
+  return {
+    provider,
+    accountIds: binding?.accountIds ?? [],
+    managerAccountId: binding?.managerAccountId ?? legacyManager,
+    bound: Boolean(binding),
+    legacyDeveloperToken: hasLegacyDeveloperTokenHeader(raw),
+  }
+}
+
 function safeHttpApiView(raw: unknown): HttpApiConfigView | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
   const cfg = raw as Record<string, unknown>

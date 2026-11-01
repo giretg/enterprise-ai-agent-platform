@@ -68,10 +68,23 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
     this.context!.source.autoApprovePolicy = input.policy
   }
   async listUsage() { return {} }
-  async findOpenProposalByHash(_connectorId: string, tenantId: string, rawHash: string) {
-    return this.versions.find((version) => version.tenantId === tenantId && version.rawHash === rawHash && version.status === 'proposed') ?? null
+  async findOpenProposalByHash(
+    _connectorId: string,
+    tenantId: string,
+    rawHash: string,
+    diffFromVersionId?: string | null,
+  ) {
+    return this.versions.find((version) =>
+      version.tenantId === tenantId &&
+      version.rawHash === rawHash &&
+      version.status === 'proposed' &&
+      (diffFromVersionId === undefined || version.diffFromVersionId === diffFromVersionId),
+    ) ?? null
   }
   async createProposal(input: Parameters<SelfUpdatingConnectorRepository['createProposal']>[0]) {
+    if (input.diffFromVersionId !== this.context!.connector.activeSpecVersionId) {
+      throw new SelfUpdateError('INVALID_STATE', 'stale proposal')
+    }
     const version: SelfUpdatingSpecVersion = {
       id: `00000000-0000-0000-0000-${String(this.versions.length + 200).padStart(12, '0')}`,
       connectorId: input.connectorId, tenantId: input.tenantId, versionNo: this.versions.length + 1,
@@ -109,6 +122,12 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
   }
   async listVersions(_connectorId: string, tenantId: string) { return this.versions.filter((v) => v.tenantId === tenantId) }
   async touchSynced(_sourceId: string, at: Date) { this.context!.source.lastSyncedAt = at }
+  async listDueForSync(input: { syncedBefore: Date; limit: number }) {
+    const ctx = this.context
+    if (!ctx?.source.urlApprovedAt || !ctx.source.trustedAt || !ctx.connector.activeSpecVersionId) return []
+    if (ctx.source.lastSyncedAt && ctx.source.lastSyncedAt >= input.syncedBefore) return []
+    return [{ connectorId: ctx.connector.id, tenantId: ctx.connector.tenantId }].slice(0, input.limit)
+  }
 }
 
 class AuditSpy implements SelfUpdateAudit {
@@ -214,6 +233,47 @@ async function run() {
     assert.equal(repo.context!.source.autoApprovePolicy?.allowAddedWrite, false)
   })
 
+  await test('napi háttér-ellenőrzés: gombnyomás nélkül átveszi a tisztán olvasási bővítést, rendszer-actorral auditál', async () => {
+    const { service, repo, sync, audit, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+    repo.context!.tenantAutoApproveEnabled = true; await service.updatePolicy(connectorId, { enabled: true, allowAddedWrite: false }, { id: APPROVER, tenantId: TENANT })
+    // Az ellenőrzés frissen futott → nem esedékes.
+    const fresh = await service.syncDue({ syncedBefore: new Date('2026-07-15T00:00:00Z'), limit: 10 })
+    assert.equal(fresh.checked, 0)
+    sync.result = { ok: true, rawText: '{"v":2}', rawHash: 'hash-2', capabilitySet: capabilitySet([{ method: 'GET', path: '/customers' }, { method: 'GET', path: '/reports' }]), host: 'partner.example' }
+    const run = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.deepEqual(run, { checked: 1, skipped: 0, outcomes: { unchanged: 0, auto_approved: 1, awaiting_approval: 0, failed: 0 } })
+    assert.equal(repo.context!.connector.activeSpecVersionId, repo.versions[1].id)
+    assert.equal(audit.events.at(-1)?.actorId, null)
+  })
+
+  await test('napi háttér-ellenőrzés: írási bővítés javaslatként emberre vár, hiba nem állítja meg a futást', async () => {
+    const { service, repo, sync, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); const v1 = repo.versions[0]
+    await service.approveVersion(connectorId, v1.id, { id: APPROVER, tenantId: TENANT })
+    repo.context!.tenantAutoApproveEnabled = true; await service.updatePolicy(connectorId, { enabled: true, allowAddedWrite: false }, { id: APPROVER, tenantId: TENANT })
+    sync.result = { ok: true, rawText: '{"v":2}', rawHash: 'hash-2', capabilitySet: capabilitySet([{ method: 'GET', path: '/customers' }, { method: 'POST', path: '/customers' }]), host: 'partner.example' }
+    const run = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(run.outcomes.awaiting_approval, 1)
+    assert.equal(repo.context!.connector.activeSpecVersionId, v1.id)
+    assert.equal(repo.versions[1].status, 'proposed')
+    repo.context!.source.lastSyncedAt = null
+    sync.sync = async () => { throw new Error('boom') }
+    const failed = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(failed.outcomes.failed, 1)
+    assert.equal(repo.context!.connector.activeSpecVersionId, v1.id)
+  })
+
+  await test('napi háttér-ellenőrzés: lejárt időkeretnél nem indít új ellenőrzést', async () => {
+    const { service, repo, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+    const run = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10, deadline: new Date('2026-07-15T11:00:00Z') })
+    assert.deepEqual(run, { checked: 0, skipped: 1, outcomes: { unchanged: 0, auto_approved: 0, awaiting_approval: 0, failed: 0 } })
+  })
+
   await test('cross-tenant hozzáférés minden publikus műveleten fail-closed', async () => {
     const { service, connectorId } = await ready()
     await expectCode('NOT_FOUND', () => service.detail(connectorId, { id: APPROVER, tenantId: OTHER_TENANT }))
@@ -267,6 +327,14 @@ async function run() {
     await service.rollback(connectorId, v0.id, { id: APPROVER, tenantId: TENANT })
     assert.equal(stale.status, 'rejected')
     await expectCode('INVALID_STATE', () => service.approveVersion(connectorId, stale.id, { id: APPROVER, tenantId: TENANT }))
+
+    // Egy korábbi futásból vagy rollback-versenyből maradt, azonos hash-ű javaslat
+    // nem blokkolhatja az új aktív verzióhoz készülő friss diffet.
+    stale.status = 'proposed'
+    const result = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    assert.equal(result.kind, 'proposed')
+    assert.equal(repo.versions.at(-1)?.diffFromVersionId, v0.id)
+    assert.notEqual(repo.versions.at(-1)?.id, stale.id)
   })
 
   console.log('\n✅ Önfrissítő connector életciklus-tesztek zöldek')

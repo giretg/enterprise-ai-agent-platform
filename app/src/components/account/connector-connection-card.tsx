@@ -3,9 +3,14 @@
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import { useState, useTransition } from 'react'
+import type { TranslateFn } from '@/i18n/translate'
 import { formatDateTime } from '@/i18n/format'
 import { asTranslate } from '@/i18n/translate'
-import { revokeConnectorGrant, startConnectorOAuth } from '@/app/actions/connector-grants'
+import {
+  revokeConnectorGrant,
+  startConnectorOAuth,
+  updateConnectorGrantNickname,
+} from '@/app/actions/connector-grants'
 import { navigateToOAuth } from '@/lib/oauth-navigation'
 import { ConnectionCard, StatusDot } from '@/components/account/connection-card'
 import {
@@ -24,6 +29,7 @@ import {
   type GoogleDriveGrantMetadata,
 } from '@/domain/connector-grant/google-drive-grant-metadata'
 import { delegatedConnectorLabel } from '@/domain/connector-grant/delegated-oauth-registry'
+import { isGoogleLinkedAccountConnector } from '@/domain/connector-grant/linked-account'
 import { connectorUsageStatus } from '@/components/account/linked-account-view'
 import {
   connectorScopeProfileDescription,
@@ -50,6 +56,7 @@ export type LinkedGrantView = {
   connectorId: string
   status: string
   accountLabel: string | null
+  nickname: string | null
   scopes: unknown
   grantedAt: string
   metadata?: unknown
@@ -156,13 +163,23 @@ function scopeSummary(
   return labels.length > 0 ? labels.join(', ') : t('noScope')
 }
 
+function grantDisplayName(grant: LinkedGrantView, t: (key: string) => string): string {
+  if (grant.nickname?.trim()) {
+    return grant.accountLabel ? `${grant.nickname} (${grant.accountLabel})` : grant.nickname
+  }
+  return grant.accountLabel ?? t('account')
+}
+
 function connectedGrantSummary(
   connector: LinkedConnectorView,
-  grant: LinkedGrantView,
-  t: (key: string) => string,
+  grants: LinkedGrantView[],
+  t: (key: string, values?: Record<string, string | number>) => string,
 ): string {
-  const account = grant.accountLabel ?? t('account')
-  return `${account} · ${scopeSummary(connector.type, grant.scopes, t)}`
+  if (grants.length === 1) {
+    return `${grantDisplayName(grants[0], t)} · ${scopeSummary(connector.type, grants[0].scopes, t)}`
+  }
+  const names = grants.map((grant) => grant.nickname?.trim() || grant.accountLabel || t('account'))
+  return t('accountsCount', { count: grants.length, names: names.join(', ') })
 }
 
 function connectorDescription(connector: LinkedConnectorView, t: (key: string, values?: Record<string, string>) => string): string {
@@ -179,6 +196,74 @@ type DetailTab = 'overview' | 'files' | 'created' | 'history'
 
 const pillButton =
   'rounded-full border border-line px-3.5 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-ink/5 disabled:opacity-50'
+
+function GoogleOauthPrivacyNotice({ t }: { t: TranslateFn }) {
+  return (
+    <p className="max-w-prose text-[11px] leading-4 text-ink-faint">
+      {t('oauthPrivacyNotice')}{' '}
+      <a
+        href="/privacy"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-medium text-ink-soft underline underline-offset-2 hover:text-ink"
+      >
+        {t('oauthPrivacyLink')}
+      </a>
+    </p>
+  )
+}
+
+function NicknameField({
+  value,
+  disabled,
+  t,
+  onChange,
+  onPreset,
+  showHint = true,
+}: {
+  value: string
+  disabled: boolean
+  t: (key: string) => string
+  onChange: (value: string) => void
+  onPreset?: (value: string) => void
+  showHint?: boolean
+}) {
+  const presets = [t('nicknamePersonal'), t('nicknameWork')]
+  return (
+    <div className="flex min-w-[12rem] flex-col gap-1.5">
+      <label className="text-[11px] font-semibold text-ink-soft">
+        {t('nicknameLabel')}
+        <input
+          value={value}
+          disabled={disabled}
+          maxLength={40}
+          placeholder={t('nicknamePlaceholder')}
+          className="mt-1 w-full rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </label>
+      {showHint ? (
+        <p className="text-[11px] font-normal leading-4 text-ink-faint">{t('nicknameHint')}</p>
+      ) : null}
+      <div className="flex flex-wrap gap-1.5">
+        {presets.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            disabled={disabled}
+            className="rounded-full border border-line px-3 py-1 text-xs font-semibold text-ink-soft hover:bg-ink/5 disabled:opacity-50"
+            onClick={() => {
+              onChange(preset)
+              onPreset?.(preset)
+            }}
+          >
+            {preset}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export function ConnectorConnectionCard({
   connector,
@@ -202,9 +287,11 @@ export function ConnectorConnectionCard({
   const [localGrants, setLocalGrants] = useState(grants)
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<DetailTab>('overview')
+  const [nickname, setNickname] = useState('')
+  const [adding, setAdding] = useState(false)
 
-  const activeGrant = localGrants.find((g) => g.connectorId === connector.id && g.status === 'active')
-  const history = localGrants.filter((g) => g !== activeGrant)
+  const activeGrants = localGrants.filter((g) => g.connectorId === connector.id && g.status === 'active')
+  const history = localGrants.filter((g) => !activeGrants.includes(g))
   const scopeProfiles = availableScopeProfiles(connector, isAdmin)
   const currentProfile =
     scopeProfiles.find((profile) => sameScopes(profile.scopes, selectedScopes)) ??
@@ -218,33 +305,32 @@ export function ConnectorConnectionCard({
     missingCapability: t('usageMissingCapability'),
     unassigned: t('usageUnassigned'),
   })
-  const isGoogle = connector.type === 'gmail' || connector.type === 'google_drive'
-  const showDrivePicker =
-    connector.type === 'google_drive' &&
-    activeGrant &&
-    driveScopeProfile(parseDriveScopes(activeGrant.scopes as never)) === 'selected_write'
-  const driveMetadata =
-    connector.type === 'google_drive' && activeGrant
-      ? grantMetadata(activeGrant.metadata ?? emptyGoogleDriveGrantMetadata())
-      : null
-  const appCreated = driveMetadata?.appCreated ?? []
+  const hasScopeProfiles = connector.type === 'gmail' || connector.type === 'google_drive'
+  const supportsLinkedAccounts = isGoogleLinkedAccountConnector(connector)
+  const pickerGrants = activeGrants.filter(
+    (grant) =>
+      connector.type === 'google_drive' &&
+      driveScopeProfile(parseDriveScopes(grant.scopes as never)) === 'selected_write',
+  )
+  const appCreated = activeGrants.flatMap(
+    (grant) => grantMetadata(grant.metadata ?? emptyGoogleDriveGrantMetadata()).appCreated,
+  )
 
   const tabs: { id: DetailTab; label: string }[] = [
     { id: 'overview', label: t('tabOverview') },
-    ...(showDrivePicker ? [{ id: 'files' as const, label: t('tabFiles') }] : []),
+    ...(pickerGrants.length > 0 ? [{ id: 'files' as const, label: t('tabFiles') }] : []),
     ...(appCreated.length > 0
       ? [{ id: 'created' as const, label: t('tabCreated', { count: appCreated.length }) }]
       : []),
     ...(history.length > 0 ? [{ id: 'history' as const, label: t('tabHistory') }] : []),
   ]
 
-  const revoke = () =>
+  const revoke = (grantId: string) =>
     startTransition(async () => {
-      if (!activeGrant) return
-      const res = await revokeConnectorGrant({ grantId: activeGrant.id })
+      const res = await revokeConnectorGrant({ grantId })
       if (res.success) {
         setLocalGrants((prev) =>
-          prev.map((g) => (g.id === activeGrant.id ? { ...g, status: 'revoked' } : g)),
+          prev.map((g) => (g.id === grantId ? { ...g, status: 'revoked' } : g)),
         )
         setMessage({ ok: true, text: t('revoked') })
         router.refresh()
@@ -253,11 +339,38 @@ export function ConnectorConnectionCard({
       }
     })
 
-  const connect = () =>
+  const saveNickname = (grantId: string, value: string) =>
+    startTransition(async () => {
+      const res = await updateConnectorGrantNickname({
+        grantId,
+        nickname: value.trim() ? value : null,
+      })
+      if (res.success) {
+        setLocalGrants((prev) =>
+          prev.map((g) => (g.id === grantId ? { ...g, nickname: value.trim() || null } : g)),
+        )
+        setMessage({ ok: true, text: t('nicknameSaved') })
+        router.refresh()
+      } else if (res.error === 'nickname_taken') {
+        setMessage({ ok: false, text: t('nicknameTaken') })
+      } else if (res.error === 'invalid_nickname') {
+        setMessage({ ok: false, text: t('invalidNickname') })
+      } else {
+        setMessage({ ok: false, text: res.error })
+      }
+    })
+
+  const connect = (addAccount: boolean) => {
+    if (addAccount && supportsLinkedAccounts && !nickname.trim()) {
+      setMessage({ ok: false, text: t('nicknameRequiredAdd') })
+      return
+    }
     startTransition(async () => {
       const res = await startConnectorOAuth({
         connectorId: connector.id,
-        scopes: isGoogle ? selectedScopes : undefined,
+        scopes: hasScopeProfiles ? selectedScopes : undefined,
+        ...(nickname.trim() ? { nickname: nickname.trim() } : {}),
+        ...(addAccount ? { addAccount: true } : {}),
       })
       if (res.success) {
         if ('stub' in res.data && res.data.stub) {
@@ -266,10 +379,48 @@ export function ConnectorConnectionCard({
         } else {
           navigateToOAuth(res.data.url)
         }
+      } else if (res.error === 'nickname_taken') {
+        setMessage({ ok: false, text: t('nicknameTaken') })
       } else {
         setMessage({ ok: false, text: res.error })
       }
     })
+  }
+
+  const startAdding = () => {
+    setOpen(true)
+    setTab('overview')
+    setAdding(true)
+  }
+
+  const grantStatusLabel = (status: string) => {
+    if (status === 'active') return t('statusActive')
+    if (status === 'revoked') return t('statusRevoked')
+    return status
+  }
+
+  const scopeSelect = (
+    <select
+      value={currentProfile.id}
+      disabled={pending}
+      aria-label={t('accessLevel')}
+      className="rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
+      onChange={(event) => {
+        const profile = scopeProfiles.find((p) => p.id === event.target.value) ?? scopeProfiles[0]
+        if (profile) setSelectedScopes([...profile.scopes])
+      }}
+    >
+      {scopeProfiles.map((profile) => (
+        <option key={profile.id} value={profile.id}>
+          {profile.id in GMAIL_LABEL_KEYS
+            ? t(GMAIL_LABEL_KEYS[profile.id as keyof typeof GMAIL_LABEL_KEYS])
+            : profile.id in DRIVE_LABEL_KEYS
+              ? t(DRIVE_LABEL_KEYS[profile.id as keyof typeof DRIVE_LABEL_KEYS])
+              : profile.label}
+        </option>
+      ))}
+    </select>
+  )
 
   const messageBox = message ? (
     <p
@@ -281,7 +432,7 @@ export function ConnectorConnectionCard({
     </p>
   ) : null
 
-  if (!activeGrant) {
+  if (activeGrants.length === 0) {
     const hint =
       connector.type === 'google_drive'
         ? connectorScopeProfileDescription(connector.type, currentProfile.id)
@@ -292,44 +443,23 @@ export function ConnectorConnectionCard({
         provider={connector.type}
         iconDataUrl={connector.iconDataUrl}
         summary={<span title={hint ?? undefined}>{connectorDescription(connector, t)}</span>}
-        actions={
-          <>
-            {isGoogle && (
-              <select
-                value={currentProfile.id}
-                disabled={pending}
-                aria-label={t('accessLevel')}
-                title={hint ?? undefined}
-                className="rounded-full border border-line bg-panel px-3 py-1.5 text-xs text-ink"
-                onChange={(event) => {
-                  const profile =
-                    scopeProfiles.find((p) => p.id === event.target.value) ?? scopeProfiles[0]
-                  if (profile) setSelectedScopes([...profile.scopes])
-                }}
-              >
-                {scopeProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.id in GMAIL_LABEL_KEYS
-                      ? t(GMAIL_LABEL_KEYS[profile.id as keyof typeof GMAIL_LABEL_KEYS])
-                      : profile.id in DRIVE_LABEL_KEYS
-                        ? t(DRIVE_LABEL_KEYS[profile.id as keyof typeof DRIVE_LABEL_KEYS])
-                        : profile.label}
-                  </option>
-                ))}
-              </select>
-            )}
-            <button
-              type="button"
-              disabled={pending}
-              className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
-              onClick={connect}
-            >
-              {t('connect')}
-            </button>
-          </>
-        }
+        actions={hasScopeProfiles ? scopeSelect : undefined}
       >
-        {messageBox}
+        <div className="space-y-3">
+          {supportsLinkedAccounts ? (
+            <NicknameField value={nickname} disabled={pending} t={t} onChange={setNickname} />
+          ) : null}
+          <button
+            type="button"
+            disabled={pending}
+            className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+            onClick={() => connect(false)}
+          >
+            {t('connect')}
+          </button>
+          {isGoogleLinkedAccountConnector(connector) ? <GoogleOauthPrivacyNotice t={t} /> : null}
+          {messageBox}
+        </div>
       </ConnectionCard>
     )
   }
@@ -344,42 +474,49 @@ export function ConnectorConnectionCard({
           {usage.usable ? t('connected') : t('unused')}
         </StatusDot>
       }
-      summary={connectedGrantSummary(connector, activeGrant, t)}
+      summary={connectedGrantSummary(connector, activeGrants, t)}
       actions={
-        <button
-          type="button"
-          aria-expanded={open}
-          className={pillButton}
-          onClick={() => setOpen((v) => !v)}
-        >
-          {t('details')}
-          <span
-            aria-hidden="true"
-            className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-180' : ''}`}
+        <>
+          {supportsLinkedAccounts ? (
+            <button type="button" className={pillButton} onClick={startAdding}>
+              {t('addAccount')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-expanded={open}
+            className={pillButton}
+            onClick={() => setOpen((v) => !v)}
           >
-            ▾
-          </span>
-        </button>
+            {t('details')}
+            <span
+              aria-hidden="true"
+              className={`ml-1.5 inline-block transition-transform ${open ? 'rotate-180' : ''}`}
+            >
+              ▾
+            </span>
+          </button>
+        </>
       }
     >
       {open || message ? (
         <div className="space-y-4">
           {open && tabs.length > 1 ? (
             <div role="tablist" className="flex gap-1 border-b border-line/60">
-              {tabs.map((t) => (
+              {tabs.map((item) => (
                 <button
-                  key={t.id}
+                  key={item.id}
                   type="button"
                   role="tab"
-                  aria-selected={tab === t.id}
+                  aria-selected={tab === item.id}
                   className={`-mb-px border-b-2 px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    tab === t.id
+                    tab === item.id
                       ? 'border-coral text-ink'
                       : 'border-transparent text-ink-soft hover:text-ink'
                   }`}
-                  onClick={() => setTab(t.id)}
+                  onClick={() => setTab(item.id)}
                 >
-                  {t.label}
+                  {item.label}
                 </button>
               ))}
             </div>
@@ -389,43 +526,91 @@ export function ConnectorConnectionCard({
             <div className="space-y-3 text-xs leading-5 text-ink-soft">
               <p>{connectorDescription(connector, t)}</p>
               <p className={usage.usable ? 'text-sage' : 'text-honey'}>{usage.text}</p>
-              {connector.type === 'google_drive' ? (
-                <p>
-                  {(() => {
-                    const id = driveScopeProfile(parseDriveScopes(activeGrant.scopes as never))
-                    return id && id in DRIVE_DESC_KEYS
-                      ? t(DRIVE_DESC_KEYS[id as keyof typeof DRIVE_DESC_KEYS])
-                      : driveGrantScopeSummary(activeGrant.scopes).description
-                  })()}
-                </p>
-              ) : null}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line/50 pt-3">
-                {isGoogle ? (
-                  <p className="text-ink-faint">
-                    {t('changeLevelHint')}
-                  </p>
+              <p>{t('changeLevelHint')}</p>
+              <ul className="divide-y divide-line/50">
+                {activeGrants.map((grant) => (
+                  <li key={grant.id} className="space-y-2 py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-ink">{grantDisplayName(grant, t)}</span>
+                      <span>{scopeSummary(connector.type, grant.scopes, t)}</span>
+                    </div>
+                    {supportsLinkedAccounts ? (
+                      <NicknameField
+                        value={grant.nickname ?? ''}
+                        disabled={pending}
+                        t={t}
+                        showHint={false}
+                        onChange={(value) =>
+                          setLocalGrants((prev) =>
+                            prev.map((row) => (row.id === grant.id ? { ...row, nickname: value } : row)),
+                          )
+                        }
+                        onPreset={(value) => saveNickname(grant.id, value)}
+                      />
+                    ) : null}
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {supportsLinkedAccounts ? (
+                        <button
+                          type="button"
+                          disabled={pending}
+                          className={pillButton}
+                          onClick={() => saveNickname(grant.id, grant.nickname ?? '')}
+                        >
+                          {t('saveNickname')}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={pending}
+                        className="rounded-full px-3 py-1.5 text-xs font-semibold text-coral-deep transition-colors hover:bg-coral/10 disabled:opacity-50"
+                        onClick={() => revoke(grant.id)}
+                      >
+                        {t('disconnect')}
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {supportsLinkedAccounts ? (
+                adding ? (
+                  <div className="space-y-2 rounded-xl border border-dashed border-line px-3 py-3">
+                    <NicknameField value={nickname} disabled={pending} t={t} onChange={setNickname} />
+                    <div className="flex flex-wrap items-center gap-2">
+                      {hasScopeProfiles ? scopeSelect : null}
+                      <button
+                        type="button"
+                        disabled={pending || !nickname.trim()}
+                        className="rounded-full bg-coral px-4 py-1.5 text-xs font-semibold text-card shadow-sm disabled:opacity-50"
+                        onClick={() => connect(true)}
+                      >
+                        {t('connect')}
+                      </button>
+                    </div>
+                    {isGoogleLinkedAccountConnector(connector) ? (
+                      <GoogleOauthPrivacyNotice t={t} />
+                    ) : null}
+                  </div>
                 ) : (
-                  <span />
-                )}
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full px-3 py-1.5 text-xs font-semibold text-coral-deep transition-colors hover:bg-coral/10 disabled:opacity-50"
-                  onClick={revoke}
-                >
-                  {t('disconnect')}
-                </button>
-              </div>
+                  <button type="button" className={pillButton} onClick={startAdding}>
+                    {t('addAccount')}
+                  </button>
+                )
+              ) : null}
             </div>
           ) : null}
 
-          {open && tab === 'files' && showDrivePicker && driveMetadata ? (
-            <GoogleDrivePickerPanel
-              grantId={activeGrant.id}
-              initialMetadata={driveMetadata}
-              pickerConfigured={drivePickerConfigured}
-            />
-          ) : null}
+          {open && tab === 'files'
+            ? pickerGrants.map((grant) => (
+                <div key={grant.id} className="space-y-2">
+                  <p className="text-xs font-semibold text-ink">{grantDisplayName(grant, t)}</p>
+                  <GoogleDrivePickerPanel
+                    grantId={grant.id}
+                    initialMetadata={grantMetadata(grant.metadata ?? emptyGoogleDriveGrantMetadata())}
+                    pickerConfigured={drivePickerConfigured}
+                  />
+                </div>
+              ))
+            : null}
 
           {open && tab === 'created' ? (
             <ul className="divide-y divide-line/50 text-xs">
@@ -445,7 +630,7 @@ export function ConnectorConnectionCard({
               {history.map((grant) => (
                 <li key={grant.id} className="flex flex-wrap justify-between gap-x-3 py-1.5">
                   <span>
-                    {grant.accountLabel ?? '—'} ({grant.status})
+                    {grantDisplayName(grant, t)} ({grantStatusLabel(grant.status)})
                   </span>
                   <span>{formatDateTime(grant.grantedAt, locale)}</span>
                 </li>

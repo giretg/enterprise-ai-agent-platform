@@ -11,8 +11,6 @@
  * chunkOkfBundle, ahol a chunk sourceRef megőrzi az oldal/section/cella locus-t.
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import {
   extractStructured,
   extractTextContent,
@@ -21,9 +19,14 @@ import {
   columnLetter,
   toExtractionMetadata,
   readExtractionBlocks,
+  pdfTextQuality,
+  pdfPageQuality,
+  pdfQualityHint,
 } from '../src/lib/kb-extraction'
 import { buildOkfBundle, chunkOkfBundle, type OkfSourceRef } from '../src/lib/kb-v3'
 import ExcelJS from 'exceljs'
+import { kbPdfFixtures } from './fixtures/kb-pdf'
+import { parsePdfPages, renderPdfPages } from '../src/lib/kb-pdf-images'
 
 async function xlsxCreate(sheets: Array<{ name: string; rows: unknown[][] }>): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook()
@@ -131,15 +134,54 @@ async function run() {
   })
 
   await check('PDF → oldal-szintű source ref valós PDF-fixture-ből', async () => {
-    const buffer = readFileSync(
-      path.resolve(__dirname, 'fixtures/file-editor/sample.pdf'),
-    )
+    const { text: buffer } = await kbPdfFixtures()
     const ex = await extractStructured({ buffer, filename: 'sample.pdf' })
     assert.equal(ex.format, 'pdf')
     assert.ok(ex.blocks.length >= 1, 'legalább egy oldal')
     assert.equal(ex.blocks[0].sourceRef.page, 1, 'oldal-szintű forrás (§4.7)')
     assert.equal(ex.blocks[0].heading, 'Oldal 1')
     assert.ok(ex.blocks[0].text.length > 0, 'oldal szövege kereshető')
+  })
+
+  await check('PDF quality: text=ok, scan=no_text, mixed preserves every page and metadata', async () => {
+    const fixtures = await kbPdfFixtures()
+    for (const [name, expected] of [
+      ['text', ['ok']], ['scanned', ['no_text']], ['mixed', ['ok', 'no_text', 'low_text']],
+    ] as const) {
+      const ex = await extractStructured({ buffer: fixtures[name], filename: `${name}.pdf` })
+      const metadata = { extraction: toExtractionMetadata(ex) }
+      assert.deepEqual(ex.blocks.map((b) => b.textQuality), expected)
+      assert.deepEqual(pdfPageQuality(metadata).map((p) => p.textQuality), expected)
+      assert.deepEqual(pdfPageQuality(metadata).map((p) => p.page), expected.map((_, i) => i + 1))
+      assert.equal(!!pdfQualityHint(pdfPageQuality(metadata)), name !== 'text')
+    }
+    assert.equal(pdfTextQuality('  \n '), 'no_text')
+    assert.equal(pdfTextQuality('!'.repeat(100) + 'normal words'), 'low_text')
+    assert.equal(pdfTextQuality('中文文档内容'.repeat(12)), 'ok')
+  })
+
+  await check('PDF page ranges are bounded before expanding or rendering', async () => {
+    assert.deepEqual(parsePdfPages('1-3,3,7'), [1, 2, 3, 7])
+    assert.deepEqual(parsePdfPages(), [1])
+    for (const bad of ['', '0', '-1', '2-1', '1.5', '1,,2', 'Infinity', '9007199254740992']) {
+      assert.throws(() => parsePdfPages(bad), { code: 'invalid_pages' })
+    }
+    for (const bad of ['1-6', '1-5,7', '1-999999999']) {
+      assert.throws(() => parsePdfPages(bad), { code: 'too_many_pages' })
+    }
+    const { mixed } = await kbPdfFixtures()
+    await assert.rejects(renderPdfPages(mixed, '4'), { code: 'invalid_pages' })
+    const result = await renderPdfPages(mixed, '1-2')
+    assert.deepEqual(result.images.map((p) => p.page), [1, 2])
+    assert.equal(result.totalPages, 3)
+    for (const image of result.images) {
+      const png = Buffer.from(image.data, 'base64')
+      assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a')
+      assert.ok(Math.max(image.width, image.height) <= 1600)
+      assert.ok(png.byteLength < 5 * 1024 * 1024)
+    }
+    const landscape = await renderPdfPages(mixed, '3')
+    assert.ok(Math.max(landscape.images[0].width, landscape.images[0].height) <= 1600)
   })
 
   await check('end-to-end: blokkok → buildOkfBundle → chunk sourceRef megőrzi a locus-t', () => {

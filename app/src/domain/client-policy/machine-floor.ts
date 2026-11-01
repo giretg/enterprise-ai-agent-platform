@@ -1,0 +1,324 @@
+/**
+ * Hermes Managed Client — gép-padló generátor (#746 V1-8, spec §5.5, §9 R5, D9).
+ *
+ * A `/etc/hermes` gépenként egy, ezért a user látható agentjeire feloldott effektív
+ * policyk uniója (a legbővebb engedély). Ami egyik agentnél sem engedett, az
+ * `agent.disabled_toolsets`. A finomabb, user × agent döntés a Guardé.
+ *
+ * Nincs látható agent → minden kapuzott toolset tiltva (üres unió, fail-closed).
+ */
+import type { WarehouseAgentAccess } from '@/lib/warehouse-settings'
+import { createHash, randomUUID } from 'node:crypto'
+import { CAPABILITY_KEYS, capabilityLevels, type CapabilityKey } from '@/domain/client-policy/capabilities'
+import { DEFAULT_TOOL_CATALOG, type ToolCatalogEntry } from '@/domain/client-policy/tool-catalog'
+import { HARNESS_SUBSTITUTES } from '@/domain/enterprise-tools/harness-substitutes'
+import { getPolicySnapshot, type ClientPolicyStore, type PolicySnapshot } from '@/domain/client-policy/policy-service'
+import {
+  isHermesProfileName,
+  renderHermesBotConnector,
+  type HermesBotConnector,
+  type HermesBotSnapshot,
+} from '@/lib/agent-checkout'
+
+/**
+ * A toolset csak akkor kerül a padlóba, ha minden látható agent effektív szintje pontosan a tengely
+ * legszigorúbb, tiltó szintje. A kapuk a katalógusból jönnek (#872): egy toolset akkor kapuzható, ha
+ * minden eszköze ugyanarra a tengelyre tartozik, és annak legszigorúbb szintje tilt („denied”/„none”).
+ */
+function toolsetGates(catalog: readonly ToolCatalogEntry[]): { key: CapabilityKey; hiddenAt: readonly string[]; toolsets: string[] }[] {
+  const axes = new Map<string, Set<string>>()
+  for (const entry of catalog) {
+    const axis = entry.class.startsWith('capability:') ? entry.class.split(':')[1] : entry.class
+    for (const toolset of entry.toolsets ?? []) axes.set(toolset, (axes.get(toolset) ?? new Set()).add(axis))
+  }
+  const gates = new Map<CapabilityKey, string[]>()
+  for (const [toolset, set] of axes) {
+    const [axis] = set
+    if (set.size !== 1 || !(CAPABILITY_KEYS as readonly string[]).includes(axis)) continue
+    const key = axis as CapabilityKey
+    if (!['denied', 'none'].includes(capabilityLevels(key)[0])) continue
+    gates.set(key, [...(gates.get(key) ?? []), toolset])
+  }
+  return [...gates].map(([key, toolsets]) => ({ key, hiddenAt: hiddenLevels(key), toolsets }))
+}
+
+/**
+ * A tiltó szinten túl ott is rejtett a Hermes saját toolsetje, ahol egy céges „harness-pótló” dolgozik
+ * helyette (#1020: `web_search: company_egress` → a `web` toolset rejtve, a céges kereső az MCP-n).
+ * Ez csak UX: a döntés a Guardé és a szerveré.
+ */
+function hiddenLevels(key: CapabilityKey): readonly string[] {
+  const substitute = HARNESS_SUBSTITUTES.find((row) => row.capability === key && row.replacesClientToolset)
+  const levels = capabilityLevels(key)
+  return substitute ? levels.filter((level) => !substitute.clientBuiltinAt.includes(level)) : [levels[0]]
+}
+
+const TOOLSET_GATES = toolsetGates(DEFAULT_TOOL_CATALOG)
+
+/**
+ * Hermes aux feladatok, amelyek saját providerre kaphatnának (2026-10, hermes-agent main).
+ * Mindegyik `provider: main` + üres `fallback_chain` (H-1b: ne essen OpenRouterre).
+ * Szándékosan nincs `model` / `api_key` / `base_url`: a Hermes az üres `model: ""`
+ * stringet `gpt-4o-mini`-re cseréli, az üres `api_key` pedig JWT nélkül hívja a
+ * gatewayt (`401 invalid_token`), és a tömörítés nem fut.
+ */
+export const AUXILIARY_TASKS = [
+  'approval',
+  'compression',
+  'curator',
+  'kanban_decomposer',
+  'mcp',
+  'monitor',
+  'profile_describer',
+  'review',
+  'title_generation',
+  'triage_specifier',
+  'tts_audio_tags',
+  'vision',
+  'web_extract',
+] as const
+
+/**
+ * Ismert modell-szolgáltatói kulcsok és base-URL env-ek. A managed `.env` üresre pineli őket,
+ * ezért kulcs nélkül a `/model --provider openrouter` már a kliensépítésnél elhasal.
+ * Ha a folyamatban mégis van kulcs, a Guard HTTP-kapu + aux wrap a végrehajtásnál zár.
+ * Csak a Hermes folyamat env-jét írja felül, a gép többi programjáét nem.
+ */
+export const PINNED_EMPTY_ENV_KEYS = [
+  'AI_GATEWAY_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
+  'ARCEE_API_KEY',
+  'DASHSCOPE_API_KEY',
+  'DEEPINFRA_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'FIREWORKS_API_KEY',
+  'GEMINI_API_KEY',
+  'GMI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GROQ_API_KEY',
+  'KILOCODE_API_KEY',
+  'KIMI_API_KEY',
+  'MINIMAX_API_KEY',
+  'MISTRAL_API_KEY',
+  'MOONSHOT_API_KEY',
+  'NEBIUS_API_KEY',
+  'NOVITA_API_KEY',
+  'NVIDIA_API_KEY',
+  'OPENAI_API_BASE',
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENCODE_API_KEY',
+  'OPENROUTER_API_KEY',
+  'STEPFUN_API_KEY',
+  'TOGETHER_API_KEY',
+  'UPSTAGE_API_KEY',
+  'XAI_API_KEY',
+  'XIAOMI_API_KEY',
+  'ZAI_API_KEY',
+] as const
+
+/**
+ * A telepítő ide teszi a token-segédet és a shell-hook tartalékot. Windowson a `.cmd` wrapper
+ * a telepítéskor rögzített, gépszintű Pythont indítja `-I` kapcsolóval (#755).
+ */
+export const MACHINE_PLATFORMS = ['posix', 'windows'] as const
+export type MachinePlatform = (typeof MACHINE_PLATFORMS)[number]
+export const CLIENT_COMMANDS: Record<MachinePlatform, { keyCmd: string; guard: string }> = {
+  posix: { keyCmd: '/opt/excellence/bin/exc-token model', guard: '/opt/excellence/bin/exc-guard' },
+  windows: {
+    keyCmd: 'C:\\ProgramData\\Excellence\\bin\\exc-token.cmd model',
+    guard: 'C:\\ProgramData\\Excellence\\bin\\exc-guard.cmd',
+  },
+}
+export const GUARD_PLUGIN_NAME = 'excellence-guard'
+
+/** A Guard heartbeatje ugyanezt a kanonikus hash-t küldi (V1-6). A fájltartalom bájtja számít, a sorrend fix. */
+export const MANAGED_DIR_HASH_VERSION = 'excellence-managed-dir-v1'
+export const MANAGED_DIR_FILE_NAMES = ['config.yaml', '.env', 'excellence-install-id'] as const
+
+export type ManagedDirFiles = {
+  'config.yaml': string
+  '.env': string
+  'excellence-install-id': string
+}
+
+export type MachineFloorPackage = {
+  installId: string
+  platform: MachinePlatform
+  managedDirHash: string
+  gatewayBaseUrl: string
+  agentIds: string[]
+  disabledToolsets: string[]
+  files: ManagedDirFiles
+  /** Thin Hermes Bot connectors to write into ~/.hermes/profiles. Not part of managedDirHash. */
+  bots: HermesBotConnector[]
+}
+
+export interface MachineFloorStore {
+  /** Atomi kiosztás: párhuzamos első letöltések ugyanazt az ID-t kapják. */
+  getOrCreateInstallId(input: { tenantId: string; userId: string; installId: string }): Promise<string>
+  /** A `platform` nélküli hívás a posix hash-t írja, a Windows-hash-t békén hagyja. */
+  save(input: { tenantId: string; userId: string; installId: string; managedDirHash: string; platform?: MachinePlatform }): Promise<void>
+  /**
+   * A kiadott padlók hash-ei (posix és Windows külön). null = nincs ilyen install.
+   * Üres tömb = a sor megvan, de még egyik platformra sem került hash.
+   */
+  issuedHashes(input: { tenantId: string; userId: string; installId: string }): Promise<readonly string[] | null>
+}
+
+export type VisibleHermesBot = {
+  agentId: string
+  version: number
+  snapshot: HermesBotSnapshot
+  warehouseAccess?: WarehouseAgentAccess
+}
+
+export type MachineFloorDeps = {
+  policyStore: ClientPolicyStore
+  listVisibleAgentIds: (input: { tenantId: string; userId: string }) => Promise<string[]>
+  listVisibleBots?: (input: { tenantId: string; userId: string }) => Promise<VisibleHermesBot[]>
+  floors: MachineFloorStore
+  newInstallId?: () => string
+}
+
+const q = (value: string) => JSON.stringify(value)
+
+export function modelGatewayBaseUrl(origin: string): string {
+  const trimmed = origin.trim().replace(/\/$/, '')
+  if (!/^https?:\/\/[^/\s]+$/.test(trimmed)) throw new Error('bad_gateway_origin')
+  return `${trimmed}/api/model-gateway/v1`
+}
+
+/** Üres lista: minden kapu tilt (nincs agent, amin engedve lenne). */
+export function disabledToolsetsForPolicies(policies: readonly Pick<PolicySnapshot, 'capabilities'>[]): string[] {
+  const disabled = new Set<string>()
+  for (const gate of TOOLSET_GATES) {
+    if (policies.every((p) => gate.hiddenAt.includes(p.capabilities[gate.key]))) {
+      for (const toolset of gate.toolsets) disabled.add(toolset)
+    }
+  }
+  return [...disabled].sort()
+}
+
+export function renderManagedEnv(): string {
+  const lines = [
+    '# Excellence gép-padló: az ismert modell-kulcsok üresek, a Hermes nem írhatja felül őket.',
+    ...PINNED_EMPTY_ENV_KEYS.map((key) => `${key}=`),
+    '',
+  ]
+  return lines.join('\n')
+}
+
+export function renderManagedConfig(input: {
+  gatewayBaseUrl: string
+  disabledToolsets: readonly string[]
+  platform?: MachinePlatform
+}): string {
+  const commands = CLIENT_COMMANDS[input.platform ?? 'posix']
+  const url = q(input.gatewayBaseUrl)
+  const aux = AUXILIARY_TASKS.map(
+    (task) => `  ${task}:\n    provider: "main"\n    fallback_chain: []`,
+  ).join('\n')
+  const disabled =
+    input.disabledToolsets.length === 0
+      ? '  disabled_toolsets: []'
+      : `  disabled_toolsets:\n${[...input.disabledToolsets].sort().map((t) => `    - ${q(t)}`).join('\n')}`
+  return [
+    'model:',
+    '  provider: "excellence"',
+    `  base_url: ${url}`,
+    '  api_mode: "chat_completions"',
+    'providers:',
+    '  excellence:',
+    `    api: ${url}`,
+    `    key_cmd: ${q(commands.keyCmd)}`,
+    '    session_affinity_header: "X-Excellence-Session"',
+    'auxiliary:',
+    aux,
+    'fallback_providers: []',
+    'plugins:',
+    '  enabled:',
+    `    - ${q(GUARD_PLUGIN_NAME)}`,
+    '  disabled: []',
+    'hooks:',
+    '  pre_tool_call:',
+    `    - command: ${q(commands.guard)}`,
+    '      timeout: 30',
+    '      fail_closed: true',
+    'hooks_auto_accept: true',
+    'security:',
+    '  redact_secrets: true',
+    'agent:',
+    disabled,
+    '',
+  ].join('\n')
+}
+
+export function managedDirHash(files: ManagedDirFiles): string {
+  const body = MANAGED_DIR_FILE_NAMES.map((name) => {
+    const digest = createHash('sha256').update(files[name]).digest('hex')
+    return `${name}\n${digest}\n`
+  }).join('')
+  return createHash('sha256').update(`${MANAGED_DIR_HASH_VERSION}\n${body}`).digest('hex')
+}
+
+export function buildManagedFiles(input: {
+  gatewayBaseUrl: string
+  disabledToolsets: readonly string[]
+  installId: string
+  platform?: MachinePlatform
+}): { files: ManagedDirFiles; managedDirHash: string } {
+  const files: ManagedDirFiles = {
+    'config.yaml': renderManagedConfig(input),
+    '.env': renderManagedEnv(),
+    'excellence-install-id': `${input.installId}\n`,
+  }
+  return { files, managedDirHash: managedDirHash(files) }
+}
+
+export async function resolveMachineFloor(
+  deps: Pick<MachineFloorDeps, 'policyStore' | 'listVisibleAgentIds'>,
+  input: { tenantId: string; userId: string },
+): Promise<{ agentIds: string[]; disabledToolsets: string[] }> {
+  const agentIds = [...(await deps.listVisibleAgentIds(input))].sort()
+  const policies = await Promise.all(agentIds.map((agentId) => getPolicySnapshot(deps.policyStore, { ...input, agentId })))
+  return { agentIds, disabledToolsets: disabledToolsetsForPolicies(policies) }
+}
+
+export async function issueMachineFloor(
+  deps: MachineFloorDeps,
+  input: {
+    tenantId: string
+    userId: string
+    gatewayBaseUrl: string
+    platform?: MachinePlatform
+    mcpUrl?: string
+    tenantSlug?: string
+  },
+): Promise<MachineFloorPackage> {
+  const platform = input.platform ?? 'posix'
+  const { agentIds, disabledToolsets } = await resolveMachineFloor(deps, input)
+  const installId = await deps.floors.getOrCreateInstallId({ ...input, installId: (deps.newInstallId ?? randomUUID)() })
+  const built = buildManagedFiles({ gatewayBaseUrl: input.gatewayBaseUrl, disabledToolsets, installId, platform })
+  await deps.floors.save({ tenantId: input.tenantId, userId: input.userId, installId, managedDirHash: built.managedDirHash, platform })
+  const bots: HermesBotConnector[] = []
+  if (input.mcpUrl && input.tenantSlug && deps.listVisibleBots) {
+    const seen = new Set<string>()
+    for (const bot of await deps.listVisibleBots(input)) {
+      const connector = renderHermesBotConnector({
+        agentId: bot.agentId,
+        version: bot.version,
+        snapshot: bot.snapshot,
+        mcpUrl: input.mcpUrl,
+        tenantSlug: input.tenantSlug,
+        warehouseAccess: bot.warehouseAccess,
+      })
+      if (!isHermesProfileName(connector.profile) || seen.has(connector.profile)) continue
+      seen.add(connector.profile)
+      bots.push(connector)
+    }
+    bots.sort((a, b) => a.profile.localeCompare(b.profile))
+  }
+  return { installId, platform, gatewayBaseUrl: input.gatewayBaseUrl, agentIds, disabledToolsets, bots, ...built }
+}

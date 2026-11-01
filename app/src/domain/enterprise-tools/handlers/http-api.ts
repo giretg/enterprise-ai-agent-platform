@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import type { TenantLanguage } from '@/lib/tenant-language'
 import {
+  DEFAULT_MAX_RESPONSE_CHARS,
   findHttpApiEndpoint,
   HttpApiClient,
   HttpApiError,
@@ -7,12 +9,17 @@ import {
   resolveConnectorApiKey,
   type HttpApiConfig,
 } from '@/domain/connector/http-api-client'
+import { capHttpApiResultForModel } from '@/domain/connector/http-api-prompt'
 import {
   paginateHttpApiGet,
   resolveHttpApiPaginatePlan,
   type HttpApiPaginateQuery,
 } from '@/domain/connector/http-api-paginate'
 import { requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
+import {
+  loadGoogleAdsDeveloperToken,
+  type GoogleAdsDeveloperTokenResolved,
+} from '@/lib/google-ads-developer-token'
 import type { LiveConnectorRow } from '../authorize-tool-call'
 import {
   HTTP_API_GET_ALL_TOOL,
@@ -40,6 +47,15 @@ function scalarQuery(value: unknown): HttpApiPaginateQuery | undefined {
   return Object.keys(query).length > 0 ? query : undefined
 }
 
+function stringMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const out: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') out[key] = entry
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 function parseBody(value: unknown): unknown {
   if (typeof value !== 'string' || value.trim() === '') return undefined
   try {
@@ -58,11 +74,59 @@ async function defaultApiKey(
   return undefined
 }
 
-function clientFor(config: HttpApiConfig, apiKey: string | undefined): HttpApiClient {
-  return new HttpApiClient(config, {
-    defaultApiKey: apiKey,
-    resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
-  })
+function clientFor(
+  config: HttpApiConfig,
+  apiKey: string | undefined,
+  language?: TenantLanguage,
+  allowedEgressHosts?: string[],
+): HttpApiClient {
+  return new HttpApiClient(
+    { ...config, ...(allowedEgressHosts ? { allowedEgressHosts } : {}) },
+    {
+      defaultApiKey: apiKey,
+      resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
+    },
+    undefined,
+    language ? { language } : undefined,
+  )
+}
+
+const DEVELOPER_TOKEN_HEADER = 'developer-token'
+
+/**
+ * Google Ads: a developer token platform-szintű (PlatformSetting / env), a platform injektálja
+ * minden hívásra. Régi konnektoron a tenant configjában tárolt fejléc csak tartalék, ha a
+ * platformon még nincs beállítva.
+ */
+export async function applyPlatformGoogleAdsDeveloperToken(
+  config: HttpApiConfig,
+  load: () => Promise<GoogleAdsDeveloperTokenResolved | null> = () => loadGoogleAdsDeveloperToken(),
+): Promise<HttpApiConfig> {
+  if (config.googleAccount?.provider !== 'google-ads') return config
+  let resolved: GoogleAdsDeveloperTokenResolved | null = null
+  try {
+    resolved = await load()
+  } catch {
+    resolved = null
+  }
+  const legacyHeaders = Object.entries(config.requestHeaders ?? {})
+  const hasLegacy = legacyHeaders.some(([name, value]) => name.toLowerCase() === DEVELOPER_TOKEN_HEADER && value.trim())
+  if (!resolved) {
+    if (hasLegacy) return config
+    throw new HttpApiError(
+      'Google Ads developer token is not configured on the platform',
+      'google_ads_developer_token_missing',
+      undefined,
+      'A Google Ads eléréséhez a platform üzemeltetőjének be kell állítania a Google Ads developer tokent (Platform · Beállítások → Google API). Ezt a cég adminja nem tudja pótolni — jelezd a felhasználónak.',
+    )
+  }
+  return {
+    ...config,
+    requestHeaders: {
+      ...Object.fromEntries(legacyHeaders.filter(([name]) => name.toLowerCase() !== DEVELOPER_TOKEN_HEADER)),
+      [DEVELOPER_TOKEN_HEADER]: resolved.developerToken,
+    },
+  }
 }
 
 /** A published definition agentje — nem a modell args.agentId-je. */
@@ -75,6 +139,11 @@ export async function executeHttpApiTool(
   delegatedAccessToken?: string,
   actingUser?: { id: string; email: string; tenantId: string | null } | null,
   agent?: HttpApiCallAgent,
+  /**
+   * #717 B réteg: a modellnek szóló hintek nyelve. Opcionális — hiányában `hu`.
+   */
+  language?: TenantLanguage,
+  allowedEgressHosts?: string[],
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -91,14 +160,23 @@ export async function executeHttpApiTool(
       status: 400,
       body: null,
       hint:
-        `A(z) "${path}" teljes nyilvántartásnak tűnik. ` +
-        'Ehhez kötelező a http_api_get_all; a sima http_api_get csak egy oldalt adhat vissza.',
+        language === 'en'
+          ? `The "${path}" looks like a full registry. ` +
+            'http_api_get_all is mandatory here; plain http_api_get may return just one page.'
+          : `A(z) "${path}" teljes nyilvántartásnak tűnik. ` +
+            'Ehhez kötelező a http_api_get_all; a sima http_api_get csak egy oldalt adhat vissza.',
     }
   }
 
-  const config = parseHttpApiConfig(connector.config)
+  const config = await applyPlatformGoogleAdsDeveloperToken(parseHttpApiConfig(connector.config))
+  const forModel = (result: unknown) =>
+    capHttpApiResultForModel({
+      result,
+      maxChars: config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS,
+      language,
+    })
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
-  const client = clientFor(config, apiKey)
+  const client = clientFor(config, apiKey, language, allowedEgressHosts)
   const callId = randomUUID()
   // X-Agent-Id a published definitionből jön. args.agentId csak akkor esik be,
   // ha egy hívó (régi teszt / kötött kliens) még nem adta át a 6. paramétert —
@@ -132,8 +210,11 @@ export async function executeHttpApiTool(
         itemCount: 0,
         items: [],
         error:
-          'A végponthoz nincs megbízható lapozási szerződés. ' +
-          'Frissítsd a connector OpenAPI snapshotját, vagy add meg az endpoint.pagination konfigurációt.',
+          language === 'en'
+            ? 'No reliable pagination contract for this endpoint. ' +
+              'Refresh the connector OpenAPI snapshot, or provide the endpoint.pagination config.'
+            : 'A végponthoz nincs megbízható lapozási szerződés. ' +
+              'Frissítsd a connector OpenAPI snapshotját, vagy add meg az endpoint.pagination konfigurációt.',
       }
     }
     const outcome = await paginateHttpApiGet({
@@ -141,6 +222,7 @@ export async function executeHttpApiTool(
       path,
       baseUrl: config.baseUrl,
       baseQuery: scalarQuery(args.query),
+      language,
       fetchPage: async (query, pagePath) => {
         const page = await client.request({
           method: 'GET',
@@ -159,16 +241,16 @@ export async function executeHttpApiTool(
       },
     })
     if (!outcome.ok) {
-      return {
+      return forModel({
         ok: false,
         path,
         pageCount: outcome.pageCount,
         itemCount: outcome.items.length,
         items: outcome.items,
         error: outcome.error,
-      }
+      })
     }
-    return {
+    return forModel({
       ok: true,
       path,
       pageCount: outcome.pageCount,
@@ -180,23 +262,29 @@ export async function executeHttpApiTool(
         strategy: outcome.strategy,
         stopReason: outcome.stopReason,
       },
-    }
-  }
-
-  if (toolName === HTTP_API_GET_TOOL) {
-    return client.request({
-      method: 'GET',
-      path,
-      query: scalarQuery(args.query),
-      context,
     })
   }
 
-  return client.request({
-    method: optionalString(args.method) ?? 'POST',
-    path,
-    query: scalarQuery(args.query),
-    body: parseBody(args.body),
-    context,
-  })
+  if (toolName === HTTP_API_GET_TOOL) {
+    return forModel(
+      await client.request({
+        method: 'GET',
+        path,
+        query: scalarQuery(args.query),
+        headers: stringMap(args.headers),
+        context,
+      }),
+    )
+  }
+
+  return forModel(
+    await client.request({
+      method: optionalString(args.method) ?? 'POST',
+      path,
+      query: scalarQuery(args.query),
+      headers: stringMap(args.headers),
+      body: parseBody(args.body),
+      context,
+    }),
+  )
 }

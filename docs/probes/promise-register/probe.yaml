@@ -1,0 +1,12 @@
+id: promise-register
+issue: 672
+slice: A
+prompt: prompt.txt
+expectedTools:
+  - platform.promise.register
+checks:
+  - Calls platform.promise.list at session start.
+  - Resolves Friday to an absolute future ISO dueAt in Europe/Budapest.
+  - Registers the callback before or when communicating the promise.
+  - Uses the published definitionId (or the bound agent) and authenticated owner.
+  - Does not claim a reminder or scheduled callback has been installed.

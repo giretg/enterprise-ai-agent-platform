@@ -11,12 +11,21 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
       'google_drive_read_file',
       'google_drive_create_folder',
       'google_drive_upload_file',
+      'google_drive_update_file',
       'google_sheets_write_range',
     ],
   },
   {
     label: 'Gmail',
     tools: [
+      'mail_list_accounts',
+      'mail_search',
+      'mail_get_message',
+      'mail_get_thread',
+      'mail_get_attachment',
+      'mail_send',
+      'mail_create_draft',
+      'mail_mark',
       'gmail_search',
       'gmail_get_message',
       'gmail_get_thread',
@@ -31,9 +40,20 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
   { label: 'Céges API', tools: ['http_api_get', 'http_api_get_all', 'http_api_request'] },
   {
     label: 'Tudásbázis',
-    tools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_get_document', 'kb_ingest'],
+    tools: [
+      'kb_search',
+      'kb_list_index',
+      'kb_get_page',
+      'kb_get_document',
+      'kb_ingest',
+      'kb_wiki_write',
+      'kb_wiki_changes',
+      'kb_wiki_revert',
+    ],
   },
   { label: 'Kódfuttatás', tools: ['sandbox_run'] },
+  { label: 'Webes keresés', tools: ['web_search'] },
+  { label: 'Külső MCP-szerver', tools: ['mcp_list_tools', 'mcp_call'] },
 ]
 
 export const CLOSED_ROLE_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = []
