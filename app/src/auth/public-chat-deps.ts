@@ -165,6 +165,7 @@ export function publicChatDeps(): PublicChatDeps {
   return {
     store: publicChatStore,
     verifyTurnstile: turnstileConfigured() ? verifyTurnstile : null,
+    botProtectionReady: turnstileConfigured() || process.env.NODE_ENV !== 'production',
     secret: publicChatSecret(),
     rateLimit,
     audit: repositories.audit,

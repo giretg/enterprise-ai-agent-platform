@@ -206,6 +206,26 @@ async function main() {
     assert.equal([...store.sessions.values()][0].messages.length, 2)
   })
 
+  await check('folyamatban lévő válasz közben a törlés nem jelez hamis sikert', async () => {
+    const store = makeStore()
+    let release!: () => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const entered = new Promise<void>((resolve) => { started = resolve })
+    const d = deps(store, { turnDeps: () => ({ ...turnDeps([]), callModel: async () => {
+      started(); await gate; return reply('kész')
+    } }) })
+    const pending = send(d, {})
+    await entered
+    const erase = () => handlePublicChat(d, { slug: 'bolt', body: { op: 'delete', visitorId: VISITOR }, ip: '1.2.3.4', origin: null })
+    assert.equal((await erase()).status, 429)
+    assert.equal(store.sessions.size, 1)
+    release()
+    assert.equal((await pending).status, 200)
+    assert.equal((await erase()).body.deleted, 1)
+    assert.equal(store.sessions.size, 0)
+  })
+
   await check('későbbi modellhiba sem veszíti el a már felmerült költséget; teszt is a napi keretet terheli', async () => {
     const store = makeStore()
     let calls = 0
@@ -456,6 +476,18 @@ async function main() {
     const testOk = await send(d, { testToken: issueTestToken(SECRET, AGENT, NOW), turnstileToken: 'ok' })
     assert.equal(testOk.status, 200)
     assert.deepEqual(tokens, ['bad', 'ok', 'bad', 'ok'])
+  })
+
+  await check('hiányzó éles botvédelem nem indít új beszélgetést vagy modellhívást', async () => {
+    const store = makeStore()
+    let called = false
+    const d = deps(store, { botProtectionReady: false, turnDeps: () => ({ ...turnDeps([]), callModel: async () => {
+      called = true
+      return reply('x')
+    } }) })
+    assert.equal((await send(d, {})).status, 503)
+    assert.equal(store.sessions.size, 0)
+    assert.equal(called, false)
   })
 
   await check('teszt-token a kimerült napi keretet sem kerülheti meg', async () => {

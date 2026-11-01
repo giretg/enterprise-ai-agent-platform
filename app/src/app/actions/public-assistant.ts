@@ -29,6 +29,7 @@ import { extractJsonObject } from '@/lib/extract-json-object'
 import { readTenantLanguage } from '@/lib/tenant-language'
 import { fail, ok } from '@/lib/result'
 import { repositories } from '@/repositories/postgres'
+import { publicChatStore } from '@/repositories/postgres/public-chat-store'
 
 const MAX_KB_TEXT_CHARS = 200_000
 
@@ -463,20 +464,24 @@ export async function deletePublicConversationAction(input: { agentId: string; s
     const where = input.sessionId
       ? { id: input.sessionId, agentId: row.agentId, tenantId: ctx.activeTenantId }
       : { visitorId: input.visitorId!, agentId: row.agentId, tenantId: ctx.activeTenantId }
-    const res = await prisma.publicChatSession.deleteMany({ where })
-    await writeAudit(repositories.audit, {
-      actorType: 'human',
-      actorId: ctx.user.id,
-      action: input.sessionId ? 'public_chat.conversation_deleted' : 'public_chat.visitor_erased',
-      targetType: 'agent',
-      targetId: row.agentId,
-      policyDecision: 'deleted',
-      // A látogató-azonosítót nem írjuk az auditba (törlés után se maradjon visszakereshető nyom).
-      metadata: { deleted: res.count, scope: input.sessionId ? 'session' : 'visitor' },
-      tenantId: ctx.activeTenantId,
+    const deleted = await publicChatStore.withTurnLock(ctx.activeTenantId, async () => {
+      const res = await prisma.publicChatSession.deleteMany({ where })
+      await writeAudit(repositories.audit, {
+        actorType: 'human',
+        actorId: ctx.user.id,
+        action: input.sessionId ? 'public_chat.conversation_deleted' : 'public_chat.visitor_erased',
+        targetType: 'agent',
+        targetId: row.agentId,
+        policyDecision: 'deleted',
+        // A látogató-azonosítót nem írjuk az auditba (törlés után se maradjon visszakereshető nyom).
+        metadata: { deleted: res.count, scope: input.sessionId ? 'session' : 'visitor' },
+        tenantId: ctx.activeTenantId,
+      })
+      return res.count
     })
+    if (deleted === null) return fail('Az asszisztens éppen válaszol. Próbáld újra a törlést egy kicsit később.')
     revalidatePath(path(row.agentId))
-    return ok({ deleted: res.count })
+    return ok({ deleted })
   } catch (e) {
     return fail(message(e))
   }

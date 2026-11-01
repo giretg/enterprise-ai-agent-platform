@@ -81,8 +81,9 @@ export interface PublicChatStore {
 
 export type PublicChatDeps = {
   store: PublicChatStore
-  /** Turnstile-token ellenőrzés (D13); `null` = nincs beállítva (a konfigurátor figyelmeztet). */
+  /** Turnstile-token ellenőrzés (D13); `null` csak helyi fejlesztésben engedett. */
   verifyTurnstile: ((token: string, ip: string | null) => Promise<boolean>) | null
+  botProtectionReady?: boolean
   /** A tényleges modell- és eszköz-hívások egy adott asszisztensre szűkítve. */
   turnDeps: (input: {
     tenantId: string
@@ -226,22 +227,21 @@ export async function handlePublicChat(
   if (!visitorId) return { status: 400, body: { error: 'bad_request' } }
   const sessionId = typeof b.sessionId === 'string' && UUID_RE.test(b.sessionId) ? b.sessionId : null
 
-  if (op === 'delete') {
-    // D18: „Beszélgetés törlése” — a látogató csak a saját (visitorId-hoz kötött) beszélgetéseit törölheti.
-    const deleted = await deps.store.deleteVisitorSessions({ agentId: row.agentId, visitorId, sessionId: sessionId ?? undefined })
-    await writeAudit(deps.audit, {
-      actorType: 'system',
-      action: 'public_chat.visitor_deleted',
-      targetType: 'agent',
-      targetId: row.agentId,
-      policyDecision: 'allowed',
-      metadata: { deleted, scope: sessionId ? 'session' : 'visitor' },
-      tenantId: row.tenantId,
-    })
-    return { status: 200, body: { ok: true, deleted } }
-  }
-
   const run = async (): Promise<PublicChatResponse> => {
+    if (op === 'delete') {
+      // A törlés ugyanazzal a zárral fut, mint az írás: siker után nem maradhat félkész forduló.
+      const deleted = await deps.store.deleteVisitorSessions({ agentId: row.agentId, visitorId, sessionId: sessionId ?? undefined })
+      await writeAudit(deps.audit, {
+        actorType: 'system',
+        action: 'public_chat.visitor_deleted',
+        targetType: 'agent',
+        targetId: row.agentId,
+        policyDecision: 'allowed',
+        metadata: { deleted, scope: sessionId ? 'session' : 'visitor' },
+        tenantId: row.tenantId,
+      })
+      return { status: 200, body: { ok: true, deleted } }
+    }
     const existing = sessionId ? await deps.store.findSession(sessionId) : null
     const session = existing && sessionUsable(existing, row.agentId, visitorId, isTest, now) ? existing : null
 
@@ -260,6 +260,7 @@ export async function handlePublicChat(
 
     let active = session
     if (!active) {
+      if (deps.botProtectionReady === false) return { status: 503, body: unavailableBody(config) }
       // D22: a teszt-token ugyanazokat a korlátokat kapja (Turnstile, IP/óra) — csak az analitikán
       // (jelzések, beszélgetéslista, betöltés-állapot) kívül. Különben egy kiszivárgott 1 órás
       // kipróbálás-link korlátlan billable modellhívásra és új munkamenetekre nyitna.
@@ -352,7 +353,7 @@ export async function handlePublicChat(
     })
     return { status: 200, body: { sessionId: sessionRef.id, reply: turn.reply, handoff: turn.handoff } }
   }
-  if (op !== 'send') return run()
+  if (op === 'history') return run()
   return (await deps.store.withTurnLock(row.tenantId, run)) ?? {
     status: 429,
     body: { error: 'rate_limited', message: 'Az asszisztens éppen válaszol. Próbáld újra egy kicsit később.' },
