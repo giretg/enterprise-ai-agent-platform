@@ -476,7 +476,8 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
           const message = graphMessage(account, row)
           if (message) messages.push(message)
         }
-        if (messages.length >= MICROSOFT_THREAD_MAX_MESSAGES) break
+        // A lapszám-korlát (10 × $top=50 ≤ 500 levél) tartja a memóriát; nem laponként
+        // vágunk, különben a (page-sorrendtől függően) legújabb levelek eshetnének ki.
         const next = isRecord(raw) && typeof raw['@odata.nextLink'] === 'string' ? raw['@odata.nextLink'] : ''
         // A nextLink a Graph saját, abszolút URL-je; fix originhez kötjük (nincs tetszőleges egress).
         url = next.startsWith(GRAPH_ORIGIN) ? next : ''
@@ -484,7 +485,9 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
       // A Graph a $filter+$orderby kombinációt elutasítja ezen a lekérdezésen, ezért
       // a szálat kliensoldalon rendezzük időrendbe (determinisztikus, teljes beszélgetés).
       messages.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-      return { threadId, messages: messages.slice(0, MICROSOFT_THREAD_MAX_MESSAGES) }
+      // A korlát fölött a LEGÚJABB leveleket tartjuk meg (válaszhoz/összegzéshez ezek
+      // a fontosak), de időrendben adjuk vissza.
+      return { threadId, messages: messages.slice(-MICROSOFT_THREAD_MAX_MESSAGES) }
     },
     async getAttachment(messageId, attachmentId) {
       const raw = await graphFetch(
@@ -590,6 +593,8 @@ export function mailProviderFor(
   connector: LiveConnectorRow,
   accessToken: string | undefined,
   account: string,
+  // Csak a Microsoft/Graph út hív közvetlen `fetch`-et; a Gmail/AgentMail saját klienst
+  // épít, ezért ott a fetchImpl nem értelmezett (teszt-injektálás a Graph-úthoz).
   fetchImpl: typeof fetch = fetch,
 ): MailProvider {
   const info = mailboxConnectorInfo(connector)

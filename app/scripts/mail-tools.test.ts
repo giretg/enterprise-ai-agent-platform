@@ -493,6 +493,45 @@ async function main() {
     assert.ok(thread.messages.length <= 250, 'a szál legfeljebb 250 levélre korlátozott')
   })
 
+  await check('Microsoft 365 szál: a korlát fölött a legújabb levelek maradnak', async () => {
+    const { mailProviderFor } = await import('../src/domain/mail/providers')
+    const connector: LiveConnectorRow = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      tenantId: TENANT_ID,
+      type: 'http_api',
+      authMode: 'service',
+      lifecycleState: 'active',
+      name: 'Microsoft 365 · info@ceg.hu',
+      config: { provenance: { templateKey: 'microsoft-365' } },
+    }
+    // 6 lap × 50 = 300 levél, növekvő perccel (n korábbi = régebbi) → a cap fölött a régit dobjuk.
+    let calls = 0
+    const fakeFetch = (async () => {
+      const base = calls * 50
+      calls++
+      const value = Array.from({ length: 50 }, (_, i) => {
+        const n = base + i
+        return {
+          id: `n${String(n).padStart(3, '0')}`,
+          conversationId: 'conv-1',
+          subject: 's',
+          receivedDateTime: `2024-01-01T${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}:00Z`,
+        }
+      })
+      return {
+        status: 200,
+        ok: true,
+        json: async () => (base + 50 < 300 ? { value, '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/messages?$skip=' + (base + 50) } : { value }),
+      } as unknown as Response
+    }) as unknown as typeof fetch
+    const provider = mailProviderFor(connector, 'tok-live', 'info@ceg.hu', fakeFetch)
+    const thread = await provider.getThread('conv-1')
+    assert.equal(thread.messages.length, 250, 'pontosan a korlát annyi levél marad')
+    // A legrégebbi (n000) kiesik, a legújabb (n299) bent van; időrendben az utolsó.
+    assert.ok(!thread.messages.some((m) => m.messageId === 'n000'), 'a legrégebbi levél kiesik')
+    assert.equal(thread.messages[thread.messages.length - 1].messageId, 'n299', 'a legújabb levél bent van, időrend végén')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt megbukott`)
     process.exit(1)
