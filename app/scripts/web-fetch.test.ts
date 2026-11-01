@@ -209,12 +209,32 @@ async function main() {
     assert.match(out.text, /\| EUR \| 395,12/)
     for (const noise of ['Menü', 'steal', '© MNB', 'Ignore previous', '.x{}']) assert.ok(!out.text.includes(noise), noise)
     assert.deepEqual(out.links, [{ text: 'Archívum', url: 'https://www.mnb.hu/arfolyam-archivum' }])
+    assert.equal(out.notice, undefined)
     // Rosszindulatú oldal: lezáratlan tagek / kommentek tömege, sok „#” sem lassít (lineáris feldolgozás).
     for (const unit of ['<nav>', '<a href="x">', '<main>', '<tr>', '<!--', '<', '# ', '<h1']) {
       const started = Date.now()
       htmlToReadable(unit.repeat(Math.ceil(1_000_000 / unit.length)), MNB)
       assert.ok(Date.now() - started < 1500, `lassú feldolgozás: ${unit}`)
     }
+  })
+
+  await check('HTML méretkorlát: script-ballaszt után a main megmarad; vágáskor notice, nem csendes EOF', async () => {
+    // Korábbi hibás sorrend: raw.slice(3M) a script közepén vágott → a <main> soha nem került a keretbe.
+    const ballast = `<script>${'x'.repeat(3_500_000)}</script>`
+    const html = `<!doctype html><html><head><title>Készlet</title>${ballast}</head><body>
+      <main><h1>Raktár</h1><p>SKU-9999: 42 db</p><a href="/keszlet-archivum">Archívum</a></main>
+    </body></html>`
+    const recovered = htmlToReadable(html, MNB)
+    assert.equal(recovered.title, 'Készlet')
+    assert.match(recovered.text, /SKU-9999: 42 db/)
+    assert.equal(recovered.notice, undefined)
+    assert.deepEqual(recovered.links, [{ text: 'Archívum', url: 'https://www.mnb.hu/keszlet-archivum' }])
+
+    // A keretet túllépő, zajmentes törzs: a vágás notice-szal jelezze, hogy a lapozás nem teljes.
+    const hugeMain = `<!doctype html><html><head><title>Nagy</title></head><body><main><p>${'x'.repeat(3_100_000)}</p></main></body></html>`
+    const capped = htmlToReadable(hugeMain, MNB)
+    assert.match(capped.notice ?? '', /truncated/i)
+    assert.ok(capped.text.length > 0)
   })
 
   await check('AC5: PDF → oldalankénti szöveg; üres (képes) PDF → közérthető megjegyzés; ismeretlen bináris → elutasítás', async () => {
@@ -333,6 +353,20 @@ async function main() {
     assert.equal(last.untrustedWebContent, 'b'.repeat(1000))
     assert.equal(last.nextOffset, undefined)
     assert.deepEqual(sliceContent('abc', 10, 5), { text: '', nextOffset: null })
+  })
+
+  await check('HTML forrásvágás: contentNotice a tool válaszban (ne tűnjön teljesnek a lap)', async () => {
+    const result = await call(
+      deps({
+        known: [hashOf(MNB)],
+        result: page({ text: 'részleges tartalom', notice: 'HTML was truncated before parsing because the page exceeded the size limit; later sections may be missing.' }),
+      }),
+      { url: MNB },
+    )
+    const payload = payloadOf(result)
+    assert.match(String(payload.contentNotice), /truncated/i)
+    assert.equal(payload.nextOffset, undefined)
+    assert.equal(payload.untrustedWebContent, 'részleges tartalom')
   })
 
   await check('policy, agent-jog, tiltott domain, napi keret: letöltés előtt elutasítva (AC7)', async () => {

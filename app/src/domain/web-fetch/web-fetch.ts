@@ -261,14 +261,26 @@ function extractLinks(html: string, baseUrl: string): Array<{ text: string; url:
   return links
 }
 
+const HTML_TRUNCATED_NOTICE =
+  'HTML was truncated before parsing because the page exceeded the size limit; later sections may be missing.'
+
+/**
+ * Olvasható szöveg HTML-ből. A méretkorlát a futtatható/zaj blokkok eltávolítása UTÁN érvényes:
+ * különben egy nagy `<script>`/`<style>` elől elnyelheti a 3M keretet, és a `<main>` tartalom
+ * csendben elveszne — a lapozás pedig teljesnek látszana (`totalChars` / hiányzó `nextOffset`).
+ */
 export function htmlToReadable(raw: string, baseUrl: string): Omit<ReadableContent, 'kind'> {
-  const html = raw.slice(0, MAX_HTML_CHARS)
-  const title = collapse(decodeEntities(stripTags(innerOf(html, 'title', 'first')?.slice(0, 2000) ?? ''))) || null
-  const region = mainRegion(stripExecutable(html))
+  // A `<title>` a `<head>`-ben van; a stripExecutable a head-et is kidobja, ezért a cím a nyers HTML-ből jön.
+  const title = collapse(decodeEntities(stripTags(innerOf(raw, 'title', 'first')?.slice(0, 2000) ?? ''))) || null
+  const cleaned = stripExecutable(raw)
+  const truncated = cleaned.length > MAX_HTML_CHARS
+  const html = truncated ? cleaned.slice(0, MAX_HTML_CHARS) : cleaned
+  const region = mainRegion(html)
   return {
     title,
     text: collapse(decodeEntities(stripTags(structureToText(region)))),
     links: extractLinks(region, baseUrl),
+    ...(truncated ? { notice: HTML_TRUNCATED_NOTICE } : {}),
   }
 }
 
