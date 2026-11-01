@@ -2,7 +2,7 @@
  * A worker HTTP-API-ja. A böngésző (platform UI) a chat-tokennel hívja, CORS csak a platform originjére.
  * A `/internal/step`-et csak a Cloud Tasks hívhatja (Google OIDC).
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { bearer, verifyChatToken, verifyGoogleOidc, type ChatClaims } from './auth.ts'
 import {
@@ -82,9 +82,25 @@ function publicConversation(c: Conversation) {
     agentId: c.agentId,
     agentName: c.agentName,
     title: c.title || 'Új beszélgetés',
+    origin: c.origin,
     createdAt: c.createdAt.toISOString(),
     lastActivityAt: c.lastActivityAt.toISOString(),
   }
+}
+
+/**
+ * #1032: platform által indított beszélgetés (bejövő levél). Az `instructions` a system promptba kerül, ezért
+ * csak akkor fogadjuk el, ha a token a platform szerveroldali tokenje (`origin`), és a hash egyezik.
+ */
+export function systemOrigin(claims: ChatClaims, body: Record<string, unknown>): { origin?: 'inbound_mail'; instructions?: string; title?: string } {
+  if (body.origin === undefined && body.instructions === undefined) return {}
+  const instructions = typeof body.instructions === 'string' ? body.instructions : ''
+  const hash = createHash('sha256').update(instructions, 'utf8').digest('hex')
+  if (body.origin !== 'inbound_mail' || claims.origin !== 'inbound_mail' || !claims.ih || claims.ih !== hash || instructions.length > 8000) {
+    throw new HttpError(403, 'origin_not_allowed')
+  }
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : ''
+  return { origin: 'inbound_mail', instructions, ...(title ? { title } : {}) }
 }
 
 export function createHandler(deps: ServerDeps) {
@@ -256,6 +272,7 @@ export function createHandler(deps: ServerDeps) {
           userId: claims.sub,
           agentId,
           agentName: agent.name,
+          ...systemOrigin(claims, body),
         })
         return ok(201, { conversation: publicConversation(c) })
       }

@@ -527,6 +527,9 @@ model Tenant {
   publicChatSessions         PublicChatSession[]
   publicChatDailyUsage       PublicChatDailyUsage[]
   documentExports            DocumentExport[]
+  inboundMailEvents          InboundMailEvent[]
+  inboundMailRules           AgentInboundMailRule[]
+  mailWatchSubscriptions     MailWatchSubscription[]
 
   @@index([status])
   @@index([createdById, selfService])
@@ -684,6 +687,8 @@ model Agent {
   miniApps                   MiniApp[]
   miniAppShares              MiniAppShare[]
   publicAssistant            PublicAssistant?
+  inboundMailRule            AgentInboundMailRule?
+  inboundMailEvents          InboundMailEvent[]
 
   @@index([tenantId, status])
   @@map("agents")
@@ -844,6 +849,8 @@ model Connector {
   wiki               AgentWiki?
   wikiPages          WikiPage[]
   wikiChangeSets     WikiChangeSet[]
+  inboundMailEvents  InboundMailEvent[]
+  mailWatch          MailWatchSubscription?
 
   @@unique([tenantId, type, name])
   @@index([tenantId, visibility, ownerUserId])
@@ -2052,4 +2059,111 @@ model DocumentExport {
   @@index([tenantId, userId])
   @@index([expiresAt])
   @@map("document_exports")
+}
+
+/// #1032 bejövő levél: mi történjen az agent saját címére érkező levéllel.
+enum InboundMailMode {
+  notify
+  process
+  handoff
+
+  @@map("inbound_mail_mode")
+}
+
+enum InboundMailEventStatus {
+  new
+  claimed
+  processed
+  ignored
+  failed
+
+  @@map("inbound_mail_event_status")
+}
+
+/// #1032: agentenkénti szabály (Beállítások → E-mail → Bejövő levelek). Hiánya = „Csak jelezze”.
+model AgentInboundMailRule {
+  agentId           String          @id @map("agent_id") @db.Uuid
+  tenantId          String          @map("tenant_id") @db.Uuid
+  mode              InboundMailMode @default(notify)
+  /// Az admin feldolgozási utasítása — a futás system promptjába kerül, sosem a levélből.
+  instructions      String          @default("")
+  /// Ő kap értesítést, és az ő nevében (jogaival, keretével) fut a feldolgozás.
+  responsibleUserId String?         @map("responsible_user_id") @db.Uuid
+  handoffToUserId   String?         @map("handoff_to_user_id") @db.Uuid
+  handoffToAgentId  String?         @map("handoff_to_agent_id") @db.Uuid
+  /// Csak innen érkező levél indít feldolgozást/átadást (domain vagy cím); üres = bárki.
+  senderAllowlist   String[]        @default([]) @map("sender_allowlist")
+  dailyRunLimit     Int             @default(20) @map("daily_run_limit")
+  updatedById       String?         @map("updated_by_id") @db.Uuid
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("agent_inbound_mail_rules")
+}
+
+/// #1032: beérkezett levél eseménye — csak fejléc-adat, a tartalmat az agent a mail_get_message-dzsel olvassa.
+model InboundMailEvent {
+  id                String                 @id @default(uuid()) @db.Uuid
+  tenantId          String                 @map("tenant_id") @db.Uuid
+  connectorId       String                 @map("connector_id") @db.Uuid
+  agentId           String?                @map("agent_id") @db.Uuid
+  messageId         String                 @map("message_id")
+  threadId          String?                @map("thread_id")
+  fromAddress       String                 @default("") @map("from_address")
+  subject           String                 @default("")
+  receivedAt        DateTime               @map("received_at") @db.Timestamptz
+  status            InboundMailEventStatus @default(new)
+  /// A döntés: notify | process | handoff (a szabály és a védelmek alapján).
+  action            String                 @default("notify")
+  /// Miért nem az lett, amit a szabály kér (pl. loop_guard, sender_filtered, daily_limit).
+  reason            String?
+  /// Ki/mi zárta le: agent_run | handoff | user:<id> | system.
+  processedBy       String?                @map("processed_by")
+  responsibleUserId String?                @map("responsible_user_id") @db.Uuid
+  conversationId    String?                @map("conversation_id") @db.Uuid
+  handoffId         String?                @map("handoff_id") @db.Uuid
+  source            String                 @default("poll")
+  error             String?
+  runStartedAt      DateTime? @map("run_started_at") @db.Timestamptz
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@unique([connectorId, messageId])
+  @@index([agentId, runStartedAt])
+  @@index([tenantId, agentId, receivedAt])
+  @@index([tenantId, responsibleUserId, status])
+  @@index([status, updatedAt])
+  @@map("inbound_mail_events")
+}
+
+/// #1032: push-feliratkozás postafiókonként (AgentMail webhook, Gmail watch, Graph subscription) + tartalék polling állapota.
+model MailWatchSubscription {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  connectorId  String    @unique @map("connector_id") @db.Uuid
+  provider     String
+  /// A szolgáltató azonosítója (webhook_id / subscription id); NULL = csak polling.
+  externalId   String?   @map("external_id")
+  /// Gmail historyId, illetve a polling utolsó látott időpontja (ISO).
+  cursor       String?
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz
+  lastPolledAt DateTime? @map("last_polled_at") @db.Timestamptz
+  lastEventAt  DateTime? @map("last_event_at") @db.Timestamptz
+  lastError    String?   @map("last_error")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([provider, externalId])
+  @@map("mail_watch_subscriptions")
 }

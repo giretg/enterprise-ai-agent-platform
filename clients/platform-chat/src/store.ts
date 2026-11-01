@@ -5,6 +5,9 @@ export const ACTIVE_TURN_STATUSES: readonly TurnStatus[] = ['queued', 'running',
 /** A user döntésére váró, parkolt forduló: nincs futó feladat, a stream lezár. */
 export const PARKED_TURN_STATUSES: readonly TurnStatus[] = ['awaiting_approval', 'awaiting_input']
 
+/** #1032: `inbound_mail` = a platform indította egy beérkezett levél feldolgozására. */
+export type ConversationOrigin = 'user' | 'inbound_mail'
+
 export type Conversation = {
   id: string
   tenantId: string
@@ -14,6 +17,9 @@ export type Conversation = {
   agentName: string
   title: string
   titleSetByUser: boolean
+  origin: ConversationOrigin
+  /** #1032: az admin feldolgozási utasítása (system prompt); csak `inbound_mail` eredetnél. */
+  instructions: string | null
   createdAt: Date
   lastActivityAt: Date
 }
@@ -150,7 +156,10 @@ export type Attachment = AttachmentRef & {
 
 export interface Store {
   // beszélgetések
-  createConversation(input: Omit<Conversation, 'id' | 'createdAt' | 'lastActivityAt' | 'title' | 'titleSetByUser'>): Promise<Conversation>
+  createConversation(
+    input: Omit<Conversation, 'id' | 'createdAt' | 'lastActivityAt' | 'title' | 'titleSetByUser' | 'origin' | 'instructions'> &
+      Partial<Pick<Conversation, 'origin' | 'instructions' | 'title'>>,
+  ): Promise<Conversation>
   getConversation(id: string): Promise<Conversation | null>
   listConversations(input: {
     tenantId: string

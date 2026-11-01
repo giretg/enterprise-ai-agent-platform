@@ -5,7 +5,8 @@
 
 export type ChatSession = { token: string; expiresAt: string; workerUrl: string; tenantSlug: string; adminInsight: boolean }
 export type ChatAgent = { agentId: string; name: string; description: string | null }
-export type ChatConversation = { id: string; agentId: string; agentName: string; title: string; createdAt: string; lastActivityAt: string; userId?: string }
+/** `origin: 'inbound_mail'` (#1032): a platform indította egy beérkezett levél feldolgozására. */
+export type ChatConversation = { id: string; agentId: string; agentName: string; title: string; origin?: 'user' | 'inbound_mail'; createdAt: string; lastActivityAt: string; userId?: string }
 export type ChatAttachment = { id: string; name: string; mime: string; size: number }
 /** #1024: a munkatárs által készített letölthető fájl (fájl-kártya). */
 export type ChatFile = {

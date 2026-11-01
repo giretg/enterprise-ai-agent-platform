@@ -17,6 +17,7 @@ import {
 import { auditAgentMail, connectAgentMailInbox } from '@/lib/agentmail-connect'
 import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
+import { ensureInboundWatch } from '@/lib/inbound-mail/deps'
 
 export type AgentMailboxSettings = {
   agentId: string
@@ -159,6 +160,8 @@ export async function setAgentPrimaryMailboxAction(input: unknown) {
       throw e
     }
     await audit(user, 'agent.mailbox.primary', agent.id, { connectorId: connector.id, address: info.address, provider: info.kind })
+    // #1032: a saját címre érkező levelekről a platform azonnal értesüljön (fail-soft; különben polling).
+    await ensureInboundWatch(connector.id, tenantId)
     const displayNameSynced = await syncAgentMailDisplayName(tenantId, agent.id)
     return ok({ primaryConnectorId: connector.id, displayNameSynced })
   } catch (e) {
