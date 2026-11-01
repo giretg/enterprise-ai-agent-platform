@@ -107,8 +107,8 @@ function setClause(patch: Record<string, unknown>, offset: number): { sql: strin
   return { sql: parts.join(', '), values }
 }
 
-export function createPgStore(pool: pg.Pool): Store {
-  const q = async (sql: string, values: unknown[] = []) => (await pool.query(sql, values)).rows as Row[]
+export function createPgStore(pool: pg.Pool, connection: Pick<pg.Pool, 'query'> = pool): Store {
+  const q = async (sql: string, values: unknown[] = []) => (await connection.query(sql, values)).rows as Row[]
   const one = async (sql: string, values: unknown[] = []) => (await q(sql, values))[0] ?? null
 
   return {
@@ -168,8 +168,8 @@ export function createPgStore(pool: pg.Pool): Store {
 
     async addMessage(input) {
       const r = await one(
-        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files, question, plan)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files, question, plan, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp()) RETURNING *`,
         [
           input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments), JSON.stringify(input.files ?? []),
           input.question ? JSON.stringify(input.question) : null, input.plan?.length ? JSON.stringify(input.plan) : null,
@@ -233,6 +233,29 @@ export function createPgStore(pool: pg.Pool): Store {
         [id, to, ...values, [...from]],
       )
       return rows.length > 0
+    },
+    async saveQuestionAnswer(input) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const tx = createPgStore(pool, client)
+        const locked = await client.query('SELECT pending_input FROM platform_chat.turns WHERE id = $1 FOR UPDATE', [input.turnId])
+        const ok = locked.rows[0]?.pending_input?.seq === input.pendingInput.seq && await tx.transitionTurn(input.turnId, ['awaiting_input'], 'running', {
+          pendingInput: input.pendingInput, continuationToken: input.continuationToken, pausedSeconds: input.pausedSeconds,
+        })
+        if (ok) {
+          for (const message of input.messages) await tx.addMessage(message)
+          await tx.appendEvent(input.turnId, 'question', { phase: 'answered', answer: input.display })
+          await tx.touchConversation(input.messages[0].conversationId)
+        }
+        await client.query('COMMIT')
+        return ok
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
     },
     async claimTurn(id, leaseSeconds) {
       const rows = await q(

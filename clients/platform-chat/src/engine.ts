@@ -204,7 +204,7 @@ export async function startTurn(
   const { conversation } = input
   const active = await deps.store.activeTurn(conversation.id)
   // #1025/3: kérdés-kártya helyett írt üzenet a kérdésre adott válasz — nem új forduló.
-  if (active?.status === 'awaiting_input') {
+  if (active?.status === 'awaiting_input' || (active?.status === 'running' && active.pendingInput?.answer)) {
     const outcome = await answerQuestion(deps, {
       turnId: active.id,
       userId: conversation.userId,
@@ -296,12 +296,19 @@ export async function answerQuestion(
   const turn = await deps.store.getTurn(input.turnId)
   if (!turn || !ownsTurn(turn, input.userId)) return 'not_found'
   const pending = turn.pendingInput
-  if (turn.status !== 'awaiting_input' || !pending || pending.answer) return 'not_waiting'
+  if (!pending || (turn.status !== 'awaiting_input' && turn.status !== 'running')) return 'not_waiting'
   const attachments = input.attachments ?? []
   const text = typeof input.answer.text === 'string' && input.answer.text.trim() ? input.answer.text : attachments.map((a) => a.name).join(', ')
   const normalized = normalizeAnswer(pending, { selected: input.answer.selected, text })
   if (!normalized) return 'invalid'
   const answer = attachments.length ? { ...normalized, attachmentIds: attachments.map((a) => a.id) } : normalized
+  // A mentés utáni sorhiba vagy elveszett HTTP-válasz esetén ugyanaz a válasz újraküldhető.
+  if (pending.answer) {
+    if (JSON.stringify(pending.answer) !== JSON.stringify(answer)) return 'not_waiting'
+    await deps.queue.enqueue({ turnId: turn.id, seq: pending.seq })
+    return 'ok'
+  }
+  if (turn.status !== 'awaiting_input') return 'not_waiting'
   let continuation: string
   try {
     continuation = await deps.platform.continuationToken({ chatToken: input.chatToken, turnId: turn.id, agentId: turn.agentId })
@@ -309,32 +316,31 @@ export async function answerQuestion(
     return 'no_access'
   }
   const waited = Math.max(0, Math.round((nowOf(deps).getTime() - Date.parse(pending.createdAt)) / 1000))
-  const ok = await deps.store.transitionTurn(turn.id, ['awaiting_input'], 'running', {
-    pendingInput: { ...pending, answer },
-    continuationToken: continuation,
-    pausedSeconds: turn.pausedSeconds + (Number.isFinite(waited) ? waited : 0),
-  })
-  if (!ok) return 'not_waiting'
   const done = (await deps.store.listSteps(turn.id)).filter((s) => s.status === 'done')
   const after = lastQuestionSeq(done)
   const { seq: _seq, callId: _callId, createdAt: _createdAt, answer: _answer, ...question } = pending
-  await deps.store.addMessage({
-    conversationId: turn.conversationId,
+  const ok = await deps.store.saveQuestionAnswer({
     turnId: turn.id,
-    role: 'assistant',
-    content: assistantText(done.filter((s) => s.seq > after)),
-    attachments: [],
-    question: { ...question, answer: normalized },
+    pendingInput: { ...pending, answer },
+    continuationToken: continuation,
+    pausedSeconds: turn.pausedSeconds + (Number.isFinite(waited) ? waited : 0),
+    display: answerDisplay(normalized),
+    messages: [{
+      conversationId: turn.conversationId,
+      turnId: turn.id,
+      role: 'assistant',
+      content: assistantText(done.filter((s) => s.seq > after)),
+      attachments: [],
+      question: { ...question, answer: normalized },
+    }, {
+      conversationId: turn.conversationId,
+      turnId: turn.id,
+      role: 'user',
+      content: answerDisplay(normalized),
+      attachments: attachments.map(({ id, name, mime, size }) => ({ id, name, mime, size })),
+    }],
   })
-  await deps.store.addMessage({
-    conversationId: turn.conversationId,
-    turnId: turn.id,
-    role: 'user',
-    content: answerDisplay(normalized),
-    attachments: attachments.map(({ id, name, mime, size }) => ({ id, name, mime, size })),
-  })
-  await deps.store.appendEvent(turn.id, 'question', { phase: 'answered', answer: answerDisplay(normalized) })
-  await deps.store.touchConversation(turn.conversationId)
+  if (!ok) return 'not_waiting'
   await deps.queue.enqueue({ turnId: turn.id, seq: pending.seq })
   return 'ok'
 }

@@ -19,7 +19,7 @@ const LABEL_MAX_CHARS = 80
 const DESCRIPTION_MAX_CHARS = 160
 const MAX_PLAN_ITEMS = 12
 const PLAN_TITLE_MAX_CHARS = 120
-const ANSWER_MAX_CHARS = 2000
+const ANSWER_MAX_CHARS = 32_000
 const PLAN_STATUSES = ['pending', 'in_progress', 'done'] as const
 
 export const INTERACTION_TOOL_DEFINITIONS = [
@@ -130,7 +130,8 @@ export function normalizeAnswer(question: Question, input: { selected?: unknown;
   const selected = [...new Set(Array.isArray(input.selected) ? input.selected.filter((x): x is string => typeof x === 'string' && labels.has(x)) : [])]
   if (Array.isArray(input.selected) && selected.length !== input.selected.length) return null
   if (!question.multiSelect && selected.length > 1) return null
-  const answerText = typeof input.text === 'string' ? input.text.trim().slice(0, ANSWER_MAX_CHARS) : ''
+  const answerText = typeof input.text === 'string' ? input.text.trim() : ''
+  if (answerText.length > ANSWER_MAX_CHARS) return null
   if (selected.length === 0 && !answerText) return null
   return answerText ? { selected, text: answerText } : { selected }
 }

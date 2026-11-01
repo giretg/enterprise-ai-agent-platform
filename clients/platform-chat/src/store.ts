@@ -177,6 +177,15 @@ export interface Store {
   updateTurn(id: string, patch: Partial<Pick<Turn, 'status' | 'stepCount' | 'tokenUsage' | 'error' | 'continuationToken' | 'context' | 'pendingApproval' | 'pendingInput' | 'finishedAt'>>): Promise<void>
   /** Feltételes állapotváltás (pl. cancel csak aktív fordulón). */
   transitionTurn(id: string, from: readonly TurnStatus[], to: TurnStatus, patch?: Partial<Pick<Turn, 'error' | 'finishedAt' | 'pendingApproval' | 'pendingInput' | 'pausedSeconds' | 'continuationToken'>>): Promise<boolean>
+  /** A válasz, üzenetek és esemény egyetlen atomi mentése; a sorbaállítás ismételhető. */
+  saveQuestionAnswer(input: {
+    turnId: string
+    pendingInput: PendingInput
+    continuationToken: string
+    pausedSeconds: number
+    messages: [Parameters<Store['addMessage']>[0], Parameters<Store['addMessage']>[0]]
+    display: string
+  }): Promise<boolean>
   /** Rövid bérlet a lépés futtatására; false = valaki más dolgozik rajta. */
   claimTurn(id: string, leaseSeconds: number): Promise<boolean>
   releaseTurn(id: string): Promise<void>

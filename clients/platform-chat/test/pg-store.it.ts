@@ -100,6 +100,18 @@ try {
   assert.equal((await store.activeTurn(c.id))?.id, r2.turn.id)
   assert.equal(await store.createTurn({ conversationId: c.id, tenantId: TENANT, userId: USER, agentId: AGENT }), null)
   assert.equal(latestPlan(await store.listSteps(r2.turn.id))?.length, 2)
+  // A második üzenet hibája az első üzenetet és az állapotváltást is visszagörgeti.
+  const beforeAnswer = await store.listMessages(c.id)
+  const message = { conversationId: c.id, turnId: r2.turn.id, role: 'user' as const, content: 'Nagy', attachments: [] }
+  await assert.rejects(store.saveQuestionAnswer({
+    turnId: r2.turn.id,
+    pendingInput: { ...parked!.pendingInput!, answer: { selected: ['Nagy'] } },
+    continuationToken: 'fresh', pausedSeconds: 100, display: 'Nagy',
+    messages: [message, { ...message, conversationId: randomUUID() }],
+  }), /foreign key/)
+  assert.equal((await store.getTurn(r2.turn.id))?.status, 'awaiting_input')
+  assert.equal((await store.getTurn(r2.turn.id))?.pendingInput?.answer, undefined)
+  assert.deepEqual(await store.listMessages(c.id), beforeAnswer)
   assert.equal(await answerQuestion(askDeps, { turnId: r2.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Nagy'] } }), 'ok')
   while (queued.length) await runStep(askDeps, queued.shift()!)
   assert.equal((await store.getTurn(r2.turn.id))?.status, 'succeeded')

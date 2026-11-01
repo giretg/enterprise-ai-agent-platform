@@ -77,6 +77,16 @@ export class MemoryStore implements Store {
     Object.assign(t, patch, { status: to })
     return true
   }
+  async saveQuestionAnswer(input: Parameters<Store['saveQuestionAnswer']>[0]) {
+    if (this.turns.get(input.turnId)?.pendingInput?.seq !== input.pendingInput.seq) return false
+    const ok = await this.transitionTurn(input.turnId, ['awaiting_input'], 'running', {
+      pendingInput: input.pendingInput, continuationToken: input.continuationToken, pausedSeconds: input.pausedSeconds,
+    })
+    if (!ok) return false
+    for (const message of input.messages) await this.addMessage(message)
+    await this.appendEvent(input.turnId, 'question', { phase: 'answered', answer: input.display })
+    return true
+  }
   async claimTurn(id: string) {
     const t = this.turns.get(id)!
     if (t.leaseUntil > Date.now()) return false

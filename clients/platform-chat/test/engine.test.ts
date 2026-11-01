@@ -17,7 +17,7 @@ import {
   type EngineDeps,
 } from '../src/engine.ts'
 import { summary, toolGroup } from '../src/tool-loading.ts'
-import { INTERACTION_TOOLS } from '../src/interaction-tools.ts'
+import { normalizeAnswer, INTERACTION_TOOLS } from '../src/interaction-tools.ts'
 import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient } from '../src/platform.ts'
 import type { Conversation } from '../src/store.ts'
 import { MemoryStore } from './memory-store.ts'
@@ -654,6 +654,37 @@ async function main() {
     assert.match((h.llmMessages[1] as Array<{ content: string }>).at(-1)!.content, /saját szöveggel.*Nagy Péternek, a Q3-ast/)
     assert.deepEqual(h.store.messages.map((m) => m.role), ['user', 'assistant', 'user', 'assistant'])
     assert.equal(h.store.messages.at(-1)?.content, 'Rendben, a Q3 beszámolót Nagy Péternek készítem elő.')
+  })
+
+  await check('#1025 sorhiba után azonos válasz újraküldhető, üzenet és várakozási idő nem duplázódik', async () => {
+    const h = harness({ llm: [callTool('ask_user', PETER), say('Kész.')], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Péter', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const enqueue = h.deps.queue.enqueue
+    h.deps.queue.enqueue = async () => { throw new Error('queue unavailable') }
+    const input = { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { text: 'Nagy Péter' } }
+    await assert.rejects(answerQuestion(h.deps, input), /queue unavailable/)
+    const saved = await h.store.getTurn(r.turn.id)
+    assert.equal(saved?.status, 'running')
+    assert.equal(h.store.messages.length, 3)
+    h.deps.queue.enqueue = enqueue
+    // A szövegmezős út is ugyanazt a mentett választ folytatja.
+    const retry = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Nagy Péter', attachments: [] })
+    assert.ok(retry.ok)
+    assert.equal(h.store.messages.length, 3)
+    assert.equal((await h.store.getTurn(r.turn.id))?.pausedSeconds, saved?.pausedSeconds)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.store.messages.length, 4)
+  })
+
+  await check('#1025 hosszú válasz végi utasítás megmarad; túlméret nem vágódik csendben', async () => {
+    const question = { ...PETER, allowOther: true, multiSelect: false }
+    const text = 'x'.repeat(3000) + ' NE KÜLDD EL'
+    assert.equal(normalizeAnswer(question, { text })?.text, text)
+    assert.equal(normalizeAnswer(question, { text: 'x'.repeat(32_001) }), null)
   })
 
   await check('#1025 következő forduló: a korábbi kérdés és a válasz a modell előzményében', async () => {
