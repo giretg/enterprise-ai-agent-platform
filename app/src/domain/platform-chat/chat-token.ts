@@ -31,6 +31,13 @@ export type ChatTokenClaims = {
   adminInsight: boolean
   turnId?: string
   agentId?: string
+  /**
+   * #1032: szerveroldali (platform által indított) beszélgetés eredete. Csak a platform állítja ki,
+   * a böngésző sosem kap ilyen tokent; a worker ezzel fogadja el az `instructions` mezőt.
+   */
+  origin?: 'inbound_mail'
+  /** #1032: a beszélgetés `instructions` mezőjének sha256-ja (a worker egyezést követel). */
+  ih?: string
   jti: string
   iat: number
   exp: number

@@ -141,6 +141,7 @@ jobs:
           npm run test:agentmail-connector
           npm run test:agent-mailbox
           npm run test:mail-tools
+          npm run test:inbound-mail
           npm run test:kb-gate
           npm run test:kb-retrieval
           npm run test:wiki-foundation
@@ -283,6 +284,9 @@ jobs:
       # #1028: tenant-postafiók grant (tulajdonos-típus CHECK, egyedi index, újracsatlakoztatás).
       - name: Tenant mailbox grants (Postgres)
         run: npm run test:tenant-mailbox-db
+      # #1032: bejövő levél esemény (idempotens webhook, átadás-sor, értesítés-lista).
+      - name: Inbound mail events (Postgres)
+        run: npm run test:inbound-mail-db
 
       - name: AI-adattárház (#984) valódi Postgresen
         run: npm run test:warehouse-db

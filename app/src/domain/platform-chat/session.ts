@@ -43,7 +43,14 @@ export type ChatSessionResult =
 
 export async function issueChatSession(
   deps: ChatSessionDeps,
-  input: { userId: string; tenantId: string; role: UserRole; agentId?: unknown },
+  input: {
+    userId: string
+    tenantId: string
+    role: UserRole
+    agentId?: unknown
+    /** #1032: csak szerveroldali hívó (bejövő levél) adhatja meg — a böngésző-út sosem. */
+    system?: { origin: 'inbound_mail'; instructionsHash: string }
+  },
 ): Promise<ChatSessionResult> {
   const key = usableChatTokenKey(deps.signingKey)
   if (!key || !deps.workerUrl) return { ok: false, code: 'not_configured' }
@@ -68,6 +75,7 @@ export async function issueChatSession(
       tid: input.tenantId,
       role: input.role,
       adminInsight: tenant.settings.adminInsight,
+      ...(input.system ? { origin: input.system.origin, ih: input.system.instructionsHash } : {}),
     },
     key,
     (deps.now ?? (() => new Date()))(),

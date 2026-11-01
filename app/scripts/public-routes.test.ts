@@ -75,6 +75,8 @@ check('a saját hitelesítésű gépi belépők publikusak (token/aláírás a h
   assertPublic('/api/v1/harness/complete')
   assertPublic('/api/v1/internal/dispatch-cycle')
   assertPublic('/api/v1/internal/ai-audit-retention')
+  assertPublic('/api/v1/internal/inbound-mail')
+  assertPublic('/api/webhooks/mail/agentmail')
   assertPublic('/api/webhooks/clerk')
 })
 
@@ -135,6 +137,7 @@ check('az alkalmazás-felület és a kezelői API VÉDETT marad', () => {
   assertProtected('/api/agents')
   assertProtected('/api/v1/internal/other-endpoint')
   assertProtected('/api/v1/internal/ai-audit-retention-admin')
+  assertProtected('/api/v1/internal/inbound-mail-admin')
   assertProtected('/api/ai-audit/content-unlock')
   assertProtected('/api/ai-audit/content-unlock/approve')
 })

@@ -12,7 +12,16 @@ export class MemoryStore implements Store {
   adminViews: Array<{ tenantId: string; adminUserId: string; conversationId: string }> = []
 
   async createConversation(input: Parameters<Store['createConversation']>[0]) {
-    const c: Conversation = { ...input, id: randomUUID(), title: '', titleSetByUser: false, createdAt: new Date(), lastActivityAt: new Date() }
+    const c: Conversation = {
+      ...input,
+      id: randomUUID(),
+      title: input.title ?? '',
+      titleSetByUser: false,
+      origin: input.origin ?? 'user',
+      instructions: input.instructions ?? null,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+    }
     this.conversations.set(c.id, c)
     return c
   }

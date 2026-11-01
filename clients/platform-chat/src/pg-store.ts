@@ -23,6 +23,8 @@ const conv = (r: Row): Conversation => ({
   agentName: r.agent_name as string,
   title: r.title as string,
   titleSetByUser: r.title_set_by_user as boolean,
+  origin: r.origin === 'inbound_mail' ? 'inbound_mail' : 'user',
+  instructions: (r.instructions as string | null) ?? null,
   createdAt: r.created_at as Date,
   lastActivityAt: r.last_activity_at as Date,
 })
@@ -107,9 +109,9 @@ export function createPgStore(pool: pg.Pool): Store {
   return {
     async createConversation(input) {
       const r = await one(
-        `INSERT INTO platform_chat.conversations (tenant_id, tenant_slug, user_id, agent_id, agent_name)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [input.tenantId, input.tenantSlug, input.userId, input.agentId, input.agentName],
+        `INSERT INTO platform_chat.conversations (tenant_id, tenant_slug, user_id, agent_id, agent_name, origin, instructions, title)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, '')) RETURNING *`,
+        [input.tenantId, input.tenantSlug, input.userId, input.agentId, input.agentName, input.origin ?? 'user', input.instructions ?? null, input.title ?? null],
       )
       return conv(r!)
     },

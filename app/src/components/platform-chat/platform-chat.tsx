@@ -267,11 +267,14 @@ export function PlatformChat({
   isAdmin,
   keyMissingForAdmin,
   initialAgentId = null,
+  initialConversationId = null,
 }: {
   isAdmin: boolean
   keyMissingForAdmin: boolean
   /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
   initialAgentId?: string | null
+  /** #1032: `?conversation=` — pl. a bejövő levél feldolgozásának beszélgetése a Postaládából. */
+  initialConversationId?: string | null
 }) {
   const [client, setClient] = useState<WorkerClient | null>(null)
   const [fatal, setFatal] = useState<string | null>(null)
@@ -566,6 +569,10 @@ export function PlatformChat({
       void send(pending.text, pending.agentId)
       return
     }
+    if (initialConversationId) {
+      void open(client, initialConversationId).catch(() => setNotice('Ezt a beszélgetést nem tudod megnyitni — lehet, hogy egy kollégád nevében futott.'))
+      return
+    }
     if (initialAgentId && agents.some((a) => a.agentId === initialAgentId)) {
       void (async () => {
         const list = (await client.conversations({ agentId: initialAgentId })).conversations
@@ -771,7 +778,14 @@ export function PlatformChat({
                 ) : (
                   <button type="button" className="min-w-0 flex-1 px-3 py-2 text-left" onClick={() => client && void open(client, c.id)}>
                     <span className="block truncate text-sm text-ink">{c.title}</span>
-                    <span className="block truncate text-[11px] text-ink-faint">{c.agentName}</span>
+                    <span className="block truncate text-[11px] text-ink-faint">
+                      {c.origin === 'inbound_mail' ? (
+                        <span title="A munkatárs egy beérkezett levél miatt kezdte, a beállított feldolgozási utasítás szerint." className="mr-1 rounded bg-honey/15 px-1 font-semibold text-honey">
+                          Bejövő levél
+                        </span>
+                      ) : null}
+                      {c.agentName}
+                    </span>
                   </button>
                 )}
                 {!adminMode && renaming !== c.id ? (

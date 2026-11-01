@@ -73,6 +73,14 @@ sandbox fájlonként 5 MB. A mérethatárt meghaladó fájlhoz az eszköz saját
 A jogosultság, az MRTR-jóváhagyás és az idempotencia változatlan; base64 nem kerül a modellkontextusba.
 A meglévő `extracted_text` mező csak a manifestet és a kezdőrészletet tárolja, migráció nem szükséges.
 
+## Bejövő levél feldolgozása (#1032)
+
+A platform szerveroldalon indít beszélgetést egy beérkezett levélre (`origin: 'inbound_mail'`), a felelős
+user nevében. A feldolgozási utasítás (`instructions`) a system promptba kerül; a worker csak akkor
+fogadja el, ha a chat-token a platform szerveroldali tokenje (`origin` claim) és az `ih` claim az utasítás
+sha256-ja — böngésző-tokennel 403. A levél tartalma csak tool-eredményként (`mail_get_message`, megbízhatatlan
+jelöléssel) jut a modellhez. Migráció: `003_conversation_origin.sql`.
+
 ## Helyi futtatás
 
 ```bash

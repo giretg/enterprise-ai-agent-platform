@@ -56,6 +56,13 @@ try {
   await assert.rejects(pool.query('SELECT * FROM public.tenants'), /permission denied/)
 
   const c = await store.createConversation({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, agentName: 'Drive' })
+  assert.equal(c.origin, 'user')
+  assert.equal(c.instructions, null)
+  // #1032: platform által indított bejövőlevél-beszélgetés (eredet + utasítás + cím).
+  const inbound = await store.createConversation({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, agentName: 'Drive', origin: 'inbound_mail', instructions: 'Töltsd fel a számlát.', title: '✉ Számla' })
+  assert.deepEqual([inbound.origin, inbound.instructions, inbound.title], ['inbound_mail', 'Töltsd fel a számlát.', '✉ Számla'])
+  assert.equal((await store.getConversation(inbound.id))?.origin, 'inbound_mail')
+  await store.deleteConversation(inbound.id)
   const r = await startTurn(deps, { conversation: c, chatToken: 'chat', content: 'Készíts mappát a költségvetésnek', attachments: [] })
   assert.ok(r.ok)
   assert.equal((await store.createTurn({ conversationId: c.id, tenantId: TENANT, userId: USER, agentId: AGENT })), null) // egy aktív forduló

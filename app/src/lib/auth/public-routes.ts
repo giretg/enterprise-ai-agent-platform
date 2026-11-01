@@ -36,6 +36,8 @@ export const PUBLIC_ROUTE_PATTERNS = [
   // #759: AI-használati napló retenciós sweep. Szűken ez a path — a szomszédos internal
   // route-ok védettek maradnak (lásd public-routes teszt other-endpoint).
   '/api/v1/internal/ai-audit-retention',
+  // #1032: bejövő levelek 5 perces karbantartása (x-dispatcher-token a handlerben). Szűken ez a path.
+  '/api/v1/internal/inbound-mail',
   '/api/webhooks(.*)',
   // Bejövő csatorna-webhook (Telegram): a Clerk-munkamenet HELYETT a route saját, konstans
   // idejű megosztott-titok fejléce hitelesít (`x-telegram-bot-api-secret-token`).

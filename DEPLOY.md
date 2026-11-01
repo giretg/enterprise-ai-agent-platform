@@ -181,6 +181,30 @@ régebben ellenőrzötteket, legfeljebb 50-et, 25 mp-es kerettel). Tisztán új,
 változás magától élesedik, ha a szervezet és a kapcsolat is engedi; minden más javaslatként
 emberi jóváhagyásra vár. Összesítő audit-sor: `connector.self_update.scheduled_sync`.
 
+## 3.3 Bejövő levelek (#1032)
+
+Az agent saját címére érkező levél eseménye. **Cloud Scheduler, 5 percenként**:
+
+```
+POST https://ai.excellencepay.com/api/v1/internal/inbound-mail
+Header: x-dispatcher-token: <DISPATCHER_CONTROL_TOKEN>
+```
+
+Ez hozza létre / újítja meg a push-feliratkozásokat (Gmail watch 7 nap, Graph ~3 nap — lejárat előtt
+1 nappal), lekérdezi a push nélküli postafiókokat (csak fejléc, modellhívás nélkül), és átveszi a futó
+feldolgozások állapotát. Push-végpontok: `/api/webhooks/mail/{agentmail|google|microsoft}`.
+
+- **AgentMail:** a webhookot a tenant szervezeti kulcsa hozza létre automatikusan; a titok a
+  connector-titoktárban (`inbound-mail-<connectorId>`). Feltétel: `NEXT_PUBLIC_APP_URL` https.
+- **Microsoft 365:** Graph-feliratkozás clientState-tel, automatikusan; ugyanaz a feltétel.
+- **Gmail (tenant-postafiók):** Pub/Sub kell. Env: `GMAIL_PUSH_TOPIC` (`projects/…/topics/…`, a
+  `gmail-api-push@system.gserviceaccount.com` publish-joggal), a push-subscription OIDC-tokennel a
+  `…/api/webhooks/mail/google` címre: `GMAIL_PUSH_AUDIENCE` (a token audience-e) és
+  `GMAIL_PUSH_SERVICE_ACCOUNT` (a push service account e-mailje). Hiányukban Gmailnél csak polling.
+- **„Dolgozza fel” mód:** a platform-chat worker kell (`PLATFORM_CHAT_WORKER_URL`), és a worker
+  `003_conversation_origin.sql` migrációja (`npm run migrate` a séma-tulajdonossal) a platform
+  deployja ELŐTT.
+
 ## 4. Clerk webhook regisztrálás
 
 Az éles domain: `https://ai.excellencepay.com`. A Clerk Dashboard-on:
