@@ -2,6 +2,7 @@
  * Per-user connector grant token vault (F2-B).
  * Refresh + access token titkosítva Secret Managerben / dev fájlban — nyers token sosem DB-ben.
  */
+import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { getCloudRunAccessToken } from '@/domain/net/cloud-run-auth'
@@ -74,13 +75,24 @@ export interface ConnectorGrantTokenStore {
   delete(): Promise<void>
 }
 
+/**
+ * Token-ref `/account/` szegmens új granthoz. Nem e-mail-hash: a CodeQL a
+ * Google-címet OAuth-taint miatt jelszónak nézné (`js/insufficient-password-hash`).
+ * Ugyanarra a fiókra a meglévő `tokenRef` marad (upsert accountLabel / tokenRef).
+ */
+export function uniqueAccountKey(): string {
+  return randomBytes(8).toString('hex')
+}
+
 export function buildGrantTokenRef(params: {
   tenantId: string | null
   userId: string
   connectorId: string
+  accountKey?: string
 }): string {
   const tenant = params.tenantId ?? 'default'
-  return `tenant/${tenant}/user/${params.userId}/connector/${params.connectorId}`
+  const base = `tenant/${tenant}/user/${params.userId}/connector/${params.connectorId}`
+  return params.accountKey ? `${base}/account/${params.accountKey}` : base
 }
 
 /** Dev / acceptance: lokális fájl a token_ref kulcson. */

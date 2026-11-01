@@ -43,8 +43,11 @@ export function driveGrantScopeSummary(scopes: unknown): ScopeProfileSummary {
 
 export function connectorOAuthErrorMessage(
   error: string,
-  t?: (key: 'oauthScopes' | 'oauthUnrequested') => string,
+  t?: (key: 'oauthScopes' | 'oauthUnrequested' | 'nicknameTaken') => string,
 ): string {
+  if (error === 'nickname_taken') {
+    return t ? t('nicknameTaken') : 'Ez az elnevezés már foglalt ennél a szolgáltatásnál.'
+  }
   if (error.startsWith('connector_oauth_scopes_not_granted')) {
     return t
       ? t('oauthScopes')

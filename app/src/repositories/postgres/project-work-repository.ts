@@ -1,10 +1,11 @@
-import { Prisma, type MemoryWriteMode, type ProjectMemoryKind, type ProjectMemoryStatus } from '@prisma/client'
+import type { MemoryWriteMode, ProjectMemoryKind, ProjectMemoryStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type {
   ProjectMemoryRecord,
   ProjectMemoryStore,
-  WorkFileQuota,
   WorkFileRecord,
+  WorkFileSaveInput,
+  WorkFileSaveResult,
   WorkFileStore,
   WorkProjectRecord,
   WorkProjectStore,
@@ -117,53 +118,37 @@ export class PostgresWorkFileRepository implements WorkFileStore {
     return row ? mapFile(row) : null
   }
 
-  async upsert(input: {
-    tenantId: string
-    projectKey: string
-    path: string
-    content: string
-    byteSize: number
-    lastWriterUserId: string
-  }): Promise<WorkFileRecord> {
-    const row = await prisma.workFile.upsert({
-      where: {
-        tenantId_projectKey_path: {
-          tenantId: input.tenantId,
-          projectKey: input.projectKey,
-          path: input.path,
-        },
-      },
-      create: input,
-      update: {
-        content: input.content,
-        byteSize: input.byteSize,
-        lastWriterUserId: input.lastWriterUserId,
-      },
-    })
-    return mapFile(row)
+  async save(input: WorkFileSaveInput): Promise<WorkFileSaveResult> {
+    return prisma.$transaction(async (tx) => {
+      // ponytail: projektenkénti zár sorosítja az írásokat; nagy terhelésnél kvótaszámláló + fájlonkénti zár.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(91028, hashtext(${`${input.tenantId}:${input.projectKey}`}))`
+      const where = { tenantId: input.tenantId, projectKey: input.projectKey }
+      const key = { tenantId_projectKey_path: { ...where, path: input.path } }
+      const existing = await tx.workFile.findUnique({ where: key })
+      const content = input.append ? `${existing?.content ?? ''}${input.content}` : input.content
+      const byteSize = Buffer.byteLength(content, 'utf8')
+      if (byteSize > input.maxFileBytes) return 'file_too_large'
+      const count = await tx.workFile.count({ where })
+      const sum = await tx.workFile.aggregate({ where, _sum: { byteSize: true } })
+      if (count + (existing ? 0 : 1) > input.maxCount ||
+          (sum._sum.byteSize ?? 0) - (existing?.byteSize ?? 0) + byteSize > input.maxProjectBytes) {
+        return 'quota_exceeded'
+      }
+      const row = await tx.workFile.upsert({
+        where: key,
+        create: { ...where, path: input.path, content, byteSize, lastWriterUserId: input.lastWriterUserId },
+        update: { content, byteSize, lastWriterUserId: input.lastWriterUserId },
+      })
+      return mapFile(row)
+    }, { timeout: 20_000 })
   }
 
   async delete(tenantId: string, projectKey: string, path: string): Promise<boolean> {
-    try {
-      await prisma.workFile.delete({
-        where: { tenantId_projectKey_path: { tenantId, projectKey, path } },
-      })
-      return true
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') return false
-      throw error
-    }
-  }
-
-  async quota(tenantId: string, projectKey: string): Promise<WorkFileQuota> {
-    const [count, agg] = await Promise.all([
-      prisma.workFile.count({ where: { tenantId, projectKey } }),
-      prisma.workFile.aggregate({
-        where: { tenantId, projectKey },
-        _sum: { byteSize: true },
-      }),
-    ])
-    return { count, bytes: agg._sum.byteSize ?? 0 }
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(91028, hashtext(${`${tenantId}:${projectKey}`}))`
+      const { count } = await tx.workFile.deleteMany({ where: { tenantId, projectKey, path } })
+      return count === 1
+    }, { timeout: 20_000 })
   }
 }
 

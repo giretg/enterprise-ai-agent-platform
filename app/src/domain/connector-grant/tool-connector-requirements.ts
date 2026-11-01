@@ -21,6 +21,9 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   kb_get_page: { connectorType: 'knowledge_base', accessMode: 'read' },
   kb_get_document: { connectorType: 'knowledge_base', accessMode: 'read' },
   kb_ingest: { connectorType: 'knowledge_base', accessMode: 'write' },
+  kb_wiki_write: { connectorType: 'knowledge_base', accessMode: 'write' },
+  kb_wiki_changes: { connectorType: 'knowledge_base', accessMode: 'read' },
+  kb_wiki_revert: { connectorType: 'knowledge_base', accessMode: 'write' },
   board_write: { connectorType: 'board', accessMode: 'write' },
   ticket_create: { connectorType: 'board', accessMode: 'write' },
   agent_ask: { connectorType: 'board', accessMode: 'write' },
@@ -83,16 +86,15 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   tulajdoni_lap_egyeztetes: { connectorType: 'workspace', accessMode: 'write' },
   reconcile_records: { connectorType: 'workspace', accessMode: 'write' },
   pptx_create: { connectorType: 'workspace', accessMode: 'write' },
-  'sandbox_app.create': { connectorType: 'board', accessMode: 'write' },
-  'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
-  'sandbox_app.preview': { connectorType: 'board', accessMode: 'read' },
-  'sandbox_app.export': { connectorType: 'board', accessMode: 'read' },
-  'sandbox_app.list': { connectorType: 'board', accessMode: 'read' },
-  'sandbox_app.get': { connectorType: 'board', accessMode: 'read' },
   'sandbox.commit': { connectorType: 'board', accessMode: 'write' },
   'sandbox.request_promotion': { connectorType: 'board', accessMode: 'write' },
   'sandbox.snapshot': { connectorType: 'board', accessMode: 'write' },
   web_search: { connectorType: 'web_search', accessMode: 'read' },
+  // #1021: az oldalolvasás a keresés connectorját (domain-szabályok, napi keret) használja.
+  web_fetch: { connectorType: 'web_search', accessMode: 'read' },
+  // #395: írás-szint a kockázati besorolásból jön (invokeEnterpriseTool), nem innen.
+  mcp_list_tools: { connectorType: 'mcp', accessMode: 'read' },
+  mcp_call: { connectorType: 'mcp', accessMode: 'read' },
 }
 
 /**

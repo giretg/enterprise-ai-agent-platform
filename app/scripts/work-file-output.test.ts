@@ -15,7 +15,7 @@ import {
   WORK_FILE_MAX_BYTES,
   resolveWorkFileBody,
 } from '../src/domain/project-work/project-work-service'
-import type { WorkFileRecord } from '../src/domain/project-work/types'
+import type { WorkFileRecord, WorkFileSaveInput } from '../src/domain/project-work/types'
 
 const TENANT = '11111111-1111-4111-8111-111111111111'
 const AGENT = '22222222-2222-4222-8222-222222222222'
@@ -75,6 +75,16 @@ class MemFiles {
       (row) => row.tenantId === tenantId && row.projectKey === projectKey,
     )
     return { count: rows.length, bytes: rows.reduce((sum, row) => sum + row.byteSize, 0) }
+  }
+  async save(input: WorkFileSaveInput) {
+    const existing = await this.find(input.tenantId, input.projectKey, input.path)
+    const content = input.append ? `${existing?.content ?? ''}${input.content}` : input.content
+    const byteSize = Buffer.byteLength(content, 'utf8')
+    if (byteSize > input.maxFileBytes) return 'file_too_large' as const
+    const quota = await this.quota(input.tenantId, input.projectKey)
+    if (quota.count + (existing ? 0 : 1) > input.maxCount ||
+        quota.bytes - (existing?.byteSize ?? 0) + byteSize > input.maxProjectBytes) return 'quota_exceeded' as const
+    return this.upsert({ ...input, content, byteSize })
   }
 }
 

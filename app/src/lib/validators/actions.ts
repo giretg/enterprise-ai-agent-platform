@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import type { UserRole } from '@prisma/client'
+import { AUTONOMY_LEVELS } from '@/lib/agent-autonomy'
+import { MAX_HIRE_DESCRIPTION_LENGTH, MAX_HIRE_DRAFT_DAILY_LIMIT } from '@/lib/agent-hire-draft'
 
 const userRoleSchema = z.enum(['viewer', 'operator', 'approver', 'admin']) satisfies z.ZodType<UserRole>
 
@@ -19,6 +21,15 @@ export const updateAgentInstructionSchema = z.object({
 export const updateAgentMemoryWriteModeSchema = z.object({
   agentId: z.string().uuid(),
   memoryWriteMode: z.enum(['approval', 'direct']),
+})
+
+export const updateAgentWriteApprovalModesSchema = z.object({
+  agentId: z.string().uuid(),
+  memoryWriteMode: z.enum(['approval', 'direct']),
+  httpApiWriteMode: z.enum(['approval', 'direct']),
+  gmailWriteMode: z.enum(['approval', 'direct']),
+  driveWriteMode: z.enum(['approval', 'direct']),
+  approverUserId: z.string().uuid().nullable().optional(),
 })
 
 export const updateAgentOutputFolderSchema = z.object({
@@ -61,9 +72,19 @@ export const setAgentUserAccessSchema = z.object({
   accessLevel: z.enum(['view', 'operate', 'none']),
 })
 
+/** 256px webp/jpeg data URL felső korlátja (a feltöltő ennyire kicsinyít). */
+export const AGENT_AVATAR_MAX_CHARS = 160_000
+
+function isAllowedAgentAvatar(value: string): boolean {
+  if (value === '') return true
+  if (/^data:image\/(webp|jpeg|png);base64,/.test(value)) return true
+  if (value.startsWith('https://') && value.length <= 2000) return true
+  return false
+}
+
 export const updateAgentAvatarSchema = z.object({
   agentId: z.string().uuid(),
-  avatarUrl: z.string().trim().max(2000),
+  avatarUrl: z.string().trim().max(AGENT_AVATAR_MAX_CHARS).refine(isAllowedAgentAvatar, 'invalid_avatar'),
 })
 
 export const suspendAgentSchema = z.object({
@@ -125,6 +146,8 @@ export const startConnectorOAuthSchema = z.object({
   connectorId: z.string().uuid(),
   scopes: z.array(z.string()).optional(),
   toolName: z.string().optional(),
+  nickname: z.string().max(40).optional(),
+  addAccount: z.boolean().optional(),
   returnTo: z
     .object({
       kind: z.enum(['conversation', 'ticket']),
@@ -133,6 +156,11 @@ export const startConnectorOAuthSchema = z.object({
       originPath: z.string().optional(),
     })
     .optional(),
+})
+
+export const updateConnectorGrantNicknameSchema = z.object({
+  grantId: z.string().uuid(),
+  nickname: z.string().max(40).nullable(),
 })
 
 const navVisibilityKeyList = z.array(z.string().min(1).max(120)).max(200)
@@ -148,6 +176,34 @@ export const setNavVisibilitySchema = z.object({
 
 export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),
+})
+
+/** #957 D3: az agentek önállóságának céges felső korlátja. */
+export const setTenantAutonomyCeilingSchema = z.object({
+  ceiling: z.enum(AUTONOMY_LEVELS),
+})
+
+/** #957 D1: a „Mondd el” AI-vázlatok napi kerete (0 = kikapcsolva). */
+export const setHireDraftDailyLimitSchema = z.object({
+  limit: z.number().int().min(0).max(MAX_HIRE_DRAFT_DAILY_LIMIT),
+})
+
+export const suggestHireDraftSchema = z.object({
+  description: z.string().trim().min(1).max(MAX_HIRE_DESCRIPTION_LENGTH),
+  locale: z.enum(['hu', 'en']),
+})
+
+/** #717: KB-nyelv űrlap-határ (a `KB_LANGUAGE_REGISTRY` kulcsaival egyezik — unit-teszt őrzi). */
+export const KB_LANGUAGE_VALUES = ['hu', 'en'] as const
+
+export const setKbLanguageSchema = z.object({
+  kbLanguage: z.enum(KB_LANGUAGE_VALUES),
+})
+
+export const setKbDocumentLanguageSchema = z.object({
+  documentId: z.string().uuid(),
+  /** `null` = öröklés a tudástár nyelvéről. */
+  kbLanguageOverride: z.enum(KB_LANGUAGE_VALUES).nullable(),
 })
 
 export const setTenantMcpIntroSchema = z.object({

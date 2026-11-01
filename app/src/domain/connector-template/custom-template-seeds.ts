@@ -60,13 +60,13 @@ export const OSTOROSBOR_CRM_REQUEST_HEADERS = {
  * adjuk, mert a jelenlegi delegált OAuth-flow refresh_tokent vár el, a GitHub
  * klasszikus OAuth app flow pedig ezt nem garantálja.
  */
-export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
+export const CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   {
     key: 'github',
     displayName: 'GitHub',
     connectorType: 'http_api',
     description:
-      'GitHub REST API connector fine-grained personal access tokennel vagy klasszikus PAT-tel.',
+      'Kódtárak, issue-k és pull requestek elérése. GitHub hozzáférési tokennel.',
     activationHelp: `1. GitHubban nyisd meg a Settings -> Developer settings -> Personal access tokens oldalt.
 2. Hozz létre egy Fine-grained personal access tokent, és válaszd ki a szükséges repository-kat.
 3. Add meg legalább azokat a jogosultságokat, amelyek a kiválasztott toolokhoz kellenek:
@@ -107,7 +107,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       {
         name: 'get_repository_tree',
         method: 'GET',
-        path: '/repos/{owner}/{repo}/git/trees/{ref}',
+        path: '/repos/{owner}/{repo}/git/trees/{ref...}',
         access: 'read',
         description:
           'A repository teljes fájllistája EGY hívásban (ref = branch neve vagy commit SHA), recursive=1 query paraméterrel az alkönyvtárakkal együtt. Kódkérdésnél ezzel kezdj: ebből válaszd ki, melyik fájlt kell elolvasni — ne lépkedj könyvtáranként.',
@@ -116,7 +116,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       {
         name: 'get_file_contents',
         method: 'GET',
-        path: '/repos/{owner}/{repo}/contents/{path}',
+        path: '/repos/{owner}/{repo}/contents/{path...}',
         access: 'read',
         description:
           'Egy fájl tartalma, vagy könyvtár-útvonalon a könyvtár listája. Fájlnál a platform a base64 tartalmat UTF-8 szöveggé dekódolja (encoding: "utf-8"), tehát közvetlenül olvasható. Nem alapértelmezett ághoz: ?ref=<branch|sha>.',
@@ -188,12 +188,12 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   },
   {
     key: 'ostorosbor-crm-sales-delegated',
-    displayName: 'Ostorosbor CRM - Sales delegated',
+    displayName: 'Ostorosbor CRM – Értékesítés',
     connectorType: 'http_api',
     description:
-      'Ertekesito neveben futo CRM kapcsolat: ugyfeladatok olvasasa, erdeklodesek, teendok, interakciok, ajanlatstatusz es dokumentum-draft muveletek. A CRM nem kuld ugyfelnek uzenetet; a javaslatok HITL jovahagyasra kerulnek. A trace fejléceket (X-Agent-Id, X-Acting-User, X-Connector-Call-Id) és az író hívások Idempotency-Key-jét a platform automatikusan küldi — a headers mezőt ehhez ne töltsd. A CRM nem enged közvetlen ügyfélnek küldést és nem támogat végleges DELETE műveletet a connectoron.',
+      'Az AI az értékesítő nevében dolgozik a CRM-ben: ügyfeleket, érdeklődéseket, teendőket és ajánlatokat lát, dokumentumvázlatot készít. Ügyfélnek nem küld semmit, a módosítások jóváhagyásra várnak.',
     activationHelp:
-      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Sales delegated profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder). Az „Acting user e-mail” mezőbe olyan címet adj meg, amely a CRM-ben regisztrált és aktív felhasználó — a kulcsos teszt és az agent hívások ehhez kötődnek (X-Acting-User fejléc).',
+      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Sales delegated profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder). Az „Acting user e-mail” mezőbe olyan címet adj meg, amely a CRM-ben regisztrált és aktív felhasználó — a kulcsos teszt és az agent hívások ehhez kötődnek (X-Acting-User fejléc). A trace fejléceket (X-Agent-Id, X-Acting-User, X-Connector-Call-Id) és az író hívások Idempotency-Key-jét a platform automatikusan küldi — a headers mezőt ehhez ne töltsd. A CRM nem enged közvetlen ügyfélnek küldést, és nem támogat végleges törlést a connectoron.',
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
     authMethods: [{ kind: 'bearer' }],
@@ -343,12 +343,12 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   },
   {
     key: 'ostorosbor-crm-service-insight',
-    displayName: 'Ostorosbor CRM - Service insight',
+    displayName: 'Ostorosbor CRM – Elemzés',
     connectorType: 'http_api',
     description:
-      'Service/monitoring kapcsolat: CRM adatok olvasasa, account agent mezok frissitese, insightok es heti osszefoglalo. Nem ertekesitoi muveletekre, hanem belso elemzesre es agent javaslatokra valo. A trace fejléceket (X-Agent-Id, X-Acting-User, X-Connector-Call-Id) és az író hívások Idempotency-Key-jét a platform automatikusan küldi — a headers mezőt ehhez ne töltsd. A CRM nem enged közvetlen ügyfélnek küldést és nem támogat végleges DELETE műveletet a connectoron.',
+      'Belső elemző kapcsolat: az AI olvassa a CRM-adatokat, frissíti az ügyféladatlapok AI-mezőit, elemzéseket és heti összefoglalót készít. Értékesítői műveletet nem végez.',
     activationHelp:
-      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Service insight profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder). Az „Acting user e-mail” mezőbe olyan címet adj meg, amely a CRM-ben regisztrált és aktív felhasználó — a kulcsos teszt és az agent hívások ehhez kötődnek (X-Acting-User fejléc).',
+      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Service insight profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder). Az „Acting user e-mail” mezőbe olyan címet adj meg, amely a CRM-ben regisztrált és aktív felhasználó — a kulcsos teszt és az agent hívások ehhez kötődnek (X-Acting-User fejléc). A trace fejléceket (X-Agent-Id, X-Acting-User, X-Connector-Call-Id) és az író hívások Idempotency-Key-jét a platform automatikusan küldi — a headers mezőt ehhez ne töltsd. A CRM nem enged közvetlen ügyfélnek küldést, és nem támogat végleges törlést a connectoron.',
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
     authMethods: [{ kind: 'bearer' }],
@@ -481,15 +481,16 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     displayName: 'Google Search Console',
     connectorType: 'http_api',
     description:
-      'Google Search Console API (searchconsole.googleapis.com): Search Analytics, verified site-ek, sitemaps és URL Inspection. Delegált felhasználói OAuth.',
-    activationHelp: `1. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-2. Válaszd ki vagy hozd létre a projektet.
-3. APIs & Services → Library → engedélyezd a „Google Search Console API” szolgáltatást.
-4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat). Vedd fel a webmasters.readonly vagy webmasters scope-ot.
-5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google API OAuth (egy app az Analytics / Search Console / Ads / Calendar / Sheets sablonokhoz).
-7. A hívott felhasználónak verified owner/user jog kell a Search Console property-n.
-8. A siteUrl path-paramétert URL-kódolni kell: https://www.example.com/ → https%3A%2F%2Fwww.example.com%2F; domain-property: sc-domain:example.com.`,
+      'Keresési teljesítmény (kattintások, megjelenések), ellenőrzött webhelyek, oldaltérképek és URL-vizsgálat. Saját Google-fiókkal.',
+    activationHelp: `Kinek mi a dolga?
+• Platform (üzemeltető): a Google-kapcsolat technikai alapja (Google OAuth alkalmazás) — itt nincs vele teendőd.
+• Cég (te, admin): add meg, MELYIK Search Console property-t érheti el a konnektor. Az agent csak ezekre hívhat.
+• Felhasználó: mindenki a saját Google-fiókjával csatlakozik. Ennek a fióknak tulajdonosi vagy felhasználói joga kell legyen a fenti property-n.
+
+Hol találod a property-t? Search Console → bal felső property-választó. Kétféle alak van:
+• webcím-előtagos: https://www.example.com/
+• domain-property: sc-domain:example.com
+Több property-t vesszővel elválasztva adhatsz meg.`,
     baseUrl: 'https://searchconsole.googleapis.com',
     egressHosts: ['searchconsole.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -513,7 +514,8 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         method: 'GET',
         path: '/webmasters/v3/sites',
         access: 'read',
-        description: 'A felhasználó Search Console site-jainak listája (permissionLevel + siteUrl).',
+        description:
+          'A felhasználó Search Console site-jainak listája (permissionLevel + siteUrl). Arra jó, hogy kiderüljön: a csatlakoztatott Google-fiók látja-e a cég által kötött property-t.',
         default: true,
       },
       {
@@ -594,7 +596,16 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: false,
       },
     ],
-    instanceFields: [],
+    instanceFields: [
+      {
+        name: 'siteUrls',
+        label: 'Search Console property (pl. https://www.example.com/ vagy sc-domain:example.com)',
+        type: 'string',
+        required: true,
+        example: 'https://www.example.com/',
+        target: 'googleAccountBinding.accountIds',
+      },
+    ],
     rateLimit: { rps: 5, burst: 10 },
   },
   {
@@ -602,15 +613,13 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     displayName: 'Google Analytics',
     connectorType: 'http_api',
     description:
-      'Google Analytics Data API v1beta (GA4): runReport, valós idejű és pivot riportok, property metadata. Delegált felhasználói OAuth.',
-    activationHelp: `1. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-2. Válaszd ki vagy hozd létre a projektet.
-3. APIs & Services → Library → engedélyezd a „Google Analytics Data API” szolgáltatást.
-4. APIs & Services → OAuth consent screen → állítsd be, és vedd fel az analytics.readonly (vagy analytics) scope-ot.
-5. APIs & Services → Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google API OAuth.
-7. A csatlakoztatott Google-fióknak legalább Viewer joga kell a GA4 property-n.
-9. A property ID a GA Admin → Property settings oldalon látható (szám, pl. 123456789). A path-ben: /v1beta/properties/{propertyId}:runReport — a properties/ előtagot a path már tartalmazza, csak a számot add meg.`,
+      'GA4-riportok: látogatók, forgalmi források, konverziók és valós idejű adatok. Saját Google-fiókkal.',
+    activationHelp: `Kinek mi a dolga?
+• Platform (üzemeltető): a Google-kapcsolat technikai alapja (Google OAuth alkalmazás) — itt nincs vele teendőd.
+• Cég (te, admin): add meg, MELYIK GA4 property-t érheti el a konnektor. Az agent csak ezekből kérhet riportot.
+• Felhasználó: mindenki a saját Google-fiókjával csatlakozik. Ennek a fióknak legalább Viewer (Megtekintő) joga kell legyen a fenti property-n.
+
+Hol találod a property ID-t? Google Analytics → Admin → Property settings (Tulajdon beállításai): egy szám, pl. 123456789. Több property-t vesszővel elválasztva adhatsz meg.`,
     baseUrl: 'https://analyticsdata.googleapis.com',
     egressHosts: ['analyticsdata.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -684,7 +693,16 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: false,
       },
     ],
-    instanceFields: [],
+    instanceFields: [
+      {
+        name: 'propertyIds',
+        label: 'GA4 property ID (pl. 123456789)',
+        type: 'string',
+        required: true,
+        example: '123456789',
+        target: 'googleAccountBinding.accountIds',
+      },
+    ],
     rateLimit: { rps: 5, burst: 10 },
   },
   {
@@ -692,16 +710,14 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     displayName: 'Google Ads',
     connectorType: 'http_api',
     description:
-      'Google Ads API REST v25: fióklista, GAQL search/searchStream és campaign/ad group/ad mutate. Delegált OAuth + developer-token fejléc.',
-    activationHelp: `1. Kell egy Google Ads manager (MCC) fiók. A developer token az API Centerben van: https://ads.google.com/aw/apicenter
-2. Teszt-hozzáférésű token csak tesztfiókra megy; éles fiókhoz Basic/Standard jóváhagyás kell.
-3. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
-4. APIs & Services → Library → engedélyezd a „Google Ads API” szolgáltatást.
-5. OAuth consent screen + Credentials → OAuth client ID, típus: Web application; redirect URI = platform …/api/connectors/oauth/callback.
-6. Client ID + secret: Platform · Beállítások → Google API OAuth.
-7. Aktiváláskor add meg: developer token (Google Ads API Center). MCC alatti kliensfiókhoz opcionálisan login-customer-id (kötőjel nélkül).
-8. A customerId path-paraméter mindig kötőjel nélküli 10 jegyű szám.
-9. Olvasáshoz a googleAds:search GAQL-t használd; a mutate végpontok írnak.`,
+      'Hirdetési fiókok, kampányok és eredményeik lekérdezése; jóváhagyás után kampánymódosítás. A cég Google Ads fiókja, a felhasználó saját Google-belépésével.',
+    activationHelp: `Kinek mi a dolga?
+• Platform (üzemeltető): a Google-kapcsolat technikai alapja (Google OAuth alkalmazás) és a Google Ads developer token — itt nincs vele teendőd.
+• Cég (te, admin): add meg, MELYIK Google Ads fiók(ok)at érheti el a konnektor. Az agent csak ezekre hívhat.
+• Felhasználó: mindenki a saját Google-fiókjával csatlakozik. Ennek a fióknak hozzáférése kell legyen a fenti Google Ads fiókhoz (közvetlenül vagy a kezelő/MCC fiókon keresztül).
+
+Hol találod a fiókazonosítót? Google Ads → jobb felső sarok, a fióknév alatt: 123-456-7890. Több fiókot vesszővel elválasztva adhatsz meg.
+Ha a fiókot egy kezelőfiókon (MCC) keresztül éritek el, add meg a kezelőfiók azonosítóját is.`,
     baseUrl: 'https://googleads.googleapis.com',
     egressHosts: ['googleads.googleapis.com', ...GOOGLE_OAUTH_EGRESS_HOSTS],
     authMethods: [{ ...GOOGLE_USER_DELEGATED_OAUTH }],
@@ -720,7 +736,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         path: '/v25/customers:listAccessibleCustomers',
         access: 'read',
         description:
-          'Az OAuth-tokenhez közvetlenül hozzáférhető Google Ads customer resource name-ek. Ehhez a híváshoz nem kell login-customer-id. Válasz: customers/1234567890.',
+          'A felhasználó Google-fiókjához közvetlenül hozzáférhető Google Ads customer resource name-ek (customers/1234567890). Arra jó, hogy kiderüljön: a csatlakoztatott Google-fiók látja-e a cég által kötött fiókot.',
         default: true,
       },
       {
@@ -780,18 +796,20 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     ],
     instanceFields: [
       {
-        name: 'developerToken',
-        label: 'Google Ads developer token (API Center)',
+        name: 'customerIds',
+        label: 'Google Ads fiókazonosító (pl. 123-456-7890)',
         type: 'string',
         required: true,
-        target: 'requestHeaders.developer-token',
+        example: '123-456-7890',
+        target: 'googleAccountBinding.accountIds',
       },
       {
         name: 'loginCustomerId',
-        label: 'Login-customer-id (MCC, kötőjel nélkül — opcionális)',
+        label: 'Kezelőfiók (MCC) azonosítója — csak ha azon keresztül éritek el',
         type: 'string',
         required: false,
-        target: 'requestHeaders.login-customer-id',
+        example: '987-654-3210',
+        target: 'googleAccountBinding.managerAccountId',
       },
     ],
     rateLimit: { rps: 2, burst: 5 },
@@ -801,7 +819,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     displayName: 'Meta Ads',
     connectorType: 'http_api',
     description:
-      'Meta Marketing API (Graph API v26.0): hirdetési fiókok, kampányok, ad setek, hirdetések és Insights. System user vagy hosszú életű user access token (bearer).',
+      'Facebook- és Instagram-hirdetések: fiókok, kampányok, hirdetések és eredményeik. Meta hozzáférési tokennel.',
     activationHelp: `Egyetlen titok kell: a Meta access token. A Business Manager magyar UI-ján ez „Kód” néven jelenik meg (EAA… / EABA… kezdetű hosszú string). Nincs külön client secret ennél a sablonnál.
 
 Hol add meg:
@@ -986,7 +1004,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'Google Calendar',
     connectorType: 'http_api',
     description:
-      'Google Calendar API v3: naptárak, események keresése, szabad időpont, esemény létrehozása és módosítása. Delegált felhasználói OAuth.',
+      'Naptárak és események keresése, szabad időpont keresése, esemény létrehozása és módosítása. Saját Google-fiókkal.',
     activationHelp: `Nincs szükség saját Google Cloud-projektre — a platform Google API OAuth appját használja. Lépések sorban:
 1. Platform · Beállítások → Google API OAuth: ellenőrizd, hogy be van-e állítva (Client ID + secret). Ha nincs, előbb azt kérd a platform-üzemeltetőtől — enélkül nem megy tovább.
 2. A Google Cloud-projektben legyen engedélyezve a „Google Calendar API” (ezt is a platform-üzemeltető végzi, egyszer kell).
@@ -1086,7 +1104,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'Google Sheets',
     connectorType: 'http_api',
     description:
-      'Google Sheets API v4: táblázatok olvasása, sorok keresése, hozzáadása és módosítása. Delegált felhasználói OAuth.',
+      'Táblázatok olvasása, sorok keresése, hozzáadása és módosítása. Saját Google-fiókkal.',
     activationHelp: `Nincs szükség saját Google Cloud-projektre — a platform Google API OAuth appját használja. Lépések sorban:
 1. Platform · Beállítások → Google API OAuth: ellenőrizd, hogy be van-e állítva. Ha nincs, előbb azt kérd a platform-üzemeltetőtől.
 2. A Google Cloud-projektben legyen engedélyezve a „Google Sheets API” (egyszeri platform-üzemeltetői lépés).
@@ -1173,7 +1191,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'Billingo',
     connectorType: 'http_api',
     description:
-      'Billingo API v3: partnerek, termékek, számlatömbök és bizonylatok (számla, díjbekérő, piszkozat) olvasása és kiállítása API-kulccsal.',
+      'Partnerek, termékek és bizonylatok (számla, díjbekérő) lekérdezése és kiállítása. Billingo API-kulccsal.',
     activationHelp: `Csak egy titok kell: a Billingo API-kulcs. Lépések sorban:
 1. Lépj be a Billingo-fiókba, és a Beállítások → API oldalon hozz létre egy API-kulcsot (v3). Ha a menüpont nem látszik, a Billingo-csomagod nem tartalmaz API-hozzáférést.
 2. A sablon „API-kulcs” mezőjét HAGYD az alapértelmezett alias-néven — ide NE másold a kulcsot.
@@ -1278,7 +1296,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'Számlázz.hu',
     connectorType: 'http_api',
     description:
-      'Számlázz.hu Számla Agent: számlák lekérdezése, adózó-ellenőrzés, és jóváhagyás után számla-kiállítás, sztornó és jóváírás egyetlen Agent-kulccsal.',
+      'Számlák lekérdezése és adószám-ellenőrzés; jóváhagyás után számlakiállítás, sztornó és jóváírás. Számla Agent kulccsal.',
     activationHelp: `Csak egy titok kell: a Számla Agent kulcs. Lépések sorban:
 1. Lépj be a Számlázz.hu-fiókodba, és a Beállítások → Számla Agent kulcsok oldalon hozz létre egy új kulcsot (pl. „AI agent” néven).
 2. Itt a varázslóban nincs kitöltendő mező — a kulcsot csak aktiváláskor kérjük.
@@ -1355,7 +1373,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'NAV Online Számla',
     connectorType: 'http_api',
     description:
-      'NAV Online Számla 3.0 lekérdezések: kimenő és bejövő számlák listája és teljes tartalma, számlalánc, adószám-ellenőrzés. Csak olvasás.',
+      'Kimenő és bejövő számlák lekérdezése a NAV-tól, adószám-ellenőrzés. Csak olvasás.',
     activationHelp: `Két előfeltétel és egy technikai felhasználó kell. Lépések sorban:
 1. Platform-előfeltétel (egyszer, superadmin): Platform · Beállítások → NAV Online Számla oldalon add meg a szoftver azonosítóját (fejlesztő neve, adószáma, elérhetősége). Enélkül a NAV minden hívást elutasít.
 2. Lépj be az onlineszamla.nav.gov.hu oldalra a cég elsődleges felhasználójaként, és a Felhasználók menüben hozz létre egy új, „Technikai felhasználó” típusú felhasználót. Jogosultságnak elég a „Számlák lekérdezése”.
@@ -1455,7 +1473,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'MiniCRM',
     connectorType: 'http_api',
     description:
-      'MiniCRM R3 API: modulok, projektek (adatlapok), kontaktok, teendők és e-mailek olvasása; jóváhagyás után létrehozás és módosítás.',
+      'Adatlapok, kontaktok, teendők és e-mailek olvasása; jóváhagyás után létrehozás és módosítás. MiniCRM API-kulccsal.',
     activationHelp: `Két adat kell: a System ID és az API-kulcs. Lépések sorban:
 1. Lépj be a MiniCRM-be adminisztrátorként, és a Beállítások → Rendszer oldalon generálj API-kulcsot.
 2. A System ID a MiniCRM címében látszik: r3.minicrm.hu/<System ID>/… — ezt írd be a varázslóban.
@@ -1618,7 +1636,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'Pipedrive',
     connectorType: 'http_api',
     description:
-      'Pipedrive CRM API v2: dealek, személyek, szervezetek, pipeline-ok, aktivitások, leadek és termékek olvasása; jóváhagyás után létrehozás és módosítás. API-tokennel, a cég saját Pipedrive-címén.',
+      'Üzletek, személyek, cégek, aktivitások és leadek olvasása; jóváhagyás után létrehozás és módosítás. Pipedrive API-tokennel.',
     activationHelp: `Csak két adat kell: a cég Pipedrive-címe és egy API-token. Lépések sorban:
 1. Lépj be a Pipedrive-ba, és nézd meg a címsort: https://ceged.pipedrive.com/… — a „ceged.pipedrive.com” részt írd be ide (https nélkül).
 2. Ugyanott: Beállítások (fogaskerék) → Személyes beállítások → API. Másold ki a személyes API-tokent. A token a te felhasználód adatait látja — ha az agent a cég egész pipeline-ját kell hogy lássa, egy admin-felhasználó tokenjét add meg.
@@ -1848,7 +1866,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'WooCommerce',
     connectorType: 'http_api',
     description:
-      'WooCommerce REST API v3: rendelések, termékek, vevők és értékesítési jelentés. Consumer key + secret (Basic auth) a webshop saját címén.',
+      'Webshop-rendelések, termékek, vevők és eladási jelentések. WooCommerce API-kulccsal.',
     activationHelp: `Három adat kell: a webshop címe, a consumer key és a consumer secret. Lépések sorban:
 1. A webshop WordPress-ében: WooCommerce → Beállítások → Speciális → REST API → Kulcs hozzáadása. Név pl. „AI agent”, jogosultság: Olvasás (írás csak ha az agent státuszt is módosíthat).
 2. A consumer key (ck_…) ide kerül a varázslóba; a consumer secretet (cs_…) csak aktiváláskor kérjük.
@@ -1983,7 +2001,7 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     displayName: 'Shoprenter',
     connectorType: 'http_api',
     description:
-      'Shoprenter REST API: rendelések, termékek, vevők, kategóriák, készlet és rendelési státuszok. HTTP Basic auth a bolt *.shoprenter.hu API-címén.',
+      'Webshop-rendelések, termékek, vevők, kategóriák és készlet. Shoprenter API-hozzáféréssel.',
     activationHelp: `Három adat kell: a bolt Shoprenter-hostja, az API-felhasználónév és az API-jelszó. Lépések sorban:
 1. A Shoprenter adminban: Beállítások → Rendszer → API. Kapcsold be az API-t, állíts felhasználónevet és jelszót, majd ments.
 2. A host mindig a *.shoprenter.hu cím — még akkor is, ha a webshop saját domainen fut. A címsorban: https://boltod.shoprenter.hu/admin → ide „boltod.shoprenter.hu” kerül (https nélkül).
@@ -2121,3 +2139,12 @@ Az adAccountId path-paraméter a numerikus fiókazonosító, act_ nélkül. Éle
     rateLimit: { rps: 1, burst: 3 },
   },
 ]
+
+/**
+ * Egy cégre szabott sablonok: csak a megadott tenant (slug) katalógusában
+ * jelennek meg; a többi custom sablon platform-szintű.
+ */
+export const CUSTOM_TEMPLATE_TENANT_SLUG_BY_KEY: Record<string, string> = {
+  'ostorosbor-crm-sales-delegated': 'ostorosbor',
+  'ostorosbor-crm-service-insight': 'ostorosbor',
+}

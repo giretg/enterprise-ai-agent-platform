@@ -14,8 +14,14 @@
  * Snapshots never contain secrets, `tokenRef`, `secretAlias`, `modelConfig`,
  * session, queue, or Clerk ids. They may contain published hard/trained rule text.
  */
+import {
+  hasPlacementOverrides,
+  parsePlacementOverrides,
+  type PlacementOverrides,
+} from '@/lib/agent-knowledge-placement'
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
+import { describeGoogleAccountBinding } from '@/domain/connector/google-account-binding'
 import {
   collectSnapshotRules,
   type AgentDefinitionSnapshotRule,
@@ -27,9 +33,12 @@ import type {
   SkillRepository,
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
+import { isWikiAccessLevel, type WikiAccessLevel } from '@/lib/wiki-access'
 import { writeAudit } from '@/lib/audit/types'
 import { snapshotLocalRoots } from '@/lib/agent-local-roots'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
+import { mailboxConnectorInfo } from '@/domain/agent-mailbox/agent-mailbox'
+import { isMicrosoft365Connector } from '@/domain/connector-grant/tenant-mailbox'
 import {
   parseHttpApiConfig,
   summarizeHttpApiEndpoints,
@@ -39,6 +48,7 @@ import {
 /** Publish needs a short "when to call me" so MCP clients can pick among teammates. */
 export const AGENT_SCOPE_REQUIRED =
   'A közzétételhez add meg a felelősségi kört: mikor ezt a munkatársat hívd.'
+export const PUBLIC_AGENT_NOT_PUBLISHABLE = 'A nyilvános asszisztens nem publikálható belső munkatársként.'
 
 export type { AgentDefinitionSnapshotRule, AgentDefinitionRuleSource } from '@/domain/agent-definition/snapshot-rules'
 export { collectSnapshotRules, renderSnapshotRulesBriefingBlock, SNAPSHOT_RULES_OVERRIDE_HINT } from '@/domain/agent-definition/snapshot-rules'
@@ -65,6 +75,17 @@ export type AgentDefinitionSnapshot = {
      * engedélyezettek. Hiányzik, ha a connector configja hibás/hiányos (fail-soft).
      */
     endpoints?: HttpApiEndpointSummary[]
+    /**
+     * #942 (csak `knowledge_base`): wiki-jog, írási mód, gyűjtési fókusz. Az
+     * alapértéknél (`read` / `approval` / üres) kimarad, így a korábbi snapshotok
+     * contentHash-e változatlan; hiányzó mező = alapérték (fail-closed).
+     */
+    wikiAccess?: WikiAccessLevel
+    wikiWriteMode?: 'approval' | 'direct'
+    wikiCollectFocus?: string
+    /** #942 D13: csak privát KB-nál jelenik meg (`private_to_user` + tulajdonos). */
+    visibility?: 'private_to_user'
+    ownerUserId?: string
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
   /**
@@ -72,6 +93,17 @@ export type AgentDefinitionSnapshot = {
    * Omitted when empty so snapshots published before this field keep their contentHash.
    */
   localRoots?: string[]
+  /**
+   * Mini app útmutató (#967 D12): az agent saját, opcionális készítési útmutatója.
+   * Csak a `platform.mini_app.guide` adja vissza (a get_definition nem). Üresen
+   * kimarad, így a korábbi snapshotok contentHash-e változatlan.
+   */
+  miniAppGuide?: string
+  /**
+   * „Hová mit ments” tábla agentenkénti felülírása (sor-kulcs → saját szabály). Üresen
+   * kimarad, így a korábbi snapshotok contentHash-e változatlan.
+   */
+  placementOverrides?: PlacementOverrides
 }
 
 export type AgentDefinition = {
@@ -152,10 +184,35 @@ type DraftWorkingSet = {
     skillVersion: { skillId: string; status: string; skill: { name: string } }
   }>
   connectors: Array<{
-    connector: { id: string; name: string; type: string }
+    connector: {
+      id: string
+      name: string
+      type: string
+      visibility?: string | null
+      ownerUserId?: string | null
+    }
     accessMode: 'read' | 'write'
+    wikiAccess?: string | null
+    wikiWriteMode?: string | null
+    wikiCollectFocus?: string | null
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
+}
+
+/** #942: a knowledge_base kötés wiki-mezői a snapshotba — csak a nem-alapértékek. */
+function knowledgeBaseSnapshotFields(
+  row: DraftWorkingSet['connectors'][number],
+): Partial<AgentDefinitionSnapshot['connectors'][number]> {
+  if (row.connector.type !== 'knowledge_base') return {}
+  const access = isWikiAccessLevel(row.wikiAccess) ? row.wikiAccess : 'read'
+  const focus = row.wikiCollectFocus?.trim()
+  const isPrivate = row.connector.visibility === 'private_to_user' && !!row.connector.ownerUserId
+  return {
+    ...(access !== 'read' ? { wikiAccess: access } : {}),
+    ...(row.wikiWriteMode === 'direct' ? { wikiWriteMode: 'direct' as const } : {}),
+    ...(focus ? { wikiCollectFocus: focus.slice(0, 2000) } : {}),
+    ...(isPrivate ? { visibility: 'private_to_user' as const, ownerUserId: row.connector.ownerUserId! } : {}),
+  }
 }
 
 /**
@@ -167,17 +224,32 @@ async function resolveHttpApiConnectorMeta(
   connectors: Pick<ConnectorRepository, 'findById'>,
   connectorId: string,
   tenantId: string,
+  hideRawMailboxEndpoints: boolean,
 ): Promise<{ endpoints?: HttpApiEndpointSummary[]; description?: string | null } | undefined> {
   try {
     const resolved = await connectors.findById(connectorId, tenantId)
     if (!resolved) return undefined
     const parsed = parseHttpApiConfig(resolved.config)
     const catalog = describeConnectorCatalog(resolved.type, resolved.config, null)
-    const description =
+    const baseDescription =
       catalog.description ??
       (typeof parsed.description === 'string' && parsed.description.trim()
         ? parsed.description.trim().slice(0, 500)
         : null)
+    // Google Ads / Analytics / Search Console: a cég által kötött fiók — ne találgasson az agent.
+    const accountNote = parsed.googleAccount
+      ? describeGoogleAccountBinding(parsed.googleAccount.provider, parsed.googleAccount.binding)
+      : null
+    const mailbox = mailboxConnectorInfo(resolved) || isMicrosoft365Connector(resolved)
+    if (hideRawMailboxEndpoints && mailbox) {
+      return {
+        description:
+          [baseDescription, accountNote, 'Use mail_* tools (mail_search, mail_get_message, mail_send) for this mailbox — do not call http_api_* on it.']
+            .filter(Boolean)
+            .join(' ') || null,
+      }
+    }
+    const description = [baseDescription, accountNote].filter(Boolean).join(' ') || null
     return {
       endpoints: summarizeHttpApiEndpoints(parsed.endpoints),
       ...(description ? { description } : {}),
@@ -196,10 +268,15 @@ async function buildSnapshot(
     hardRules?: string
     trainedRules?: string
     localRoots?: string
+    miniAppGuide?: string
+    placementOverrides?: unknown
   },
   workingSet: Pick<DraftWorkingSet, 'enabledSkills' | 'connectors' | 'capabilities'>,
   connectors?: Pick<ConnectorRepository, 'findById'>,
 ): Promise<AgentDefinitionSnapshot> {
+  const hideRawMailboxEndpoints = workingSet.capabilities.some(
+    (row) => row.allowed && row.toolName.startsWith('mail_'),
+  )
   const connectorEntries = await Promise.all(
     workingSet.connectors.map(async (row) => {
       const base = {
@@ -207,19 +284,28 @@ async function buildSnapshot(
         name: row.connector.name,
         type: row.connector.type,
         accessMode: row.accessMode,
+        ...knowledgeBaseSnapshotFields(row),
       }
       if (row.connector.type !== 'http_api' || !connectors) return base
-      const meta = await resolveHttpApiConnectorMeta(connectors, row.connector.id, agent.tenantId)
+      const meta = await resolveHttpApiConnectorMeta(
+        connectors,
+        row.connector.id,
+        agent.tenantId,
+        hideRawMailboxEndpoints,
+      )
       return meta ? { ...base, ...meta } : base
     }),
   )
   const localRoots = snapshotLocalRoots(agent.localRoots)
+  const placementOverrides = parsePlacementOverrides(agent.placementOverrides)
   return {
     name: agent.name,
     roleInstruction: agent.roleInstruction,
     description: agent.description ?? null,
     rules: collectSnapshotRules(agent),
     ...(localRoots ? { localRoots } : {}),
+    ...(agent.miniAppGuide?.trim() ? { miniAppGuide: agent.miniAppGuide.trim() } : {}),
+    ...(hasPlacementOverrides(placementOverrides) ? { placementOverrides } : {}),
     skills: workingSet.enabledSkills
       .filter((row) => row.skillVersion.status === 'active')
       .map((row) => ({
@@ -311,6 +397,8 @@ export class AgentDefinitionService {
   }): Promise<AgentDefinition> {
     const agent = await this.deps.agents.findById(input.agentId, input.tenantId)
     if (!agent) throw new Error('Agent not found')
+    // #1016 D1/D7: nyilvános asszisztens sosem kerül MCP-re / Hermesbe / platform-chatbe.
+    if (agent.kind === 'public') throw new Error(PUBLIC_AGENT_NOT_PUBLISHABLE)
     if (!agent.description?.trim()) throw new Error(AGENT_SCOPE_REQUIRED)
 
     const [enabledSkills, connectors, capabilities] = await Promise.all([

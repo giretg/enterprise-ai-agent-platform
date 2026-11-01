@@ -215,3 +215,97 @@ export function isValidTenantSlug(slug: string): boolean {
   // Min. 2, max. 63 karakter; alfanumerikussal kezdődik/végződik, közötte kötőjel is.
   return /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/.test(slug)
 }
+
+// ── Self-service cégindítás (#830) ──────────────────────────────────────────
+
+/** Egy user legfeljebb ennyi saját (self-service, nem archivált) céget indíthat. */
+export const SELF_SERVICE_TENANT_CAP = 5
+
+/** Az archivált cég felszabadítja a kvótát; a felfüggesztett / kivezetés alatti nem. */
+export function countsTowardSelfServiceCap(status: TenantStatus): boolean {
+  return status !== 'archived'
+}
+
+export function selfServiceCapReached(ownedCount: number): boolean {
+  return ownedCount >= SELF_SERVICE_TENANT_CAP
+}
+
+const HU_TRANSLITERATION: Record<string, string> = {
+  á: 'a', é: 'e', í: 'i', ó: 'o', ö: 'o', ő: 'o', ú: 'u', ü: 'u', ű: 'u',
+  Á: 'A', É: 'E', Í: 'I', Ó: 'O', Ö: 'O', Ő: 'O', Ú: 'U', Ü: 'U', Ű: 'U',
+}
+
+/**
+ * Magyar ékezetek ASCII-ra (`Őstermelő` → `Ostermelo`), hogy a slug ne csonkuljon
+ * (`normalizeTenantSlug` minden nem-ASCII betűt kötőjellé tenne). Más nyelvek
+ * ékezetes betűit (pl. ä, č) Unicode-felbontás után a jelölő eldobásával kezeljük.
+ */
+export function transliterateHungarian(raw: string): string {
+  return raw
+    .replace(/[áéíóöőúüűÁÉÍÓÖŐÚÜŰ]/g, (ch) => HU_TRANSLITERATION[ch] ?? ch)
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+}
+
+const TENANT_SLUG_MAX = 63
+
+/** A cégnévből képzett slug-alap; érvénytelen alak (pl. csupa írásjel) ⇒ `null`. */
+export function selfServiceSlugBase(displayName: string): string | null {
+  const slug = normalizeTenantSlug(transliterateHungarian(displayName))
+    .slice(0, TENANT_SLUG_MAX)
+    .replace(/-+$/g, '')
+  return isValidTenantSlug(slug) ? slug : null
+}
+
+/** Ütközéskor: `slug`, `slug-2`, `slug-3`, … — a hossz-limitet a toldalék sem lépheti át. */
+export function selfServiceSlugCandidate(base: string, attempt: number): string {
+  if (attempt <= 1) return base
+  const suffix = `-${attempt}`
+  return `${base.slice(0, TENANT_SLUG_MAX - suffix.length).replace(/-+$/g, '')}${suffix}`
+}
+
+/** Érvénytelen névből képzett slug helyett: `t-` + 8 karakter egy azonosító elejéről. */
+export function selfServiceFallbackSlug(id: string): string {
+  const head = id.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8)
+  return `t-${head.padEnd(8, '0')}`
+}
+
+export const TAX_ID_MAX_LENGTH = 32
+
+/** Adószám: szabad szöveg, trim; üres ⇒ `null`; túl hosszú ⇒ `undefined` (a hívó hibát ad). */
+export function normalizeTaxId(raw: string | null | undefined): string | null | undefined {
+  const value = (raw ?? '').trim()
+  if (!value) return null
+  if (value.length > TAX_ID_MAX_LENGTH) return undefined
+  return value
+}
+
+/**
+ * Indíthat-e most a user saját céget (tenant-váltó „Új cég" / onboarding)?
+ * Felfüggesztett fiók és superadmin-assume kontextus fail closed; különben a limit dönt.
+ */
+export function canStartSelfServiceTenant(params: {
+  userStatus: string
+  assumed: boolean
+  ownedSelfServiceCount: number
+}): boolean {
+  if (params.userStatus === 'suspended') return false
+  if (params.assumed) return false
+  return !selfServiceCapReached(params.ownedSelfServiceCount)
+}
+
+/**
+ * A team-lépés csak a URL-ben kért cégre megy, és csak ha a user ott aktív admin.
+ * Így a „második cég" nem a süti szerinti régi tenantba hív meg munkatársat.
+ */
+export function resolveOnboardingTeamTenantId(params: {
+  step?: string | null
+  requestedTenantId?: string | null
+  memberships: ReadonlyArray<{ tenantId: string; role: UserRole; status: TenantMembershipStatus }>
+}): string | null {
+  if (params.step !== 'team' || !params.requestedTenantId) return null
+  const ok = params.memberships.some(
+    (row) => row.tenantId === params.requestedTenantId && row.status === 'active' && row.role === 'admin',
+  )
+  return ok ? params.requestedTenantId : null
+}

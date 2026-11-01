@@ -1,0 +1,16 @@
+# {Szolgáltató} — weboldal-lenyomat ({YYYY-MM-DD})
+
+> Nem teljes archívum: kulcs szekciók (árazás, terméknevek, funkciók, GYIK / feltételek).
+> Minden nagyobb blokk előtt forrás URL.
+
+## Árazás — https://…
+
+## Termékek / terméknevek — https://…
+
+## Funkciók — https://…
+
+## GYIK / feltételek — https://…
+
+## Akciók, promóciók (hatálydátummal) — https://…
+
+## Dokumentumok (PDF) — URL, cím, hatálydátum, sha256

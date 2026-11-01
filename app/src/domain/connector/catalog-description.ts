@@ -27,6 +27,16 @@ export function describeConnectorCatalog(
       tools: [],
     }
   }
+  if (type === 'mcp') {
+    const cfg = config as Record<string, unknown> | null
+    const set = capabilitySet as { tools?: Array<{ approved?: unknown }> } | null
+    const tools = Array.isArray(set?.tools) ? set.tools.filter((tool) => tool?.approved === true) : []
+    return {
+      description: `Külső MCP-szerver — ${tools.length} jóváhagyott eszköz.`,
+      baseUrl: typeof cfg?.serverUrl === 'string' ? cfg.serverUrl : null,
+      tools: [],
+    }
+  }
   if (type === 'code_sandbox') {
     const cfg = config as Record<string, unknown> | null
     const baseUrl = typeof cfg?.baseUrl === 'string' ? cfg.baseUrl : null

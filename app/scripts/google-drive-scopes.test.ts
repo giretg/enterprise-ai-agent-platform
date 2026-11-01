@@ -3,18 +3,20 @@
  */
 import assert from 'node:assert/strict'
 import {
+  clampDriveGrantedScopesToRequest,
   DRIVE_SCOPES,
   driveScopeProfile,
   driveScopeProfileRequiresAdmin,
   driveToolAllowedByScopes,
   driveToolMinimalScopes,
+  mergeDriveGrantScopes,
   normalizeDriveScope,
 } from '../src/domain/connector-grant/google-drive-scopes'
 import {
   registeredDelegatedProviderTypes,
   resolveGrantOAuthScopes,
 } from '../src/domain/connector-grant/delegated-oauth-registry'
-import { toolsRequiringConnector } from '../src/domain/tool-broker/tool-connector-requirements'
+import { toolsRequiringConnector } from '../src/domain/connector-grant/tool-connector-requirements'
 
 function test(name: string, fn: () => void) {
   try {
@@ -118,6 +120,35 @@ test('google_drive provider regisztrálva', () => {
   const tools = toolsRequiringConnector('google_drive')
   assert.ok(tools.includes('google_drive_search'))
   assert.ok(tools.includes('google_drive_share_file'))
+})
+
+test('clampDriveGrantedScopesToRequest: visszahozott full drive nem szélesít', () => {
+  const clamped = clampDriveGrantedScopesToRequest({
+    expectedScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+    grantedScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file, DRIVE_SCOPES.full],
+  })
+  assert.deepEqual(clamped.sort(), [DRIVE_SCOPES.file, DRIVE_SCOPES.readonly].sort())
+  assert.equal(driveScopeProfile(clamped), 'selected_write')
+})
+
+test('mergeDriveGrantScopes: selected_write kérés nem örökít full_write-ot', () => {
+  const merged = mergeDriveGrantScopes({
+    existingScopes: [DRIVE_SCOPES.full],
+    newScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+    requestedScopes: [DRIVE_SCOPES.readonly, DRIVE_SCOPES.file],
+  })
+  assert.ok(!merged.includes(DRIVE_SCOPES.full))
+  assert.equal(driveScopeProfile(merged), 'selected_write')
+})
+
+test('mergeDriveGrantScopes: explicit full_write kérés megtartja a full scope-ot', () => {
+  const merged = mergeDriveGrantScopes({
+    existingScopes: [DRIVE_SCOPES.readonly],
+    newScopes: [DRIVE_SCOPES.full],
+    requestedScopes: [DRIVE_SCOPES.openid, DRIVE_SCOPES.email, DRIVE_SCOPES.full],
+  })
+  assert.ok(merged.includes(DRIVE_SCOPES.full))
+  assert.equal(driveScopeProfile(merged), 'full_write')
 })
 
 console.log('\nAll google-drive-scopes tests passed.')

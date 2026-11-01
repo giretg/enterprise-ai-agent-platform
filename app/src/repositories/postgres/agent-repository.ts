@@ -1,4 +1,5 @@
-import type { Agent, ConnectorAccessMode, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import type { Agent, Connector, ConnectorAccessMode, MemoryWriteMode } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
@@ -94,7 +95,7 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
-  async updateAvatar(input: { agentId: string; avatarUrl: string }): Promise<Agent> {
+  async updateAvatar(input: { agentId: string; avatarUrl: string | null }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
       data: { avatarUrl: input.avatarUrl },
@@ -111,6 +112,24 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateWriteApprovalModes(input: {
+    agentId: string
+    memoryWriteMode: Agent['memoryWriteMode']
+    httpApiWriteMode: Agent['httpApiWriteMode']
+    gmailWriteMode: Agent['gmailWriteMode']
+    driveWriteMode: Agent['driveWriteMode']
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: {
+        memoryWriteMode: input.memoryWriteMode,
+        httpApiWriteMode: input.httpApiWriteMode,
+        gmailWriteMode: input.gmailWriteMode,
+        driveWriteMode: input.driveWriteMode,
+      },
+    })
+  }
+
   async updateOutputFolder(input: { agentId: string; folderId: string | null }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
@@ -118,10 +137,37 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async updateMiniAppGuide(input: { agentId: string; miniAppGuide: string }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { miniAppGuide: input.miniAppGuide },
+    })
+  }
+
+  async updatePlacementOverrides(input: {
+    agentId: string
+    placementOverrides: Prisma.InputJsonValue | null
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { placementOverrides: input.placementOverrides ?? Prisma.DbNull },
+    })
+  }
+
   async updateLocalRoots(input: { agentId: string; localRoots: string }): Promise<Agent> {
     return prisma.agent.update({
       where: { id: input.agentId },
       data: { localRoots: input.localRoots },
+    })
+  }
+
+  async updateModelConfig(input: {
+    agentId: string
+    modelConfig: Prisma.InputJsonValue
+  }): Promise<Agent> {
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { modelConfig: input.modelConfig },
     })
   }
 
@@ -142,6 +188,7 @@ export class PostgresAgentRepository implements AgentRepository {
   async activate(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
+    if (agent.kind === 'public') throw new Error('A nyilvános asszisztens nem aktiválható belső munkatársként.')
     if (!agent.currentDefinitionVersionId) {
       throw new Error('Előbb tedd közzé a definíciót, aztán aktiválhatod.')
     }
@@ -165,6 +212,7 @@ export class PostgresAgentRepository implements AgentRepository {
   async resume(agentId: string): Promise<Agent> {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
+    if (agent.kind === 'public') throw new Error('A nyilvános asszisztens nem aktiválható belső munkatársként.')
     assertTransition(agent.status, 'active')
     return prisma.agent.update({
       where: { id: agentId },
@@ -205,7 +253,29 @@ export class PostgresAgentRepository implements AgentRepository {
       include: { connector: true },
       orderBy: { connectorId: 'asc' },
     })
-    return rows.map((row) => ({ connector: row.connector, accessMode: row.accessMode }))
+    return rows.map(toBinding)
+  }
+
+  async findConnectorBinding(agentId: string, connectorId: string): Promise<AgentConnectorBinding | null> {
+    const row = await prisma.agentConnector.findUnique({
+      where: { agentId_connectorId: { agentId, connectorId } },
+      include: { connector: true },
+    })
+    return row ? toBinding(row) : null
+  }
+
+  async updateWikiLink(input: Parameters<AgentRepository['updateWikiLink']>[0]): Promise<AgentConnectorBinding | null> {
+    const result = await prisma.agentConnector.updateMany({
+      where: { agentId: input.agentId, connectorId: input.connectorId },
+      data: {
+        ...(input.accessMode ? { accessMode: input.accessMode } : {}),
+        ...(input.wikiAccess ? { wikiAccess: input.wikiAccess } : {}),
+        ...(input.wikiWriteMode ? { wikiWriteMode: input.wikiWriteMode } : {}),
+        ...(input.wikiCollectFocus !== undefined ? { wikiCollectFocus: input.wikiCollectFocus } : {}),
+      },
+    })
+    if (result.count === 0) return null
+    return this.findConnectorBinding(input.agentId, input.connectorId)
   }
 
   async replaceCapabilities(agentId: string, toolNames: string[]): Promise<void> {
@@ -225,6 +295,7 @@ export class PostgresAgentRepository implements AgentRepository {
     agentId: string
     connectorId: string
     accessMode: ConnectorAccessMode
+    initialWikiWriteMode?: MemoryWriteMode
   }): Promise<void> {
     await prisma.agentConnector.upsert({
       where: {
@@ -234,8 +305,32 @@ export class PostgresAgentRepository implements AgentRepository {
         agentId: input.agentId,
         connectorId: input.connectorId,
         accessMode: input.accessMode,
+        ...(input.initialWikiWriteMode ? { wikiWriteMode: input.initialWikiWriteMode } : {}),
       },
       update: { accessMode: input.accessMode },
     })
+    // #1029: olvasási hozzáféréssel a postafiók nem lehet az agent saját címe.
+    if (input.accessMode !== 'write') {
+      await prisma.agent.updateMany({
+        where: { id: input.agentId, primaryMailboxConnectorId: input.connectorId },
+        data: { primaryMailboxConnectorId: null },
+      })
+    }
+  }
+}
+
+function toBinding(row: {
+  connector: Connector
+  accessMode: ConnectorAccessMode
+  wikiAccess: AgentConnectorBinding['wikiAccess']
+  wikiWriteMode: AgentConnectorBinding['wikiWriteMode']
+  wikiCollectFocus: string | null
+}): AgentConnectorBinding {
+  return {
+    connector: row.connector,
+    accessMode: row.accessMode,
+    wikiAccess: row.wikiAccess,
+    wikiWriteMode: row.wikiWriteMode,
+    wikiCollectFocus: row.wikiCollectFocus,
   }
 }

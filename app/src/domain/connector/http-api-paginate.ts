@@ -3,6 +3,7 @@
  * A stratégia endpoint-capability; a hálózati hívást a hívó injektálja.
  */
 import type { HttpPagination } from '@/domain/provisioning/connector-config'
+import type { TenantLanguage } from '@/lib/tenant-language'
 
 export const HTTP_API_GET_ALL_LIMITS = { pageSize: 100, maxPages: 50 } as const
 const COMMON_ARRAY_KEYS = ['data', 'items', 'results', 'records', 'rows', 'ownerships'] as const
@@ -210,8 +211,11 @@ export async function paginateHttpApiGet(input: {
   baseUrl?: string
   baseQuery?: HttpApiPaginateQuery
   fetchPage: (query: HttpApiPaginateQuery, path?: string) => Promise<HttpApiPaginatePageResult>
+  /** #717 B réteg: a hibaüzenetek nyelve. Alapértelmezés `hu` = mai szöveg. */
+  language?: TenantLanguage
 }): Promise<HttpApiPaginateOutcome | HttpApiPaginateFailure> {
   const { plan } = input
+  const en = (input.language ?? 'hu') === 'en'
   const items: unknown[] = []
   const seenCursors = new Set<string>()
   const seenPages = new Set<string>()
@@ -244,7 +248,9 @@ export async function paginateHttpApiGet(input: {
       const hint = typeof result.hint === 'string' && result.hint.trim() ? ` — ${result.hint.trim()}` : ''
       return {
         ok: false,
-        error: `HTTP ${result.status} a(z) ${pageCount}. oldalon — a lapozás megszakadt${hint}`,
+        error: en
+          ? `HTTP ${result.status} on page ${pageCount} — pagination stopped${hint}`
+          : `HTTP ${result.status} a(z) ${pageCount}. oldalon — a lapozás megszakadt${hint}`,
         pageCount, items, lastStatus, strategy: plan.kind,
       }
     }
@@ -253,7 +259,9 @@ export async function paginateHttpApiGet(input: {
     if (!pageItems) {
       return {
         ok: false,
-        error: `nem található rekordtömb a(z) "${plan.itemsPath}" útvonalon a(z) ${pageCount}. oldalon`,
+        error: en
+          ? `no record array at "${plan.itemsPath}" on page ${pageCount}`
+          : `nem található rekordtömb a(z) "${plan.itemsPath}" útvonalon a(z) ${pageCount}. oldalon`,
         pageCount, items, lastStatus, strategy: plan.kind,
       }
     }
@@ -267,7 +275,9 @@ export async function paginateHttpApiGet(input: {
     if (seenPages.has(fingerprint)) {
       return {
         ok: false,
-        error: `a(z) ${pageCount}. oldal megismételte egy korábbi oldal tartalmát`,
+        error: en
+          ? `page ${pageCount} repeated an earlier page's content`
+          : `a(z) ${pageCount}. oldal megismételte egy korábbi oldal tartalmát`,
         pageCount, items, lastStatus, strategy: plan.kind,
       }
     }
@@ -300,7 +310,7 @@ export async function paginateHttpApiGet(input: {
       if (seenCursors.has(cursorKey)) {
         return {
           ok: false,
-          error: `a cursor megismétlődött (${next})`,
+          error: en ? `cursor repeated (${next})` : `a cursor megismétlődött (${next})`,
           pageCount, items, lastStatus, strategy: plan.kind,
         }
       }
@@ -327,7 +337,9 @@ export async function paginateHttpApiGet(input: {
       if (!nextRequest) {
         return {
           ok: false,
-          error: 'a következő oldal linkje nem használható biztonságosan ezen a connectoron',
+          error: en
+            ? 'the next-page link cannot be used safely on this connector'
+            : 'a következő oldal linkje nem használható biztonságosan ezen a connectoron',
           pageCount, items, lastStatus, strategy: plan.kind,
         }
       }

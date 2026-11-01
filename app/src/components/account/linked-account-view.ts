@@ -23,9 +23,9 @@ const HU_USAGE: UsageCopy = {
   and: 'és',
   capableOne: (list) => `${list} rendelkezik a szükséges eszközjoggal.`,
   capableMany: (list) => `${list} rendelkeznek a szükséges eszközjoggal.`,
-  capableCount: (count) => `${count} aktív agent rendelkezik a szükséges eszközjoggal.`,
-  missingCapability: 'A fiók össze van kötve, de a hozzárendelt agenteknél hiányzik a szükséges eszközjog.',
-  unassigned: 'A fiók össze van kötve, de még nincs agenthez rendelve.',
+  capableCount: (count) => `${count} aktív munkatárs rendelkezik a szükséges eszközjoggal.`,
+  missingCapability: 'A fiók össze van kötve, de a hozzárendelt munkatársaknál hiányzik a szükséges eszközjog.',
+  unassigned: 'A fiók össze van kötve, de még nincs munkatárshoz rendelve.',
 }
 
 export function connectorUsageStatus(

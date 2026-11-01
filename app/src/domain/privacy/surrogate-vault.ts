@@ -5,7 +5,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { SurrogateEntityType } from '@/domain/privacy/surrogate-format'
 
-export type PrivacyScope = { type: 'conversation' | 'trace'; id: string }
+/**
+ * `hermes_session`: a Model Gateway (#746 V1-4) Hermes-session hatóköre, `id = <userId>:<sessionId>`.
+ * Külön típus, nem `conversation`: a beszélgetés-hatókör a platform conversation-gépezetére (resolve-access,
+ * GC) épül, a Hermes-session azonosítója pedig kliens-adta, és az HMAC-ot is el kell tudni választani tőle.
+ */
+export type PrivacyScope = { type: 'conversation' | 'trace' | 'hermes_session'; id: string }
 
 export type RefEntityRef = {
   entityType: SurrogateEntityType

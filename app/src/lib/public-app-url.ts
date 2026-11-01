@@ -4,7 +4,16 @@
  */
 export function resolvePublicAppOrigin(request?: Request): string {
   const fromEnv = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, '')
-  if (fromEnv) return fromEnv
+  if (fromEnv) {
+    const url = new URL(fromEnv)
+    if (url.origin !== fromEnv || url.username || url.password || (process.env.NODE_ENV === 'production' && url.protocol !== 'https:')) {
+      throw new Error('invalid_NEXT_PUBLIC_APP_URL')
+    }
+    return url.origin
+  }
+
+  // A forwarded hostot a kliens is befolyásolhatja; éles telepítőcsomagba és OAuth-URL-be nem kerülhet.
+  if (process.env.NODE_ENV === 'production') throw new Error('missing_NEXT_PUBLIC_APP_URL')
 
   if (request) {
     const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim()

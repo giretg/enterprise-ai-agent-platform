@@ -6,16 +6,45 @@ import {
   parseDelegatedGrantScopes,
 } from '@/domain/connector-grant/delegated-oauth-registry'
 import { TOOL_REQUIREMENTS } from '@/domain/connector-grant/tool-connector-requirements'
+import {
+  resolveLinkedAccountGrant,
+  type LinkedAccountChoice,
+} from '@/domain/connector-grant/linked-account'
+import {
+  TENANT_MAILBOX_DISCONNECTED,
+  tenantMailboxOf,
+} from '@/domain/connector-grant/tenant-mailbox'
+import { effectiveWikiAccess, wikiAccessAllows, isKnowledgeBaseVisibleTo, scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { asUuid } from './tool-error-messages'
 import {
+  GMAIL_CREATE_DRAFT_TOOL,
+  GMAIL_GET_MESSAGE_TOOL,
+  GMAIL_GET_THREAD_TOOL,
+  GMAIL_MODIFY_LABELS_TOOL,
+  GMAIL_SEARCH_TOOL,
+  GMAIL_SEND_TOOL,
   HTTP_API_GET_ALL_TOOL,
   HTTP_API_GET_TOOL,
   HTTP_API_REQUEST_TOOL,
   KB_GET_DOCUMENT_TOOL,
   KB_GET_PAGE_TOOL,
+  KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_SEARCH_TOOL,
+  KB_WIKI_WRITE_TOOL,
+  MAIL_CREATE_DRAFT_TOOL,
+  MAIL_GET_ATTACHMENT_TOOL,
+  MAIL_GET_MESSAGE_TOOL,
+  MAIL_GET_THREAD_TOOL,
+  MAIL_LIST_ACCOUNTS_TOOL,
+  MAIL_MARK_TOOL,
+  MAIL_SEARCH_TOOL,
+  MAIL_SEND_TOOL,
+  isEnterpriseMailTool,
+  isEnterpriseMailWriteTool,
+  capabilityToolsFor,
 } from './tool-definitions'
+import { listMailAccounts, resolveMailAccounts } from '@/domain/mail/mail'
 
 const KB_READ_TOOLS = [KB_GET_DOCUMENT_TOOL, KB_GET_PAGE_TOOL, KB_LIST_INDEX_TOOL, KB_SEARCH_TOOL]
 
@@ -42,6 +71,9 @@ export type LiveConnectorRow = {
   name?: string
   secretAlias?: string | null
   config?: unknown
+  /** #942 D13: knowledge_base láthatóság (`shared` | `private_to_user`). */
+  visibility?: unknown
+  ownerUserId?: string | null
 }
 
 export type HttpApiConnectorChoice = {
@@ -56,6 +88,10 @@ export type AuthorizeToolCallDenied = {
   connectorId?: string
   /** Több http_api kötés esetén, ha path alapján nem egyértelmű. */
   connectorChoices?: HttpApiConnectorChoice[]
+  /** Több kapcsolt fiók esetén, ha az `account` argumentum hiányzik vagy ismeretlen. */
+  accountChoices?: LinkedAccountChoice[]
+  /** #1028: megszakadt tenant-postafiók címe a usernek szóló üzenethez. */
+  mailboxAddress?: string | null
 }
 
 export type AuthorizeToolCallAllowed = {
@@ -64,6 +100,13 @@ export type AuthorizeToolCallAllowed = {
   connector: LiveConnectorRow
   grantId?: string | null
   tokenRef?: string | null
+  grant?: LiveGrantRow | null
+  /**
+   * #1030: feloldott mail_* fiók handle. Beégetjük a jóváhagyásba / execute-ba,
+   * különben account nélkül a HITL „saját postafiók”-ot hazudhat, a execute pedig
+   * a mindenkori primary/egyetlen fiókra válthat.
+   */
+  resolvedMailAccount?: string
 }
 
 export type AuthorizeToolCallResult = AuthorizeToolCallAllowed | AuthorizeToolCallDenied
@@ -74,6 +117,8 @@ export type LiveGrantRow = {
   scopes: unknown
   status: string
   metadata?: unknown
+  accountLabel?: string | null
+  nickname?: string | null
 }
 
 export type AuthorizeToolCallDeps = {
@@ -83,6 +128,24 @@ export type AuthorizeToolCallDeps = {
     connectorId: string
     userId: string
   }) => Promise<LiveGrantRow | null>
+  findActiveGrants?: (input: {
+    tenantId: string
+    connectorId: string
+    userId: string
+  }) => Promise<LiveGrantRow[]>
+  /** #1028: tenant-postafiók aktív grantje (a hívó usertől független). */
+  findActiveTenantGrant?: (input: { tenantId: string; connectorId: string }) => Promise<LiveGrantRow | null>
+  /** #1030: az agent saját postafiókja — a mail_* alapértelmezett fiókja. */
+  findPrimaryMailboxConnectorId?: (input: { agentId: string; tenantId: string }) => Promise<string | null>
+}
+
+async function loadActiveGrants(
+  deps: AuthorizeToolCallDeps,
+  input: { tenantId: string; connectorId: string; userId: string },
+): Promise<LiveGrantRow[]> {
+  if (deps.findActiveGrants) return deps.findActiveGrants(input)
+  const one = await deps.findActiveGrant(input)
+  return one ? [one] : []
 }
 
 function missingConnectorReason(connectorType: string, accessMode: string): string {
@@ -191,20 +254,210 @@ function pickBinding(
     }
   }
 
-  return { reason: 'connector_id_required' }
+  // #1028: pl. saját Gmail + közös postafiók — a modell a nevek közül választ (connectorName).
+  return {
+    reason: 'connector_id_required',
+    connectorChoices: connectorChoicesFromCandidates(definition, candidates),
+  }
+}
+
+/**
+ * #1030: a mail_* eszköz a saját capabilityjével, vagy a postafiók típusának megfelelő
+ * régi eszközével hívható (gmail_* a Google-, http_api_* az AgentMail/M365-postafióknál).
+ * Másik eszköz (pl. CRM-célú http_api_request) nem nyit levélküldést.
+ */
+const MAIL_LEGACY_CAPABILITIES: Record<string, { gmail: string; httpApi: string[] }> = {
+  [MAIL_LIST_ACCOUNTS_TOOL]: { gmail: GMAIL_SEARCH_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_SEARCH_TOOL]: { gmail: GMAIL_SEARCH_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_MESSAGE_TOOL]: { gmail: GMAIL_GET_MESSAGE_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_THREAD_TOOL]: { gmail: GMAIL_GET_THREAD_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_GET_ATTACHMENT_TOOL]: { gmail: GMAIL_GET_MESSAGE_TOOL, httpApi: [HTTP_API_GET_TOOL, HTTP_API_GET_ALL_TOOL] },
+  [MAIL_SEND_TOOL]: { gmail: GMAIL_SEND_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+  [MAIL_CREATE_DRAFT_TOOL]: { gmail: GMAIL_CREATE_DRAFT_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+  [MAIL_MARK_TOOL]: { gmail: GMAIL_MODIFY_LABELS_TOOL, httpApi: [HTTP_API_REQUEST_TOOL] },
+}
+
+function mailCapabilityAllowed(
+  definition: AgentDefinition,
+  toolName: string,
+  kind: 'gmail' | 'httpApi' | 'any',
+): boolean {
+  const legacy = MAIL_LEGACY_CAPABILITIES[toolName]
+  const accepted = [
+    toolName,
+    ...(legacy && kind !== 'httpApi' ? [legacy.gmail] : []),
+    ...(legacy && kind !== 'gmail' ? legacy.httpApi : []),
+  ]
+  return definition.snapshot.capabilities.some((row) => row.allowed && accepted.includes(row.toolName))
+}
+
+async function authorizeMailTool(
+  deps: AuthorizeToolCallDeps,
+  input: AuthorizeToolCallInput,
+): Promise<AuthorizeToolCallResult> {
+  const write = isEnterpriseMailWriteTool(input.toolName)
+  if (!mailCapabilityAllowed(input.definition, input.toolName, 'any')) {
+    return { allowed: false, reason: 'capability_not_allowed' }
+  }
+
+  const primaryConnectorId = deps.findPrimaryMailboxConnectorId
+    ? await deps.findPrimaryMailboxConnectorId({
+        agentId: input.definition.agentId,
+        tenantId: input.principal.tenantId,
+      })
+    : null
+  const accounts = await listMailAccounts({
+    definition: input.definition,
+    primaryConnectorId,
+    findConnector: deps.findConnector,
+    findActiveGrants: (row) => loadActiveGrants(deps, row),
+    userId: input.principal.userId,
+    tenantId: input.principal.tenantId,
+  })
+  if (input.toolName === MAIL_LIST_ACCOUNTS_TOOL) {
+    if (accounts.length === 0) return { allowed: false, reason: 'missing_mailbox' }
+    return authorizeLoadedConnector(deps, input, accounts[0].connectorId, accounts[0].grantId)
+  }
+  const resolved = resolveMailAccounts(accounts, input.args.account, {
+    allAllowed: input.toolName === MAIL_SEARCH_TOOL,
+    write,
+    primaryConnectorId,
+  })
+  if (!resolved.ok) {
+    return {
+      allowed: false,
+      reason: resolved.reason,
+      ...(resolved.accounts.length > 0 ? { accountChoices: resolved.accounts } : {}),
+    }
+  }
+  const picked = resolved.accounts[0]
+  if (!picked) return { allowed: false, reason: 'missing_mailbox' }
+  if (!mailCapabilityAllowed(input.definition, input.toolName, picked.kind === 'google' ? 'gmail' : 'httpApi')) {
+    return { allowed: false, reason: 'capability_not_allowed' }
+  }
+  const loaded = await authorizeLoadedConnector(deps, input, picked.connectorId, picked.grantId)
+  if (!loaded.allowed) return loaded
+  return { ...loaded, resolvedMailAccount: picked.account }
+}
+
+async function authorizeLoadedConnector(
+  deps: AuthorizeToolCallDeps,
+  input: AuthorizeToolCallInput,
+  connectorId: string,
+  preferredGrantId?: string,
+): Promise<AuthorizeToolCallResult> {
+  const connector = await deps.findConnector(connectorId)
+  if (!connector) return { allowed: false, reason: 'connector_not_active' }
+  if (connector.tenantId !== input.principal.tenantId) return { allowed: false, reason: 'tenant_isolation' }
+  if (connector.lifecycleState !== 'active') return { allowed: false, reason: 'connector_not_active' }
+
+  const scopeTool = MAIL_LEGACY_CAPABILITIES[input.toolName]?.gmail ?? input.toolName
+
+  if (tenantMailboxOf(connector)) {
+    const grant = deps.findActiveTenantGrant
+      ? await deps.findActiveTenantGrant({ tenantId: input.principal.tenantId, connectorId: connector.id })
+      : null
+    if (!grant) {
+      return {
+        allowed: false,
+        reason: TENANT_MAILBOX_DISCONNECTED,
+        connectorId: connector.id,
+        mailboxAddress: tenantMailboxOf(connector)?.address ?? null,
+      }
+    }
+    if (
+      !isDelegatedToolAllowedByScopes({
+        connectorType: connector.type,
+        toolName: scopeTool,
+        args: input.args,
+        scopes: parseDelegatedGrantScopes(grant.scopes),
+      })
+    ) {
+      return { allowed: false, reason: delegatedScopeDeniedReason(connector.type), connectorId: connector.id }
+    }
+    return {
+      allowed: true,
+      connectorId: connector.id,
+      connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      grant,
+    }
+  }
+
+  const delegated = connector.authMode === 'user_delegated'
+  if (!delegated) {
+    if (connector.type !== 'http_api' && connector.type !== 'mcp' && connector.type !== 'gmail') {
+      return { allowed: false, reason: 'acting_user_required' }
+    }
+    return { allowed: true, connectorId: connector.id, connector }
+  }
+
+  const grants = await loadActiveGrants(deps, {
+    tenantId: input.principal.tenantId,
+    connectorId: connector.id,
+    userId: input.principal.userId,
+  })
+  const preferred = preferredGrantId ? grants.find((row) => row.id === preferredGrantId) : undefined
+  const pickedGrant = preferred
+    ? { ok: true as const, grant: preferred }
+    : resolveLinkedAccountGrant(
+        grants.map((grant) => ({
+          ...grant,
+          accountLabel: grant.accountLabel ?? null,
+          nickname: grant.nickname ?? null,
+        })),
+        input.args.account,
+      )
+  if (!pickedGrant.ok) {
+    return {
+      allowed: false,
+      reason: pickedGrant.reason,
+      connectorId: connector.id,
+      ...(pickedGrant.accounts.length > 0 ? { accountChoices: pickedGrant.accounts } : {}),
+    }
+  }
+  const grant = grants.find((row) => row.id === pickedGrant.grant.id) ?? pickedGrant.grant
+  if (
+    !isDelegatedToolAllowedByScopes({
+      connectorType: connector.type,
+      toolName: scopeTool,
+      args: input.args,
+      scopes: parseDelegatedGrantScopes(grant.scopes),
+    })
+  ) {
+    return { allowed: false, reason: delegatedScopeDeniedReason(connector.type), connectorId: connector.id }
+  }
+  return {
+    allowed: true,
+    connectorId: connector.id,
+    connector,
+    grantId: grant.id,
+    tokenRef: grant.tokenRef,
+    grant,
+  }
 }
 
 export async function authorizeToolCall(
   deps: AuthorizeToolCallDeps,
   input: AuthorizeToolCallInput,
 ): Promise<AuthorizeToolCallResult> {
+  if (isEnterpriseMailTool(input.toolName)) {
+    return authorizeMailTool(deps, input)
+  }
+
   const requirement = TOOL_REQUIREMENTS[input.toolName]
   if (!requirement) {
     return { allowed: false, reason: 'tool_not_configured' }
   }
 
+  // #943: a wiki-írás a `kb_ingest` képességre is épülhet — a tényleges jog a kötés `wikiAccess`-e.
   const accepted =
-    input.toolName === KB_GET_DOCUMENT_TOOL ? KB_READ_TOOLS : [input.toolName]
+    input.toolName === KB_GET_DOCUMENT_TOOL
+      ? KB_READ_TOOLS
+      : input.toolName === KB_WIKI_WRITE_TOOL
+        ? [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL]
+        : capabilityToolsFor(input.toolName)
   const capability = input.definition.snapshot.capabilities.find(
     (row) => accepted.includes(row.toolName) && row.allowed,
   )
@@ -212,11 +465,33 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'capability_not_allowed' }
   }
 
+  // #942 D13: a nem a hívónak szóló privát és a `wikiAccess: none` KB-kötés
+  // nem létezik a hívó számára; közvetlen hivatkozásra `not_found`.
+  const isKb = requirement.connectorType === 'knowledge_base'
+  const wikiIntake = input.toolName === KB_INGEST_TOOL && input.args.processingMode === 'wiki'
+  const definition = isKb
+    ? {
+        ...input.definition,
+        snapshot: {
+          ...input.definition.snapshot,
+          connectors: scopeSnapshotConnectorsToUser(input.definition.snapshot.connectors, input.principal.userId),
+        },
+      }
+    : input.definition
+  const connectorIdArg = asUuid(input.args.connectorId)
+  if (
+    isKb &&
+    connectorIdArg &&
+    !definition.snapshot.connectors.some((row) => row.connectorId === connectorIdArg && row.type === 'knowledge_base')
+  ) {
+    return { allowed: false, reason: 'not_found' }
+  }
+
   const picked = pickBinding(
-    input.definition,
+    definition,
     requirement.connectorType,
-    requirement.accessMode,
-    asUuid(input.args.connectorId),
+    wikiIntake ? 'read' : requirement.accessMode,
+    connectorIdArg,
     normalizeConnectorName(input.args.connectorName),
     input.toolName,
     input.args,
@@ -224,7 +499,8 @@ export async function authorizeToolCall(
   if ('reason' in picked) {
     return {
       allowed: false,
-      reason: picked.reason,
+      reason: input.toolName === KB_GET_DOCUMENT_TOOL && picked.reason === 'missing_knowledge_base_connector_read'
+        ? 'not_found' : picked.reason,
       ...(picked.connectorChoices ? { connectorChoices: picked.connectorChoices } : {}),
     }
   }
@@ -243,7 +519,22 @@ export async function authorizeToolCall(
     return { allowed: false, reason: 'connector_not_active' }
   }
 
-  if (requirement.connectorType === 'knowledge_base' || requirement.connectorType === 'code_sandbox') {
+  if (isKb && !isKnowledgeBaseVisibleTo(connector, input.principal.userId)) {
+    return { allowed: false, reason: 'not_found' }
+  }
+
+  if (wikiIntake) {
+    const binding = definition.snapshot.connectors.find((row) => row.connectorId === connector.id)
+    if (!binding || !wikiAccessAllows(effectiveWikiAccess(binding), 'submit')) {
+      return { allowed: false, reason: 'wiki_submit_not_allowed' }
+    }
+  }
+
+  if (
+    requirement.connectorType === 'knowledge_base' ||
+    requirement.connectorType === 'code_sandbox' ||
+    requirement.connectorType === 'web_search'
+  ) {
     return {
       allowed: true,
       connectorId: connector.id,
@@ -253,8 +544,41 @@ export async function authorizeToolCall(
     }
   }
 
+  // #1028: tenant-postafiók — a token a tenanté, a hívó user grantjeihez nem nyúlunk.
+  if (tenantMailboxOf(connector)) {
+    const grant = deps.findActiveTenantGrant
+      ? await deps.findActiveTenantGrant({ tenantId: input.principal.tenantId, connectorId: connector.id })
+      : null
+    if (!grant) {
+      return {
+        allowed: false,
+        reason: TENANT_MAILBOX_DISCONNECTED,
+        connectorId: connector.id,
+        mailboxAddress: tenantMailboxOf(connector)?.address ?? null,
+      }
+    }
+    if (
+      !isDelegatedToolAllowedByScopes({
+        connectorType: connector.type,
+        toolName: input.toolName,
+        args: input.args,
+        scopes: parseDelegatedGrantScopes(grant.scopes),
+      })
+    ) {
+      return { allowed: false, reason: delegatedScopeDeniedReason(connector.type), connectorId: connector.id }
+    }
+    return {
+      allowed: true,
+      connectorId: connector.id,
+      connector,
+      grantId: grant.id,
+      tokenRef: grant.tokenRef,
+      grant,
+    }
+  }
+
   const delegated = connector.authMode === 'user_delegated'
-  if (!delegated && requirement.connectorType !== 'http_api') {
+  if (!delegated && requirement.connectorType !== 'http_api' && requirement.connectorType !== 'mcp') {
     return { allowed: false, reason: 'acting_user_required' }
   }
 
@@ -266,14 +590,28 @@ export async function authorizeToolCall(
     }
   }
 
-  const grant = await deps.findActiveGrant({
+  const grants = await loadActiveGrants(deps, {
     tenantId: input.principal.tenantId,
     connectorId: connector.id,
     userId: input.principal.userId,
   })
-  if (!grant) {
-    return { allowed: false, reason: 'connector_grant_missing', connectorId: connector.id }
+  const pickedGrant = resolveLinkedAccountGrant(
+    grants.map((grant) => ({
+      ...grant,
+      accountLabel: grant.accountLabel ?? null,
+      nickname: grant.nickname ?? null,
+    })),
+    input.args.account,
+  )
+  if (!pickedGrant.ok) {
+    return {
+      allowed: false,
+      reason: pickedGrant.reason,
+      connectorId: connector.id,
+      ...(pickedGrant.accounts.length > 0 ? { accountChoices: pickedGrant.accounts } : {}),
+    }
   }
+  const grant = grants.find((row) => row.id === pickedGrant.grant.id) ?? pickedGrant.grant
 
   const scopes = parseDelegatedGrantScopes(grant.scopes)
   if (
@@ -297,5 +635,6 @@ export async function authorizeToolCall(
     connector,
     grantId: grant.id,
     tokenRef: grant.tokenRef,
+    grant,
   }
 }

@@ -2,6 +2,8 @@ import { getTranslations } from 'next-intl/server'
 import { listTenants, listPlatformUsers } from '@/app/actions/tenant'
 import { getAuthContext } from '@/auth/context'
 import { PlatformTenantPanel } from '@/components/tenant/platform-tenant-panel'
+import { listPlatformChatInsightAction } from '@/app/actions/platform-chat'
+import { PlatformChatAdminInsightPanel } from '@/components/platform-chat/admin-insight-panel'
 
 /**
  * Platform admin — tenant registry (Tenant-Management §9.2, elfogadási kritérium §13/1).
@@ -12,6 +14,7 @@ import { PlatformTenantPanel } from '@/components/tenant/platform-tenant-panel'
 export default async function PlatformTenantsPage() {
   const [res, usersRes, ctx] = await Promise.all([listTenants(), listPlatformUsers(), getAuthContext()])
   const canManageMemberships = Boolean(ctx?.platformRoles.includes('superadmin'))
+  const insight = canManageMemberships ? await listPlatformChatInsightAction() : null
 
   const t = await getTranslations('ControlPlane.platformTenants')
   if (!res.success) {
@@ -49,6 +52,7 @@ export default async function PlatformTenantsPage() {
         users={usersRes.success ? usersRes.data : []}
         canManageMemberships={canManageMemberships}
       />
+      {insight?.success ? <PlatformChatAdminInsightPanel rows={insight.data} /> : null}
     </div>
   )
 }

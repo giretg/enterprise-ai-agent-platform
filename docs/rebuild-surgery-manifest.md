@@ -489,7 +489,7 @@ DEFER: `sandbox-*`, `code-sandbox` actions, `tulajdoni-*`, office/xlsx helpers h
 |---|---|
 | `docs/rebuild-surgery-manifest.md` | KEEP | Ez a fájl — a részletes ledger. |
 | `docs/architecture.md` | REWRITE (új, Phase 0) | Az issue #8 „short architecture note" deliverable-je: ~1 oldal — belépési pontok, `legacy/` szabály, import-boundary, link ide. Nem duplikálja a ledgert. |
-| `CONTEXT.md` | REWRITE később | A glossary még a chat/tanítás nyelv. Phase 0-ban ne blokkoljon. |
+| `GLOSSARY.md` | KEEP (korábban `CONTEXT.md`) | Domain-szókincs. A Matt Pocock skillek `GLOSSARY.md`-t olvasnak. |
 | `docs/specs/**`, `docs/AI-Agent-Platform-*` | REFERENCE ONLY | Historikus. Nem implementációs szerződés. |
 | `README.md` | REWRITE | Control Plane + MCP Gateway; chat/dispatcher mondatok ki. |
 | `DOCS.md` | DELETE vagy archív | A legacy architecture leírása. |

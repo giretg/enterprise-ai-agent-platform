@@ -9,6 +9,8 @@ export type ToolUiLabel = {
   label: string
   /** Hover / tooltip leírás (1–2 mondat). */
   description: string
+  /** Állapotszöveg, amíg az eszköz fut (pl. a platform-chatben); hiányában a `label`. */
+  progress?: string
 }
 
 export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
@@ -31,7 +33,23 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   kb_ingest: {
     label: 'Tudásbázis feltöltés',
-    description: 'Fájl betöltése a tudásbázisba sima szövegként vagy wiki (OKF) oldalakra bontva.',
+    description:
+      'Fájl vagy rövid jegyzet betöltése a tudásbázisba: sima szövegként, gépi (OKF) oldalakra bontva, vagy a wikibe feldolgozásra.',
+  },
+  kb_wiki_write: {
+    label: 'Wiki írása',
+    description:
+      'Az AI-munkatárs a feldolgozott forrásokból wiki-oldalakat ír és frissít. Csak írási joggal; jóváhagyás módban a wiki gazdája fogadja el.',
+  },
+  kb_wiki_changes: {
+    label: 'Wiki változásai',
+    description:
+      'Megmutatja, mi változott a wikin, mióta az AI-munkatárs utoljára megnézte: ki, mikor, mely oldalakat módosította (a szöveg nélkül).',
+  },
+  kb_wiki_revert: {
+    label: 'Wiki visszaállítása',
+    description:
+      'Egy oldalt egy korábbi verziójára, vagy egy teljes módosítást az előtte lévő állapotra állít vissza. Mindig a wiki jóváhagyója fogadja el.',
   },
 
   'platform.projects.list': {
@@ -185,30 +203,80 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
       'a válasz csak összegzést és a bizonytalan párokat adja.',
   },
 
-  // Mini-app
-  'sandbox_app.create': {
-    label: 'Mini-app létrehozása',
-    description: 'Új, böngészőben megnyitható mini-app (HTML) draft létrehozása.',
+  // Mini app (#967) — MCP-eszközök
+  'platform.mini_app.create': {
+    label: 'Mini app létrehozása',
+    description: 'Új, böngészőben megnyitható oldal (jellemzően riport) egyetlen HTML-fájlból, beágyazott adattal.',
   },
-  'sandbox_app.update_artifact': {
-    label: 'Tartalom frissítése',
-    description: 'Mini-app HTML tartalmának feltöltése vagy cseréje (új verzió).',
+  'platform.mini_app.update': {
+    label: 'Mini app frissítése',
+    description: 'Új verzió feltöltése egy saját mini apphoz; a korábbi verziók visszanézhetők.',
   },
-  'sandbox_app.preview': {
-    label: 'Előnézet',
-    description: 'Rövid életű, izolált előnézeti URL a mini-apphoz.',
+  'platform.mini_app.list': {
+    label: 'Mini appok listázása',
+    description: 'A saját, a megosztott és a szervezeti mini appok listája név, verzió és dátum szerint.',
   },
-  'sandbox_app.export': {
-    label: 'Exportálás',
-    description: 'Mini-app verzió exportja letölthető .html fájlként.',
+  'platform.mini_app.get': {
+    label: 'Mini app megnyitása',
+    description: 'Friss megnyitási link vagy a HTML forrás lekérése egy mini apphoz.',
   },
-  'sandbox_app.list': {
-    label: 'Mini-appok listázása',
-    description: 'Az agent saját mini-appjainak listázása név, státusz és verzió szerint.',
+  'platform.mini_app.share': {
+    label: 'Mini app megosztása',
+    description: 'Megosztás más AI munkatársakkal vagy az egész szervezettel (olvasás és másolás).',
   },
-  'sandbox_app.get': {
-    label: 'Mini-app megnyitása',
-    description: 'Egy meglévő mini-app HTML forrásának lekérése megtekintéshez vagy szerkesztéshez.',
+  'platform.mini_app.unshare': {
+    label: 'Megosztás visszavonása',
+    description: 'Egy mini app megosztásának visszavonása munkatársaktól vagy a szervezettől.',
+  },
+  'platform.mini_app.archive': {
+    label: 'Mini app archiválása',
+    description: 'A mini app eltűnik a listákból, a megosztások megszűnnek; 90 napig visszaállítható.',
+  },
+  'platform.mini_app.guide': {
+    label: 'Mini app útmutató',
+    description: 'A platform szabályai és a munkatárs saját mini app útmutatója (arculat, felépítés).',
+  },
+
+  // AI-adattárház (#984) — MCP-eszközök
+  'warehouse.list_datasets': {
+    label: 'Adatkészletek listája',
+    description: 'A céges adattárház adatkészletei (pl. ügyfelek, rendelések): mit jelent egy sor, hány sor, mikor frissült.',
+  },
+  'warehouse.describe_dataset': {
+    label: 'Adatkészlet leírása',
+    description: 'Egy adatkészlet mezőinek üzleti jelentése, mértékegysége, kapcsolatai és betöltési előzményei.',
+  },
+  'warehouse.prepare_import': {
+    label: 'Excel betöltésének előkészítése',
+    description: 'Excel-fájl átvétele és átvizsgálása (munkalapok, fejléc, típusok); ismert szerkezetnél a mentett recept alapján.',
+  },
+  'warehouse.submit_import_plan': {
+    label: 'Betöltési terv beküldése',
+    description: 'Az AI javaslata: melyik oszlop hova kerül és mit jelent. A platform ellenőrzi, nem hajtja végre vakon.',
+  },
+  'warehouse.preview_import': {
+    label: 'Betöltés előnézete',
+    description: 'Mi változna: új, módosuló, hibás sorok és bizonytalan ügyfél-egyezések — adatmódosítás nélkül.',
+  },
+  'warehouse.commit_import': {
+    label: 'Betöltés véglegesítése',
+    description: 'Az előnézetben látott adatok betöltése. Új adatkészlethez vagy mezőhöz emberi jóváhagyás kell.',
+  },
+  'warehouse.discard_import': {
+    label: 'Feltöltés törlése',
+    description: 'Még be nem töltött Excel-feltöltés törlése (pl. rossz fájl). Az adatkészletek nem változnak.',
+  },
+  'warehouse.get_import_status': {
+    label: 'Betöltés állapota',
+    description: 'Egy betöltés állapota, eredménye és a kézi döntésre váró tételek.',
+  },
+  'warehouse.query_dataset': {
+    label: 'Adatlekérdezés',
+    description: 'Szűrés, csoportosítás, összesítés az adattárházban — forrással és frissességgel együtt.',
+  },
+  'warehouse.export_dataset': {
+    label: 'Adatkészlet exportja',
+    description: 'Egy adatkészlet kimásolása CSV-ként.',
   },
 
   // Sandbox verziókezelés
@@ -225,7 +293,39 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Pillanatkép készítése a sandbox aktuális állapotáról.',
   },
 
-  // Email (Gmail)
+  // Email (egységes mail_* + Gmail)
+  mail_list_accounts: {
+    label: 'Postafiókok',
+    description: 'Az agent által elérhető postafiókok: cím, típus, olvasás/írás, saját cím-e.',
+  },
+  mail_search: {
+    label: 'Keresek a leveleid között…',
+    description: 'Keresés az elérhető postafiókokban (feladó, tárgy, dátum, olvasatlan) — egyben vagy az összesben.',
+  },
+  mail_get_message: {
+    label: 'Levél megnyitása',
+    description: 'Egy levél teljes tartalma és csatolmány-listája, postafiók-típustól függetlenül.',
+  },
+  mail_get_thread: {
+    label: 'Levélváltás megnyitása',
+    description: 'Egy levélváltás összes levele időrendben.',
+  },
+  mail_get_attachment: {
+    label: 'Csatolmány',
+    description: 'Levélcsatolmány tartalma (szöveg, ha olvasható, különben fájl).',
+  },
+  mail_send: {
+    label: 'Levelet írok…',
+    description: 'Új levél vagy válasz a kiválasztott postafiókból; ha be van kapcsolva, előbb jóváhagyást kér.',
+  },
+  mail_create_draft: {
+    label: 'Piszkozat',
+    description: 'Piszkozat mentése küldés nélkül, ahol a szolgáltató támogatja.',
+  },
+  mail_mark: {
+    label: 'Olvasott / archiválás',
+    description: 'Olvasottnak jelölés, archiválás vagy címke; ha be van kapcsolva, előbb jóváhagyást kér.',
+  },
   gmail_search: {
     label: 'Levélkeresés',
     description: 'Gmail keresés Gmail keresőszintaxissal (pl. is:unread newer_than:1d).',
@@ -386,19 +486,61 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'API írás',
     description: 'Író (POST/PUT/PATCH/DELETE) hívás a hozzárendelt külső REST API-n.',
   },
+  mcp_list_tools: {
+    label: 'Külső MCP-eszközök listája',
+    description: 'A hozzárendelt külső MCP-szerverek jóváhagyott eszközeinek listája (név, kockázat, paraméterek).',
+  },
+  mcp_call: {
+    label: 'Külső MCP-eszköz hívása',
+    description:
+      'Egy jóváhagyott külső MCP-eszköz futtatása. Az olvasó eszköz azonnal fut, az író és a veszélyes jóváhagyást kérhet.',
+  },
   sandbox_exec: {
     label: 'Kód futtatása',
     description: 'Izolált, hívásonként új sandbox futtatása kontrollált workspace inputtal és outputtal.',
   },
   sandbox_run: {
     label: 'Skill-script futtatása',
-    description: 'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában.',
+    description:
+      'Az agenthez pinnelt skill scriptjének futtatása a platform sandboxában. A megadott munkafájlok bemásolódnak a futtatásba; a sandboxnak nincs internetelérése.',
+  },
+
+  // Platform-chat helyi csatolmány-eszközök (#1023) — a worker válaszol, nem MCP.
+  attachment_read: {
+    label: 'Csatolmány olvasása',
+    description: 'A beszélgetéshez csatolt fájl egy részletének olvasása oldal, munkalap vagy sor szerint.',
+    progress: 'Olvasom a csatolmányt',
+  },
+  attachment_search: {
+    label: 'Csatolmány keresése',
+    description: 'Szöveg keresése a csatolt fájlban, oldalszámmal vagy sorszámmal.',
+    progress: 'Keresek a csatolmányban',
+  },
+  attachment_view: {
+    label: 'Csatolmány megtekintése',
+    description: 'Egy PDF-oldal vagy csatolt kép megjelenítése a modellnek.',
+    progress: 'Megnézem a csatolmányt',
   },
 
   // Webes kutatás
   web_search: {
     label: 'Webes keresés',
-    description: 'Kontrollált webes keresés publikus, aktuális információhoz.',
+    description:
+      'Keresés a nyilvános weben a cég saját keresőjével, és a találatok (weboldal, PDF) megnyitása; minden keresés és megnyitott oldal a cég naplójába kerül. Előtte egy adminnak be kell állítania a Beállítások → Webes keresés alatt.',
+    progress: 'Keresek a weben',
+  },
+  // #1021: a „Webes keresés” joggal jár, külön nem kapcsolható
+  web_fetch: {
+    label: 'Weboldal megnyitása',
+    description:
+      'Egy keresési találat, a beszélgetésben megadott link vagy egy engedélyezett oldal megnyitása és elolvasása (weboldal vagy PDF). A belső hálózat soha nem érhető el.',
+    progress: 'Megnyitom az oldalt',
+  },
+  // #1024 letölthető fájl
+  document_export: {
+    label: 'Fájl készítése',
+    description:
+      'Letölthető Excel-, Word-, PDF- vagy CSV-fájlt készít a válaszból. A fájlt 7 napig csak az töltheti le, aki kérte; céges rendszerbe nem ír.',
   },
   web_research_request: {
     label: 'Webes kutatás',
@@ -455,11 +597,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Felfedezés eredményéből connector-draft összeállítása.',
   },
 
-  // Zárt szerep — web-egress
-  web_fetch: {
-    label: 'Webes letöltés',
-    description: 'Kontrollált tartalom-letöltés URL-ről (deny-by-default, allowlist).',
-  },
+  // Zárt szerep — web-egress (a `web_fetch` címkéje fent, #1021)
   'web.research.serve': {
     label: 'Kutatás kiszolgálása',
     description: 'Web-kutatási eredmény kiszolgálása a Web-Egress szerep számára.',

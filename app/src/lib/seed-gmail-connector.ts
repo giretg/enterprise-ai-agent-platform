@@ -51,6 +51,9 @@ export async function ensureGmailProvisioningDraft(
       reviewStatus: 'approved',
       sandboxTestOk: true,
       validationResult,
+      // A seed/backfill is gate-értékeket ír, ezért nem kerülheti meg az
+      // aktiválás compare-and-set tokenjét egy párhuzamos admin-művelet mellett.
+      revision: { increment: 1 },
     },
   })
 }

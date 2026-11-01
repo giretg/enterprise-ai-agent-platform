@@ -56,6 +56,7 @@ async function LinkedAccountsContent() {
         connectorId: g.connectorId,
         status: g.status,
         accountLabel: g.accountLabel,
+        nickname: g.nickname,
         scopes: g.scopes,
         grantedAt: toIso(g.grantedAt),
         metadata: g.metadata,

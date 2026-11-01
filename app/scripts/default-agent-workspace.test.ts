@@ -11,6 +11,7 @@ import {
   CONTROL_PLANE_PENDING_PATH,
   CONTROL_PLANE_PLATFORM_HOME,
   DEFAULT_AGENT_WORKSPACE_FALLBACK,
+  ONBOARDING_PATH,
   homePathForAuthContext,
 } from '../src/lib/control-plane-entry'
 
@@ -63,21 +64,31 @@ check('platform-mód a tenant-registryre megy, ne a munkatárs-listára', () => 
   )
 })
 
-check('tenant nélküli aktív fiók pendingre megy, ne a listára', () => {
+check('tenant nélküli aktív fiók az onboardingra megy (saját cég / meghívó), ne a listára', () => {
   assert.equal(
     homePathForAuthContext({
       kind: 'none',
       user: { status: 'active', role: 'operator' },
     }),
-    CONTROL_PLANE_PENDING_PATH,
+    ONBOARDING_PATH,
   )
 })
 
-check('jóváhagyásra váró fiók pendingre megy', () => {
+check('meghívó nélküli új fiók az onboardingra megy, nem várakozó képernyőre (#830 D6)', () => {
   assert.equal(
     homePathForAuthContext({
       kind: 'none',
       user: { status: 'pending', role: null },
+    }),
+    ONBOARDING_PATH,
+  )
+})
+
+check('felfüggesztett fiók a pending képernyőn marad', () => {
+  assert.equal(
+    homePathForAuthContext({
+      kind: 'none',
+      user: { status: 'suspended', role: 'admin' },
     }),
     CONTROL_PLANE_PENDING_PATH,
   )

@@ -59,6 +59,12 @@ export async function PublicSiteShell({ children }: { children: ReactNode }) {
             </Link>
             <LocaleSwitcher />
             <NextLink
+              href="/sign-up"
+              className="hidden px-3 py-1.5 text-sm font-semibold text-ink-soft transition-colors hover:text-ink sm:inline"
+            >
+              {t('signUp')}
+            </NextLink>
+            <NextLink
               href="/sign-in"
               className="signal-btn rounded border border-ink bg-ink px-2.5 py-2 text-sm font-semibold text-white sm:px-4"
             >

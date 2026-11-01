@@ -1,35 +1,103 @@
 import Link from 'next/link'
-import { getTranslations } from 'next-intl/server'
+import { getLocale, getTranslations } from 'next-intl/server'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
-import { listAgents } from '@/app/actions/platform'
+import { listAgentsForCatalog } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
+import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
+import { DashboardChatLauncher } from '@/components/platform-chat/dashboard-chat-launcher'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
-import { personaFor } from '@/lib/agent-persona'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
+import { canStartPlatformChat } from '@/lib/platform-chat-href'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
+import {
+  COMPANY_CONNECTOR_TYPES,
+  lastMcpUseByUser,
+  onboardingSteps,
+  type OnboardingStepKey,
+} from '@/lib/overview-onboarding'
+import { listBrokenTenantMailboxes } from '@/lib/tenant-mailbox-status'
+import { repositories } from '@/repositories/postgres'
 import { operationErrorLabel } from '../operations/labels'
 import { HandoffsPanel } from '../operations/handoffs-panel'
 import { OperationsPanel } from '../operations/operations-panel'
 
 export const dynamic = 'force-dynamic'
 
+const OVERVIEW_TASK_LIMIT = 2
+
+const STEP_HREF: Record<OnboardingStepKey, string> = {
+  connectors: '/control-plane/provisioning',
+  agents: '/control-plane/agents/new',
+  mcp: '/control-plane/get-started',
+}
+
 export default async function DashboardPage() {
   const ctx = await requireControlPlaneTenantViewer()
-  const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
-  const [agentsRes, listed, inbox] = await Promise.all([
-    listAgents({ limit: 100 }),
+  const tenantId = ctx.activeTenantId
+  const userId = ctx.user.id
+  const isAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const canCreateAgent = isAdmin
+  const [agentsRes, listed, inbox, mcpUse, connectors, members, tenant, brokenMailboxes] = await Promise.all([
+    listAgentsForCatalog({ limit: 100 }),
     listPendingGatewayOperationsAction(),
     listHandoffInboxAction(),
+    // Operátor csak a saját MCP-állapotát látja; a tenant-szintű kép admin-nézet.
+    lastMcpUseByUser(tenantId, isAdmin ? undefined : userId),
+    isAdmin
+      ? repositories.connectors
+          .listForTenant(tenantId)
+          .then((rows) =>
+            rows.filter((c) => c.lifecycleState === 'active' && COMPANY_CONNECTOR_TYPES.includes(c.type)),
+          )
+      : [],
+    isAdmin
+      ? repositories.tenantMemberships
+          .findByTenantWithUsers(tenantId)
+          .then((rows) => rows.filter((m) => m.status === 'active'))
+      : [],
+    repositories.tenants.findById(tenantId),
+    // #1028: megszakadt közös postafiók — csak az admin tudja újracsatlakoztatni.
+    isAdmin ? listBrokenTenantMailboxes(tenantId) : [],
   ])
   const agents = agentsRes.success ? agentsRes.data : []
+  const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
+  // Ugyanaz a feltétel, mint a kártya „Beszélgetés indítása” gombján.
+  const chatAgents = agents
+    .filter(
+      (agent) =>
+        agent.kind !== 'public' &&
+        canStartPlatformChat({
+          tenantEnabled: tenantChatEnabled,
+          platformChatEnabled: agent.platformChatEnabled !== false,
+          status: agent.status,
+          currentDefinitionVersionId: agent.currentDefinitionVersionId ?? null,
+        }),
+    )
+    .map((agent) => ({ id: agent.id, name: agent.name, description: agent.description ?? null }))
   const operations = listed.success ? listed.data.operations : []
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const t = await getTranslations('ControlPlane.dashboard')
   const tAgents = await getTranslations('ControlPlane.agents')
   const tOps = asTranslate(await getTranslations('ControlPlane.operations'))
-  const tasksEmpty =
-    listed.success && inbox.success && operations.length === 0 && handoffs.length === 0
+  const tOnb = await getTranslations('ControlPlane.dashboard.onboarding')
+  const tRoles = await getTranslations('PlatformIam')
+  const locale = await getLocale()
+  const formatDate = (date: Date) => date.toLocaleDateString(locale, { dateStyle: 'medium' })
+  const ownMcpUse = mcpUse.get(userId)
+  const steps = onboardingSteps({
+    isAdmin,
+    companyConnectorCount: connectors.length,
+    agentCount: agents.length,
+    mcpUsed: Boolean(ownMcpUse),
+  })
+  const doneCount = steps.filter((step) => step.done).length
+  const mcpUserCount = members.filter((m) => mcpUse.has(m.userId)).length
+  const totalTasks = operations.length + handoffs.length
+  const tasksEmpty = listed.success && inbox.success && totalTasks === 0
+  const previewOperations = operations.slice(0, OVERVIEW_TASK_LIMIT)
+  const previewHandoffs = handoffs.slice(0, OVERVIEW_TASK_LIMIT - previewOperations.length)
 
   return (
     <div className="space-y-10">
@@ -38,12 +106,83 @@ export default async function DashboardPage() {
         <h1 className="mt-2 font-display text-3xl font-semibold">{t('title')}</h1>
       </div>
 
+      {brokenMailboxes.map((mailbox) => (
+        <p
+          key={mailbox.connectorId}
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-coral/40 bg-coral/10 p-4 text-sm text-coral-deep"
+        >
+          <span>{t('mailboxBroken', { address: mailbox.address ?? '—' })}</span>
+          <Link href="/control-plane/provisioning/agentmail" className="font-semibold hover:underline">
+            {t('mailboxBrokenAction')}
+          </Link>
+        </p>
+      ))}
+
+      {chatAgents.length > 0 ? <DashboardChatLauncher agents={chatAgents} /> : null}
+
+      {doneCount < steps.length ? (
+        <section className="space-y-4" aria-labelledby="onboarding-title">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 id="onboarding-title" className="font-display text-xl font-semibold">
+              {tOnb('title')}
+            </h2>
+            <p className="text-sm text-ink-soft">{tOnb('progress', { done: doneCount, total: steps.length })}</p>
+          </div>
+          <p className="text-sm text-ink-soft">{isAdmin ? tOnb('introAdmin') : tOnb('introMember')}</p>
+          <ol className="space-y-3">
+            {steps.map((step, index) => (
+              <li
+                key={step.key}
+                className={`flex flex-wrap items-start gap-4 rounded-2xl border p-4 ${
+                  step.done ? 'border-ink/10 bg-paper' : 'border-coral/35 bg-white'
+                }`}
+              >
+                <span
+                  aria-hidden
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                    step.done ? 'bg-emerald-600 text-white' : 'border border-coral text-coral'
+                  }`}
+                >
+                  {step.done ? '✓' : index + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold">
+                    {tOnb(`${step.key}.title`)}
+                    <span className="sr-only"> — {step.done ? tOnb('doneLabel') : tOnb('todoLabel')}</span>
+                  </h3>
+                  <p className="mt-1 text-sm text-ink-soft">
+                    {step.done ? tOnb(`${step.key}.done`) : tOnb(`${step.key}.todo`)}
+                  </p>
+                </div>
+                {step.done ? null : (
+                  <Link
+                    href={STEP_HREF[step.key]}
+                    className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coral/90"
+                  >
+                    {tOnb(`${step.key}.action`)}
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : !isAdmin && ownMcpUse ? (
+        <p className="rounded-2xl border border-ink/10 bg-paper p-4 text-sm text-ink">
+          <span aria-hidden className="mr-2 text-emerald-600">✓</span>
+          {tOnb('mcpInUse', { date: formatDate(ownMcpUse) })}
+        </p>
+      ) : null}
+
       <section className="space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-display text-xl font-semibold">{t('tasksTitle')}</h2>
-          <Link href="/control-plane/operations" className="text-sm text-coral-deep hover:underline">
-            {t('tasksAll')}
-          </Link>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+            {tasksEmpty ? null : <span className="text-ink-soft">{t('tasksTotal', { count: totalTasks })}</span>}
+            <Link href="/control-plane/operations" className="text-coral-deep hover:underline">
+              {t('tasksAll')}
+            </Link>
+          </div>
         </div>
         {listed.success ? null : (
           <p className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
@@ -56,13 +195,12 @@ export default async function DashboardPage() {
           </p>
         )}
         {tasksEmpty ? <p className="text-sm text-ink-soft">{t('tasksEmpty')}</p> : null}
-        {listed.success && operations.length > 0 ? (
-          <div className="space-y-3">
-            <h3 className="font-display text-lg font-semibold">{tOps('approvalsTitle')}</h3>
-            <OperationsPanel operations={operations} />
-          </div>
+        {listed.success && previewOperations.length > 0 ? (
+          <OperationsPanel operations={previewOperations} />
         ) : null}
-        {inbox.success && handoffs.length > 0 ? <HandoffsPanel handoffs={handoffs} /> : null}
+        {inbox.success && previewHandoffs.length > 0 ? (
+          <HandoffsPanel handoffs={previewHandoffs} hideIntro />
+        ) : null}
       </section>
 
       <section className="space-y-3">
@@ -84,17 +222,14 @@ export default async function DashboardPage() {
         </div>
         {agentsRes.success ? (
           <div className="grid gap-4 md:grid-cols-2">
-            {agents.map((agent) => {
-              const persona = personaFor(agent.name)
-              return (
-                <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
-                  <Card title={persona.nickname || agent.name}>
-                    {agent.description ? <p className="text-sm text-ink">{agent.description}</p> : null}
-                    <p className="mt-1 text-sm text-ink-soft">{agent.status}</p>
-                  </Card>
-                </Link>
-              )
-            })}
+            {agents.map((agent) => (
+              <AgentCatalogCard
+                key={agent.id}
+                agent={agent}
+                canResumeHire={canCreateAgent}
+                tenantChatEnabled={tenantChatEnabled}
+              />
+            ))}
             {agents.length === 0 ? (
               <Card title={tAgents('emptyTitle')}>
                 <p className="text-sm text-ink-soft">
@@ -109,6 +244,72 @@ export default async function DashboardPage() {
           </div>
         )}
       </section>
+
+      {isAdmin ? (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-display text-xl font-semibold">{tOnb('connectorsTitle')}</h2>
+            <Link
+              href={STEP_HREF.connectors}
+              className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coral/90"
+            >
+              {tOnb('connectors.action')}
+            </Link>
+          </div>
+          {connectors.length === 0 ? (
+            <p className="text-sm text-ink-soft">{tOnb('connectorsEmpty')}</p>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {connectors.map((connector) => (
+                <li key={connector.id} className="rounded-full border border-ink/10 bg-white px-3 py-1 text-sm">
+                  {connector.name}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {isAdmin ? (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <h2 className="font-display text-xl font-semibold">{tOnb('usersTitle')}</h2>
+              <p className="mt-1 text-sm text-ink-soft">
+                {tOnb('usersSummary', { used: mcpUserCount, total: members.length })}
+              </p>
+            </div>
+            <Link href="/control-plane/iam" className="text-sm text-coral-deep hover:underline">
+              {tOnb('usersAll')}
+            </Link>
+          </div>
+          <ul className="divide-y divide-ink/10 rounded-2xl border border-ink/10 bg-white">
+            {members.map((member) => {
+              const usedAt = mcpUse.get(member.userId)
+              return (
+                <li key={member.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{member.userName || member.userEmail}</p>
+                    <p className="text-xs text-ink-soft">
+                      {member.userName ? `${member.userEmail} · ` : ''}
+                      {tRoles(`roleLabel_${member.role}`)}
+                    </p>
+                  </div>
+                  {usedAt ? (
+                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+                      ✓ {tOnb('userMcpUsed', { date: formatDate(usedAt) })}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-paper px-3 py-1 text-xs text-ink-soft">
+                      {tOnb('userMcpNever')}
+                    </span>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ) : null}
     </div>
   )
 }

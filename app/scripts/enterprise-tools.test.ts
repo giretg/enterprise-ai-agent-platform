@@ -129,8 +129,10 @@ function invokeDeps(opts?: {
   executeKbTool?: EnterpriseToolDeps['executeKbTool']
   loadSkillVersion?: EnterpriseToolDeps['loadSkillVersion']
   executeSandboxRun?: EnterpriseToolDeps['executeSandboxRun']
+  readWorkFile?: EnterpriseToolDeps['readWorkFile']
   writeWorkFile?: EnterpriseToolDeps['writeWorkFile']
   resolveActingUser?: EnterpriseToolDeps['resolveActingUser']
+  resolveTenantLanguage?: EnterpriseToolDeps['resolveTenantLanguage']
   resolveError?: Error
   startAuthorization?: EnterpriseToolDeps['startAuthorization']
   audit?: Array<{ action: string }>
@@ -168,8 +170,10 @@ function invokeDeps(opts?: {
     executeKbTool: opts?.executeKbTool,
     loadSkillVersion: opts?.loadSkillVersion,
     executeSandboxRun: opts?.executeSandboxRun,
+    readWorkFile: opts?.readWorkFile,
     writeWorkFile: opts?.writeWorkFile,
     resolveActingUser: opts?.resolveActingUser,
+    resolveTenantLanguage: opts?.resolveTenantLanguage,
   }
 }
 
@@ -207,6 +211,7 @@ async function main() {
       connector: connector(),
       grantId: GRANT_ID,
       tokenRef: 'stub-drive-token',
+      grant: grant(),
     })
   })
 
@@ -497,7 +502,83 @@ async function main() {
     assert.equal(parsePayload(result).code, 'agent_inactive')
   })
 
-  await check('stale definitionId is agent_stale', async () => {
+  await check('stale definitionId on a write is agent_stale with currentDefinitionId', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: definition({ definitionId: STALE_DEFINITION_ID }),
+        currentDefinitionId: DEFINITION_ID,
+      }),
+      {
+        principal: principal(),
+        toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+        args: { definitionId: STALE_DEFINITION_ID, name: 'x' },
+      },
+    )
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result)
+    assert.equal(payload.code, 'agent_stale')
+    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
+    assert.match(String(payload.message), /platform\.agent\.get_definition/)
+  })
+
+  // Újrapublikálás munka közben: az olvasás az aktuális verzión fut, és a válasz jelzi.
+  const byId = (current: AgentDefinition) => async ({ definitionId }: { definitionId: string }) =>
+    definitionId === STALE_DEFINITION_ID ? definition({ definitionId: STALE_DEFINITION_ID }) : current
+
+  await check('stale definitionId on a read runs on the current version with a notice', async () => {
+    let calls = 0
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps({
+        currentDefinitionId: DEFINITION_ID,
+        executeDriveTool: async () => {
+          calls++
+          return { files: [] }
+        },
+      }),
+      loadDefinition: byId(definition()),
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: STALE_DEFINITION_ID },
+    })
+    assert.ok('content' in result)
+    assert.equal(result.isError, undefined)
+    assert.equal(calls, 1)
+    const notice = JSON.parse(result.content[1]?.text ?? '{}') as {
+      definitionUpdated?: { previousDefinitionId: string; currentDefinitionId: string; message: string }
+    }
+    assert.equal(notice.definitionUpdated?.previousDefinitionId, STALE_DEFINITION_ID)
+    assert.equal(notice.definitionUpdated?.currentDefinitionId, DEFINITION_ID)
+    assert.match(notice.definitionUpdated?.message ?? '', /platform\.agent\.get_definition/)
+  })
+
+  await check('stale read follows the current version permissions, not the old ones', async () => {
+    let calls = 0
+    const revoked = definition({
+      snapshot: { ...definition().snapshot, capabilities: [] },
+    })
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps({
+        currentDefinitionId: DEFINITION_ID,
+        executeDriveTool: async () => {
+          calls++
+          return { files: [] }
+        },
+      }),
+      loadDefinition: byId(revoked),
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+      args: { definitionId: STALE_DEFINITION_ID },
+    })
+    assert.equal(result.isError, true)
+    assert.equal(calls, 0)
+    assert.notEqual(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('stale read does not follow twice when the current version is stale too', async () => {
     const result = await invokeEnterpriseTool(
       invokeDeps({
         definition: definition({ definitionId: STALE_DEFINITION_ID }),
@@ -510,9 +591,33 @@ async function main() {
       },
     )
     assert.equal(result.isError, true)
-    const payload = parsePayload(result)
-    assert.equal(payload.code, 'agent_stale')
-    assert.equal(payload.currentDefinitionId, DEFINITION_ID)
+    assert.equal(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('invalid_args names the bad fields for the client and the audit', async () => {
+    const audit: Array<{ action: string; metadata?: unknown }> = []
+    const deps: EnterpriseToolDeps = {
+      ...invokeDeps(),
+      audit: {
+        async append(data) {
+          audit.push({ action: data.action, metadata: data.metadata })
+        },
+      },
+    }
+    const result = await invokeEnterpriseTool(deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_READ_FILE_TOOL,
+      args: { definitionId: DEFINITION_ID },
+    })
+    assert.equal(result.isError, true)
+    const payload = parsePayload(result as { content: Array<{ text: string }> })
+    assert.equal(payload.code, 'invalid_args')
+    const issues = payload.issues as Array<{ path: string; message: string }>
+    assert.ok(issues.some((issue) => issue.path === 'fileId'))
+    const denied = audit.find((row) => row.action === 'enterprise.tool.denied')
+    assert.ok(
+      (denied?.metadata as { issues?: Array<{ path: string }> }).issues?.some((issue) => issue.path === 'fileId'),
+    )
   })
 
   await check('mismatched agentId is definition_mismatch', async () => {
@@ -636,6 +741,126 @@ async function main() {
     assert.equal(payload.code, 'google_drive_api_error')
     assert.equal(payload.status, 413)
     assert.equal(payload.googleCode, 'file_too_large')
+  })
+
+  await check('Drive API error maps structured Google details without raw body', async () => {
+    const logs = captureInfo()
+    try {
+      const result = await invokeEnterpriseTool(
+        invokeDeps({
+          executeDriveTool: async () => {
+            throw new GoogleDriveApiError(
+              'google_drive.search failed: 400',
+              400,
+              undefined,
+              'INVALID_ARGUMENT',
+              ['invalid'],
+              ['q'],
+              'Invalid Query',
+            )
+          },
+        }),
+        {
+          principal: principal({ role: 'admin' }),
+          toolName: GOOGLE_DRIVE_SEARCH_TOOL,
+          args: { definitionId: DEFINITION_ID },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, 'google_drive_api_error')
+      assert.equal(payload.status, 400)
+      assert.equal(payload.googleStatus, 'INVALID_ARGUMENT')
+      assert.deepEqual(payload.googleReasonCodes, ['invalid'])
+      assert.deepEqual(payload.googleLocations, ['q'])
+      assert.equal(payload.googleMessage, 'Invalid Query')
+      const serialized = result.content[0]?.text ?? ''
+      assert.equal(serialized.includes('secret-content'), false)
+      const logged = logs.events.find((row) => row.event === 'enterprise.tool.error')
+      assert.equal(logged?.payload.googleStatus, 'INVALID_ARGUMENT')
+      assert.deepEqual(logged?.payload.googleReasonCodes, ['invalid'])
+      assert.deepEqual(logged?.payload.googleLocations, ['q'])
+      assert.equal(logged?.payload.googleMessage, 'Invalid Query')
+    } finally {
+      logs.restore()
+    }
+  })
+
+  await check('Drive upload 400 logs googleMessage and upload meta without file body', async () => {
+    const logs = captureInfo()
+    const html = '<h1>secret-report-body</h1>'
+    try {
+      const result = await invokeEnterpriseTool(
+        {
+          ...invokeDeps({
+            grant: grant({
+              scopes: [
+                'https://www.googleapis.com/auth/drive.readonly',
+                'https://www.googleapis.com/auth/drive.file',
+              ],
+            }),
+            definition: definition({
+              snapshot: {
+                name: 'Writer',
+                roleInstruction: 'Write',
+                skills: [],
+                connectors: [{ connectorId: CONNECTOR_ID, type: 'google_drive', accessMode: 'write' }],
+                capabilities: [{ toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL, allowed: true }],
+              },
+            }),
+            executeDriveTool: async () => {
+              throw new GoogleDriveApiError(
+                'google_drive.upload_file failed: 400',
+                400,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'Invalid multipart request with 0 mime parts',
+              )
+            },
+          }),
+          async findAgentWriteModes() {
+            return { memory: 'approval', httpApi: 'approval', gmail: 'approval', drive: 'direct' }
+          },
+          async enqueueWrite() {
+            throw new Error('direct Drive upload must not enqueue')
+          },
+        },
+        {
+          principal: principal({ role: 'admin' }),
+          toolName: GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
+          args: {
+            definitionId: DEFINITION_ID,
+            name: 'birtok-arharmonizacio-nagyker-2026-09.html',
+            mimeType: 'text/html',
+            textContent: html,
+            idempotencyKey: 'upload-400-1',
+          },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, 'google_drive_api_error')
+      assert.equal(payload.status, 400)
+      assert.equal(payload.googleMessage, 'Invalid multipart request with 0 mime parts')
+      assert.equal(payload.uploadName, 'birtok-arharmonizacio-nagyker-2026-09.html')
+      assert.equal(payload.uploadMimeType, 'text/html')
+      assert.equal(payload.hasParentFolderId, false)
+      assert.equal(payload.uploadContentLength, Buffer.byteLength(html, 'utf8'))
+      assert.equal(payload.textContent, undefined)
+      const serialized = result.content[0]?.text ?? ''
+      assert.equal(serialized.includes('secret-report-body'), false)
+      const logged = logs.events.find((row) => row.event === 'enterprise.tool.denied')
+      assert.equal(logged?.payload.googleMessage, 'Invalid multipart request with 0 mime parts')
+      assert.equal(logged?.payload.uploadName, 'birtok-arharmonizacio-nagyker-2026-09.html')
+      assert.equal(logged?.payload.uploadMimeType, 'text/html')
+      assert.equal(logged?.payload.hasParentFolderId, false)
+      assert.equal(logged?.payload.uploadContentLength, Buffer.byteLength(html, 'utf8'))
+      assert.equal(logged?.payload.textContent, undefined)
+    } finally {
+      logs.restore()
+    }
   })
 
   await check('invoke create_folder enqueues instead of calling Drive', async () => {
@@ -922,6 +1147,124 @@ async function main() {
     }
   })
 
+  await check('gmail search with two grants requires account', async () => {
+    const personal = grant({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountLabel: 'anna@gmail.com',
+      nickname: 'magán',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const work = grant({
+      id: '22222222-2222-4222-8222-222222222222',
+      tokenRef: 'stub-gmail-work',
+      accountLabel: 'anna@ceg.hu',
+      nickname: 'céges',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const deps: AuthorizeToolCallDeps = {
+      async findConnector() {
+        return connector({ type: 'gmail' })
+      },
+      async findActiveGrant() {
+        return personal
+      },
+      async findActiveGrants() {
+        return [personal, work]
+      },
+    }
+    const input = {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Mail',
+          roleInstruction: 'Read mail',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'read' }],
+          capabilities: [{ toolName: GMAIL_SEARCH_TOOL, allowed: true }],
+        },
+      }),
+      toolName: GMAIL_SEARCH_TOOL,
+      args: { query: 'is:unread' },
+    }
+    const missing = await authorizeToolCall(deps, input)
+    assert.equal(missing.allowed, false)
+    if (!missing.allowed) {
+      assert.equal(missing.reason, 'account_required')
+      assert.deepEqual(
+        missing.accountChoices?.map((row) => row.account),
+        ['magán', 'céges'],
+      )
+    }
+    const picked = await authorizeToolCall(deps, {
+      ...input,
+      args: { query: 'is:unread', account: 'céges' },
+    })
+    assert.equal(picked.allowed, true)
+    if (picked.allowed) {
+      assert.equal(picked.grantId, work.id)
+      assert.equal(picked.tokenRef, 'stub-gmail-work')
+    }
+  })
+
+  await check('http_api calendar with two grants requires account', async () => {
+    const personal = grant({
+      id: '11111111-1111-4111-8111-111111111111',
+      accountLabel: 'anna@gmail.com',
+      nickname: 'magán',
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    })
+    const work = grant({
+      id: '22222222-2222-4222-8222-222222222222',
+      tokenRef: 'stub-calendar-work',
+      accountLabel: 'anna@ceg.hu',
+      nickname: 'céges',
+      scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+    })
+    const deps: AuthorizeToolCallDeps = {
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'user_delegated' })
+      },
+      async findActiveGrant() {
+        return personal
+      },
+      async findActiveGrants() {
+        return [personal, work]
+      },
+    }
+    const input = {
+      principal: principal(),
+      definition: definition({
+        snapshot: {
+          name: 'Calendar',
+          roleInstruction: 'Read calendar',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+          capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+        },
+      }),
+      toolName: HTTP_API_GET_TOOL,
+      args: { path: '/calendar/v3/users/me/calendarList' },
+    }
+    const missing = await authorizeToolCall(deps, input)
+    assert.equal(missing.allowed, false)
+    if (!missing.allowed) {
+      assert.equal(missing.reason, 'account_required')
+      assert.deepEqual(
+        missing.accountChoices?.map((row) => row.account),
+        ['magán', 'céges'],
+      )
+    }
+    const picked = await authorizeToolCall(deps, {
+      ...input,
+      args: { path: '/calendar/v3/users/me/calendarList', account: 'céges' },
+    })
+    assert.equal(picked.allowed, true)
+    if (picked.allowed) {
+      assert.equal(picked.grantId, work.id)
+      assert.equal(picked.tokenRef, 'stub-calendar-work')
+    }
+  })
+
   await check('gmail search without grant is connector_grant_missing', async () => {
     const result = await authorizeToolCall(authorizeDeps({ connector: connector({ type: 'gmail' }), grant: null }), {
       principal: principal(),
@@ -1001,6 +1344,52 @@ async function main() {
     const payload = parsePayload(result)
     assert.equal(payload.ok, true)
     assert.equal(payload.path, '/reports/query')
+  })
+
+  await check('#717: invoke passes the tenant language to the http_api executor', async () => {
+    const seen: Array<string | undefined> = []
+    const httpApiDeps = {
+      connector: connector({
+        type: 'http_api',
+        authMode: 'service',
+        config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+      }),
+      grant: null,
+      definition: definition({
+        snapshot: {
+          name: 'CRM',
+          roleInstruction: 'Query CRM',
+          skills: [],
+          connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'read' }],
+          capabilities: [{ toolName: HTTP_API_GET_TOOL, allowed: true }],
+        },
+      }),
+      executeHttpApiTool: async (
+        _tool: unknown,
+        _args: Record<string, unknown>,
+        _connector: unknown,
+        _accessToken?: string,
+        _actingUser?: unknown,
+        _agent?: unknown,
+        language?: string,
+      ) => {
+        seen.push(language)
+        return { ok: true, stub: true }
+      },
+    }
+    const input = {
+      principal: principal(),
+      toolName: HTTP_API_GET_TOOL,
+      args: { definitionId: DEFINITION_ID, path: '/reports/query' },
+    }
+    // resolver nélkül a biztonságos alapértelmezés (hu) megy át
+    await invokeEnterpriseTool(invokeDeps(httpApiDeps), input)
+    // `en` tenant esetén a modellnek szóló hintek angolul jönnek
+    await invokeEnterpriseTool(
+      invokeDeps({ ...httpApiDeps, resolveTenantLanguage: async () => 'en' }),
+      input,
+    )
+    assert.deepEqual(seen, ['hu', 'en'])
   })
 
   await check('invoke http_api_get marks upstream HTTP failures as MCP errors', async () => {
@@ -1162,7 +1551,7 @@ async function main() {
             authMode: 'service',
             secretAlias: null,
             config: {
-              baseUrl: 'https://crm.example.test',
+              baseUrl: 'https://example.com',
               auth: { scheme: 'none' },
               requestHeaders: { 'X-Agent-Id': '{{agent.id}}' },
               endpoints: [{ method: 'GET', path: '/orders' }],
@@ -1246,6 +1635,105 @@ async function main() {
     assert.deepEqual(enqueued, [GOOGLE_DRIVE_UPLOAD_FILE_TOOL, HTTP_API_REQUEST_TOOL])
   })
 
+  await check('http_api_request direct mode executes without enqueue', async () => {
+    const enqueued: string[] = []
+    let executed = false
+    let executedAgent: { id: string } | undefined
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          connector: connector({
+            type: 'http_api',
+            authMode: 'service',
+            config: { baseUrl: 'https://crm.example.test', auth: { scheme: 'none' } },
+          }),
+          grant: null,
+          definition: definition({
+            snapshot: {
+              name: 'CRM',
+              roleInstruction: 'Write CRM',
+              skills: [],
+              connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write' }],
+              capabilities: [{ toolName: HTTP_API_REQUEST_TOOL, allowed: true }],
+            },
+          }),
+          executeHttpApiTool: async (_tool, _args, _connector, _token, _actingUser, agent) => {
+            executed = true
+            executedAgent = agent
+            return { ok: true, status: 200 }
+          },
+        }),
+        async findAgentWriteModes() {
+          return { memory: 'approval', httpApi: 'direct', gmail: 'approval', drive: 'approval' }
+        },
+        async enqueueWrite(input: { toolName: string }) {
+          enqueued.push(input.toolName)
+          return { content: [{ type: 'text' as const, text: '{}' }] }
+        },
+      },
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: HTTP_API_REQUEST_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          method: 'POST',
+          path: '/tasks',
+          body: '{"title":"x"}',
+          idempotencyKey: 'http-direct-1',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.equal(executed, true)
+    // Enélkül az X-Agent-Id sablon üres → template_variable_missing minden közvetlen írásnál.
+    assert.ok(executedAgent?.id)
+    assert.deepEqual(enqueued, [])
+    assert.equal(parsePayload(result).ok, true)
+  })
+
+  await check('gmail stays queued when only HTTP API is direct', async () => {
+    const enqueued: string[] = []
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          definition: definition({
+            snapshot: {
+              name: 'Mailer',
+              roleInstruction: 'Mail',
+              skills: [],
+              connectors: [{ connectorId: CONNECTOR_ID, type: 'gmail', accessMode: 'write' }],
+              capabilities: [{ toolName: 'gmail_send', allowed: true }],
+            },
+          }),
+          connector: connector({ type: 'gmail' }),
+        }),
+        async findAgentWriteModes() {
+          return { memory: 'approval', httpApi: 'direct', gmail: 'approval', drive: 'approval' }
+        },
+        async enqueueWrite(input: { toolName: string }) {
+          enqueued.push(input.toolName)
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ status: 'awaiting_approval' }) }],
+          }
+        },
+      },
+      {
+        principal: principal({ role: 'admin' }),
+        toolName: 'gmail_send',
+        args: {
+          definitionId: DEFINITION_ID,
+          to: 'a@b.c',
+          subject: 'Hi',
+          body: 'Hello',
+          idempotencyKey: 'gmail-1',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    assert.deepEqual(enqueued, ['gmail_send'])
+    assert.equal(parsePayload(result).status, 'awaiting_approval')
+  })
+
   await check('kb_ingest requires write binding', async () => {
     const result = await authorizeToolCall(
       authorizeDeps({ connector: kbConnector }),
@@ -1265,6 +1753,20 @@ async function main() {
       },
     )
     assert.deepEqual(result, { allowed: false, reason: 'missing_knowledge_base_connector_write' })
+  })
+
+  await check('wiki intake respects submit permission independently of legacy write access', async () => {
+    for (const wikiAccess of ['read', 'submit', 'write'] as const) {
+      const result = await authorizeToolCall(authorizeDeps({ connector: kbConnector }), {
+        principal: principal(), toolName: KB_INGEST_TOOL, args: { processingMode: 'wiki' },
+        definition: definition({ snapshot: { ...kbDefinition.snapshot, connectors: [{
+          connectorId: CONNECTOR_ID, type: 'knowledge_base', wikiAccess,
+          accessMode: wikiAccess === 'write' ? 'write' : 'read',
+        }] } }),
+      })
+      assert.equal(result.allowed, wikiAccess !== 'read')
+      if (!result.allowed) assert.equal(result.reason, 'wiki_submit_not_allowed')
+    }
   })
 
   await check('kb_ingest invoke publishes without Drive token lookup', async () => {
@@ -1427,6 +1929,145 @@ async function main() {
     assert.equal(payload.scriptSha256, 'abc123')
     assert.deepEqual(payload.outputs, ['sandbox-output/napi-riport/report.html'])
     assert.deepEqual(written, ['sandbox-output/napi-riport/report.html'])
+  })
+
+  await check('sandbox_run copies binary attachment and work-file inputs to /work/in/', async () => {
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        readWorkFile: async ({ path, projectKey }) => {
+          assert.equal(projectKey, 'kampany')
+          if (path === 'sales.csv') return { path: 'sales.csv', content: '10,20,30\n' }
+          return null
+        },
+        executeSandboxRun: async (input) => {
+          const mounted = input.files.find((file) => file.sandboxPath === '/work/in/sales.csv')
+          assert.ok(mounted)
+          const binary = input.files.find((file) => file.sandboxPath === '/work/in/attachments/data.xlsx')
+          assert.ok(binary)
+          assert.deepEqual(Buffer.from(binary.bytes), Buffer.from([0, 255, 128]))
+          assert.equal(Buffer.from(mounted.bytes).toString('utf8'), '10,20,30\n')
+          return {
+            exitCode: 0,
+            stdout: '60',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            outputFiles: [],
+            metrics: {
+              provider: 'cloud_run',
+              region: 'europe-west1',
+              provisionMs: 1,
+              execMs: 1,
+              totalMs: 2,
+              cpuProfile: '1',
+              memoryProfile: '512Mi',
+              inputBytes: 20,
+              outputBytes: 0,
+              egressBytes: 0,
+              coldStart: false,
+              exitStatus: 0,
+            },
+          }
+        },
+        writeWorkFile: async (input) => ({ path: input.path }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          inputs: 'sales.csv',
+          inputFiles: JSON.stringify([{ path: 'attachments/data.xlsx', contentBase64: Buffer.from([0, 255, 128]).toString('base64') }]),
+          projectKey: 'kampany',
+        },
+      },
+    )
+    assert.equal(result.isError, undefined)
+    const payload = parsePayload(result)
+    assert.equal(payload.stdout, '60')
+    assert.deepEqual(payload.inputs, [{ path: 'sales.csv', sandboxPath: '/work/in/sales.csv' }, { path: 'attachments/data.xlsx', sandboxPath: '/work/in/attachments/data.xlsx' }])
+  })
+
+  await check('sandbox_run missing work-file input is denied', async () => {
+    let ran = false
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        readWorkFile: async () => null,
+        executeSandboxRun: async () => {
+          ran = true
+          throw new Error('must not run')
+        },
+        writeWorkFile: async () => ({ path: 'nope' }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          inputs: 'missing.csv',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'file_not_found')
+    assert.equal(ran, false)
+  })
+
+  await check('sandbox_run rejects work-file path traversal', async () => {
+    let read = false
+    const result = await invokeEnterpriseTool(
+      invokeDeps({
+        definition: sandboxDefinition,
+        connector: sandboxConnector,
+        grant: null,
+        loadSkillVersion: async () => ({
+          attachments: [scriptAttachment],
+          status: 'active',
+          tenantId: TENANT_ID,
+        }),
+        readWorkFile: async () => {
+          read = true
+          return { path: 'x', content: 'nope' }
+        },
+        executeSandboxRun: async () => {
+          throw new Error('must not run')
+        },
+        writeWorkFile: async () => ({ path: 'nope' }),
+      }),
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          inputs: '../secret.csv',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    assert.equal(parsePayload(result).code, 'invalid_args')
+    assert.equal(read, false)
   })
 
   await check('sandbox_run missing connector is loud', async () => {

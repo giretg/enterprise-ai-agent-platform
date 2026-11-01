@@ -132,13 +132,18 @@ function ProposalCard({
         {proposal.requestedByName} · {proposal.agentName} ·{' '}
         {formatDateTime(proposal.updatedAt, locale)}
       </p>
+      {proposal.revisesSkillId ? (
+        <p className="mt-2 rounded-lg bg-honey/10 px-3 py-2 text-xs text-ink-soft">
+          {t('proposalRevision')}
+        </p>
+      ) : null}
       <label className="mt-3 block text-xs font-medium text-ink-faint" htmlFor={`proposal-name-${proposal.id}`}>
         {t('name')}
       </label>
       <input
         id={`proposal-name-${proposal.id}`}
         value={name}
-        disabled={pending}
+        disabled={pending || Boolean(proposal.revisesSkillId)}
         onChange={(event) => setName(event.target.value)}
         className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-1.5 text-sm"
       />
@@ -164,6 +169,12 @@ function ProposalCard({
         onChange={(event) => setInstructions(event.target.value)}
         className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 text-sm"
       />
+      <div className="mt-3">
+        <p className="text-xs font-medium text-ink-faint">{t('proposalTriggers')}</p>
+        <p className="mt-1 text-sm text-ink-soft">
+          {proposal.triggerKeywords.length > 0 ? proposal.triggerKeywords.join(', ') : t('proposalNoTriggers')}
+        </p>
+      </div>
       <div className="mt-3">
         <p className="text-xs font-medium text-ink-faint">{t('attachmentKept')}</p>
         {proposal.attachments.length === 0 ? (

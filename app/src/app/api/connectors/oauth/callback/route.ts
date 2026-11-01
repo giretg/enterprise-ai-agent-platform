@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { oauthReturnPath } from '@/domain/connector-grant/connector-grant-needed'
 import { services } from '@/domain/gateway-services'
 import { prisma } from '@/lib/db'
+import { repositories } from '@/repositories/postgres'
 import { publicAppUrl } from '@/lib/public-app-url'
 
 export async function GET(request: Request) {
@@ -24,16 +26,39 @@ export async function GET(request: Request) {
     const { verifyOAuthState, resolveOAuthCallbackActor } = await import('@/lib/crypto/oauth-state')
     const statePayload = verifyOAuthState(state)
     const actorId = resolveOAuthCallbackActor(user?.id ?? null, statePayload.userId)
+    if (statePayload.owner === 'tenant') {
+      const admin = await requireTenantRole('admin')
+      if (admin.user.id !== actorId || admin.activeTenantId !== statePayload.tenantId) {
+        throw new Error('connector_grant_forbidden')
+      }
+    }
     const connector = await prisma.connector.findUnique({ where: { id: statePayload.connectorId } })
     if (!connector) throw new Error('connector_not_found')
     if (connector.lifecycleState !== 'active') throw new Error('connector_not_active')
 
-    await services.connectorGrants.completeOAuthCallback({
+    const grant = await services.connectorGrants.completeOAuthCallback({
       code,
       state,
       connector,
       actorId,
     })
+    if (statePayload.owner === 'tenant') {
+      // #1028: közös postafiók bekötése — ki kötötte be (csak audit, a hozzáférést nem befolyásolja).
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId,
+        agentVersion: null,
+        action: 'connector.mailbox.connect',
+        targetType: 'connector',
+        targetId: connector.id,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: grant.accountLabel,
+        policyDecision: 'allowed',
+        metadata: { address: grant.accountLabel, grantId: grant.id },
+        tenantId: connector.tenantId,
+      })
+    }
 
     return redirectAfterOAuth(request, state)
   } catch (e) {

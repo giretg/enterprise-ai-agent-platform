@@ -31,12 +31,17 @@ import {
 } from '../src/domain/provisioning/provisioning-service'
 import { ProvisioningError } from '../src/domain/provisioning/errors'
 import { isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
-import { validateDraftConfig } from '../src/domain/provisioning/draft-validator'
+import { validateDraftConfig, withCatalogTrustedEgress } from '../src/domain/provisioning/draft-validator'
 import {
   normalizeConnectorConfig,
   type ConnectorConfig,
 } from '../src/domain/provisioning/connector-config'
 import { HttpSandboxConnectionTester } from '../src/domain/provisioning/sandbox-connection-tester'
+import { ensureGmailProvisioningDraft } from '../src/lib/seed-gmail-connector'
+import {
+  withGoogleAccountBinding,
+  type GoogleAccountBinding,
+} from '../src/domain/connector/google-account-binding'
 
 let failures = 0
 /** Az agentnek grantolható draft-capability-k (a ProvisioningService kapuja ezeket nézi). */
@@ -108,6 +113,8 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     NonNullable<Parameters<ConnectorDraftRepository['activate']>[0]['initialSpecVersion']>
   >()
   agentConnectors: Array<{ agentId: string; connectorId: string; accessMode: ConnectorAccessMode }> = []
+  /** Egy párhuzamos config-módosítás által okozott compare-and-set ütközést modellez. */
+  advanceRevisionBeforeNextActivation = false
   private seq = 0
 
   async createDraft(input: CreateConnectorDraftInput): Promise<DraftRow> {
@@ -146,6 +153,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       reviewedById: null,
       secondApproverId: null,
       sandboxTestOk: null,
+      revision: 1,
       createdAt: new Date(),
       updatedAt: new Date(),
       connector,
@@ -165,6 +173,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
   async setValidationResult(draftId: string, result: Prisma.InputJsonValue) {
     const d = this.drafts.get(draftId)!
     d.validationResult = result as Prisma.JsonValue
+    d.revision++
     return d
   }
   async setReview(params: {
@@ -175,15 +184,18 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     const d = this.drafts.get(params.draftId)!
     d.reviewStatus = params.reviewStatus
     d.reviewedById = params.reviewedById
+    d.revision++
     return d
   }
   async setSandboxTestResult(draftId: string, ok: boolean) {
     const d = this.drafts.get(draftId)!
     d.sandboxTestOk = ok
+    d.revision++
     return d
   }
   async activate(params: {
     draftId: string
+    expectedDraftRevision: number
     secretAlias: string
     authMode: ConnectorAuthMode
     secondApproverId: string | null
@@ -196,6 +208,13 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     }
   }) {
     const d = this.drafts.get(params.draftId)!
+    if (this.advanceRevisionBeforeNextActivation) {
+      d.revision++
+      this.advanceRevisionBeforeNextActivation = false
+    }
+    if (d.revision !== params.expectedDraftRevision) {
+      return null
+    }
     d.secondApproverId = params.secondApproverId
     d.connector.lifecycleState = 'active'
     d.connector.secretAlias = params.secretAlias
@@ -241,6 +260,15 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.reviewedById = null
     d.secondApproverId = null
     d.sandboxTestOk = null
+    d.revision++
+    return d
+  }
+  async setGoogleAccountBinding(params: { draftId: string; binding: GoogleAccountBinding }) {
+    const d = this.drafts.get(params.draftId)!
+    d.connector.config = withGoogleAccountBinding(
+      (d.connector.config ?? {}) as Record<string, unknown>,
+      params.binding,
+    ) as Prisma.JsonValue
     return d
   }
   async reopen(params: { draftId: string }) {
@@ -250,6 +278,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.reviewedById = null
     d.secondApproverId = null
     d.sandboxTestOk = null
+    d.revision++
     d.connector.lifecycleState = 'draft'
     return d.connector
   }
@@ -383,6 +412,57 @@ function cleanConfig() {
   }
 }
 
+function googleCalendarConfig() {
+  return {
+    provider: 'google-calendar',
+    baseUrl: 'https://www.googleapis.com',
+    egressHosts: ['www.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com'],
+    authMode: 'user_delegated',
+    auth: {
+      type: 'oauth2',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+      userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+    },
+    scopesSuggested: ['https://www.googleapis.com/auth/calendar.readonly'],
+    proposedTools: [
+      {
+        name: 'list_calendars',
+        method: 'GET',
+        path: '/calendar/v3/users/me/calendarList',
+        access: 'read',
+      },
+    ],
+    provenance: { templateKey: 'google-calendar', templateOrigin: 'custom', templateVersion: 1 },
+  }
+}
+
+function googleAdsConfig(extra: Record<string, unknown> = {}) {
+  return {
+    provider: 'google-ads',
+    baseUrl: 'https://googleads.googleapis.com',
+    egressHosts: ['googleads.googleapis.com', 'accounts.google.com', 'oauth2.googleapis.com'],
+    authMode: 'user_delegated',
+    auth: {
+      type: 'oauth2',
+      authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+      tokenUrl: 'https://oauth2.googleapis.com/token',
+    },
+    scopesSuggested: ['https://www.googleapis.com/auth/adwords'],
+    proposedTools: [
+      {
+        name: 'search',
+        method: 'POST',
+        path: '/v25/customers/{customerId}/googleAds:search',
+        access: 'read',
+      },
+    ],
+    googleAccountBinding: { accountIds: ['1234567890'] },
+    provenance: { templateKey: 'google-ads', templateOrigin: 'custom', templateVersion: 1 },
+    ...extra,
+  }
+}
+
 function makeService(opts?: {
   bankPreset?: boolean
   tester?: SandboxConnectionTester
@@ -395,13 +475,24 @@ function makeService(opts?: {
   /** A külső secret-alias platform-oldali, tenant-scope-os engedélyezésének fake-je. */
   isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
   resolvePlatformGoogleOAuth?: () => Promise<{ configured: boolean }>
+  resolvePlatformGoogleAdsDeveloperToken?: () => Promise<{ configured: boolean }>
+  /** A bérlő allowlist-bővítése elutasítja a címet (pl. privát IP). */
+  extendRejects?: boolean
 }) {
   const audit = opts?.audit ?? new FakeAudit()
   const drafts = opts?.drafts ?? new FakeDraftRepo()
+  // A bérlő allowlistje élő: az aktiválás bővítése ugyanebbe ír, mint a későbbi hívások.
+  const allowlist = [...(opts?.allowlist ?? ALLOWLIST)]
   const svc = new ProvisioningService({
     drafts,
     audit,
-    resolveEgressAllowlist: async () => opts?.allowlist ?? ALLOWLIST,
+    resolveEgressAllowlist: async () => [...allowlist],
+    extendEgressAllowlist: async (_tenantId, host) => {
+      if (opts?.extendRejects) return { ok: false, reason: 'forbidden_host' }
+      const added = !allowlist.includes(host)
+      if (added) allowlist.push(host)
+      return { ok: true, added, host }
+    },
     resolveBankPreset: async () => opts?.bankPreset ?? false,
     sandboxTester: opts?.tester ?? okTester,
     resolveAgentCapabilities: async () => opts?.agentCapabilities ?? [],
@@ -411,8 +502,9 @@ function makeService(opts?: {
       opts?.verifyApprover ?? (async ({ tenantId }) => tenantId === TENANT),
     isTrustedExternalSecretAlias: opts?.isTrustedExternalSecretAlias ?? (() => true),
     resolvePlatformGoogleOAuth: opts?.resolvePlatformGoogleOAuth,
+    resolvePlatformGoogleAdsDeveloperToken: opts?.resolvePlatformGoogleAdsDeveloperToken,
   })
-  return { svc, audit, drafts }
+  return { svc, audit, drafts, allowlist }
 }
 
 /** Teljes happy-path az aktiválás előfeltételeinek beállításához. */
@@ -561,6 +653,94 @@ async function run() {
     assert.equal(audit.byAction('provisioning.connector.activate').length, 1)
   })
 
+  await test('Katalógus-sablon: létrehozáskor a kapuk bezáródnak, üres allowlist mellett is', async () => {
+    const { svc, drafts } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      adminActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    const validation = draft.validationResult as { checks: { egressAllowlist: string }; status: string } | null
+    assert.equal(validation?.checks.egressAllowlist, 'passed')
+    assert.notEqual(validation?.status, 'failed')
+    assert.equal(draft.sandboxTestOk, true)
+    assert.equal(draft.reviewStatus, 'approved')
+  })
+
+  await test('Katalógus-sablon: Calendar üres allowlisttel aktiválható', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      adminActor,
+    )
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
+  })
+
+  await test('Katalógus-sablon: bukott ellenőrzés nem zár kaput és nem kapcsolható be', async () => {
+    const { svc, drafts } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Rossz sablon',
+        sourceType: 'template',
+        generatedConfig: {
+          ...googleCalendarConfig(),
+          proposedTools: [
+            {
+              name: 'list_calendars',
+              method: 'GET',
+              path: 'data:text/plain,secret',
+              access: 'read',
+            },
+          ],
+        },
+      },
+      adminActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    const validation = draft.validationResult as { status: string } | null
+    assert.equal(validation?.status, 'failed')
+    assert.equal(draft.reviewStatus, 'pending')
+    assert.equal(draft.sandboxTestOk, null)
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+    assert.equal(drafts.drafts.get(created.draftId)!.reviewStatus, 'pending')
+  })
+
+  await test('Agent katalógus-draftot nem auto-approve-ol; admin aktiváláskor zárja a kaput', async () => {
+    const { svc, drafts } = makeService({
+      allowlist: [],
+      agentCapabilities: DRAFT_CAPABILITIES,
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Calendar',
+        sourceType: 'template',
+        generatedConfig: googleCalendarConfig(),
+      },
+      agentActor,
+    )
+    const draft = drafts.drafts.get(created.draftId)!
+    assert.equal(draft.reviewStatus, 'pending')
+    assert.equal(draft.sandboxTestOk, null)
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
+    assert.equal(drafts.drafts.get(created.draftId)!.reviewStatus, 'approved')
+  })
+
   await test('P5/APG-03: CRM privacy capability append-only spec-verzióba kerül', async () => {
     const { svc, drafts } = makeService()
     const created = await draftToActivatable(svc, adminActor, {
@@ -578,6 +758,45 @@ async function run() {
     const privacy = capabilitySet.privacy as Record<string, unknown>
     assert.equal(privacy.structured_field_privacy, true)
     assert.equal(privacy.stable_entity_ids, true)
+  })
+
+  await test('P5-race: közben szerkesztett draft nem aktiválható régi gate-tel', async () => {
+    const { svc, drafts, audit } = makeService()
+    const created = await draftToActivatable(svc)
+    drafts.advanceRevisionBeforeNextActivation = true
+
+    await expectError('DRAFT_CHANGED_DURING_ACTIVATION', () =>
+      svc.activateConnector(
+        { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+        adminActor,
+      ),
+    )
+
+    assert.equal(drafts.drafts.get(created.draftId)?.connector.lifecycleState, 'draft')
+    assert.equal(audit.byAction('provisioning.connector.activate').length, 0)
+  })
+
+  await test('P5-race: Gmail seed/backfill gate-frissítése is új revíziót kényszerít', async () => {
+    let upsertInput: Record<string, unknown> | undefined
+    await ensureGmailProvisioningDraft(
+      {
+        connectorDraft: {
+          async upsert(input: unknown) {
+            upsertInput = input as unknown as Record<string, unknown>
+            return input as never
+          },
+        },
+      } as never,
+      {
+        tenantId: TENANT,
+        connectorId: 'conn-gmail-seeded',
+        templateKey: 'google-workspace',
+        templateDescriptor: { key: 'google-workspace', version: 1 },
+      },
+    )
+
+    assert.deepEqual((upsertInput?.update as { revision?: unknown }).revision, { increment: 1 })
+    assert.equal((upsertInput?.create as { revision?: unknown }).revision, undefined)
   })
 
   await test('P5-security: tenant-admin nem használhat tetszőleges runtime secret aliast', async () => {
@@ -622,6 +841,54 @@ async function run() {
     await expectError('DRAFT_NOT_APPROVED', () =>
       svc.activateConnector({ draftId: created.draftId, secretAlias: 'x' }, adminActor),
     )
+  })
+
+  // Aktiválás = jóváhagyás: a deklarált kimenő cím automatikusan bekerül a bérlő allowlistjére.
+  const NEW_HOST_CONFIG = {
+    ...cleanConfig(),
+    baseUrl: 'https://api.new-crm.example',
+    egressHosts: ['api.new-crm.example'],
+  }
+
+  await test('P5-auto: aktiváláskor a konnektor kimenő címe bekerül a bérlő allowlistjére', async () => {
+    const { svc, audit, allowlist } = makeService()
+    const created = await draftToActivatable(svc, adminActor, NEW_HOST_CONFIG)
+    assert.equal(allowlist.includes('api.new-crm.example'), false)
+    const res = await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'active')
+    assert.equal(allowlist.includes('api.new-crm.example'), true)
+    assert.equal(audit.byAction('connector.egress_allowlist.extend').length, 1)
+  })
+
+  await test('P5-auto: banki preset alatt az aktiválás nem bővíti magától az allowlistet', async () => {
+    const { svc, allowlist } = makeService({ bankPreset: true })
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig: NEW_HOST_CONFIG },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await expectError('DRAFT_VALIDATION_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
+    )
+    assert.equal(allowlist.includes('api.new-crm.example'), false)
+  })
+
+  await test('P5-auto: tiltott kimenő cím → aktiválás EGRESS_HOST_REJECTED hibával megáll', async () => {
+    const { svc, allowlist } = makeService({ extendRejects: true })
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig: NEW_HOST_CONFIG },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    await expectError('EGRESS_HOST_REJECTED', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' }, adminActor),
+    )
+    assert.equal(allowlist.includes('api.new-crm.example'), false)
   })
 
   await test('P5-neg: aktiválás kulcs/alias nélkül → ACTIVATION_KEYLESS_UNCONFIRMED', async () => {
@@ -698,7 +965,8 @@ async function run() {
   // (auth.scheme=bearer + oauth blokk), különben a http-api-kliens SERVICE oauth2-ként
   // értelmezné és a per-user Bearer-injekció kimaradna → minden tool-hívás elhasalna.
   await test('oauth2 delegated: aktiváláskor runtime-alakra normalizálódik (auth.scheme=bearer + oauth blokk)', async () => {
-    const { svc, drafts } = makeService()
+    const oauthHosts = ['accounts.google.com', 'oauth2.googleapis.com', 'www.googleapis.com']
+    const { svc, drafts } = makeService({ allowlist: [...ALLOWLIST, ...oauthHosts] })
     const created = await svc.createConnectorDraft(
       {
         name: 'Google Search Console',
@@ -708,6 +976,7 @@ async function run() {
           ...cleanConfig(),
           provider: 'google_search_console',
           authMode: 'user_delegated',
+          egressHosts: [...ALLOWLIST, ...oauthHosts],
           scopesSuggested: ['https://www.googleapis.com/auth/webmasters.readonly'],
           auth: {
             type: 'oauth2',
@@ -1047,6 +1316,31 @@ async function run() {
     assert.equal(r.status, 'failed')
   })
 
+  await test('Validátor: tokenUrl portja nem kerül az egress-hostba (hostname, mint a guard)', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      auth: {
+        type: 'oauth2',
+        tokenUrl: 'https://api.acme-crm.example:8443/oauth/token',
+        clientId: 'x',
+        secretAliasSuggested: 'env:ACME_OAUTH',
+      },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.egressAllowlist, 'passed')
+  })
+
+  await test('Validátor: katalógus-sablon hostjai a tenant-listától függetlenül ismertek', () => {
+    const cfg = normalizeConnectorConfig(googleCalendarConfig())
+    const bare = validateDraftConfig(cfg, { egressAllowlist: [] })
+    assert.equal(bare.checks.egressAllowlist, 'warned')
+    const trusted = validateDraftConfig(cfg, {
+      egressAllowlist: withCatalogTrustedEgress([], cfg),
+    })
+    assert.equal(trusted.checks.egressAllowlist, 'passed')
+    assert.equal(trusted.unknownHosts.length, 0)
+  })
+
   await test('Validátor: banki preset → ismeretlen host failed (allowlist-only)', () => {
     const cfg = normalizeConnectorConfig({ ...cleanConfig(), egressHosts: ['api.other.example'] })
     const warned = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST, bankPreset: false })
@@ -1233,6 +1527,74 @@ async function run() {
     assert.equal(calls.length, 0)
   })
 
+  await test('SBX: allowlistolt hostnév BELSŐ IP-re oldódik fel → resolved_private_ip, NINCS hívás', async () => {
+    // DNS-rebinding / belső-IP hostnév: a host az allowliston van és nem tiltott
+    // host-minta, de a feloldott cím privát → a próbahívás előtt blokk (SSRF).
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveHostIps: async () => ['169.254.169.254'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.detail, 'resolved_private_ip')
+    assert.equal(calls.length, 0)
+  })
+
+  await test('SBX: allowlistolt hostnév RFC1918 címre oldódik fel → resolved_private_ip', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveHostIps: async () => ['10.0.0.5'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.detail, 'resolved_private_ip')
+    assert.equal(calls.length, 0)
+  })
+
+  await test('SBX: allowlistolt hostnév PUBLIKUS IP-re oldódik fel → átengedve (reachable)', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveHostIps: async () => ['93.184.216.34'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.detail, 'reachable')
+    assert.equal(calls.length, 1)
+  })
+
+  await test('SBX: DNS-feloldás nélkül (back-compat) → a viselkedés változatlan', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(calls.length, 1)
+  })
+
   await test('SBX: 3xx redirect (manual) → redirect_blocked, nem siker', async () => {
     const { fn } = recordingFetch({ status: 302 })
     const tester = new HttpSandboxConnectionTester({
@@ -1373,6 +1735,50 @@ async function run() {
     assert.ok(/unknown@example.com/.test(r.detail ?? ''))
   })
 
+  await test('SBX: nem-CRM connector + VALÓDI tokennel 404 → generikus üzenet, NEM acting user', async () => {
+    const { fn } = recordingFetch({ status: 404 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: { ...cleanConfig(), auth: { type: 'bearer_token' } } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.statusCode, 404)
+    assert.ok(!/acting user/i.test(r.detail ?? ''), 'nem-CRM connectornál ne CRM-üzenet jelenjen meg')
+    assert.ok(/404/.test(r.detail ?? ''))
+  })
+
+  await test('SBX: GitHub repo-szűrt connector → a próba a /user végpontra megy (nem kamurepo)', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ['api.github.com'],
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: {
+        provider: 'github',
+        baseUrl: 'https://api.github.com',
+        egressHosts: ['api.github.com'],
+        authMode: 'service',
+        auth: { type: 'bearer_token' },
+        proposedTools: [
+          { name: 'get_repository', method: 'GET', path: '/repos/{owner}/{repo}', access: 'read' },
+          { name: 'list_issues', method: 'GET', path: '/repos/{owner}/{repo}/issues', access: 'read' },
+        ],
+      } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, true)
+    assert.equal(calls[0].url, 'https://api.github.com/user')
+  })
+
   await test('SBX: fetch dob (hálózati hiba) → request_failed, sanitizált detail', async () => {
     const tester = new HttpSandboxConnectionTester({
       resolveEgressAllowlist: async () => ALLOWLIST,
@@ -1421,6 +1827,44 @@ async function run() {
     assert.equal(t.ok, true)
     assert.equal(t.detail, 'google_drive_oauth_metadata_check')
     assert.equal(drafts.drafts.get(created.draftId)!.sandboxTestOk, true)
+  })
+
+  await test('listDrafts: Google Drive config secret-mentes OAuth nézetben jelenik meg', async () => {
+    const { svc } = makeService()
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Drive',
+        sourceType: 'template',
+        connectorType: 'google_drive',
+        generatedConfig: {
+          provider: 'google-drive',
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            scopes: ['https://www.googleapis.com/auth/drive.file'],
+            scopeTransform: 'none',
+          },
+          provenance: {
+            templateKey: 'google-drive',
+            templateVersion: 1,
+            templateOrigin: 'builtin',
+          },
+        },
+      },
+      adminActor,
+    )
+    const rows = await svc.listDrafts(adminActor)
+    const row = rows.find((item) => item.draftId === created.draftId)
+    assert.ok(row)
+    assert.equal(row.config, null)
+    assert.equal(row.httpApiView, null)
+    assert.equal(row.delegatedOauthView?.provider, 'google-drive')
+    assert.equal(row.delegatedOauthView?.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
+    assert.equal(row.delegatedOauthView?.tokenUrl, 'https://oauth2.googleapis.com/token')
+    assert.deepEqual(row.delegatedOauthView?.scopes, ['https://www.googleapis.com/auth/drive.file'])
+    assert.equal(row.delegatedOauthView?.scopeTransform, 'none')
+    assert.equal(row.delegatedOauthView?.provenance?.templateKey, 'google-drive')
   })
 
   await test('SBX: Gmail sandbox zöld clientId nélkül (platform OAuth az aktiváláskor kell)', async () => {
@@ -1488,6 +1932,107 @@ async function run() {
     const created = await gmailActivatable(svc)
     await expectError('PLATFORM_GOOGLE_OAUTH_MISSING', () =>
       svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  // ── Google fiókos konnektorok: platform / cég / felhasználó szintek ─────────
+
+  async function googleAdsDraft(svc: ProvisioningService, config: Record<string, unknown>) {
+    return svc.createConnectorDraft(
+      { name: 'Google Ads', sourceType: 'template', generatedConfig: config },
+      adminActor,
+    )
+  }
+
+  await test('Google Ads: cég-szintű fiókkötés nélkül nem aktiválható', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: true }),
+    })
+    const { googleAccountBinding: _omit, ...unbound } = googleAdsConfig()
+    const created = await googleAdsDraft(svc, unbound)
+    await expectError('GOOGLE_ACCOUNT_BINDING_MISSING', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('Google Ads: platform developer token nélkül nem aktiválható (nem cég-szintű adat)', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: false }),
+    })
+    const created = await googleAdsDraft(svc, googleAdsConfig())
+    await expectError('PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING', () =>
+      svc.activateConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('Google Ads: platform token + kötött fiók mellett aktiválható; régi cég-tokennel is', async () => {
+    const { svc } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: true }),
+    })
+    const created = await googleAdsDraft(svc, googleAdsConfig())
+    const res = await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'active')
+
+    const legacy = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: false }),
+    })
+    const legacyDraft = await googleAdsDraft(
+      legacy.svc,
+      googleAdsConfig({ requestHeaders: { 'developer-token': 'tenant-legacy-token' } }),
+    )
+    const legacyRes = await legacy.svc.activateConnector({ draftId: legacyDraft.draftId }, adminActor)
+    assert.equal(legacyRes.lifecycleState, 'active')
+  })
+
+  await test('Fiókkötés: cég-admin aktív konnektoron módosítja, újranyitás és grant-visszavonás nélkül', async () => {
+    const { svc, drafts, audit } = makeService({
+      allowlist: [],
+      resolvePlatformGoogleOAuth: async () => ({ configured: true }),
+      resolvePlatformGoogleAdsDeveloperToken: async () => ({ configured: true }),
+    })
+    const created = await googleAdsDraft(
+      svc,
+      googleAdsConfig({ requestHeaders: { 'login-customer-id': '1111111111', 'X-Trace': 'x' } }),
+    )
+    await svc.activateConnector({ draftId: created.draftId }, adminActor)
+    const res = await svc.updateGoogleAccountBinding(
+      { draftId: created.draftId, accountIds: ['222-333-4444'], managerAccountId: '987-654-3210' },
+      adminActor,
+    )
+    assert.deepEqual(res.binding, { accountIds: ['2223334444'], managerAccountId: '9876543210' })
+    const stored = drafts.drafts.get(created.draftId)!
+    assert.equal(stored.connector.lifecycleState, 'active')
+    const config = stored.connector.config as Record<string, unknown>
+    assert.deepEqual(config.googleAccountBinding, res.binding)
+    // A régi, cég-configban tárolt MCC fejléc eltűnik — a kötés az egyetlen forrás.
+    assert.deepEqual(config.requestHeaders, { 'X-Trace': 'x' })
+    const event = audit.events.find((e) => e.action === 'provisioning.connector.google_account_binding')
+    assert.ok(event, 'audit event missing')
+    const meta = event.metadata as Record<string, unknown>
+    assert.deepEqual(meta.previous_account_ids, ['1234567890'])
+    assert.deepEqual(meta.account_ids, ['2223334444'])
+  })
+
+  await test('Fiókkötés: hibás azonosító, nem Google konnektor és agent-aktor elutasítva', async () => {
+    const { svc } = makeService({ allowlist: [] })
+    const created = await googleAdsDraft(svc, googleAdsConfig())
+    await expectError('PROVISIONING_INVALID_INPUT', () =>
+      svc.updateGoogleAccountBinding({ draftId: created.draftId, accountIds: ['12-34'] }, adminActor),
+    )
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.updateGoogleAccountBinding({ draftId: created.draftId, accountIds: ['1234567890'] }, agentActor),
+    )
+    const crm = await draftToActivatable(svc)
+    await expectError('GOOGLE_ACCOUNT_BINDING_UNSUPPORTED', () =>
+      svc.updateGoogleAccountBinding({ draftId: crm.draftId, accountIds: ['1234567890'] }, adminActor),
     )
   })
 

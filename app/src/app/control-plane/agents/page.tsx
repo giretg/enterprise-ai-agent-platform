@@ -1,19 +1,25 @@
 import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
-import { listAgents } from '@/app/actions/platform'
+import { listAgentsForCatalog } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
+import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
 import { Card } from '@/components/ui/shell'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
-import { personaFor } from '@/lib/agent-persona'
+import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
+import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 
 export default async function AgentsIndexPage() {
   const ctx = await requireControlPlaneTenantViewer()
-  const agentsRes = await listAgents({ limit: 100 })
+  const [agentsRes, tenant] = await Promise.all([
+    listAgentsForCatalog({ limit: 100 }),
+    repositories.tenants.findById(ctx.activeTenantId),
+  ])
   const agents = agentsRes.success ? agentsRes.data : []
   const loadError = agentsRes.success ? null : agentsRes.error
   const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
   const t = await getTranslations('ControlPlane.agents')
 
   return (
@@ -40,19 +46,14 @@ export default async function AgentsIndexPage() {
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {agents.map((agent) => {
-            const persona = personaFor(agent.name)
-            return (
-              <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
-                <Card title={persona.nickname || agent.name}>
-                  {agent.description ? (
-                    <p className="text-sm text-ink">{agent.description}</p>
-                  ) : null}
-                  <p className="mt-1 text-sm text-ink-soft">{agent.status}</p>
-                </Card>
-              </Link>
-            )
-          })}
+          {agents.map((agent) => (
+            <AgentCatalogCard
+              key={agent.id}
+              agent={agent}
+              canResumeHire={canCreateAgent}
+              tenantChatEnabled={tenantChatEnabled}
+            />
+          ))}
           {agents.length === 0 ? (
             <Card title={t('emptyTitle')}>
               <p className="text-sm text-ink-soft">

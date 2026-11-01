@@ -10,10 +10,10 @@
  * a `warnings`/`errors` üzenetekbe rövidített/sanitizált formában mehetnek.
  */
 import {
-  FORBIDDEN_HOST_PATTERNS,
   FORBIDDEN_PATH_PATTERNS,
   SECRET_LIKE_PATTERNS,
 } from '@/domain/net/untrusted-patterns'
+import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { findOverlappingHttpApiEndpoints } from '@/domain/connector/http-api-client'
 import { WRITE_METHODS, type ConnectorConfig, type HttpMethod } from './connector-config'
 
@@ -52,10 +52,28 @@ export type ValidatorOptions = {
 
 function hostOf(url: string): string | null {
   try {
-    return new URL(url).host.toLowerCase()
+    return new URL(url).hostname.toLowerCase()
   } catch {
     return null
   }
+}
+
+/** A draft által deklarált kimenő hostok (egressHosts + base/token/auth URL). */
+export function declaredEgressHosts(config: ConnectorConfig): string[] {
+  const hosts = new Set(config.egressHosts.map((h) => h.toLowerCase()))
+  for (const url of [config.baseUrl, config.auth.tokenUrl, config.auth.userInfoUrl, config.auth.authUrl]) {
+    const host = typeof url === 'string' ? hostOf(url) : null
+    if (host) hosts.add(host)
+  }
+  return [...hosts]
+}
+
+/**
+ * Katalógus-sablon hostjai a tenant-listával együtt számítanak ismertnek:
+ * a sablon már bízott, nem kell külön allowlist-szertartás.
+ */
+export function withCatalogTrustedEgress(tenantAllowlist: string[], config: ConnectorConfig): string[] {
+  return [...new Set([...tenantAllowlist.map((h) => h.toLowerCase()), ...declaredEgressHosts(config)])]
 }
 
 function worst(...statuses: CheckStatus[]): CheckStatus {
@@ -77,10 +95,8 @@ export function validateDraftConfig(
 
   const allowlist = new Set(opts.egressAllowlist.map((h) => h.toLowerCase()))
 
-  // 1) Egress-allowlist: minden egressHost + a baseUrl host-ja az allowliston?
-  const declaredHosts = new Set<string>(config.egressHosts.map((h) => h.toLowerCase()))
-  const baseHost = hostOf(config.baseUrl)
-  if (baseHost) declaredHosts.add(baseHost)
+  // 1) Egress-allowlist: minden deklarált kimenő host az allowliston?
+  const declaredHosts = new Set(declaredEgressHosts(config))
 
   const unknownHosts: string[] = []
   for (const host of declaredHosts) {
@@ -100,11 +116,10 @@ export function validateDraftConfig(
   // 2) Tiltott minták: gyanús host / path (exfil-szerű). Mindig `failed`.
   let forbiddenPatterns: CheckStatus = 'passed'
   for (const host of declaredHosts) {
-    for (const rule of FORBIDDEN_HOST_PATTERNS) {
-      if (rule.pattern.test(host)) {
-        forbiddenPatterns = 'failed'
-        errors.push(`forbidden_host_pattern:${rule.name}`)
-      }
+    const forbidden = matchForbiddenHost(host)
+    if (forbidden) {
+      forbiddenPatterns = 'failed'
+      errors.push(`forbidden_host_pattern:${forbidden}`)
     }
   }
   for (const tool of config.proposedTools) {

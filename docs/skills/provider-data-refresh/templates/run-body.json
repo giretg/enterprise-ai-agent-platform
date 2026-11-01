@@ -1,0 +1,17 @@
+{
+  "outcome": "unchanged",
+  "summary": "Mit néztél, mit találtál, mit nem tudtál igazolni (az adminnak szól).",
+  "started_at": "2026-01-01T08:00:00.000Z",
+  "completed_at": "2026-01-01T09:00:00.000Z",
+  "agent_id": "<az agent neve a get_definition-ből>",
+  "visited_urls": ["https://szolgaltato.hu/arak"],
+  "documents_found": [
+    {
+      "url": "https://szolgaltato.hu/kondiciok.pdf",
+      "title": "Kereskedői kondíciós lista",
+      "media_type": "application/pdf",
+      "content_hash": "sha256:<64 hex>",
+      "note": "hatály: YYYY.MM.DD"
+    }
+  ]
+}

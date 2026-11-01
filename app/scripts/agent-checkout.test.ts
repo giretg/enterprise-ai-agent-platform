@@ -241,7 +241,7 @@ async function main() {
     assert.match(agents, /platform\.agent\.get_definition/)
   })
 
-  await check('#652 briefing: fixed sections, same text in prompt, AGENTS.md and SOUL.md', () => {
+  await check('#652 briefing: fixed sections, same text in prompt and AGENTS.md; Hermes SOUL is a connector stub', () => {
     const def = definition()
     const skills = [skill(SKILL_A, VER_A, 'drive-search'), skill(SKILL_B, VER_B, 'drive-write')]
     const briefing = renderAgentBriefing({ definition: def, skills })
@@ -259,6 +259,7 @@ async function main() {
     assert.match(briefing, /^## Who you are\n\nYou are now Drive asszisztens\./)
     assert.match(briefing, /WHERE TO SAVE WHAT/)
     assert.match(briefing, /platform\.work_file\.write/)
+    assert.match(briefing, /platform\.whoami → linkedAccounts/)
     assert.match(
       briefing,
       /- drive-search: drive-search description Triggers: drive, search\. `skill:\/\/drive-search\/SKILL\.md`/,
@@ -273,8 +274,43 @@ async function main() {
     const soul = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' }).files.find(
       (f) => f.path === 'SOUL.md',
     )
-    assert.ok(soul?.content.includes(bound))
+    assert.ok(soul?.content.includes('connector to Drive asszisztens'))
+    assert.ok(soul?.content.includes('platform.agent.get_definition'))
+    assert.ok(!soul?.content.includes(bound))
     assert.ok(renderAgentPrompt({ definition: def, skills, bound: true }).includes(bound))
+  })
+
+  await check('#672 customer promises appear in every session workflow and overdue briefing', () => {
+    const def = definition()
+    const empty = renderAgentBriefing({ definition: def, skills: [] })
+    assert.match(empty, /call platform\.promise\.register with an absolute dueAt before or when you tell them/)
+    assert.match(empty, /Call platform\.promise\.list at the start of every session/)
+    assert.doesNotMatch(empty, /## Open customer promises/)
+    const briefing = renderAgentBriefing({
+      definition: def,
+      skills: [],
+      customerPromises: [
+        { id: 'late', title: 'Call back', dueAt: '2026-10-01T10:00:00Z', customerName: 'Acme', customerEmail: null, overdue: true },
+        { id: 'next', title: 'Send contract', dueAt: '2026-11-01T10:00:00Z', customerName: null, customerEmail: 'a@example.com', overdue: false },
+      ],
+    })
+    assert.match(briefing, /## Open customer promises/)
+    assert.match(briefing, /Call back.*2026-10-01T10:00:00Z.*Acme.*promiseId `late`; overdue: yes\. Fulfill or cancel now\./)
+    assert.match(briefing, /a@example\.com.*promiseId `next`; overdue: no\./)
+    assert.match(briefing, /not policy or authorization/)
+    const checkout = renderAgentCheckout({ definition: def, skills: [], mcpUrl: MCP_URL, harness: 'hermes' })
+    assert.ok(checkout.files.some((file) => file.content.includes('platform.promise.register')))
+    assert.ok(renderAgentPrompt({ definition: def, skills: [] }).includes('platform.promise.list'))
+  })
+
+  await check('#739 briefing lists direct writes when approval is off', () => {
+    const briefing = renderAgentBriefing({
+      definition: definition(),
+      skills: [],
+      writeModes: { memory: 'direct', httpApi: 'direct', gmail: 'approval', drive: 'approval' },
+    })
+    assert.match(briefing, /These writes run immediately \(logged, no approval link\): memory, company HTTP APIs/)
+    assert.match(briefing, /These writes wait for a human: Gmail, Drive and Sheets/)
   })
 
   await check('#660 briefing includes published rules in full with override hint (blog / Csilla eval)', () => {
@@ -330,7 +366,7 @@ async function main() {
     const briefing = renderAgentBriefing({ definition: def, skills })
     assert.match(
       briefing,
-      /3\. For every new task, first read the entry skill drive-search \(`skill:\/\/drive-search\/SKILL\.md`\)/,
+      /4\. For every new task, first read the entry skill drive-search \(`skill:\/\/drive-search\/SKILL\.md`\)/,
     )
     assert.match(briefing, /- drive-search \(entry skill — read first on every new task\):[^\n]*\n- drive-write:/)
     const agents = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL }).files.find(
@@ -339,12 +375,12 @@ async function main() {
     assert.ok(agents?.content.includes(briefing))
   })
 
-  await check('#652 briefing size: tables of contents only, bounded besides roleInstruction', () => {
+  await check('#652 briefing size: skill description and triggers are never clipped, the list is capped at 25', () => {
     const many = Array.from({ length: 200 }, (_, i) => {
       const id = `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`
       return {
         ...skill(id, id, `skill-${i}`, { ...pinnedBody, triggerKeywords: Array.from({ length: 50 }, (_, t) => `trigger-${t}`) }),
-        description: 'x'.repeat(5000),
+        description: 'x'.repeat(1024),
       }
     })
     const roleInstruction = 'r'.repeat(20000)
@@ -357,7 +393,9 @@ async function main() {
     })
     const briefing = renderAgentBriefing({ definition: def, skills: many })
     assert.ok(briefing.includes(roleInstruction))
-    assert.ok(briefing.length - roleInstruction.length < 16000, `${briefing.length - roleInstruction.length}`)
+    assert.ok(briefing.length - roleInstruction.length < 50000, `${briefing.length - roleInstruction.length}`)
+    assert.ok(briefing.includes('x'.repeat(1024)), 'full description')
+    assert.ok(briefing.includes('trigger-49.'), 'last trigger of the skill is listed')
     assert.match(briefing, /…and 175 more/)
   })
 
@@ -402,6 +440,8 @@ async function main() {
       }).files.find((f) => f.path === 'AGENTS.md')?.content ?? ''
     assert.match(agents, /sandbox_run/)
     assert.match(agents, /skillVersionId/)
+    assert.match(agents, /inputs/)
+    assert.match(agents, /\/work\/in\//)
     assert.doesNotMatch(agents, /sandbox_exec/)
   })
 
@@ -411,6 +451,8 @@ async function main() {
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /first checkout \(create folder\)/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /claude \| codex \| goose \| grok \| hermes/)
     assert.match(CHECKOUT_TOOL_DESCRIPTION, /harness:"hermes"/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /thin Bot connector/)
+    assert.match(CHECKOUT_TOOL_DESCRIPTION, /Do not copy skills/)
   })
 
   await check('codex harness adds Desktop open hint to writeRecipe', () => {
@@ -432,7 +474,7 @@ async function main() {
     assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
   })
 
-  await check('hermes harness → profile distribution (#682 WP-1)', () => {
+  await check('hermes harness → thin Bot connector, no skill or briefing copy', () => {
     const def = definition()
     const bundle = renderAgentCheckout({
       definition: def,
@@ -440,32 +482,15 @@ async function main() {
       mcpUrl: MCP_URL,
       harness: 'hermes',
     })
-    // Pins decide the skill label; give the snapshot a non-slug name too.
-    const napi = renderAgentCheckout({
-      definition: definition({
-        snapshot: {
-          ...def.snapshot,
-          skills: [{ skillId: SKILL_A, skillVersionId: VER_A, name: 'Napi Marketing Riport' }],
-        },
-      }),
-      skills: [skill(SKILL_A, VER_A, 'Napi Marketing Riport')],
-      mcpUrl: MCP_URL,
-      harness: 'hermes',
-    })
-    const napiSkill = napi.files.find((f) => f.path.startsWith('skills/excellence/'))
-    assert.equal(napiSkill?.path, 'skills/excellence/napi-marketing-riport/SKILL.md')
-    assert.match(napiSkill?.content ?? '', /^---\nname: napi-marketing-riport\ntitle: Napi Marketing Riport\n/)
 
     assert.equal(bundle.suggestedRoot, '.hermes/excellence/acme/drive-asszisztens')
+    assert.deepEqual(bundle.files.map((f) => f.path).sort(), ['SOUL.md', 'config.yaml', 'distribution.yaml', 'profile.yaml'].sort())
     assert.deepEqual(bundle.files.map((f) => f.path), bundle.generatedPaths)
     for (const path of bundle.generatedPaths) assertSafeCheckoutPath(path)
-    assert.ok(bundle.generatedPaths.includes('SOUL.md'))
     assert.ok(!bundle.generatedPaths.includes('AGENTS.md'))
-    for (const file of bundle.files.filter((f) => f.path.startsWith('skills/excellence/'))) {
-      const name = /^name: (.+)$/m.exec(file.content)?.[1] ?? ''
-      assert.match(name, /^[a-z0-9][a-z0-9._-]*$/)
-      assert.equal(file.path, `skills/excellence/${name}/SKILL.md`)
-    }
+    assert.equal(bundle.files.some((f) => f.path.startsWith('skills/excellence/')), false)
+    assert.equal(bundle.files.some((f) => f.path === '.enterprise-agent/manifest.json'), false)
+    assert.deepEqual(bundle.deleteUnder, ['.enterprise-agent', 'skills/excellence'])
 
     const content = (path: string) => bundle.files.find((f) => f.path === path)?.content ?? ''
     const config = content('config.yaml')
@@ -473,6 +498,7 @@ async function main() {
     assert.match(config, /user_profile_enabled: false/)
     assert.match(config, new RegExp(`X-Excellence-Agent-Id: ${AGENT_ID}`))
     assert.match(config, /auth: oauth/)
+    assert.match(config, /client_id: https:\/\/nousresearch\.github\.io\/hermes-agent\/docs\/oauth\/client-metadata\.json/)
     assert.match(config, /- google_drive_search/)
     assert.match(config, /- platform\.agent\.get_definition/)
     assert.doesNotMatch(config, /platform\.agent\.publish|platform\.agent\.create_draft/)
@@ -481,20 +507,23 @@ async function main() {
     assert.match(dist, /name: exc-drive-asszisztens/)
     assert.match(dist, /version: 3\.0\.0/)
     const owned = dist.slice(dist.indexOf('distribution_owned'))
-    assert.doesNotMatch(owned, /config\.yaml|profile\.yaml/)
+    assert.doesNotMatch(owned, /config\.yaml|profile\.yaml|skills\/excellence/)
     const profileYaml = content('profile.yaml')
     assert.match(profileYaml, /display_name: Drive asszisztens \(Inspect Drive through MCP\)/)
     assert.match(profileYaml, /title: Drive asszisztens \(Inspect Drive through MCP\)/)
 
     const soul = content('SOUL.md')
+    assert.match(soul, /connector to Drive asszisztens/)
+    assert.match(soul, /platform\.agent\.get_definition/)
     assert.match(soul, /do not pass definitionId/)
-    assert.match(soul, new RegExp(`contentHash: ${hashSnapshot(def.snapshot)}`))
+    assert.doesNotMatch(soul, /contentHash/)
     assert.doesNotMatch(soul, /agent_stale/)
+    assert.doesNotMatch(soul, /Töltsd le az AI munkatársaimat/)
+    assert.match(bundle.writeRecipe, /thin bind/)
     assert.match(bundle.writeRecipe, /hermes profile install "\$HOME\/\.hermes\/excellence\/acme\/drive-asszisztens" --name exc-drive-asszisztens -y/)
     assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
     assert.match(bundle.writeRecipe, /display_name and ui_meta\.hermes-bots\.title/)
     assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
-    assert.equal(JSON.parse(content('.enterprise-agent/manifest.json')).pin.harness, 'hermes')
   })
 
   await check('hermes profile name stays within 60 chars for long agent names', () => {
@@ -572,8 +601,8 @@ async function main() {
     assert.match(goose.writeRecipe, /session working directory/)
 
     const hermes = renderAgentCheckout({ definition: def, skills, mcpUrl: MCP_URL, harness: 'hermes' })
-    assert.match(hermes.writeRecipe, /allowlist the union/)
-    assert.match(hermes.files.find((file) => file.path === 'SOUL.md')?.content ?? '', /Local coding folders/)
+    assert.match(hermes.writeRecipe, /platform.agent.get_definition → localRoots/)
+    assert.doesNotMatch(hermes.files.find((file) => file.path === 'SOUL.md')?.content ?? '', /Local coding folders/)
     assert.match(hermes.files.find((file) => file.path === 'distribution.yaml')?.content ?? '', /local_roots/)
   })
 

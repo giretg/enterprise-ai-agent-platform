@@ -12,11 +12,16 @@ export type ProvisioningErrorCode =
   | 'DRAFT_NOT_APPROVED'
   | 'SANDBOX_TEST_FAILED'
   | 'ACTIVATION_AUTH_TEST_FAILED'
+  | 'EGRESS_HOST_REJECTED' // aktiváláskor a konnektor kimenő címe nem vehető fel az allowlistre (pl. privát IP)
   | 'ACTIVATION_KEYLESS_UNCONFIRMED'
+  | 'DRAFT_CHANGED_DURING_ACTIVATION' // a config/gate az aktiválási commit előtt megváltozott
   | 'SECRET_ALIAS_NOT_TRUSTED' // csak connector-owned vagy tenant-scope-ban engedélyezett külső alias
   | 'SECRET_ALIAS_MISSING'
   | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId
   | 'PLATFORM_GOOGLE_OAUTH_MISSING' // Gmail: a platform Google OAuth app nincs beállítva
+  | 'PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING' // Google Ads: a platform developer tokenje nincs beállítva
+  | 'GOOGLE_ACCOUNT_BINDING_MISSING' // Ads / Analytics / Search Console: a cég nem választott fiókot
+  | 'GOOGLE_ACCOUNT_BINDING_UNSUPPORTED' // fiókkötés nem Google fiókos konnektoron
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver
   | 'DUAL_CONTROL_REQUIRED'
   | 'APPROVER_NOT_AUTHORIZED' // dual-control: a második jóváhagyó nem aktív, azonos-tenant admin
@@ -29,6 +34,7 @@ export type ProvisioningErrorCode =
   | 'PLATFORM_CONNECTOR_FORBIDDEN' // platform-owned connector lifecycle: csak superadmin
   | 'CONNECTOR_NOT_ASSIGNABLE' // self_updating: nincs aktív/valid capability snapshot
   | 'DRAFT_ALREADY_ACTIVATED' // hard-delete: csak sosem aktivált draftra
+  | 'TENANT_MAILBOX_READ_ONLY' // #1028: csak olvasásra bekötött közös postafiók nem kaphat írási kötést
 
 export class ProvisioningError extends Error {
   constructor(

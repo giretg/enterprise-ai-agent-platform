@@ -56,7 +56,10 @@ function chooseGmailScopes(descriptor: TemplateDescriptor, selected?: string[]):
   }
   const allowed = new Set(descriptor.scopeCatalog.map((scope) => scope.value))
   const defaults = descriptor.scopeCatalog.filter((scope) => scope.default).map((scope) => scope.value)
-  const requested = selected && selected.length > 0 ? selected : defaults
+  const requested = selected ?? defaults
+  if (requested.length === 0) {
+    throw new ConnectorTemplateMaterializationError('Válassz legalább egy Gmail-jogosultságot.')
+  }
   const unknown = requested.filter((scope) => !allowed.has(scope))
   if (unknown.length > 0) {
     throw new ConnectorTemplateMaterializationError(`unknown gmail template scopes: ${unknown.join(', ')}`)

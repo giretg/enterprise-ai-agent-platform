@@ -5,7 +5,9 @@ import { z } from 'zod'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { repositories } from '@/repositories/postgres'
+import { hasMinimumRole } from '@/lib/iam-policy'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ProjectListItem, MemoryView } from '@/domain/project-work/project-work-service'
 import { effectiveWorkProjectKey } from '@/lib/work-project'
 
@@ -246,7 +248,10 @@ export async function deleteProjectMemoryAction(
 ): Promise<ActionResult<{ deleted: true }>> {
   try {
     const parsed = deleteMemorySchema.parse(input)
-    const ctx = await requireTenantRole('admin')
+    const ctx = await requireTenantRole('viewer')
+    if (!hasMinimumRole(ctx.activeTenantRole, 'admin') && !isSuperadmin(ctx.platformRoles)) {
+      throw new TenantAuthError('INSUFFICIENT_ROLE')
+    }
     const agent = await scopedAgent(parsed.agentId, ctx.activeTenantId)
     if (!agent) return fail('agent_not_found')
     const row = await repositories.projectMemory.findById(parsed.memoryId)
