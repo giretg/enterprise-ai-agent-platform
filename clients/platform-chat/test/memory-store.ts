@@ -60,7 +60,7 @@ export class MemoryStore implements Store {
     if ([...this.turns.values()].some((t) => t.conversationId === input.conversationId && ACTIVE_TURN_STATUSES.includes(t.status))) return null
     const t = {
       ...input, id: randomUUID(), status: 'queued' as const, stepCount: 0, tokenUsage: {}, error: null, continuationToken: null,
-      context: null, pendingApproval: null, pendingInput: null, pausedSeconds: 0, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
+      context: null, pendingApproval: null, pendingInput: null, pausedSeconds: 0, pause: null, runLimits: null, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
     }
     this.turns.set(t.id, t)
     return { ...t }
@@ -128,6 +128,9 @@ export class MemoryStore implements Store {
   }
   async eventsAfter(turnId: string, after: number) {
     return this.events.filter((e) => e.turnId === turnId && e.seq > after)
+  }
+  async lastEventId(turnId: string) {
+    return this.events.filter((e) => e.turnId === turnId).at(-1)?.seq ?? 0
   }
   async pruneOldEvents() {}
   async addAttachment(input: Omit<Attachment, 'id'>) {

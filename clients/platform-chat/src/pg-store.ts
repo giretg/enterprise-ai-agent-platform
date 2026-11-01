@@ -58,6 +58,8 @@ const turnOf = (r: Row): Turn => ({
   pendingApproval: (r.pending_approval as Turn['pendingApproval']) ?? null,
   pendingInput: (r.pending_input as Turn['pendingInput']) ?? null,
   pausedSeconds: (r.paused_seconds as number | null) ?? 0,
+  pause: (r.pause as Turn['pause']) ?? null,
+  runLimits: (r.run_limits as Turn['runLimits']) ?? null,
   createdAt: r.created_at as Date,
   finishedAt: (r.finished_at as Date | null) ?? null,
 })
@@ -93,9 +95,11 @@ const TURN_COLUMNS: Record<string, string> = {
   pendingApproval: 'pending_approval',
   pendingInput: 'pending_input',
   pausedSeconds: 'paused_seconds',
+  pause: 'pause',
+  runLimits: 'run_limits',
   finishedAt: 'finished_at',
 }
-const JSON_COLUMNS = new Set(['token_usage', 'context', 'pending_approval', 'pending_input'])
+const JSON_COLUMNS = new Set(['token_usage', 'context', 'pending_approval', 'pending_input', 'pause', 'run_limits'])
 
 function setClause(patch: Record<string, unknown>, offset: number): { sql: string; values: unknown[] } {
   const parts: string[] = []
@@ -266,6 +270,9 @@ export function createPgStore(pool: pg.Pool, connection: Pick<pg.Pool, 'query'> 
         [id, leaseSeconds],
       )
       return rows.length > 0
+    },
+    async lastEventId(turnId) {
+      return Number((await one('SELECT COALESCE(MAX(seq), 0) AS seq FROM platform_chat.turn_events WHERE turn_id = $1', [turnId]))?.seq ?? 0)
     },
     async releaseTurn(id) {
       await q(`UPDATE platform_chat.turns SET lease_until = NULL WHERE id = $1`, [id])

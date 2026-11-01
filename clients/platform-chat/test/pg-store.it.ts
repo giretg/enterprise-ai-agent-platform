@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
-import { answerQuestion, decideApproval, latestPlan, runStep, startTurn, toFunctionName, type EngineDeps } from '../src/engine.ts'
+import { answerQuestion, decideApproval, latestPlan, resumeTurn, runStep, startTurn, toFunctionName, type EngineDeps } from '../src/engine.ts'
 import { createPgStore } from '../src/pg-store.ts'
 import type { PlatformClient } from '../src/platform.ts'
 
@@ -127,6 +127,25 @@ try {
   assert.equal(after.at(-3)?.question?.answer.selected[0], 'Nagy')
   assert.equal(after.at(-1)?.plan?.length, 2)
   assert.deepEqual((await store.eventsAfter(r2.turn.id, 0)).filter((e) => ['plan', 'question'].includes(e.type)).map((e) => e.type), ['plan', 'question', 'question'])
+
+  // Valódi Postgres: a szünet benne marad az egy-aktív-forduló indexben, a kész lépés megmarad.
+  const resumeDeps: EngineDeps = { ...deps, limits: { ...deps.limits, maxSteps: 1 } }
+  const r3 = await startTurn(resumeDeps, { conversation: c, chatToken: 'chat', content: 'Új riport', attachments: [] })
+  assert.ok(r3.ok)
+  while (queued.length) await runStep(resumeDeps, queued.shift()!)
+  assert.equal((await store.getTurn(r3.turn.id))?.status, 'paused')
+  assert.equal((await store.getTurn(r3.turn.id))?.pause?.reason, 'steps')
+  assert.equal((await store.activeTurn(c.id))?.id, r3.turn.id)
+  assert.equal(await store.createTurn({ conversationId: c.id, tenantId: TENANT, userId: USER, agentId: AGENT }), null)
+  assert.equal((await store.eventsAfter(r3.turn.id, 0)).at(-1)?.type, 'pause')
+  assert.equal(await store.lastEventId(r3.turn.id), (await store.eventsAfter(r3.turn.id, 0)).at(-1)?.seq)
+  const firstStep = (await store.listSteps(r3.turn.id))[0]
+  await resumeTurn(resumeDeps, { turnId: r3.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' })
+  // Egy 1-lépéses új keret után újra szünet, számláló és első modellválasz változatlan.
+  while (queued.length) await runStep(resumeDeps, queued.shift()!)
+  assert.equal((await store.getTurn(r3.turn.id))?.runLimits?.maxSteps, 2)
+  assert.deepEqual((await store.listSteps(r3.turn.id))[0], firstStep)
+  assert.equal((await store.getTurn(r3.turn.id))?.status, 'paused')
 
   await store.deleteConversation(c.id)
   assert.equal(await store.getTurn(r.turn.id), null) // kaszkád

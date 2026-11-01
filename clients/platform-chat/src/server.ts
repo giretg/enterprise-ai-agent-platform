@@ -13,7 +13,7 @@ import {
   type BlobStorage,
 } from './attachments.ts'
 import type { Config } from './config.ts'
-import { answerQuestion, cancelTurn, closeExpiredApproval, decideApproval, latestPlan, runStep, startTurn, type EngineDeps } from './engine.ts'
+import { answerQuestion, cancelTurn, closeExpiredApproval, decideApproval, latestPlan, resumeTurn, runStep, startTurn, turnProgress, type EngineDeps } from './engine.ts'
 import { ACTIVE_TURN_STATUSES, PARKED_TURN_STATUSES, type Conversation, type Turn } from './store.ts'
 
 const SSE_POLL_MS = 300
@@ -138,6 +138,9 @@ export function createHandler(deps: ServerDeps) {
     if (active && (await closeExpiredApproval(deps, active))) activeTurn = null
     const lastFailed = activeTurn ? null : await lastTurnError(c.id, messages.at(-1)?.turnId ?? null)
     const plan = activeTurn ? latestPlan(await store.listSteps(activeTurn.id)) : null
+    const paused = activeTurn?.status === 'paused' && activeTurn.pause
+      ? { ...activeTurn.pause, ...turnProgress(await store.listSteps(activeTurn.id), activeTurn.context), lastId: await store.lastEventId(activeTurn.id) }
+      : null
     return {
       conversation: publicConversation(c),
       messages: messages.map((m) => ({
@@ -156,6 +159,7 @@ export function createHandler(deps: ServerDeps) {
             status: activeTurn.status,
             pendingApproval: activeTurn.pendingApproval ? { message: activeTurn.pendingApproval.message, createdAt: activeTurn.pendingApproval.createdAt } : null,
             pendingInput: publicQuestion(activeTurn),
+            paused,
             plan,
           }
         : null,
@@ -326,6 +330,14 @@ export function createHandler(deps: ServerDeps) {
 
     if (parts[0] === 'turns' && parts.length === 3) {
       const turnId = parts[1]
+      if (method === 'POST' && parts[2] === 'resume') {
+        if (!UUID_RE.test(turnId)) throw new HttpError(404, 'not_found')
+        const outcome = await resumeTurn(deps, { turnId, userId: claims.sub, tenantId: claims.tid, chatToken: claims.token })
+        if (outcome === 'not_found') throw new HttpError(404, 'not_found')
+        if (outcome === 'no_access') throw new HttpError(403, 'agent_unavailable')
+        if (outcome !== 'ok') throw new HttpError(409, outcome)
+        return ok(202, { turnId })
+      }
       if (method === 'GET' && parts[2] === 'events') return streamEvents(req, res, claims, turnId, cors)
       if (method === 'POST' && parts[2] === 'cancel') {
         if (!UUID_RE.test(turnId) || !(await cancelTurn(deps, turnId, claims.sub))) throw new HttpError(404, 'not_found')

@@ -43,10 +43,11 @@ type Live = {
   /** #1025: a munkaterv élő állapota. */
   plan: ChatPlanItem[] | null
   error: string | null
+  paused: { message: string; completedOperations: number; files: ChatFile[] } | null
 }
 
 const freshLive = (turnId: string, patch: Partial<Live> = {}): Live => ({
-  turnId, lastId: 0, text: '', status: '', approval: null, question: null, plan: null, error: null, ...patch,
+  turnId, lastId: 0, text: '', status: '', approval: null, question: null, plan: null, error: null, paused: null, ...patch,
 })
 
 const SESSION_ERRORS: Record<string, string> = {
@@ -507,7 +508,8 @@ export function PlatformChat({
               if (!prev || prev.turnId !== turnId) return prev
               const p = { ...prev, lastId: Math.max(prev.lastId, e.id) }
               if (e.type === 'delta') return { ...p, text: p.text + String(e.data.text ?? ''), status: '' }
-              if (e.type === 'status') return { ...p, status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
+              if (e.type === 'status') return { ...p, ...(e.data.phase === 'resumed' ? { paused: null } : {}), status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
+              if (e.type === 'pause') return { ...p, status: '', text: String(e.data.text ?? p.text), paused: { message: String(e.data.message ?? ''), completedOperations: Number(e.data.completedOperations ?? 0), files: (e.data.files as ChatFile[]) ?? [] } }
               if (e.type === 'tool') {
                 return { ...p, text: p.text && !p.text.endsWith('\n\n') ? `${p.text}\n\n` : p.text, status: e.data.phase === 'start' ? toolStatus(String(e.data.name ?? ''), e.data.detail) : 'Gondolkodom…' }
               }
@@ -539,7 +541,7 @@ export function PlatformChat({
       if (abort.signal.aborted) return
       const fresh = await c.conversation(conversationId)
       setView(fresh)
-      setLive((p) => (p && (p.approval || p.question || p.error) ? p : null))
+      setLive((p) => (p && (p.approval || p.question || p.error || p.paused) ? p : null))
       // Az első válasz után a beszélgetés címet kap — frissül az előzménylista.
       refreshListRef.current()
     },
@@ -558,7 +560,10 @@ export function PlatformChat({
       atBottomRef.current = true
       setAtBottom(true)
       const plan = v.activeTurn?.plan ?? null
-      if (v.activeTurn?.pendingApproval) {
+      if (v.activeTurn?.paused) {
+        const { text, lastId, ...paused } = v.activeTurn.paused
+        setLive(freshLive(v.activeTurn.id, { text, lastId, paused, plan }))
+      } else if (v.activeTurn?.pendingApproval) {
         setLive(freshLive(v.activeTurn.id, { approval: { message: v.activeTurn.pendingApproval.message }, plan }))
       } else if (v.activeTurn?.pendingInput) {
         const { question, options, allowOther, multiSelect } = v.activeTurn.pendingInput
@@ -798,6 +803,22 @@ export function PlatformChat({
     if (view) setView(await client.conversation(view.conversation.id))
   }
 
+  async function resume() {
+    if (!client || !live?.paused || !view || busy) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      await client.resume(live.turnId)
+      setLive({ ...live, paused: null, status: 'Folytatom a munkát…' })
+      void follow(client, view.conversation.id, live.turnId, live.lastId)
+    } catch (e) {
+      if (e instanceof ChatApiError && e.status === 409) void open(client, view.conversation.id)
+      else setNotice('A folytatást most nem sikerült elindítani. Próbáld újra; az eddigi eredmények megmaradtak.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function rename(c: ChatConversation, title: string) {
     if (!client || !title.trim()) return setRenaming(null)
     await client.rename(c.id, title.trim()).catch(() => setNotice('Az átnevezés most nem sikerült.'))
@@ -861,7 +882,7 @@ export function PlatformChat({
   }
 
   const readOnly = adminMode
-  const working = !!live && !live.approval && !live.question && !live.error
+  const working = !!live && !live.approval && !live.question && !live.error && !live.paused
   const empty = !view?.messages.length && !live
   const now = new Date()
 
@@ -1114,7 +1135,7 @@ export function PlatformChat({
           ) : null}
         </div>
         <span className="flex-1" />
-        {working ? (
+        {working || live?.paused ? (
           <button
             type="button"
             onClick={() => void stop()}
@@ -1307,6 +1328,15 @@ export function PlatformChat({
                         </div>
                       ) : null}
                       {live.question ? <QuestionCard key={`${live.turnId}-${live.lastId}`} question={live.question} readOnly={readOnly} onAnswer={answer} /> : null}
+                      {live.paused ? (
+                        <div className="rounded-2xl border border-line bg-card p-4 text-sm" role="status">
+                          <p className="font-medium">A munka szünetel</p>
+                          <p className="mt-1">{live.paused.message}</p>
+                          <p className="mt-2 text-ink-soft">{live.paused.completedOperations} művelet elkészült. Folytatáskor az elkészült műveleteket nem ismétli meg.</p>
+                          <FileCards files={live.paused.files} />
+                          {!readOnly ? <button type="button" disabled={busy} onClick={() => void resume()} className="mt-3 rounded-full border border-coral/40 px-3 py-1 font-medium hover:bg-coral/10 disabled:opacity-50">Folytatás</button> : null}
+                        </div>
+                      ) : null}
                       {live.error ? (
                         <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
                           <p>{live.error}</p>

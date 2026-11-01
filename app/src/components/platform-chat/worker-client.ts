@@ -47,10 +47,11 @@ export type ConversationView = {
     pendingApproval: { message: string; createdAt: string } | null
     pendingInput?: (ChatQuestion & { createdAt: string }) | null
     plan?: ChatPlanItem[] | null
+    paused?: { message: string; completedOperations: number; text: string; files: ChatFile[]; lastId: number } | null
   } | null
   lastError: { turnId: string; message: string | null } | null
 }
-export type TurnEvent = { id: number; type: 'delta' | 'status' | 'tool' | 'approval' | 'question' | 'plan' | 'done' | 'error'; data: Record<string, unknown> }
+export type TurnEvent = { id: number; type: 'delta' | 'status' | 'tool' | 'approval' | 'question' | 'plan' | 'pause' | 'done' | 'error'; data: Record<string, unknown> }
 
 export class ChatApiError extends Error {
   constructor(
@@ -118,6 +119,7 @@ export function createWorkerClient(initial: ChatSession) {
     send: (id: string, content: string, attachmentIds: string[]) =>
       call<{ turnId: string }>(`/conversations/${id}/turns`, { method: 'POST', body: JSON.stringify({ content, attachmentIds }) }),
     cancel: (turnId: string) => call(`/turns/${turnId}/cancel`, { method: 'POST', body: '{}' }),
+    resume: (turnId: string) => call<{ turnId: string }>(`/turns/${turnId}/resume`, { method: 'POST', body: '{}' }),
     approve: (turnId: string, decision: 'approve' | 'reject') =>
       call<{ outcome: string }>(`/turns/${turnId}/approval`, { method: 'POST', body: JSON.stringify({ decision }) }),
     answer: (turnId: string, answer: { selected: string[]; text?: string }) =>
@@ -168,6 +170,8 @@ export function createWorkerClient(initial: ChatSession) {
             lastId = Math.max(lastId, id)
             const event = { id, type, data: JSON.parse(data) as Record<string, unknown> }
             if (type === 'approval' || type === 'question') parked = event.data.phase === 'requested'
+            if (type === 'pause') parked = true
+            if (type === 'status' && event.data.phase === 'resumed') parked = false
             onEvent(event)
             if (type === 'done' || type === 'error') finished = true
           }

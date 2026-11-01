@@ -4,6 +4,7 @@
  * Futtatás: npm run test:platform-chat
  */
 import assert from 'node:assert/strict'
+import { createWorkerClient } from '../src/components/platform-chat/worker-client'
 import {
   CHAT_TOKEN_AUDIENCE,
   CHAT_TURN_TOKEN_AUDIENCE,
@@ -120,6 +121,35 @@ const ctx = (over: Partial<GatewayCallContext> = {}): GatewayCallContext => ({
 })
 
 async function main() {
+  await check('worker kliens: a szünet lezárja a streamet, a Folytatás ugyanazt a fordulót viszi tovább', async () => {
+    const original = globalThis.fetch
+    const calls: string[] = []
+    const event = (id: number, type: string, data: object) => `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`
+    try {
+      globalThis.fetch = async (url, init) => {
+        calls.push(String(url))
+        if (String(url).endsWith('/resume')) {
+          assert.equal(init?.method, 'POST')
+          return Response.json({ turnId: 'same-turn' })
+        }
+        assert.equal((init?.headers as Record<string, string>)['last-event-id'], calls.length === 1 ? '0' : '1')
+        if (calls.length > 3) throw new Error('a szünet nem zárta le a streamet')
+        return new Response(calls.length === 1 ? event(1, 'pause', { message: 'Keretelfogyás' }) : event(2, 'status', { phase: 'resumed' }) + event(3, 'done', { content: 'Kész' }))
+      }
+      const client = createWorkerClient({ token: 'session', expiresAt: new Date(Date.now() + 600_000).toISOString(), workerUrl: 'https://worker.example', tenantSlug: 'acme', adminInsight: false })
+      const seen: string[] = []
+      const last = await client.stream('same-turn', (e) => seen.push(e.type), AbortSignal.timeout(1000))
+      assert.equal(last, 1)
+      assert.equal(calls.length, 1)
+      await client.resume('same-turn')
+      await client.stream('same-turn', (e) => seen.push(e.type), AbortSignal.timeout(1000), last)
+      assert.deepEqual(seen, ['pause', 'status', 'done'])
+      assert.ok(calls.every((url) => url.includes('/turns/same-turn/')))
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   await check('beállítás: keret nélkül nincs bekapcsolt állapot; adminInsight alapból tiltva', () => {
     assert.deepEqual(readPlatformChatSettings({}), { enabled: false, dailyBudgetUsd: null, adminInsight: false })
     assert.equal(readPlatformChatSettings({ platformChat: { enabled: true } }).enabled, false)

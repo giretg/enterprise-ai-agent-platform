@@ -1,5 +1,8 @@
 import { DEFAULT_CORE_TOOLS } from './tool-loading.ts'
 
+/** Belső vészfék; a szokásos feladatot az idő- és a gateway napi költségkerete határolja. */
+export const DEFAULT_MAX_STEPS = 1000
+
 /** A worker konfigurációja env-ből. A platformot CSAK a publikus URL-jén éri el (§3, D7). */
 export type Config = {
   port: number
@@ -62,7 +65,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ? env.PLATFORM_CHAT_CORE_TOOLS.split(',').map((n) => n.trim()).filter(Boolean)
       : [...DEFAULT_CORE_TOOLS],
     limits: {
-      maxSteps: int(env.PLATFORM_CHAT_MAX_STEPS, 25),
+      maxSteps: int(env.PLATFORM_CHAT_MAX_STEPS, DEFAULT_MAX_STEPS),
       // A platform folytatási tokenje 45 percig él — ennél hosszabb forduló nem lehet.
       maxTurnSeconds: Math.min(int(env.PLATFORM_CHAT_TURN_MAX_SECONDS, 40 * 60), 44 * 60),
       maxAttemptsPerStep: 3,

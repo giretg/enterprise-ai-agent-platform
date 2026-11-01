@@ -11,11 +11,13 @@ import {
   MESSAGES,
   planNext,
   runStep,
+  resumeTurn,
   startTurn,
   toFunctionName,
   toolDefinitions,
   type EngineDeps,
 } from '../src/engine.ts'
+import { DEFAULT_MAX_STEPS, loadConfig } from '../src/config.ts'
 import { summary, toolGroup } from '../src/tool-loading.ts'
 import { normalizeAnswer, INTERACTION_TOOLS } from '../src/interaction-tools.ts'
 import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient } from '../src/platform.ts'
@@ -80,7 +82,7 @@ function harness(script: Script, opts: { now?: () => Date; maxSteps?: number; to
     store,
     platform,
     queue: { enqueue: async (t) => void queued.push(t) },
-    limits: { maxSteps: opts.maxSteps ?? 25, maxTurnSeconds: 2400, maxAttemptsPerStep: 3, historyMessages: 30, toolResultChars: 1000 },
+    limits: { maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS, maxTurnSeconds: 2400, maxAttemptsPerStep: 3, historyMessages: 30, toolResultChars: 1000 },
     platformOrigin: 'https://app.example.com',
     coreTools: opts.coreTools ?? ['google_drive.search', 'google_drive_create_folder'],
     ...(opts.now ? { now: opts.now } : {}),
@@ -102,6 +104,109 @@ const callTool = (name: string, args: Record<string, unknown>, id = 'c1'): Parti
 const done = (text: string): McpCallResult => ({ kind: 'complete', text, isError: false })
 
 async function main() {
+  await check('top 20 riport: 25-nél több sikeres lépés után is elkészül az export', async () => {
+    assert.equal(loadConfig({ PLATFORM_CHAT_TOKEN_SECRET: 's'.repeat(32), PLATFORM_ORIGIN: 'https://app.example', PLATFORM_CHAT_SELF_URL: 'https://worker.example', PLATFORM_CHAT_DATABASE_URL: 'unused', PLATFORM_CHAT_QUEUE: 'inline' }).limits.maxSteps, DEFAULT_MAX_STEPS)
+    const batch = (count: number, prefix: string) => ({ toolCalls: Array.from({ length: count }, (_, i) => ({
+      id: `${prefix}-${i}`, name: 'google_drive__search', arguments: JSON.stringify({ q: `${prefix}-${i}` }),
+    })) })
+    const h = harness({ llm: [batch(4, 'előkészítés'), batch(20, 'ügyfél'), callTool('google_drive_create_folder', { name: 'export' }), say('Kész a riport.')],
+      tool: Array.from({ length: 25 }, () => done('{}')) })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Top 20 ügyfél riport', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 25)
+    assert.equal((await h.store.listSteps(r.turn.id)).length, 29)
+  })
+
+  await check('szünet és folytatás: kész írás nem ismétlődik, sorhiba után ugyanott folytat', async () => {
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{"id":"export"}')] }, { maxSteps: 2 })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const before = (await h.store.getTurn(r.turn.id))!
+    assert.equal(before.status, 'paused')
+    assert.equal(before.continuationToken, null)
+    assert.equal(h.toolCalls.length, 1)
+    assert.equal((await h.store.activeTurn(c.id))?.id, r.turn.id)
+    assert.equal((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'másik', attachments: [] })).ok, false)
+    assert.equal(await runStep(h.deps, { turnId: r.turn.id, seq: 2 }), 'skip')
+    let renewals = 0
+    h.deps.platform.continuationToken = async () => { renewals++; return 'fresh-token' }
+    const enqueue = h.deps.queue.enqueue
+    h.deps.queue.enqueue = async () => { throw new Error('queue unavailable') }
+    const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
+    await assert.rejects(resumeTurn(h.deps, input), /queue unavailable/)
+    h.deps.queue.enqueue = enqueue
+    assert.equal(await resumeTurn(h.deps, input), 'ok')
+    assert.equal(renewals, 1)
+    assert.deepEqual((await h.store.getTurn(r.turn.id))?.tokenUsage, before.tokenUsage)
+    await h.drain()
+    const after = (await h.store.getTurn(r.turn.id))!
+    assert.equal(after.status, 'succeeded')
+    assert.equal(after.runLimits?.maxSteps, 4)
+    assert.equal(after.createdAt.getTime(), before.createdAt.getTime())
+    assert.equal(after.tokenUsage.costUsd, 0.02)
+    assert.equal(h.toolCalls.length, 1)
+    assert.equal(h.store.messages.filter((m) => m.role === 'user').length, 1)
+    assert.equal(await resumeTurn(h.deps, input), 'not_waiting')
+  })
+
+  await check('időkeret: folytatás csak tulajdonossal és friss hozzáféréssel, az eltelt munkaidő megmarad', async () => {
+    let now = new Date()
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{}')] }, { now: () => now })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r.ok)
+    await runStep(h.deps, h.queued.shift()!)
+    const created = (await h.store.getTurn(r.turn.id))!.createdAt
+    now = new Date(created.getTime() + 2401_000)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'time')
+    const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
+    assert.equal(await resumeTurn(h.deps, { ...input, userId: AGENT }), 'not_found')
+    assert.equal(await resumeTurn(h.deps, { ...input, tenantId: AGENT }), 'not_found')
+    h.deps.platform.continuationToken = async () => { throw new Error('revoked') }
+    assert.equal(await resumeTurn(h.deps, input), 'no_access')
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    h.deps.platform.continuationToken = async () => 'renewed'
+    now = new Date(now.getTime() + 86_400_000)
+    assert.equal(await resumeTurn(h.deps, input), 'ok')
+    const resumed = (await h.store.getTurn(r.turn.id))!
+    assert.equal(resumed.runLimits?.maxActiveSeconds, 4800)
+    assert.equal(resumed.pausedSeconds, 86400)
+    assert.equal(resumed.createdAt.getTime(), created.getTime())
+    now = new Date(now.getTime() + 2400_000)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'time') // az előző 40 perc is számít
+    assert.equal(h.toolCalls.length, 0)
+    assert.equal(await cancelTurn(h.deps, r.turn.id, USER), true)
+    assert.equal((await h.store.activeTurn(c.id)), null)
+  })
+
+  await check('napi keret: a Folytatás nem kerüli meg a kaput, az elutasítás nem lesz modellválasz', async () => {
+    const blocked = { content: 'Mai keret elfogyott.', blockReason: BUDGET_BLOCK_REASON }
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), blocked, blocked, say('Kész.')], tool: [done('{}')] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r.ok)
+    const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'budget')
+    await resumeTurn(h.deps, input)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    await resumeTurn(h.deps, input)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 1)
+    assert.ok(!JSON.stringify(h.llmMessages.at(-1)).includes('Mai keret elfogyott.'))
+    assert.equal(h.store.messages.at(-1)?.content, 'Kész.')
+    assert.equal((await h.store.getTurn(r.turn.id))?.tokenUsage.costUsd, 0.04)
+  })
+
   await check('egyszerű forduló: user-üzenet → streamelt válasz → assistant üzenet, cím automatikusan', async () => {
     const h = harness({ llm: [say('Szia! Miben segíthetek?')], tool: [] })
     const c = await h.conversation()
@@ -288,16 +393,16 @@ async function main() {
     assert.equal(await cancelTurn(h.deps, r.turn.id, '99999999-9999-4999-8999-999999999999'), false)
   })
 
-  await check('napi keret elfogyott: a forduló közérthető szöveggel failed', async () => {
+  await check('napi keret elfogyott: a forduló folytathatóan szünetel', async () => {
     const h = harness({ llm: [{ content: 'A cég mai keretét erre a beszélgetésre már felhasználtuk.', blockReason: BUDGET_BLOCK_REASON }], tool: [] })
     const c = await h.conversation()
     const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
     assert.ok(r.ok)
     await h.drain()
     const turn = await h.store.getTurn(r.turn.id)
-    assert.equal(turn?.status, 'failed')
-    assert.match(String(turn?.error), /keretét/)
-    assert.ok(h.store.events.some((e) => e.type === 'error' && e.payload.code === 'budget'))
+    assert.equal(turn?.status, 'paused')
+    assert.match(String(turn?.pause?.message), /keretét/)
+    assert.ok(h.store.events.some((e) => e.type === 'pause' && e.payload.reason === 'budget'))
   })
 
   await check('ismétlődő-hurok: azonos tool + argumentum 3× → leállás', async () => {
@@ -313,13 +418,13 @@ async function main() {
     assert.equal(h.toolCalls.length, 2)
   })
 
-  await check('lépés-limit és maxAttempts: közérthető failed', async () => {
+  await check('belső vészfék: szünet; ismétlődő futási hiba: failed', async () => {
     const h = harness({ llm: [callTool('google_drive.search', { q: '1' })], tool: [done('[]')] }, { maxSteps: 2 })
     const c = await h.conversation()
     const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
     assert.ok(r.ok)
     await h.drain()
-    assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.tooManySteps)
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.message, MESSAGES.tooManySteps)
 
     const h2 = harness({ llm: [new Error('502'), new Error('502'), new Error('502')], tool: [] })
     const c2 = await h2.conversation()
@@ -341,13 +446,13 @@ async function main() {
     assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.noAccess)
   })
 
-  await check('elfogyott modell-kredit (402): azonnal failed, érthető üzenettel, nincs újrapróbálás', async () => {
+  await check('elfogyott modell-kredit (402): szünet, érthető üzenettel, nincs automatikus újrapróbálás', async () => {
     const h = harness({ llm: [new PlatformError('model gateway: 402 requires more credits', 402)], tool: [] })
     const c = await h.conversation()
     const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
     assert.ok(r.ok)
     assert.equal(await runStep(h.deps, h.queued.shift()!), 'done')
-    assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.creditExhausted)
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'credit')
     assert.equal(h.queued.length, 0)
   })
 

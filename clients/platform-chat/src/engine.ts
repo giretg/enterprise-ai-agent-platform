@@ -25,6 +25,7 @@ import {
   type ToolStepOutput,
   type Turn,
   type TurnContext,
+  type TurnPause,
 } from './store.ts'
 import type { Config } from './config.ts'
 import { urlDomain, userUrlHashes } from './web-urls.ts'
@@ -86,8 +87,8 @@ export const MESSAGES = {
   failed: 'Most nem sikerült válaszolni, mert a céges modell nem érhető el. Próbáld újra.',
   creditExhausted: 'Most nem tudok válaszolni, mert elfogyott a cég AI-szolgáltatásának kerete. Szólj az adminisztrátornak, hogy emelje meg.',
   noAccess: 'Ehhez a munkatárshoz most nincs hozzáférésed, vagy kikapcsolták a platform-chatben.',
-  tooManySteps: 'A munkatárs túl sok lépésben dolgozott ezen a kérésen, ezért leállt. Fogalmazd meg pontosabban, mit szeretnél.',
-  tooLong: 'A válasz túl sokáig tartott, ezért leállt. Próbáld újra kisebb részekre bontva.',
+  tooManySteps: 'A feladat elérte a feldolgozás biztonsági korlátját. Az eddigi eredmények megmaradtak. A Folytatás újabb feldolgozási keretet engedélyez.',
+  tooLong: 'A feladat felhasználta az erre a munkaszakaszra szánt időt. Az eddigi eredmények megmaradtak. A Folytatás újabb időkeretet engedélyez.',
   loop: 'A munkatárs ugyanazt a lépést ismételte, ezért leállt. Próbáld másképp megfogalmazni a kérést.',
   approvalExpired: (link: string) =>
     `Ez a kérés a jóváhagyási listára került, mert 15 percen belül nem született döntés. A jóváhagyási listán bármikor dönthetsz róla: ${link}`,
@@ -150,6 +151,71 @@ function turnFiles(steps: Step[], context: TurnContext | null): FileCard[] {
     }
   }
   return [...byUrl.values()]
+}
+
+/** A mentett részeredmény újranyitáskor és a szünet eseményében is ugyanaz. */
+export function turnProgress(steps: Step[], context: TurnContext | null) {
+  return {
+    text: assistantText(steps.filter((s) => s.seq > lastQuestionSeq(steps))),
+    files: turnFiles(steps, context),
+    plan: latestPlan(steps),
+    completedOperations: steps.filter((s) => s.kind === 'tool' && s.status === 'done' && !(s.output as ToolStepOutput).isError).length,
+  }
+}
+
+function runLimits(deps: EngineDeps, turn: Turn) {
+  return turn.runLimits ?? { maxSteps: deps.limits.maxSteps, maxActiveSeconds: deps.limits.maxTurnSeconds }
+}
+
+async function pauseTurn(deps: EngineDeps, turn: Turn, reason: TurnPause['reason'], message: string) {
+  const pause: TurnPause = { reason, message, createdAt: nowOf(deps).toISOString() }
+  const ok = await deps.store.transitionTurn(turn.id, ['queued', 'running'], 'paused', {
+    pause, runLimits: runLimits(deps, turn), continuationToken: null,
+  })
+  if (!ok) return
+  const steps = await deps.store.listSteps(turn.id)
+  const context = (await deps.store.getTurn(turn.id))?.context ?? null
+  await deps.store.appendEvent(turn.id, 'pause', { ...pause, ...turnProgress(steps, context) })
+  await deps.store.touchConversation(turn.conversationId)
+}
+
+/** Kizárólag a tulajdonos kifejezett folytatása nyit új keretet; a számlálók nem nullázódnak. */
+export async function resumeTurn(
+  deps: EngineDeps,
+  input: { turnId: string; userId: string; tenantId: string; chatToken: string },
+): Promise<'ok' | 'not_found' | 'not_waiting' | 'busy' | 'no_access'> {
+  const found = await deps.store.getTurn(input.turnId)
+  if (!found || !ownsTurn(found, input.userId) || found.tenantId !== input.tenantId) return 'not_found'
+  if (!(await deps.store.claimTurn(found.id, LEASE_SECONDS))) return 'busy'
+  try {
+    const turn = (await deps.store.getTurn(found.id))!
+    if (turn.status !== 'paused' && turn.status !== 'queued') return 'not_waiting'
+    if (turn.status === 'paused') {
+      if (!turn.pause) return 'not_waiting'
+      let continuation: string
+      try {
+        continuation = await deps.platform.continuationToken({ chatToken: input.chatToken, turnId: turn.id, agentId: turn.agentId })
+      } catch {
+        return 'no_access'
+      }
+      const waited = Math.max(0, Math.floor((nowOf(deps).getTime() - Date.parse(turn.pause.createdAt)) / 1000))
+      const limits = runLimits(deps, turn)
+      if (turn.pause.reason === 'steps') limits.maxSteps += deps.limits.maxSteps
+      if (turn.pause.reason === 'time') limits.maxActiveSeconds += deps.limits.maxTurnSeconds
+      const ok = await deps.store.transitionTurn(turn.id, ['paused'], 'queued', {
+        continuationToken: continuation, pause: null, runLimits: limits,
+        pausedSeconds: turn.pausedSeconds + waited,
+      })
+      if (!ok) return 'not_waiting'
+    }
+    // Sorhiba vagy elveszett HTTP-válasz után ismételhető, a kész lépések nem futnak újra.
+    const done = (await deps.store.listSteps(turn.id)).filter((s) => s.status === 'done')
+    await deps.store.appendEvent(turn.id, 'status', { phase: 'resumed' })
+    await deps.queue.enqueue({ turnId: turn.id, seq: done.length })
+    return 'ok'
+  } finally {
+    await deps.store.releaseTurn(found.id)
+  }
 }
 
 async function finalize(deps: EngineDeps, turn: Turn, extra?: string) {
@@ -453,6 +519,7 @@ export async function buildMessages(deps: Pick<EngineDeps, 'store' | 'storage' |
   for (const s of steps) {
     if (s.kind === 'llm') {
       const out = s.output as LlmStepOutput
+      if (out.blocked) continue
       messages.push({
         role: 'assistant',
         content: out.content || null,
@@ -586,12 +653,12 @@ async function runLlm(deps: EngineDeps, turn: Turn, conversation: Conversation, 
   const byFunction = new Map(context.tools.map((t) => [toFunctionName(t.name), t.name]))
   byFunction.set(TOOL_DESCRIBE, TOOL_DESCRIBE)
   const toolCalls = result.blockReason ? [] : result.toolCalls.map((c) => ({ ...c, name: byFunction.get(c.name) ?? c.name }))
-  await deps.store.finishStep(turn.id, seq, 'done', { content: result.content, toolCalls } satisfies LlmStepOutput)
+  const blocked = result.blockReason === BUDGET_BLOCK_REASON
+  await deps.store.finishStep(turn.id, seq, 'done', { content: blocked ? '' : result.content, toolCalls, ...(blocked ? { blocked: true } : {}) } satisfies LlmStepOutput)
   await deps.store.updateTurn(turn.id, { stepCount: seq + 1, tokenUsage: usage })
 
   if (result.blockReason === BUDGET_BLOCK_REASON) {
-    // D14: elfogyott a napi keret — a forduló közérthető zárószöveggel lezárul, a kész lépések maradnak.
-    await fail(deps, turn, result.content, 'budget')
+    await pauseTurn(deps, turn, 'budget', `${result.content} Az eddigi eredmények megmaradtak; a keret rendezése után folytathatod.`)
     return
   }
   if (toolCalls.length === 0) {
@@ -777,12 +844,14 @@ async function askUser(
  * Dobott hiba → 5xx → újrapróbálás; a `maxAttemptsPerStep`-edik hibánál a forduló közérthetően `failed`.
  */
 export async function runStep(deps: EngineDeps, task: { turnId: string; seq: number }): Promise<'done' | 'skip' | 'retry'> {
-  const turn = await deps.store.getTurn(task.turnId)
+  let turn = await deps.store.getTurn(task.turnId)
   if (!turn || !ACTIVE_TURN_STATUSES.includes(turn.status)) return 'skip'
   if (PARKED_TURN_STATUSES.includes(turn.status)) return 'skip'
   if (!(await deps.store.claimTurn(turn.id, LEASE_SECONDS))) return 'retry'
   let current: Step | undefined
   try {
+    turn = (await deps.store.getTurn(turn.id))!
+    if (!ACTIVE_TURN_STATUSES.includes(turn.status) || PARKED_TURN_STATUSES.includes(turn.status)) return 'skip'
     const conversation = await deps.store.getConversation(turn.conversationId)
     if (!conversation || !turn.continuationToken) {
       await fail(deps, turn, MESSAGES.noAccess, 'no_access')
@@ -798,12 +867,13 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
     }
     // #1025: a munkaterv frissítése nem fogyasztja a lépéskeretet.
     const planSteps = done.filter((s) => isToolStep(s, UPDATE_PLAN)).length
-    if (task.seq - planSteps >= deps.limits.maxSteps) {
-      await fail(deps, turn, MESSAGES.tooManySteps, 'max_steps')
+    const limits = runLimits(deps, turn)
+    if (task.seq - planSteps >= limits.maxSteps) {
+      await pauseTurn(deps, turn, 'steps', MESSAGES.tooManySteps)
       return 'done'
     }
-    if (nowOf(deps).getTime() - turn.createdAt.getTime() - turn.pausedSeconds * 1000 > deps.limits.maxTurnSeconds * 1000) {
-      await fail(deps, turn, MESSAGES.tooLong, 'max_time')
+    if (nowOf(deps).getTime() - turn.createdAt.getTime() - turn.pausedSeconds * 1000 > limits.maxActiveSeconds * 1000) {
+      await pauseTurn(deps, turn, 'time', MESSAGES.tooLong)
       return 'done'
     }
     if (turn.status === 'queued') await deps.store.transitionTurn(turn.id, ['queued'], 'running')
@@ -820,7 +890,12 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
     }
     // Elfogyott a szolgáltatói kredit (a gateway a 402-t továbbadja): újrapróbálva sem lesz jobb.
     if (error instanceof PlatformError && error.status === 402) {
-      await fail(deps, turn, MESSAGES.creditExhausted, 'credit_exhausted')
+      const step = (await deps.store.listSteps(turn.id)).find((s) => s.seq === task.seq)
+      if (step?.kind === 'llm' && step.status === 'running') {
+        await deps.store.finishStep(turn.id, step.seq, 'done', { content: '', toolCalls: [], blocked: true })
+        await deps.store.updateTurn(turn.id, { stepCount: step.seq + 1 })
+      }
+      await pauseTurn(deps, turn, 'credit', `${MESSAGES.creditExhausted} Az eddigi eredmények megmaradtak; a keret rendezése után folytathatod.`)
       return 'done'
     }
     const attempts = (await deps.store.listSteps(turn.id)).find((s) => s.seq === task.seq)?.attempts ?? 1
