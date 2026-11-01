@@ -416,6 +416,83 @@ async function main() {
     assert.deepEqual(payload.failedAccounts, ['szamlazas@ceg.hu'])
   })
 
+  await check('Microsoft 365 szál: a 10-es alap lapméreten túl is teljes a beszélgetés', async () => {
+    const { mailProviderFor } = await import('../src/domain/mail/providers')
+    const connector: LiveConnectorRow = {
+      id: '88888888-8888-4888-8888-888888888888',
+      tenantId: TENANT_ID,
+      type: 'http_api',
+      authMode: 'service',
+      lifecycleState: 'active',
+      name: 'Microsoft 365 · info@ceg.hu',
+      config: { provenance: { templateKey: 'microsoft-365' } },
+    }
+    // Két lap: 50 + 10 levél, fordított időrendben, hogy a kliensoldali rendezést is ellenőrizzük.
+    const makeRows = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => {
+        const n = from + i
+        return {
+          id: `m${String(n).padStart(2, '0')}`,
+          conversationId: 'conv-1',
+          subject: 'Szál',
+          receivedDateTime: `2024-01-01T00:${String(59 - n).padStart(2, '0')}:00Z`,
+        }
+      })
+    let calls = 0
+    const fakeFetch = (async (url: string | URL) => {
+      calls++
+      const href = String(url)
+      const firstPage = !href.includes('$skip=')
+      const body = firstPage
+        ? { value: makeRows(0, 50), '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/messages?$skip=50' }
+        : { value: makeRows(50, 10) }
+      return { status: 200, ok: true, json: async () => body } as unknown as Response
+    }) as unknown as typeof fetch
+    const provider = mailProviderFor(connector, 'tok-live', 'info@ceg.hu', fakeFetch)
+    const thread = await provider.getThread('conv-1')
+    assert.equal(calls, 2, 'a nextLinket követni kell (a 10-es alap lapméret nem elég)')
+    assert.equal(thread.messages.length, 60, 'a teljes szál visszajön, nem csak az első lap')
+    // Kliensoldali időrend: a legkorábbi (m59, 00:00:00) az első.
+    assert.equal(thread.messages[0].messageId, 'm59')
+    assert.ok(thread.messages[0].date <= thread.messages[59].date)
+  })
+
+  await check('Microsoft 365 szál: a lapozás kötött (nincs végtelen nextLink-követés)', async () => {
+    const { mailProviderFor } = await import('../src/domain/mail/providers')
+    const connector: LiveConnectorRow = {
+      id: '99999999-9999-4999-8999-999999999999',
+      tenantId: TENANT_ID,
+      type: 'http_api',
+      authMode: 'service',
+      lifecycleState: 'active',
+      name: 'Microsoft 365 · info@ceg.hu',
+      config: { provenance: { templateKey: 'microsoft-365' } },
+    }
+    let calls = 0
+    // Mindig ad nextLinket és 50 egyedi levelet → végtelen lenne, ha nem lenne korlát.
+    const fakeFetch = (async () => {
+      const base = calls * 50
+      calls++
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          value: Array.from({ length: 50 }, (_, i) => ({
+            id: `x${base + i}`,
+            conversationId: 'conv-1',
+            subject: 's',
+            receivedDateTime: `2024-01-01T00:00:00Z`,
+          })),
+          '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/messages?$skip=' + (base + 50),
+        }),
+      } as unknown as Response
+    }) as unknown as typeof fetch
+    const provider = mailProviderFor(connector, 'tok-live', 'info@ceg.hu', fakeFetch)
+    const thread = await provider.getThread('conv-1')
+    assert.ok(calls <= 10, 'a lapozás legfeljebb 10 lap')
+    assert.ok(thread.messages.length <= 250, 'a szál legfeljebb 250 levélre korlátozott')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt megbukott`)
     process.exit(1)

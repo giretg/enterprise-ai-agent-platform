@@ -332,18 +332,19 @@ function graphMessage(account: string, raw: unknown): MailMessage | null {
   }
 }
 
-const GRAPH = 'https://graph.microsoft.com/v1.0/me'
+const GRAPH_ORIGIN = 'https://graph.microsoft.com/'
+const GRAPH = `${GRAPH_ORIGIN}v1.0/me`
 
-async function graphFetch(
+async function graphFetchAt(
   accessToken: string,
-  path: string,
-  init?: RequestInit,
-  fetchImpl: typeof fetch = fetch,
+  url: string,
+  init: RequestInit | undefined,
+  fetchImpl: typeof fetch,
 ): Promise<unknown> {
   if (accessToken.startsWith('stub-')) {
-    return { stub: true, path, method: init?.method ?? 'GET' }
+    return { stub: true, path: url, method: init?.method ?? 'GET' }
   }
-  const res = await fetchImpl(`${GRAPH}${path}`, {
+  const res = await fetchImpl(url, {
     ...init,
     redirect: 'manual',
     headers: {
@@ -359,6 +360,20 @@ async function graphFetch(
   if (!res.ok) throw new Error(`microsoft_mail_failed: HTTP ${res.status}`)
   return body
 }
+
+async function graphFetch(
+  accessToken: string,
+  path: string,
+  init?: RequestInit,
+  fetchImpl: typeof fetch = fetch,
+): Promise<unknown> {
+  return graphFetchAt(accessToken, `${GRAPH}${path}`, init, fetchImpl)
+}
+
+// Egy szál ennyi levélnél / lapnál tovább nem gyűlik: a Graph alap lapmérete 10,
+// korlátlan lapozás nélkül egy hosszú beszélgetés a közös processzben memóriát vinne.
+const MICROSOFT_THREAD_MAX_MESSAGES = 250
+const MICROSOFT_THREAD_MAX_PAGES = 10
 
 function isoDay(value: string | undefined): string | undefined {
   return value?.match(/^\d{4}-\d{2}-\d{2}/)?.[0]
@@ -448,17 +463,28 @@ function microsoftProvider(accessToken: string, account: string, fetchImpl: type
       return message
     },
     async getThread(threadId) {
-      const raw = await graphFetch(
-        accessToken,
-        `/messages?$filter=${encodeURIComponent(`conversationId eq '${threadId.replace(/'/g, "''")}'`)}&$select=id,conversationId,from,toRecipients,ccRecipients,subject,receivedDateTime,bodyPreview,body,isRead,hasAttachments,categories`,
-        undefined,
-        fetchImpl,
-      )
-      const rows = isRecord(raw) && Array.isArray(raw.value) ? raw.value : []
-      return {
-        threadId,
-        messages: rows.map((row) => graphMessage(account, row)).filter((row): row is MailMessage => Boolean(row)),
+      const filter = encodeURIComponent(`conversationId eq '${threadId.replace(/'/g, "''")}'`)
+      // $top felviszi a lapméretet az alap 10-ről; a nextLinket korlátozottan követjük,
+      // különben egy hosszú beszélgetés csendben 10 levélre csonkul (hibás összegzés/válasz).
+      let url = `${GRAPH}/messages?$filter=${filter}&$top=50&$select=id,conversationId,from,toRecipients,ccRecipients,subject,receivedDateTime,bodyPreview,body,isRead,hasAttachments,categories`
+      const messages: MailMessage[] = []
+      for (let page = 0; page < MICROSOFT_THREAD_MAX_PAGES && url; page++) {
+        const raw = await graphFetchAt(accessToken, url, undefined, fetchImpl)
+        if (isRecord(raw) && raw.stub === true) break
+        const rows = isRecord(raw) && Array.isArray(raw.value) ? raw.value : []
+        for (const row of rows) {
+          const message = graphMessage(account, row)
+          if (message) messages.push(message)
+        }
+        if (messages.length >= MICROSOFT_THREAD_MAX_MESSAGES) break
+        const next = isRecord(raw) && typeof raw['@odata.nextLink'] === 'string' ? raw['@odata.nextLink'] : ''
+        // A nextLink a Graph saját, abszolút URL-je; fix originhez kötjük (nincs tetszőleges egress).
+        url = next.startsWith(GRAPH_ORIGIN) ? next : ''
       }
+      // A Graph a $filter+$orderby kombinációt elutasítja ezen a lekérdezésen, ezért
+      // a szálat kliensoldalon rendezzük időrendbe (determinisztikus, teljes beszélgetés).
+      messages.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+      return { threadId, messages: messages.slice(0, MICROSOFT_THREAD_MAX_MESSAGES) }
     },
     async getAttachment(messageId, attachmentId) {
       const raw = await graphFetch(
@@ -564,11 +590,12 @@ export function mailProviderFor(
   connector: LiveConnectorRow,
   accessToken: string | undefined,
   account: string,
+  fetchImpl: typeof fetch = fetch,
 ): MailProvider {
   const info = mailboxConnectorInfo(connector)
   if (info?.kind === 'agentmail') return agentMailProvider(connector, accessToken, account)
   if (info?.kind === 'microsoft' || isMicrosoft365Connector(connector)) {
-    return microsoftProvider(accessToken ?? '', account)
+    return microsoftProvider(accessToken ?? '', account, fetchImpl)
   }
   if (info?.kind === 'google' || connector.type === 'gmail') {
     return gmailProvider(accessToken ?? '', account)
