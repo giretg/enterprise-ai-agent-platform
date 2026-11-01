@@ -549,7 +549,7 @@ const composeFields = {
 const gmailSendObject = z
   .object({
     ...composeFields,
-    draftId: z.string().max(200).optional().describe('Send an existing draft (from gmail_create_draft / gmail_list_drafts) instead of composing'),
+    draftId: z.string().max(200).optional().describe('Send an existing draft (from gmail_create_draft / gmail_list_drafts) instead of composing — pass it alone, without to/cc/bcc/subject/body/reply fields'),
   })
   .passthrough()
 
@@ -561,9 +561,23 @@ function composeIssue(args: { to?: string; subject?: string; body?: string; repl
   return null
 }
 
+/** draftId küldésnél a levélmezőket a végrehajtás eldobja — ha átjönnének, a jóváhagyó mást látna, mint ami kimegy (#668). */
+const DRAFT_EXCLUSIVE_FIELDS = ['to', 'cc', 'bcc', 'subject', 'body', 'replyToMessageId', 'replyAll'] as const
+
+function draftSendIssue(args: Record<string, unknown>): string | null {
+  const present = DRAFT_EXCLUSIVE_FIELDS.filter((key) => {
+    const value = args[key]
+    return typeof value === 'string' ? value.trim() !== '' : value === true
+  })
+  return present.length ? `draftId cannot be combined with ${present.join(', ')} — pass only draftId to send a draft` : null
+}
+
+function sendIssue(args: { draftId?: string } & Parameters<typeof composeIssue>[0]): string | null {
+  return args.draftId?.trim() ? draftSendIssue(args as Record<string, unknown>) : composeIssue(args)
+}
+
 export const gmailSendInputSchema = gmailSendObject.superRefine((args, ctx) => {
-  if (args.draftId) return
-  const issue = composeIssue(args)
+  const issue = sendIssue(args)
   if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
 })
 
@@ -699,13 +713,12 @@ const mailComposeFields = {
 const mailSendObject = z
   .object({
     ...mailComposeFields,
-    draftId: z.string().max(200).optional().describe('Send an existing draft instead of composing'),
+    draftId: z.string().max(200).optional().describe('Send an existing draft instead of composing — pass it alone, without to/cc/bcc/subject/body/reply fields'),
   })
   .passthrough()
 
 export const mailSendInputSchema = mailSendObject.superRefine((args, ctx) => {
-  if (args.draftId) return
-  const issue = composeIssue(args)
+  const issue = sendIssue(args)
   if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
 })
 
