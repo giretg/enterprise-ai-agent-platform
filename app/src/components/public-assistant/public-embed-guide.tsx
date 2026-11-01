@@ -95,8 +95,8 @@ export function PublicEmbedGuide({
         </p>
         {!turnstileReady ? (
           <p className="rounded-lg border border-honey/30 bg-honey/10 px-3 py-2 text-xs text-ink">
-            A robotok elleni védelem (Cloudflare Turnstile) ezen a platformon még nincs beállítva. A napi keret és az
-            üzenetkorlát így is véd, de kérd meg az üzemeltetőt a bekapcsolására.
+            A robotok elleni védelem (Cloudflare Turnstile) még nincs beállítva. Éles környezetben új beszélgetés
+            nem indítható, amíg az üzemeltető be nem kapcsolja.
           </p>
         ) : null}
         {testHref ? (
