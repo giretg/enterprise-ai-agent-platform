@@ -472,6 +472,10 @@ async function main() {
       /codex app/,
     )
     assert.match(bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '', /agent_stale/)
+    assert.match(
+      bundle.files.find((f) => f.path === 'AGENTS.md')?.content ?? '',
+      /same `idempotencyKey`/,
+    )
   })
 
   await check('hermes harness → thin Bot connector, no skill or briefing copy', () => {
