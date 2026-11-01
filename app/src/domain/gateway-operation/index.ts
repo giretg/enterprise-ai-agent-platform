@@ -30,6 +30,10 @@ export type {
   GatewayPendingOperationRow,
   GatewayOperationHistoryRow,
 } from './gateway-operation-service'
+export {
+  resolveDesignatedApproverBinding,
+  type DesignatedApproverResolution,
+} from './designated-approver'
 export { enqueueWriteForMcp, WRITE_CONFIRM_KEY, WRITE_CONFIRM_TTL_MS } from './write-confirm'
 export {
   formElicitationCapable,
