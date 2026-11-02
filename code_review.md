@@ -9,6 +9,7 @@
 - Üzleti hatás: a hibás rendezést az agent azonnal, érthető paraméterhibaként kapja vissza; nem szakad meg az adatbázis-lekérdezés általános belső hibával. A helyes összesített riportok változatlanul működnek.
 - Ellenőrzés: új célzott regresszió a korábban elfogadott, PostgreSQL-ben érvénytelen rendezést elutasítja; `test:warehouse` minden tesztje, célzott ESLint és `git diff --check` zöld. A teljes TypeScript-ellenőrzés a közös, más branchhez generált Prisma kliens és a jelenlegi schema eltérése miatt az érintetlen `inbound-mail` modulban hibázik; a módosított fájlokban nincs TS-hiba. Élő PostgreSQL-lekérdezés és terheléspróba nem futott.
 - Élesítési korlát: ez egy komponens célzott review-ja, nem teljes enterprise megfelelőségi igazolás. A [#984](https://github.com/giretg/enterprise-ai-agent-platform/issues/984) R9 adateltávolítási és Q9 mentés/helyreállítási követelményeit, valamint az importok teljes párhuzamossági és audit-atomitási viselkedését külön kell igazolni.
+- PR: [#1056](https://github.com/giretg/enterprise-ai-agent-platform/pull/1056) (`codex`, `codex-automation`, `bug`).
 
 ## 2026-11-01 15:00 Europe/Budapest - Nyilvános ügyfélchat: törlési versenyhelyzet és kikapcsolt botvédelem
 
