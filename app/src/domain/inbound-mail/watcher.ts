@@ -269,17 +269,27 @@ export class MailboxWatcher {
         ids = await gmail.listRecentIds(this.fetchImpl, token)
       }
       const known = await this.deps.store.knownMessageIds(mailbox.connectorId, ids)
-      const mails: InboundMailHeaders[] = []
-      for (const id of ids.filter((x) => !known.has(x))) {
-        const mail = await gmail.getHeaders(this.fetchImpl, token, id, this.now())
-        if (mail) mails.push(mail)
+      const unseen = ids.filter((x) => !known.has(x))
+      // A fejléc-lekérést és a befogadást kötegenként váltogatjuk (a kurzor a végén lép csak előre).
+      // Egy nagy levél-dömpingnél (sok történeti levél egy push-ban) így a feldolgozás menet közbeni
+      // megszakadása (pl. a push ack-határidejének túllépése) is TARTÓS előrehaladást hagy: az
+      // újraküldött push a már rögzített leveleket a `knownMessageIds` szűrővel kihagyja, és a
+      // maradékon halad tovább. Köteges rögzítés nélkül egyetlen rögzítés sem történne a dömping
+      // végéig, így az újraküldés elölről kezdené — és soha be nem fejeződő, erőforrás-pazarló hurok.
+      for (let i = 0; i < unseen.length; i += MAX_DETAIL_FETCH) {
+        const mails: InboundMailHeaders[] = []
+        for (const id of unseen.slice(i, i + MAX_DETAIL_FETCH)) {
+          const mail = await gmail.getHeaders(this.fetchImpl, token, id, this.now())
+          if (mail) mails.push(mail)
+        }
+        const outcomes = await this.ingest(mailbox, state, mails, 'push')
+        created += outcomes.filter((o) => o.created).length
       }
-      const outcomes = await this.ingest(mailbox, state, mails, 'push')
-      // Csak előre léptetjük a kurzort (az értesítések sorrendje nem garantált).
+      // Csak előre léptetjük a kurzort (az értesítések sorrendje nem garantált). A megszakadt
+      // feldolgozásnál ez nem fut le → a kurzor marad, a hátralévőket a következő push behúzza.
       if (nextCursor && (!state.cursor || BigInt(nextCursor) > BigInt(state.cursor))) {
         await this.deps.watches.update(mailbox.connectorId, { cursor: nextCursor })
       }
-      created += outcomes.filter((o) => o.created).length
     }
     return created
   }

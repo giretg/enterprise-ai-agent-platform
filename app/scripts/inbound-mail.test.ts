@@ -598,6 +598,33 @@ async function main() {
     assert.equal(await h.watcher.handleGmailPush({ emailAddress: ADDRESS, historyId: '200' }), 0)
   })
 
+  await check('Gmail burst: menet közbeni megszakadás után a push újraküldés nem kezdi elölről (tartós előrehaladás)', async () => {
+    const h = harness('google')
+    h.store.rule = rule({ mode: 'notify' })
+    await h.watcher.ensureWatch(mailbox('google'))
+    h.watches.set(CONNECTOR, { ...h.watches.get(CONNECTOR)!, cursor: '100' })
+    let failAt35 = true
+    h.respond((url) => {
+      if (url.includes('/history?')) {
+        const second = new URL(url).searchParams.get('pageToken') === 'page2'
+        return { history: [{ messagesAdded: Array.from({ length: 30 }, (_, i) => ({ message: { id: `burst-${i + (second ? 30 : 0)}` } })) }], historyId: '200', ...(second ? {} : { nextPageToken: 'page2' }) }
+      }
+      const id = /messages\/(burst-\d+)/.exec(url)?.[1]
+      // A 4. köteg közepén (burst-35) elhal a feldolgozás — ahogy egy ack-határidő túllépés tenné.
+      if (failAt35 && id === 'burst-35') return new Response('{}', { status: 503 })
+      return { id, internalDate: String(Date.now()), payload: { headers: [{ name: 'From', value: 'a@partner.hu' }] } }
+    })
+    await assert.rejects(h.watcher.handleGmailPush({ emailAddress: ADDRESS, historyId: '200' }))
+    // A megszakadásig lezárt kötegek (burst-0..29) TARTÓSAN rögzítve; a kurzor NEM lépett előre.
+    assert.equal(h.store.only().length, 30, 'a megszakadásig rögzített levelek megmaradnak')
+    assert.equal(h.watches.get(CONNECTOR)?.cursor, '100', 'megszakadt feldolgozásnál a kurzor nem lép előre (nincs levélvesztés)')
+    // Az újraküldött push a már rögzítetteket kihagyja, és csak a hátralévőket dolgozza fel.
+    failAt35 = false
+    assert.equal(await h.watcher.handleGmailPush({ emailAddress: ADDRESS, historyId: '200' }), 30, 'csak a hátralévő levelek jönnek be, nincs duplikálás')
+    assert.equal(h.store.only().length, 60)
+    assert.equal(h.watches.get(CONNECTOR)?.cursor, '200')
+  })
+
   await check('AgentMail: hibás fejléc-lekérés nem indít futást; újrapróbálható', async () => {
     const h = harness()
     let fail = true
