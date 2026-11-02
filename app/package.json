@@ -200,6 +200,7 @@
     "test:robots": "tsx scripts/robots.test.ts",
     "test:oauth-privacy-policy-page": "tsx scripts/oauth-privacy-policy-page.test.ts",
     "test:i18n": "tsx scripts/i18n-public-paths.test.ts",
+    "test:mobile-shell-header": "tsx scripts/mobile-shell-header.test.ts",
     "test:agent-catalog-card": "tsx scripts/agent-catalog-card.test.ts",
     "test:confirm-dialog": "tsx scripts/confirm-dialog.test.ts",
     "test:project-memory-delete": "tsx scripts/project-memory-delete.test.ts",
