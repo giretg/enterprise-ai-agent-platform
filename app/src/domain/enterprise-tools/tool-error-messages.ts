@@ -91,7 +91,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   invalid_filters: 'filters must be a JSON array of {field, op, value} (see detail)',
   invalid_filter_value: 'A filter value is missing or has the wrong form (see detail)',
   invalid_aggregate: 'Aggregates are fn:field pairs, e.g. sum:netto,count:* — sum/avg only on numbers',
-  invalid_order: 'orderBy is "field" or "field desc"',
+  invalid_order:
+    'orderBy is "field" or "field desc"; with groupBy/aggregates, order only by a groupBy field or a requested aggregate, e.g. sum:netto desc (see detail)',
   nothing_selected: 'Nothing to select — pass fields or aggregates',
   unsafe_archive: 'The Excel file is damaged or its unpacked content is too large — nothing was stored',
   unsupported_format: 'Only .xlsx Excel files are supported for now',

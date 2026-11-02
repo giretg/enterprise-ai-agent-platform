@@ -111,7 +111,7 @@ export const warehouseInputSchemas: Record<WarehouseTool, z.ZodTypeAny> = {
         .describe('JSON array: [{"field":"datum","op":"between","value":["2026-10-01","2026-10-31"]}]. ops: eq ne gt gte lt lte contains starts_with in is_null not_null between.'),
       groupBy: z.string().max(1_000).optional().describe('Comma-separated fields to group by.'),
       aggregates: z.string().max(1_000).optional().describe('Comma-separated fn:field, e.g. "sum:netto,count:*". fn: count sum avg min max.'),
-      orderBy: z.string().max(1_000).optional().describe('e.g. "sum:netto desc" or "datum".'),
+      orderBy: z.string().max(1_000).optional().describe('e.g. "sum:netto desc" or "datum". With groupBy/aggregates, only a groupBy field or a requested aggregate.'),
       limit: z.number().int().min(1).max(QUERY_MAX_LIMIT).optional(),
       offset: z.number().int().min(0).optional().describe('Pass nextOffset from the previous page.'),
     })
