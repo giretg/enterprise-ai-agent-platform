@@ -356,6 +356,10 @@ async function main() {
     assert.ok(!compiled.sql.includes('DROP'))
     assert.deepEqual(compiled.params[0], '1000; DROP TABLE x')
     assert.deepEqual(compiled.columns, ['ugyfel_ref.nev', 'sum:netto', 'count'])
+    assert.throws(
+      () => compileQuery(schema, buildQuerySpec({ dataset: 'rendelesek', groupBy: 'ugyfel_ref.nev', aggregates: 'sum:netto', orderBy: 'netto desc' }), catalog),
+      (error: unknown) => error instanceof QueryError && error.code === 'invalid_order',
+    )
     assert.throws(() => compileQuery(schema, buildQuerySpec({ dataset: 'rendelesek', fields: 'netto;drop' }), catalog), QueryError)
     assert.throws(() => compileQuery(schema, buildQuerySpec({ dataset: 'masik' }), catalog), QueryError)
     assert.throws(() => qi('a"b'), UnsafeIdentifierError)
