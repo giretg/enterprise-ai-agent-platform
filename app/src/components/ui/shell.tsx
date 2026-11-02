@@ -54,6 +54,14 @@ export function AppShell({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openGroup, setOpenGroup] = useState<string | null>(null)
 
+  // Mobil menü: navigáció után mindig csukódjon be — akkor is, ha a menüpont
+  // nem a saját onClick-jén keresztül (pl. redirect, vissza gomb) vált oldalt.
+  const [menuPathname, setMenuPathname] = useState(pathname)
+  if (menuPathname !== pathname) {
+    setMenuPathname(pathname)
+    setMobileMenuOpen(false)
+  }
+
   useEffect(() => {
     if (!openGroup) return
     const onMouseDown = (e: MouseEvent) => {
@@ -94,10 +102,15 @@ export function AppShell({
     )
   }
 
-  const renderTopLeaf = (item: NavLeaf) => {
+  const renderTopLeaf = (item: NavLeaf, onPick?: () => void) => {
     const active = isActive(item.href, item.exact)
     return (
-      <Link key={item.href} href={item.href} className={`${linkClass(active)} inline-flex items-center`}>
+      <Link
+        key={item.href}
+        href={item.href}
+        onClick={onPick}
+        className={`${linkClass(active)} inline-flex items-center`}
+      >
         {item.label}
         {item.badge ? (
           <span className="ml-1.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-coral px-1 text-[10px] font-semibold leading-none text-white">
@@ -246,7 +259,7 @@ export function AppShell({
                   </div>
                 )
               }
-              return renderTopLeaf(item)
+              return renderTopLeaf(item, () => setMobileMenuOpen(false))
             })}
             {switchLink && (
               <Link
