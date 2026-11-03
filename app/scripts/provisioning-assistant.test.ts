@@ -30,6 +30,10 @@ import {
   type SandboxConnectionTester,
 } from '../src/domain/provisioning/provisioning-service'
 import { ProvisioningError } from '../src/domain/provisioning/errors'
+import {
+  describeGitHubRepositoryAccess,
+  type GitHubRepositoryAccess,
+} from '../src/domain/connector/github-repository-access'
 import { isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
 import { validateDraftConfig, withCatalogTrustedEgress } from '../src/domain/provisioning/draft-validator'
 import {
@@ -269,6 +273,14 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       (d.connector.config ?? {}) as Record<string, unknown>,
       params.binding,
     ) as Prisma.JsonValue
+    return d
+  }
+  async setGitHubRepositoryAccess(params: { draftId: string; access: GitHubRepositoryAccess }) {
+    const d = this.drafts.get(params.draftId)!
+    d.connector.config = {
+      ...((d.connector.config ?? {}) as Record<string, unknown>),
+      githubRepositoryAccess: params.access,
+    } as Prisma.JsonValue
     return d
   }
   async reopen(params: { draftId: string }) {
@@ -2034,6 +2046,77 @@ async function run() {
     await expectError('GOOGLE_ACCOUNT_BINDING_UNSUPPORTED', () =>
       svc.updateGoogleAccountBinding({ draftId: crm.draftId, accountIds: ['1234567890'] }, adminActor),
     )
+  })
+
+  function githubConfig(extra: Record<string, unknown> = {}) {
+    return {
+      provider: 'github',
+      baseUrl: 'https://api.github.com',
+      egressHosts: ['api.github.com'],
+      authMode: 'service',
+      auth: { type: 'bearer_token', secretAliasSuggested: 'github-personal-access-token' },
+      scopesSuggested: [],
+      proposedTools: [
+        { name: 'get_repository', method: 'GET', path: '/repos/{owner}/{repo}', access: 'read' },
+      ],
+      githubRepositoryAccess: { mode: 'selected', repositories: ['acme/old'] },
+      provenance: { templateKey: 'github', templateOrigin: 'custom', templateVersion: 1 },
+      ...extra,
+    }
+  }
+
+  await test('GitHub kódtár-kör: aktív konnektoron módosítható, auditált, a lista-nézetben látszik', async () => {
+    const { svc, drafts, audit } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      { name: 'GitHub', sourceType: 'template', generatedConfig: githubConfig() },
+      adminActor,
+    )
+    await svc.activateConnector({ draftId: created.draftId, confirmKeyless: true }, adminActor)
+    const res = await svc.updateGitHubRepositoryAccess(
+      { draftId: created.draftId, repositoryAccess: 'Acme/CRM\nacme/web, acme/crm' },
+      adminActor,
+    )
+    assert.deepEqual(res.access, { mode: 'selected', repositories: ['acme/crm', 'acme/web'] })
+    const stored = drafts.drafts.get(created.draftId)!
+    assert.equal(stored.connector.lifecycleState, 'active')
+    assert.deepEqual((stored.connector.config as Record<string, unknown>).githubRepositoryAccess, res.access)
+    const event = audit.events.find((e) => e.action === 'provisioning.connector.github_repository_access')
+    assert.ok(event, 'audit event missing')
+    const meta = event.metadata as Record<string, unknown>
+    assert.deepEqual(meta.previous_repositories, ['acme/old'])
+    assert.deepEqual(meta.repositories, ['acme/crm', 'acme/web'])
+
+    await svc.updateGitHubRepositoryAccess({ draftId: created.draftId, repositoryAccess: '*' }, adminActor)
+    const row = (await svc.listDrafts(adminActor)).find((d) => d.draftId === created.draftId)
+    assert.deepEqual(row?.githubRepositoryView, { mode: 'any' })
+  })
+
+  await test('GitHub kódtár-kör: hibás formátum, nem GitHub konnektor és agent-aktor elutasítva', async () => {
+    const { svc } = makeService({ allowlist: [] })
+    const created = await svc.createConnectorDraft(
+      { name: 'GitHub', sourceType: 'template', generatedConfig: githubConfig() },
+      adminActor,
+    )
+    await expectError('PROVISIONING_INVALID_INPUT', () =>
+      svc.updateGitHubRepositoryAccess({ draftId: created.draftId, repositoryAccess: 'csak-tulajdonos' }, adminActor),
+    )
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.updateGitHubRepositoryAccess({ draftId: created.draftId, repositoryAccess: 'acme/crm' }, agentActor),
+    )
+    const crm = await draftToActivatable(svc)
+    await expectError('GITHUB_REPOSITORY_ACCESS_UNSUPPORTED', () =>
+      svc.updateGitHubRepositoryAccess({ draftId: crm.draftId, repositoryAccess: 'acme/crm' }, adminActor),
+    )
+    const crmRow = (await svc.listDrafts(adminActor)).find((d) => d.draftId === crm.draftId)
+    assert.equal(crmRow?.githubRepositoryView, null)
+  })
+
+  await test('GitHub kódtár-kör: az agent a definícióban megkapja a megengedett kódtárakat', () => {
+    assert.match(
+      describeGitHubRepositoryAccess({ mode: 'selected', repositories: ['acme/crm', 'acme/web'] }),
+      /only these repositories.*acme\/crm, acme\/web/,
+    )
+    assert.match(describeGitHubRepositoryAccess({ mode: 'any' }), /every repository/)
   })
 
   await test('Gmail: platform OAuth mellett clientId/secret nélkül aktiválható', async () => {

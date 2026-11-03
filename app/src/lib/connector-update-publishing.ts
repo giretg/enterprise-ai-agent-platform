@@ -3,7 +3,11 @@
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { listConnectorAgentsForPublishing } from '@/app/actions/connector-publishing'
 import { publishAgentDefinitionAction } from '@/app/actions/platform'
-import { activateConnector as activate, updateGoogleAccountBinding as updateBinding } from '@/app/actions/provisioning'
+import {
+  activateConnector as activate,
+  updateGitHubRepositoryAccess as updateRepositories,
+  updateGoogleAccountBinding as updateBinding,
+} from '@/app/actions/provisioning'
 import { approveMcpTools as approveMcp } from '@/app/actions/mcp-connectors'
 import {
   approveSelfUpdatingVersion as approveVersion,
@@ -57,6 +61,12 @@ export async function activateConnector(input: Parameters<typeof activate>[0]) {
 
 export async function updateGoogleAccountBinding(input: Parameters<typeof updateBinding>[0]) {
   const result = await updateBinding(input)
+  if (result.success) await offerPublishing(result.data.connectorId)
+  return result
+}
+
+export async function updateGitHubRepositoryAccess(input: Parameters<typeof updateRepositories>[0]) {
+  const result = await updateRepositories(input)
   if (result.success) await offerPublishing(result.data.connectorId)
   return result
 }

@@ -34,6 +34,12 @@ import {
   normalizeGoogleDriveConnectorConfig,
   type GoogleDriveConnectorConfig,
 } from '@/domain/connector-template/google-drive-connector-config'
+import {
+  gitHubRepositoryAccessFromText,
+  isGitHubConnectorConfig,
+  parseGitHubRepositoryAccessConfig,
+  type GitHubRepositoryAccess,
+} from '@/domain/connector/github-repository-access'
 import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import {
   privacyCapabilityAbsentAudit,
@@ -1049,6 +1055,49 @@ export class ProvisioningService {
     return { connectorId: draft.connectorId, binding }
   }
 
+  /**
+   * Tenant-admin: melyik GitHub-kódtárakat érheti el a konnektor (`*` = mindet, amit a token lát).
+   * Aktív konnektoron is állítható — újranyitás, kulcscsere és agent-leválasztás nélkül.
+   */
+  async updateGitHubRepositoryAccess(
+    input: { draftId: string; repositoryAccess: string },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string; access: GitHubRepositoryAccess }> {
+    await this.requireHumanAdmin(actor, 'updateGitHubRepositoryAccess')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+    if (draft.connector.type !== 'http_api' || !isGitHubConnectorConfig(draft.connector.config)) {
+      throw new ProvisioningError(
+        'GITHUB_REPOSITORY_ACCESS_UNSUPPORTED',
+        'Kódtár-kör csak GitHub-kapcsolaton állítható.',
+      )
+    }
+    if (draft.connector.lifecycleState === 'archived') {
+      throw new ProvisioningError('CONNECTOR_NOT_ACTIVE', 'archived connector cannot be changed')
+    }
+    let access: GitHubRepositoryAccess
+    try {
+      access = gitHubRepositoryAccessFromText(input.repositoryAccess)
+    } catch {
+      throw new ProvisioningError(
+        'PROVISIONING_INVALID_INPUT',
+        'A kódtárakat tulajdonos/kódtár alakban add meg (pl. ceg/crm, legfeljebb 100 darab), vagy írj * jelet, ha mindegyiket elérheti.',
+      )
+    }
+    const previous = readGitHubRepositoryAccess(draft.connector.config)
+
+    await this.deps.drafts.setGitHubRepositoryAccess({ draftId: draft.id, access })
+    await this.appendAudit(actor, 'provisioning.connector.github_repository_access', draft.connectorId, {
+      draft_id: draft.id,
+      connector_id: draft.connectorId,
+      previous_mode: previous?.mode ?? null,
+      previous_repositories: previous?.mode === 'selected' ? previous.repositories : null,
+      mode: access.mode,
+      repositories: access.mode === 'selected' ? access.repositories : null,
+      policyDecision: 'allowed',
+    })
+    return { connectorId: draft.connectorId, access }
+  }
+
   /** Aktiválási kapu a Google fiókos konnektorokra: cégfiók kiválasztva + platform-előfeltételek. */
   private async assertGoogleAccountActivationReady(config: unknown): Promise<void> {
     const provider = readConnectorProvider(config)
@@ -1462,6 +1511,8 @@ export class ProvisioningService {
       httpApiView: safeHttpApiView(d.connector.config),
       // Google Ads / Analytics / Search Console: melyik cégfiókot éri el (tenant-szint).
       googleAccountView: safeGoogleAccountView(d.connector.config),
+      // GitHub: mely kódtárakat érheti el (régi, kör nélküli kapcsolat = mind).
+      githubRepositoryView: safeGitHubRepositoryView(d.connector.type, d.connector.config),
       sourceType: d.sourceType,
       sourceHash: d.sourceHash,
       createdAt: d.createdAt,
@@ -1825,6 +1876,19 @@ export type GoogleAccountView = {
   bound: boolean
   /** Régi, cég-configban tárolt developer token (a platform-szintű beállítás felülírja). */
   legacyDeveloperToken: boolean
+}
+
+function readGitHubRepositoryAccess(raw: unknown): GitHubRepositoryAccess | undefined {
+  try {
+    return parseGitHubRepositoryAccessConfig((raw as Record<string, unknown> | null)?.githubRepositoryAccess)
+  } catch {
+    return undefined
+  }
+}
+
+function safeGitHubRepositoryView(type: string, raw: unknown): GitHubRepositoryAccess | null {
+  if (type !== 'http_api' || !isGitHubConnectorConfig(raw)) return null
+  return readGitHubRepositoryAccess(raw) ?? { mode: 'any' }
 }
 
 function safeGoogleAccountView(raw: unknown): GoogleAccountView | null {

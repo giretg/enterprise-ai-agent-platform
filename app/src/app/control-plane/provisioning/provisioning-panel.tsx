@@ -33,6 +33,8 @@ import {
 import { startConnectorOAuth, getGoogleOAuthConfiguredStatus, getGoogleDriveOAuthConfiguredStatus, getGoogleApiOAuthConfiguredStatus } from '@/app/actions/connector-grants'
 import { isPlatformGoogleApiConnectorTemplateKey } from '@/lib/platform-google-api-connectors'
 import { GoogleConnectorLevelsPanel, type GoogleAccountViewRow } from './google-connector-levels-panel'
+import { GitHubRepositoryPanel } from './github-repository-panel'
+import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import { listMcpConnectors } from '@/app/actions/mcp-connectors'
 import {
   McpConnectorCard,
@@ -167,6 +169,8 @@ type DraftRow = {
   delegatedOauthView: DelegatedOauthConfigView
   /** Google Ads / Analytics / Search Console: cég-szintű fiókkötés (secret-mentes). */
   googleAccountView?: GoogleAccountViewRow | null
+  /** GitHub: mely kódtárakat érheti el (null = nem GitHub-kapcsolat). */
+  githubRepositoryView?: GitHubRepositoryAccess | null
   sourceType: string
   sourceHash: string
   createdAt: string | Date
@@ -3411,6 +3415,15 @@ function DraftCard({
           view={googleAccountView}
           googleApiOauthConfigured={googleApiOauthConfigured}
           googleAdsDeveloperTokenConfigured={googleAdsDeveloperTokenConfigured}
+          pending={pending}
+          run={run}
+        />
+      ) : null}
+
+      {draft.githubRepositoryView && !isArchived ? (
+        <GitHubRepositoryPanel
+          draftId={draft.draftId}
+          access={draft.githubRepositoryView}
           pending={pending}
           run={run}
         />
