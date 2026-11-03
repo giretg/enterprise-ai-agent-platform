@@ -5,6 +5,7 @@
 
 import { COMMON_HTTP_PAGE_SIZES, requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
 import type { TenantLanguage } from '@/lib/tenant-language'
+import { SAVED_RESULT_PREVIEW_CHARS, type SavedHttpResultInfo } from './http-api-saved-result'
 
 export type HttpApiCatalogParam = {
   name: string
@@ -153,7 +154,25 @@ export function buildHttpApiOversizedResponseHint(input: {
   )
 }
 
-function truncationHint(input: { originalChars: number; maxChars: number; en: boolean }): string {
+/** Riport-/aggregáló végpont: ott az „aggregált végpontot használj” tanács zsákutca (#1071). */
+const AGGREGATE_PATH_RE = /report|riport|kimutat|aggregat|summary|stats|statistic|analytics|pivot/i
+
+export function isAggregateHttpPath(path: string | undefined): boolean {
+  return !!path && AGGREGATE_PATH_RE.test(path.split('?')[0]!)
+}
+
+function truncationHint(input: { originalChars: number; maxChars: number; en: boolean; aggregatePath?: boolean }): string {
+  if (input.aggregatePath) {
+    return input.en
+      ? `Response too large (${input.originalChars} chars, limit ${input.maxChars}). ` +
+          'This already is an aggregated/report endpoint: the result itself is large. ' +
+          'Split it into smaller calls (shorter period, fewer dimensions) and combine the parts, ' +
+          'or tell the user that the full breakdown does not fit. Do not build a report from this partial preview.'
+      : `A válasz túl nagy (${input.originalChars} karakter, limit ${input.maxChars}). ` +
+          'Ez már aggregált/riport végpont: maga az eredmény nagy. ' +
+          'Bontsd kisebb hívásokra (rövidebb időszak, kevesebb dimenzió), és fűzd össze a részeket, ' +
+          'vagy mondd meg a felhasználónak, hogy a teljes bontás így nem fér el. Ebből a részleges előnézetből ne készíts kimutatást.'
+  }
   return input.en
     ? `Response too large (${input.originalChars} chars, limit ${input.maxChars}). ` +
       'The full body was not sent to the model. Use a documented query/filter, ' +
@@ -165,6 +184,21 @@ function truncationHint(input: { originalChars: number; maxChars: number; en: bo
       'Ugyanazt a szűretlen path-ot ne hívd újra.'
 }
 
+/** #1071: a teljes válasz el van mentve — a modell innen dolgozzon, ne kérdezze le újra. */
+function savedResultHint(input: { originalChars: number; maxChars: number; saved: SavedHttpResultInfo; en: boolean }): string {
+  const { saved } = input
+  const rows = saved.rowCount != null ? (input.en ? `, ${saved.rowCount} rows` : `, ${saved.rowCount} sor`) : ''
+  return input.en
+    ? `The response is large (${input.originalChars} chars, limit ${input.maxChars}), but the FULL data is saved ` +
+        `(savedResultId ${saved.savedResultId}${rows}); you only see a preview. Do not call the API again or narrow the request because of the size. ` +
+        `For a file (Excel/CSV) call document_export with format "xlsx" and savedResultId "${saved.savedResultId}" — the platform builds it from the full data; never type the rows yourself. ` +
+        `To read or analyse the data, page through it with http_api_saved_read (savedResultId, offset, limit). Only the requesting user can access it, for 7 days.`
+    : `A válasz nagy (${input.originalChars} karakter, limit ${input.maxChars}), de a TELJES adat el van mentve ` +
+        `(savedResultId ${saved.savedResultId}${rows}); te csak egy előnézetet látsz. A méret miatt ne hívd újra az API-t, és ne szűkítsd a kérést. ` +
+        `Fájlhoz (Excel/CSV) hívd a document_export-ot format "xlsx" és savedResultId "${saved.savedResultId}" értékkel — a platform a teljes adatból készíti el; a sorokat soha ne gépeld be. ` +
+        `Az adat olvasásához, elemzéséhez lapozz a http_api_saved_read-del (savedResultId, offset, limit). Csak a kérő user éri el, 7 napig.`
+}
+
 /**
  * Hard truncate meta a modellnek / MCP-válasznak. A teljes JSON nem kerül a kontextusba.
  */
@@ -173,6 +207,8 @@ export function buildHttpApiTruncationBody(input: {
   maxChars: number
   preview: string
   language?: TenantLanguage
+  /** A hívott path — riport-végpontnál más a tanács (#1071). */
+  path?: string
 }): {
   truncated: true
   originalChars: number
@@ -186,18 +222,27 @@ export function buildHttpApiTruncationBody(input: {
     originalChars: input.originalChars,
     maxChars: input.maxChars,
     preview: input.preview,
-    hint: truncationHint({ originalChars: input.originalChars, maxChars: input.maxChars, en }),
+    hint: truncationHint({
+      originalChars: input.originalChars,
+      maxChars: input.maxChars,
+      en,
+      aggregatePath: isAggregateHttpPath(input.path),
+    }),
   }
 }
 
 /**
  * MCP / modell-válasz kemény plafonja. A get_all belső lapozás a teljes page-body-t
- * megkaphatja; amit a modell lát, az soha nem lehet maxChars fölött.
+ * megkaphatja; amit a modell lát, az soha nem lehet maxChars fölött. #1071: ha a teljes
+ * válasz el van mentve (`saved`), a modell rövidebb előnézetet és a mentett adat azonosítóját kapja.
  */
 export function capHttpApiResultForModel(input: {
   result: unknown
   maxChars: number
   language?: TenantLanguage
+  /** A hívott path (get/request válaszában nincs benne) — riport-végpontnál más a tanács. */
+  path?: string
+  saved?: SavedHttpResultInfo | null
 }): unknown {
   const maxChars = Math.max(1, Math.floor(input.maxChars))
   let json: string
@@ -207,16 +252,21 @@ export function capHttpApiResultForModel(input: {
     return input.result
   }
   if (json.length <= maxChars) return input.result
-  const truncated = buildHttpApiTruncationBody({
-    originalChars: json.length,
-    maxChars,
-    preview: json.slice(0, maxChars),
-    language: input.language,
-  })
   const src =
     input.result && typeof input.result === 'object' && !Array.isArray(input.result)
       ? (input.result as Record<string, unknown>)
       : null
+  const saved = input.saved ?? null
+  const truncated = buildHttpApiTruncationBody({
+    originalChars: json.length,
+    maxChars,
+    preview: json.slice(0, saved ? Math.min(maxChars, SAVED_RESULT_PREVIEW_CHARS) : maxChars),
+    language: input.language,
+    path: input.path ?? (typeof src?.path === 'string' ? src.path : undefined),
+  })
+  if (saved) {
+    truncated.hint = savedResultHint({ originalChars: json.length, maxChars, saved, en: (input.language ?? 'hu') === 'en' })
+  }
   return {
     ...(typeof src?.ok === 'boolean' ? { ok: src.ok } : { ok: true }),
     ...(typeof src?.status === 'number' ? { status: src.status } : {}),
@@ -228,6 +278,7 @@ export function capHttpApiResultForModel(input: {
     truncated: true,
     originalChars: truncated.originalChars,
     maxChars: truncated.maxChars,
+    ...(saved ? { savedResult: saved } : {}),
     preview: truncated.preview,
     // Hiba-hint (4xx/5xx magyarázat) marad; sikeres ágon a kliens soft-hintje ellentmondana.
     hint:
@@ -250,7 +301,7 @@ export function buildHttpApiEfficiencyGuidance(language: TenantLanguage = 'hu'):
       '- Ownership / partner / ownerships / large rosters: http_api_get_all is MANDATORY — plain get often returns only the first page (e.g. 50 rows).',
       '- Period / comparison / top-N analytics: aggregated or report/query endpoint + period params; do NOT dump the full order/account list, and do NOT substitute another proxy metric (e.g. rolling health) when the requested period data is missing — say so.',
       '- After an unfiltered listing, do not walk through dozens of individual detail endpoints; top-N / search / filter first.',
-      '- After archiving a large JSON: tool_result_extract (arrayPath if needed) → reconcile/xlsx; NEVER chunk the same file with file_read. For ownership reconciliation the get_all tool-output path works directly too.',
+      '- When a response is too large, the platform saves the full data (savedResult.savedResultId): build the Excel with document_export + savedResultId, read it page by page with http_api_saved_read — do not type rows into a tool call and do not query it again.',
     ].join('\n')
   }
   return [
@@ -260,7 +311,7 @@ export function buildHttpApiEfficiencyGuidance(language: TenantLanguage = 'hu'):
     '- Ownership / partner / ownerships / nagy névsor: KÖTELEZŐEN http_api_get_all — a sima get gyakran csak az első oldalt (pl. 50 sort) adja.',
     '- Időszak / összehasonlítás / top-N analitika: aggregált vagy report/query végpont + period paramok; NE dumpold a teljes order/account listát, és NE helyettesíts más proxy-metrikával (pl. rolling health), ha a kért periódus-adat hiányzik — mondd ki.',
     '- Szűretlen listázás után ne húzz végig tucatnyi egyedi részlet-endpointot; előbb top-N / search / filter.',
-    '- Nagy JSON archive után: tool_result_extract (arrayPath ha kell) → reconcile/xlsx; SOHA ne chunkold file_read-del ugyanazt a fájlt. Ownership egyeztetéshez a get_all tool-outputs path közvetlenül is jó.',
+    '- Túl nagy válasznál a platform elmenti a teljes adatot (savedResult.savedResultId): Excelt a document_export + savedResultId készít, olvasni a http_api_saved_read-del lapozva lehet — a sorokat ne gépeld be eszközhívásba, és ne kérdezd le újra.',
   ].join('\n')
 }
 

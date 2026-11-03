@@ -486,6 +486,13 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'API írás',
     description: 'Író (POST/PUT/PATCH/DELETE) hívás a hozzárendelt külső REST API-n.',
   },
+  // #1071
+  http_api_saved_read: {
+    label: 'Nagy API-válasz olvasása',
+    description:
+      'Egy túl nagy, ezért elmentett API-válasz (pl. riport) részletenkénti olvasása. A mentett adatot 7 napig csak az éri el, aki kérte.',
+    progress: 'Olvasom a mentett adatot',
+  },
   mcp_list_tools: {
     label: 'Külső MCP-eszközök listája',
     description: 'A hozzárendelt külső MCP-szerverek jóváhagyott eszközeinek listája (név, kockázat, paraméterek).',

@@ -108,6 +108,8 @@ import {
   capabilityToolsFor,
   DOCUMENT_EXPORT_TOOL,
   documentExportInputSchema,
+  HTTP_API_SAVED_READ_TOOL,
+  httpApiSavedReadInputSchema,
   type EnterpriseToolResourceLink,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
@@ -2112,6 +2114,18 @@ async function createMcpResourceHandler(
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
       )
       server.registerTool(
+        HTTP_API_SAVED_READ_TOOL,
+        {
+          title: 'Read a saved large API response',
+          description:
+            'Read a large http_api_* response that was saved instead of sent in full (the response has savedResult.savedResultId). Returns rows from offset (default 100 per call, under 20 000 characters) and nextOffset; without a row list it returns a text slice. ' +
+            'Use it to look into or analyse the full data — for an Excel/CSV file call document_export with savedResultId instead of copying rows. Only the requesting user can read it, for 7 days. Omit definitionId when this client is bound; otherwise pass it.',
+          inputSchema: httpApiSavedReadInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: false },
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_SAVED_READ_TOOL, args, deps),
+      )
+      server.registerTool(
         KB_SEARCH_TOOL,
         {
           title: 'Search knowledge base',
@@ -2237,7 +2251,7 @@ async function createMcpResourceHandler(
             title: 'Make a downloadable file',
             description:
               'Create a downloadable Excel (xlsx), CSV, Word (docx), PDF or Markdown file for the user — use it whenever the user asks for a file, a spreadsheet, a Word document or a PDF instead of only answering in chat. ' +
-              'xlsx/csv: pass sheets (JSON text with headers, rows and optional numberFormats; numbers as numbers, dates as ISO text). docx/pdf/md: pass markdown. ' +
+              'xlsx/csv: pass sheets (JSON text with headers, rows and optional numberFormats; numbers as numbers, dates as ISO text), or savedResultId when a large http_api_* response was saved — then the platform fills the table from the full data. docx/pdf/md: pass markdown. ' +
               'The file is kept for 7 days and only the requesting user can download it; reply with one short sentence and the link, do not repeat the content. Omit definitionId when this client is bound; otherwise pass it.',
             inputSchema: documentExportInputSchema,
             annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },

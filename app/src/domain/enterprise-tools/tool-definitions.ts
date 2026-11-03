@@ -115,7 +115,11 @@ export const ENTERPRISE_WEB_TOOLS = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] as const
  * #1021: az oldalolvasásnak nincs külön munkatárs-szintű kapcsolója — a „Webes keresés” jog (`web_search`)
  * mindkettőt engedi, így a már bekapcsolt munkatársak újrabeállítás nélkül megkapják.
  */
-const CAPABILITY_ALIASES: Record<string, readonly string[]> = { [WEB_FETCH_TOOL]: [WEB_SEARCH_TOOL] }
+const CAPABILITY_ALIASES: Record<string, readonly string[]> = {
+  [WEB_FETCH_TOOL]: [WEB_SEARCH_TOOL],
+  // #1071: a mentett nagy válasz olvasása bármelyik http_api joggal jár (a listázáshoz, pl. Hermes Bot).
+  http_api_saved_read: ENTERPRISE_HTTP_TOOLS,
+}
 
 /** Az agent-képességek, amelyek közül bármelyik engedi az eszközt. */
 export function capabilityToolsFor(toolName: string): string[] {
@@ -132,6 +136,11 @@ export function withCapabilityAliases(toolNames: readonly string[]): string[] {
 
 /** #1024: letölthető fájl (XLSX, CSV, DOCX, PDF, MD) — „harness-pótló”, a listázását a `harness-substitutes.ts` dönti el. */
 export const DOCUMENT_EXPORT_TOOL = 'document_export'
+/**
+ * #1071: a plafon felett mentett http_api válasz lapozott olvasása. Nem hív céges rendszert: a mentés
+ * a kérő user + munkatárs sajátja, ezért nincs connector-jog és nincs külön munkatárs-kapcsoló.
+ */
+export const HTTP_API_SAVED_READ_TOOL = 'http_api_saved_read'
 export const ENTERPRISE_FILE_TOOLS = [DOCUMENT_EXPORT_TOOL] as const
 
 /** #395 D1: két fix eszköz minden külső MCP-szerverhez — a nevek futásidőben nem változnak. */
@@ -151,6 +160,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_MAIL_TOOLS,
   ...ENTERPRISE_GMAIL_TOOLS,
   ...ENTERPRISE_HTTP_TOOLS,
+  HTTP_API_SAVED_READ_TOOL,
   ...ENTERPRISE_KB_TOOLS,
   ...ENTERPRISE_SANDBOX_TOOLS,
   ...ENTERPRISE_MCP_TOOLS,
@@ -187,6 +197,7 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   WEB_FETCH_TOOL,
   // Céges rendszerbe nem ír: a fájl a platform ideiglenes tárolójába kerül.
   DOCUMENT_EXPORT_TOOL,
+  HTTP_API_SAVED_READ_TOOL,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -267,6 +278,10 @@ export function isEnterpriseWebFetchTool(toolName: string): toolName is typeof W
 
 export function isDocumentExportTool(toolName: string): toolName is typeof DOCUMENT_EXPORT_TOOL {
   return toolName === DOCUMENT_EXPORT_TOOL
+}
+
+export function isHttpApiSavedReadTool(toolName: string): toolName is typeof HTTP_API_SAVED_READ_TOOL {
+  return toolName === HTTP_API_SAVED_READ_TOOL
 }
 
 export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcpTool {
@@ -1237,6 +1252,54 @@ export const documentExportInputSchema = z
       .max(1_000_000)
       .optional()
       .describe('docx/pdf/md only. The document body in Markdown: headings (#), lists, tables, bold/italic, links.'),
+    savedResultId: z
+      .string()
+      .max(400)
+      .optional()
+      .describe(
+        'xlsx/csv only, instead of sheets: the savedResult.savedResultId of a large http_api_* response. The platform builds the table from the full saved data — never type the rows yourself. ' +
+          'Several ids, comma-separated, make one sheet each (xlsx).',
+      ),
+    columns: z
+      .string()
+      .max(20_000)
+      .optional()
+      .describe(
+        'With savedResultId, optional JSON text to pick, order and name columns: [{"path": "dimensions.partner.name", "header": "Partner"}, …]. ' +
+          'Paths are the savedResult.fields values. Default: every field, with the report\'s own column labels.',
+      ),
+    arrayPath: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('With savedResultId, only when savedResult.arrayPath picked the wrong list: dot path of the rows, e.g. body.data.rows.'),
+  })
+  .passthrough()
+
+export const httpApiSavedReadInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    savedResultId: z.string().uuid().describe('savedResult.savedResultId from a large http_api_* response.'),
+    asText: z.boolean().optional().describe('Read the full JSON as character pages. When the reply has asText=true, pass asText=true and nextOffset to continue.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('First row to return (0 = first row). Without a row list: character offset. Pass nextOffset to read on.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1_000)
+      .optional()
+      .describe('Rows per call (default 100). The reply stays under 20 000 characters, so fewer rows may come back — follow nextOffset.'),
+    arrayPath: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Only when savedResult.arrayPath picked the wrong list: dot path of the rows, e.g. body.data.rows.'),
   })
   .passthrough()
 
@@ -1290,6 +1353,7 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (toolName === WEB_SEARCH_TOOL) return webSearchInputSchema
   if (toolName === WEB_FETCH_TOOL) return webFetchInputSchema
   if (toolName === DOCUMENT_EXPORT_TOOL) return documentExportInputSchema
+  if (toolName === HTTP_API_SAVED_READ_TOOL) return httpApiSavedReadInputSchema
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
   if (toolName === GMAIL_GET_THREAD_TOOL) return gmailGetThreadInputSchema

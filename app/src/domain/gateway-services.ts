@@ -68,6 +68,7 @@ import { getPolicySnapshot } from '@/domain/client-policy/policy-service'
 import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
 import { PostgresDocumentExportRepository } from '@/repositories/postgres/document-export-repository'
 import { documentExportPath, loadOwnExport } from '@/domain/document-export/document-export-store'
+import { loadOwnSavedResult, SAVED_RESULT_FORMAT, SAVED_RESULT_MIME } from '@/domain/connector/http-api-saved-result'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
@@ -521,8 +522,17 @@ async function startAuthorization(input: {
 }
 
 const documentExportStore = new PostgresDocumentExportRepository()
-const documentExportDeps: Pick<EnterpriseToolDeps, 'saveDocumentExport' | 'documentExportUrl'> = {
+const documentExportDeps: Pick<EnterpriseToolDeps, 'saveHttpResult' | 'saveDocumentExport' | 'documentExportUrl'> = {
   // #1024: letölthető fájlok ideiglenes tárolója.
+  // #1071: a nagy http_api válasz ugyanabba a felhasználónkénti, 7 napos tárolóba kerül.
+  saveHttpResult: ({ data, ...input }) =>
+    documentExportStore.create({
+      ...input,
+      format: SAVED_RESULT_FORMAT,
+      mimeType: SAVED_RESULT_MIME,
+      byteSize: data.length,
+      data,
+    }),
   saveDocumentExport: ({ document, ...input }) =>
     documentExportStore.create({
       ...input,
@@ -759,6 +769,7 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   resolveClientPolicy: (input) => getPolicySnapshot(clientPolicyStore, input),
   ...documentExportDeps,
   loadOwnDocumentExport: (input) => loadOwnExport(documentExportStore, { ...input, now: new Date() }),
+  loadHttpResult: (input) => loadOwnSavedResult(documentExportStore, { ...input, now: new Date() }),
   countWebToolCalls: ({ tenantId, toolName, agentId, since }) =>
     prisma.auditLog.count({
       where: { tenantId, action: 'enterprise.tool.ok', inputRef: toolName, ...(agentId ? { targetId: agentId } : {}), createdAt: { gte: since } },

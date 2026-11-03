@@ -22,7 +22,7 @@ import {
   type ExecuteMcpToolInput,
   type McpGateDeps,
 } from '@/domain/enterprise-tools/handlers/mcp'
-import { httpApiFileSaver, httpApiFileAuditMeta, type EnterpriseToolDeps, auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
+import { httpResultSaver, savedResultAuditMeta, httpApiFileSaver, httpApiFileAuditMeta, type EnterpriseToolDeps, auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
 import type { McpCallResult } from '@/domain/connector/mcp-client'
 import { mcpResultForModel } from '@/domain/connector/mcp-tools'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
@@ -81,7 +81,7 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = Pick<EnterpriseToolDeps, 'saveDocumentExport' | 'documentExportUrl' | 'now'> & MailboxFailureDeps & AuthorizeToolCallDeps &
+export type GatewayOperationServiceDeps = Pick<EnterpriseToolDeps, 'saveHttpResult' | 'saveDocumentExport' | 'documentExportUrl' | 'now'> & MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -1176,6 +1176,10 @@ async function executeApprovedOperation(
             agentId: definition.agentId,
             client: 'unknown',
           }),
+          { saveOversized: httpResultSaver(deps, {
+            principal: { userId: operation.principalUserId, tenantId: operation.tenantId },
+            definition, definitionId: operation.agentDefinitionVersionId, client: 'unknown',
+          }) },
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
@@ -1218,6 +1222,7 @@ async function executeApprovedOperation(
       tenantId: operation.tenantId,
       ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
       ...httpApiFileAuditMeta(result),
+      ...savedResultAuditMeta(result),
       ...(mailbox ? { mailbox: grant?.accountLabel ?? mailbox.address ?? null, requestedBy: operation.principalUserId } : {}),
     }
     console.info('gateway.operation.succeeded', payload)

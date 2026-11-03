@@ -1088,6 +1088,7 @@ export class HttpApiClient {
             maxChars: max,
             preview: text.slice(0, max),
             language: this.language,
+            path: params.path,
           })
         } else {
           body = previewText
@@ -1122,6 +1123,7 @@ export class HttpApiClient {
                 maxChars: max,
                 preview: text.slice(0, Math.min(max, text.length)),
                 language: this.language,
+                path: params.path,
               }).hint
             : undefined
 

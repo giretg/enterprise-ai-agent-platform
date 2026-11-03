@@ -10,6 +10,7 @@ import {
   type HttpApiConfig,
 } from '@/domain/connector/http-api-client'
 import { capHttpApiResultForModel } from '@/domain/connector/http-api-prompt'
+import { saveOversizedHttpResult, type SaveOversizedHttpResult } from '@/domain/connector/http-api-saved-result'
 import type { HttpApiFile } from '@/domain/connector/http-api-file'
 import {
   paginateHttpApiGet,
@@ -202,6 +203,8 @@ export async function executeHttpApiTool(
   allowedEgressHosts?: string[],
   /** #1070: hiányában a fájl-válasz nem adható át (a modell rövid magyarázatot kap). */
   saveFile?: SaveHttpApiFile,
+  /** #1071: a plafon feletti, hiánytalan válasz mentése a kérő usernek; hiányában csak előnézet. */
+  options?: { saveOversized?: SaveOversizedHttpResult },
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -227,12 +230,11 @@ export async function executeHttpApiTool(
   }
 
   const config = await applyPlatformGoogleAdsDeveloperToken(parseHttpApiConfig(connector.config))
-  const forModel = (result: unknown) =>
-    capHttpApiResultForModel({
-      result,
-      maxChars: config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS,
-      language,
-    })
+  const maxChars = config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
+  const forModel = async (result: unknown) => {
+    const saved = await saveOversizedHttpResult({ result, maxChars, path, toolName, save: options?.saveOversized })
+    return capHttpApiResultForModel({ result, maxChars, language, path, saved })
+  }
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
   const client = clientFor(config, apiKey, language, allowedEgressHosts)
   const callId = randomUUID()

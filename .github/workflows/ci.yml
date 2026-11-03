@@ -126,6 +126,7 @@ jobs:
           npm run test:tenant-mailbox
           npm run test:http-api
           npm run test:http-api-file-response
+          npm run test:http-api-saved-result
           npm run test:write-approval-modes
           npm run test:write-approval-ui
           npm run test:pending-args-summary
