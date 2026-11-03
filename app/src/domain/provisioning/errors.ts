@@ -22,6 +22,7 @@ export type ProvisioningErrorCode =
   | 'PLATFORM_GOOGLE_ADS_DEVELOPER_TOKEN_MISSING' // Google Ads: a platform developer tokenje nincs beállítva
   | 'GOOGLE_ACCOUNT_BINDING_MISSING' // Ads / Analytics / Search Console: a cég nem választott fiókot
   | 'GOOGLE_ACCOUNT_BINDING_UNSUPPORTED' // fiókkötés nem Google fiókos konnektoron
+  | 'GITHUB_REPOSITORY_ACCESS_UNSUPPORTED' // kódtár-kör nem GitHub-konnektoron
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver
   | 'DUAL_CONTROL_REQUIRED'
   | 'APPROVER_NOT_AUTHORIZED' // dual-control: a második jóváhagyó nem aktív, azonos-tenant admin

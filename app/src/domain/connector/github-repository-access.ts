@@ -26,12 +26,23 @@ function normalizeRepositories(repositories: unknown[]): string[] {
   return normalized
 }
 
+/** Soronként / vesszővel elválasztott owner/repo lista, bemásolt GitHub-linkekkel is. */
+export function splitGitHubRepositories(text: string): string[] {
+  return text.split(/[\s,]+/).filter(Boolean).map((item) => {
+    if (/^(?:https?:\/\/)?(?:www\.)?github\.com\//i.test(item)) {
+      const url = new URL(/^https?:\/\//i.test(item) ? item : `https://${item}`)
+      return url.pathname.split('/').slice(1, 3).join('/').replace(/\.git$/i, '')
+    }
+    return item
+  })
+}
+
 export function gitHubRepositoryAccessFromText(value: string): GitHubRepositoryAccess {
   const trimmed = value.trim()
   if (trimmed === '*') return { mode: 'any' }
   return {
     mode: 'selected',
-    repositories: normalizeRepositories(trimmed.split(/[\s,]+/).filter(Boolean)),
+    repositories: normalizeRepositories(splitGitHubRepositories(trimmed)),
   }
 }
 
@@ -46,4 +57,24 @@ export function parseGitHubRepositoryAccessConfig(raw: unknown): GitHubRepositor
     throw new Error('GitHub repository access mode must be "any" or "selected"')
   }
   return { mode: 'selected', repositories: normalizeRepositories(value.repositories) }
+}
+
+/** GitHub sablonból készült (vagy kódtár-körrel rendelkező) http_api konnektor config-e. */
+export function isGitHubConnectorConfig(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false
+  const config = raw as Record<string, unknown>
+  const provenance = config.provenance
+  const templateKey =
+    typeof provenance === 'object' && provenance !== null && !Array.isArray(provenance)
+      ? (provenance as Record<string, unknown>).templateKey
+      : undefined
+  return templateKey === 'github' || (typeof config.githubRepositoryAccess === 'object' && config.githubRepositoryAccess !== null)
+}
+
+/** Agentnek szóló, secret-mentes megjegyzés a definíció-snapshotba. */
+export function describeGitHubRepositoryAccess(access: GitHubRepositoryAccess): string {
+  if (access.mode === 'any') {
+    return 'GitHub: every repository the access token can reach is allowed; ask the user which owner/repo they mean if it is not clear.'
+  }
+  return `GitHub: only these repositories are allowed (use them as {owner}/{repo} in paths): ${access.repositories.join(', ')}.`
 }

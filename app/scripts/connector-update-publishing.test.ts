@@ -47,7 +47,9 @@ async function main() {
       if (throwPublish && agentId === 'b') throw new Error('Offline')
       return failPublish && agentId === 'b' ? { success: false, error: 'Hiányzó felelősségi kör' } : { success: true }
     } },
-    '@/app/actions/provisioning': { activateConnector: update, updateGoogleAccountBinding: update },
+    '@/app/actions/provisioning': {
+      activateConnector: update, updateGitHubRepositoryAccess: update, updateGoogleAccountBinding: update,
+    },
     '@/app/actions/mcp-connectors': { approveMcpTools: update },
     '@/app/actions/self-updating-connectors': {
       approveSelfUpdatingVersion: update, rollbackSelfUpdatingVersion: update, syncSelfUpdatingConnector: update,

@@ -64,6 +64,7 @@ import type {
   WikiTag,
 } from '@prisma/client'
 import type { GoogleAccountBinding } from '@/domain/connector/google-account-binding'
+import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import type { ListPageResult } from '@/lib/list-pagination'
 import type { AuditAppendInput } from '@/lib/audit/types'
 
@@ -458,6 +459,14 @@ export interface ConnectorDraftRepository {
   setGoogleAccountBinding(params: {
     draftId: string
     binding: GoogleAccountBinding
+  }): Promise<ConnectorDraftWithConnector>
+  /**
+   * GitHub-konnektor kódtár-köre (`githubRepositoryAccess`) cseréje. Csak ezt az egy config-kulcsot
+   * írja; a lifecycle-t, a kulcsot és az agent-kötéseket nem érinti.
+   */
+  setGitHubRepositoryAccess(params: {
+    draftId: string
+    access: GitHubRepositoryAccess
   }): Promise<ConnectorDraftWithConnector>
   reopen(params: { draftId: string }): Promise<Connector>
   decommission(params: { draftId: string }): Promise<{ connectorId: string; affectedAgentIds: string[] }>

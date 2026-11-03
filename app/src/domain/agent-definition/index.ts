@@ -22,6 +22,7 @@ import {
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
 import { describeGoogleAccountBinding } from '@/domain/connector/google-account-binding'
+import { describeGitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import {
   collectSnapshotRules,
   type AgentDefinitionSnapshotRule,
@@ -247,6 +248,10 @@ async function resolveHttpApiConnectorMeta(
     const accountNote = parsed.googleAccount
       ? describeGoogleAccountBinding(parsed.googleAccount.provider, parsed.googleAccount.binding)
       : null
+    // GitHub: a megengedett kódtárak — enélkül az agent nem tudja, mit írjon a {owner}/{repo} helyére.
+    const repositoryNote = parsed.githubRepositoryAccess
+      ? describeGitHubRepositoryAccess(parsed.githubRepositoryAccess)
+      : null
     const mailbox = mailboxConnectorInfo(resolved) || isMicrosoft365Connector(resolved)
     if (hideRawMailboxEndpoints && mailbox) {
       return {
@@ -256,7 +261,7 @@ async function resolveHttpApiConnectorMeta(
             .join(' ') || null,
       }
     }
-    const description = [baseDescription, accountNote].filter(Boolean).join(' ') || null
+    const description = [baseDescription, accountNote, repositoryNote].filter(Boolean).join(' ') || null
     return {
       endpoints: summarizeHttpApiEndpoints(parsed.endpoints),
       ...(description ? { description } : {}),
