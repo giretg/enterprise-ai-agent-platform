@@ -1115,9 +1115,12 @@ export interface WikiStructureRepository {
       Pick<
         WikiCategoryRow,
         'parentId' | 'name' | 'description' | 'sortOrder' | 'approval' | 'reviewCycleDays' | 'requiredFields' | 'requiredSections' | 'sectionRule' | 'templateMd'
+        | 'pageSort' | 'pinnedPages' | 'pageOrder' | 'collapsed'
       >
     >,
   ): Promise<WikiCategoryRow | null>
+  /** Testvérek új sorrendje egy tranzakcióban; `false`, ha valamelyik sor már nincs meg. */
+  reorderCategories?(wikiId: string, orders: Array<{ id: string; sortOrder: number }>): Promise<boolean>
   deleteCategory(wikiId: string, id: string): Promise<boolean>
   /** Publikált oldalak, amelyek `outLinks`-e tartalmazza a path-t (GIN-index); a saját oldal nem számít. */
   listBacklinks(connectorId: string, path: string, limit: number): Promise<{ count: number; pages: WikiBacklinkRow[] }>

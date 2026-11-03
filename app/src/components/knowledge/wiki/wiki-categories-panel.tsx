@@ -1,17 +1,18 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslations } from 'next-intl'
 import {
   createWikiCategoryAction,
   deleteWikiCategoryAction,
+  reorderWikiCategoriesAction,
   setWikiCategoriesManagedAction,
   updateWikiCategoryAction,
 } from '@/app/actions/knowledge-wiki'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Card } from '@/components/ui/shell'
-import { slugifyCategory } from '@/lib/wiki-categories'
+import { WIKI_CATEGORY_MAX_PINNED, WIKI_PAGE_SORTS, slugifyCategory, type WikiPageSort } from '@/lib/wiki-categories'
 
 type Approval = 'inherit' | 'always'
 type Node = {
@@ -21,8 +22,15 @@ type Node = {
   parentId: string | null
   name: string
   description: string | null
-  sortOrder: number
+  /** `null` = nincs megadva (a sorrendezettek után, név szerint). */
+  sortOrder: number | null
   approval: Approval
+  /** Menü: oldalrendezés, kiemelt oldalak, kézi sorrend, alapból becsukva; a publikált oldalak menüsorrendben. */
+  pageSort?: WikiPageSort
+  pinnedPages?: string[]
+  pageOrder?: string[]
+  collapsed?: boolean
+  pages?: Array<{ path: string; title: string }>
   protected: boolean
   published: number
   archived: number
@@ -37,6 +45,10 @@ type Node = {
 }
 
 type RulesPatch = {
+  pageSort?: WikiPageSort
+  pinnedPages?: string[]
+  pageOrder?: string[]
+  collapsed?: boolean
   reviewCycleDays?: number | null
   requiredFields?: string[]
   requiredSections?: string[]
@@ -85,6 +97,114 @@ function categoryErrorKey(code: string): (typeof CATEGORY_ERRORS)[number] | 'gen
 }
 
 const inputClass = 'w-full rounded-lg border border-line/70 px-3 py-1.5 text-sm'
+
+/** Egy elem áthelyezése a listában (`to` = a cél indexe az eredeti listában). */
+function moveItem<T>(list: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return list
+  const next = [...list]
+  const [item] = next.splice(from, 1)
+  next.splice(to, 0, item)
+  return next
+}
+
+/**
+ * Húzással és ↑/↓ gombbal rendezhető lista. Csak a fogantyú húzható, így a sorban lévő
+ * űrlapmezők továbbra is szerkeszthetők; a gombok mobilon és billentyűzettel is működnek.
+ */
+function SortableList<T extends { id: string }>({
+  items,
+  disabled,
+  onReorder,
+  renderItem,
+  className,
+  itemClassName,
+  testId,
+}: {
+  items: T[]
+  disabled?: boolean
+  onReorder: (ids: string[]) => void
+  renderItem: (item: T, controls: ReactNode) => ReactNode
+  className?: string
+  itemClassName?: string
+  testId?: string
+}) {
+  const t = useTranslations('ControlPlane.wiki.categories.order')
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [overId, setOverId] = useState<string | null>(null)
+  const ids = items.map((item) => item.id)
+  const move = (from: number, to: number) => {
+    const next = moveItem(ids, from, to)
+    if (next !== ids) onReorder(next)
+  }
+  return (
+    <ul className={className} data-testid={testId}>
+      {items.map((item, index) => {
+        const controls = items.length > 1 ? (
+          <span className="flex shrink-0 items-center gap-0.5 text-ink-faint">
+            <span
+              draggable={!disabled}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = 'move'
+                event.dataTransfer.setData('text/plain', item.id)
+                setDragId(item.id)
+              }}
+              onDragEnd={() => {
+                setDragId(null)
+                setOverId(null)
+              }}
+              title={t('dragHint')}
+              aria-hidden
+              className={`select-none px-0.5 ${disabled ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'}`}
+              data-testid="sortable-handle"
+            >
+              ⋮⋮
+            </span>
+            <button
+              type="button"
+              disabled={disabled || index === 0}
+              onClick={() => move(index, index - 1)}
+              aria-label={t('moveUp')}
+              title={t('moveUp')}
+              className="rounded px-0.5 hover:text-ink disabled:opacity-30"
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              disabled={disabled || index === items.length - 1}
+              onClick={() => move(index, index + 1)}
+              aria-label={t('moveDown')}
+              title={t('moveDown')}
+              className="rounded px-0.5 hover:text-ink disabled:opacity-30"
+            >
+              ↓
+            </button>
+          </span>
+        ) : null
+        return (
+          <li
+            key={item.id}
+            className={`${itemClassName ?? ''} ${overId === item.id && dragId && dragId !== item.id ? 'bg-coral/5 ring-1 ring-inset ring-coral/40' : ''}`}
+            onDragOver={(event) => {
+              if (!dragId || !ids.includes(dragId)) return
+              event.preventDefault()
+              setOverId(item.id)
+            }}
+            onDragLeave={() => setOverId((current) => (current === item.id ? null : current))}
+            onDrop={(event) => {
+              event.preventDefault()
+              if (dragId && ids.includes(dragId)) move(ids.indexOf(dragId), index)
+              setDragId(null)
+              setOverId(null)
+            }}
+          >
+            {renderItem(item, controls)}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
 
 /**
  * #1061 F1: „Kategóriák” — kezelt kategória-fa (2 szint), kategóriánkénti
@@ -214,10 +334,16 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
             {data.categories.length === 0 ? (
               <p className="text-sm text-ink-soft">{t('emptyTree')}</p>
             ) : (
-              <ul className="divide-y divide-line/60 rounded-lg border border-line/70" data-testid="wiki-categories-tree">
-                {data.categories.map((node) => (
-                  <li key={node.id}>
+              <SortableList
+                items={data.categories}
+                disabled={pending}
+                onReorder={(orderedIds) => run(() => reorderWikiCategoriesAction({ connectorId, parentId: null, orderedIds }), t('order.saved'))}
+                className="divide-y divide-line/60 rounded-lg border border-line/70"
+                testId="wiki-categories-tree"
+                renderItem={(node, controls) => (
+                  <>
                     <CategoryRow
+                      controls={controls}
                       requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
                       node={node}
                       parent={null}
@@ -231,34 +357,41 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
                       onDelete={() => run(() => deleteWikiCategoryAction({ connectorId, categoryId: node.id }), t('deleted'))}
                     />
                     {node.children.length ? (
-                      <ul className="border-t border-line/40 bg-paper/40">
-                        {node.children.map((child) => (
-                          <li key={child.id} className="pl-6">
-                            <CategoryRow
-                              requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
-                              node={child}
-                              parent={node}
-                              topLevel={topLevel}
-                              editing={editing === child.id}
-                              onEdit={() => setEditing(editing === child.id ? null : child.id)}
-                              pending={pending}
-                              onSave={(patch) =>
-                                run(
-                                  () => updateWikiCategoryAction({ connectorId, categoryId: child.id, ...patch }),
-                                  t('saved'),
-                                  () => setEditing(null),
-                                )
-                              }
-                              onDelete={() => run(() => deleteWikiCategoryAction({ connectorId, categoryId: child.id }), t('deleted'))}
-                            />
-                          </li>
-                        ))}
-                      </ul>
+                      <SortableList
+                        items={node.children}
+                        disabled={pending}
+                        onReorder={(orderedIds) =>
+                          run(() => reorderWikiCategoriesAction({ connectorId, parentId: node.id, orderedIds }), t('order.saved'))
+                        }
+                        className="border-t border-line/40 bg-paper/40"
+                        itemClassName="pl-6"
+                        renderItem={(child, childControls) => (
+                          <CategoryRow
+                            controls={childControls}
+                            requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
+                            node={child}
+                            parent={node}
+                            topLevel={topLevel}
+                            editing={editing === child.id}
+                            onEdit={() => setEditing(editing === child.id ? null : child.id)}
+                            pending={pending}
+                            onSave={(patch) =>
+                              run(
+                                () => updateWikiCategoryAction({ connectorId, categoryId: child.id, ...patch }),
+                                t('saved'),
+                                () => setEditing(null),
+                              )
+                            }
+                            onDelete={() => run(() => deleteWikiCategoryAction({ connectorId, categoryId: child.id }), t('deleted'))}
+                          />
+                        )}
+                      />
                     ) : null}
-                  </li>
-                ))}
-              </ul>
+                  </>
+                )}
+              />
             )}
+            {data.categories.length > 1 ? <p className="text-xs text-ink-faint">{t('order.treeHint')}</p> : null}
 
             <LinkedWikisSection
               data={data}
@@ -302,6 +435,7 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
 }
 
 function CategoryRow({
+  controls,
   node,
   parent,
   topLevel,
@@ -312,13 +446,15 @@ function CategoryRow({
   onDelete,
   requirable,
 }: {
+  /** Húzó-fogantyú és ↑/↓ gombok (a szülő lista adja). */
+  controls?: ReactNode
   node: Node
   parent: Node | null
   topLevel: Node[]
   editing: boolean
   onEdit: () => void
   pending: boolean
-  onSave: (patch: { name?: string; description?: string | null; parentId?: string | null; sortOrder?: number; approval?: Approval } & RulesPatch) => void
+  onSave: (patch: { name?: string; description?: string | null; parentId?: string | null; sortOrder?: number | null; approval?: Approval } & RulesPatch) => void
   onDelete: () => void
   /** `null` = a metaadat-mezők ki vannak kapcsolva (ciklus és kötelező mező nem állítható). */
   requirable: Requirable[] | null
@@ -328,7 +464,15 @@ function CategoryRow({
   const [name, setName] = useState(node.name)
   const [description, setDescription] = useState(node.description ?? '')
   const [parentId, setParentId] = useState(node.parentId ?? '')
-  const [sortOrder, setSortOrder] = useState(node.sortOrder)
+  const [sortOrder, setSortOrder] = useState(node.sortOrder === null ? '' : String(node.sortOrder))
+  const [pageSort, setPageSort] = useState<WikiPageSort>(node.pageSort ?? 'title')
+  const [collapsed, setCollapsed] = useState(!!node.collapsed)
+  const [pinned, setPinned] = useState<string[]>(node.pinnedPages ?? [])
+  const categoryPages = node.pages ?? []
+  // Kézi sorrend: a mostani menüsorrendből indul (a kiemeltek nélkül nem kell külön kezelni — azok úgyis felül vannak).
+  const [manual, setManual] = useState<string[]>(categoryPages.map((page) => page.path))
+  const sortOrderValue = sortOrder.trim() === '' ? null : Math.max(0, Math.min(100000, Math.floor(Number(sortOrder)) || 0))
+  const titleOf = (path: string) => categoryPages.find((page) => page.path === path)?.title ?? path
   const [approval, setApproval] = useState<Approval>(node.approval)
   const [cycle, setCycle] = useState(node.reviewCycleDays ? String(node.reviewCycleDays) : '')
   const [required, setRequired] = useState<string[]>(node.requiredFields ?? [])
@@ -347,8 +491,19 @@ function CategoryRow({
   return (
     <div className="px-3 py-2" data-testid="wiki-category-row">
       <div className="flex flex-wrap items-center gap-2">
+        {controls}
         <span className="text-sm font-medium text-ink">{node.name}</span>
         <code className="text-xs text-ink-faint">{node.path}</code>
+        <span className="text-xs text-ink-faint" data-testid="wiki-category-order">
+          {node.sortOrder === null ? t('order.unset') : t('order.badge', { order: node.sortOrder })}
+        </span>
+        {node.collapsed ? <span className="rounded-full bg-ink/5 px-2 text-xs text-ink-soft">{t('menu.collapsedBadge')}</span> : null}
+        {node.pageSort && node.pageSort !== 'title' ? (
+          <span className="rounded-full bg-ink/5 px-2 text-xs text-ink-soft">{t(`menu.sortBadge.${node.pageSort}`)}</span>
+        ) : null}
+        {node.pinnedPages?.length ? (
+          <span className="rounded-full bg-ink/5 px-2 text-xs text-ink-soft">{t('menu.pinnedBadge', { count: node.pinnedPages.length })}</span>
+        ) : null}
         <span className="text-xs text-ink-soft">{t('pages', { count: pages })}</span>
         {node.archived ? <span className="text-xs text-ink-faint">{t('archivedPages', { count: node.archived })}</span> : null}
         {node.protected ? (
@@ -405,7 +560,11 @@ function CategoryRow({
               ...(name !== node.name ? { name } : {}),
               ...(description !== (node.description ?? '') ? { description: description || null } : {}),
               ...(parentChanged ? { parentId: parentId || null } : {}),
-              ...(sortOrder !== node.sortOrder ? { sortOrder } : {}),
+              ...(sortOrderValue !== node.sortOrder ? { sortOrder: sortOrderValue } : {}),
+              ...(pageSort !== (node.pageSort ?? 'title') ? { pageSort } : {}),
+              ...(collapsed !== !!node.collapsed ? { collapsed } : {}),
+              ...(!sameList(pinned, node.pinnedPages ?? []) ? { pinnedPages: pinned } : {}),
+              ...(pageSort === 'manual' && !sameList(manual, node.pageOrder ?? []) ? { pageOrder: manual } : {}),
               ...(approval !== node.approval ? { approval } : {}),
               ...(requirable && cycleValue !== (node.reviewCycleDays ?? null) ? { reviewCycleDays: cycleValue } : {}),
               ...(requirable && !sameList(required, node.requiredFields ?? []) ? { requiredFields: required } : {}),
@@ -468,10 +627,94 @@ function CategoryRow({
               max={100000}
               step={10}
               value={sortOrder}
-              onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
+              placeholder={t('order.placeholder')}
+              onChange={(e) => setSortOrder(e.target.value)}
               className={inputClass}
+              data-testid="wiki-category-order-input"
             />
           </label>
+
+          <fieldset className="space-y-3 rounded-lg border border-line/70 px-3 py-2 sm:col-span-2" data-testid="wiki-category-menu">
+            <legend className="px-1 text-sm font-medium text-ink">{t('menu.title')}</legend>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-sm">
+                <span className="mb-1 flex items-center text-ink">
+                  {t('menu.sortLabel')}
+                  <HelpHint>{t('menu.sortHelp')}</HelpHint>
+                </span>
+                <select
+                  value={pageSort}
+                  onChange={(e) => setPageSort(e.target.value as WikiPageSort)}
+                  className={inputClass}
+                  data-testid="wiki-category-page-sort"
+                >
+                  {WIKI_PAGE_SORTS.map((sort) => (
+                    <option key={sort} value={sort}>
+                      {t(`menu.sort.${sort}`)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 self-end text-sm">
+                <input type="checkbox" checked={collapsed} onChange={(e) => setCollapsed(e.target.checked)} data-testid="wiki-category-collapsed" />
+                <span className="text-ink">{t('menu.collapsedLabel')}</span>
+                <HelpHint>{t('menu.collapsedHelp')}</HelpHint>
+              </label>
+            </div>
+            <div className="text-sm">
+              <span className="mb-1 flex items-center text-ink">
+                {t('menu.pinnedLabel', { max: WIKI_CATEGORY_MAX_PINNED })}
+                <HelpHint>{t('menu.pinnedHelp')}</HelpHint>
+              </span>
+              {categoryPages.length === 0 ? (
+                <p className="text-xs text-ink-faint">{t('menu.noPages')}</p>
+              ) : (
+                <div className="flex max-h-40 flex-col gap-1 overflow-y-auto" data-testid="wiki-category-pinned">
+                  {categoryPages.map((page) => (
+                    <label key={page.path} className="flex items-center gap-1.5 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={pinned.includes(page.path)}
+                        disabled={!pinned.includes(page.path) && pinned.length >= WIKI_CATEGORY_MAX_PINNED}
+                        onChange={(e) =>
+                          setPinned(e.target.checked ? [...pinned, page.path] : pinned.filter((path) => path !== page.path))
+                        }
+                      />
+                      <span className="truncate">{page.title}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            {pageSort === 'manual' && categoryPages.length > 1 ? (
+              <div className="text-sm">
+                <span className="mb-1 block text-ink">{t('menu.manualLabel')}</span>
+                <SortableList
+                  items={manual.map((path) => ({ id: path }))}
+                  onReorder={setManual}
+                  className="max-h-60 divide-y divide-line/50 overflow-y-auto rounded-lg border border-line/70 bg-white"
+                  testId="wiki-category-manual-order"
+                  renderItem={(item, itemControls) => (
+                    <div className="flex items-center gap-2 px-2 py-1 text-xs">
+                      {itemControls}
+                      <span className="truncate">{titleOf(item.id)}</span>
+                      {pinned.includes(item.id) ? <span className="ml-auto text-ink-faint">{t('menu.pinnedShort')}</span> : null}
+                    </div>
+                  )}
+                />
+              </div>
+            ) : null}
+            <p className="rounded-lg bg-paper px-3 py-2 text-xs text-ink-soft" data-testid="wiki-category-menu-preview">
+              {[
+                sortOrderValue === null ? t('menu.previewNoOrder') : t('menu.previewOrder', { order: sortOrderValue }),
+                pinned.length ? t('menu.previewPinned', { titles: pinned.map(titleOf).join(', ') }) : null,
+                t(`menu.preview.${pageSort}`),
+                collapsed ? t('menu.previewCollapsed') : null,
+              ]
+                .filter(Boolean)
+                .join(' ')}
+            </p>
+          </fieldset>
           {approval === 'always' && node.approval !== 'always' ? (
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 sm:col-span-2" data-testid="wiki-category-rule-preview">
               {t('rulePreview', { count: pages, name: node.name })}

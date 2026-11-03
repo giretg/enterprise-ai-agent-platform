@@ -279,10 +279,81 @@ async function main() {
     assert.ok(!JSON.stringify(rows2.map((row) => row.metadata)).includes('Kártyás partnerek'))
   })
 
+  await check('menüsorrend: húzásos átrendezés 10-es lépésközzel, oldalrendezés, kiemelés, becsukás; áthelyezéskor a path is vándorol', async () => {
+    const start = await categories.create(actor, connector.id, { key: 'start', name: 'Start here' })
+    const sources = await categories.create(actor, connector.id, { key: 'sources', name: 'Sources' })
+    const roots = () => structure.listCategories(wiki.id).then((rows) => rows.filter((row) => !row.parentId))
+    const before = await roots()
+    // Új kategória a testvérek után, 10-es lépésközzel.
+    const startRow = before.find((row) => row.id === start.id)!
+    const sourcesRow = before.find((row) => row.id === sources.id)!
+    assert.equal(sourcesRow.sortOrder! - startRow.sortOrder!, 10)
+
+    const wanted = [start.id, ...before.filter((row) => row.id !== start.id && row.id !== sources.id).map((row) => row.id), sources.id]
+    assert.ok((await categories.reorder(actor, connector.id, null, wanted)).changed > 0)
+    assert.deepEqual(await categories.reorder(actor, connector.id, null, wanted), { changed: 0 })
+    const after = await roots()
+    assert.deepEqual(
+      wanted.map((id) => after.find((row) => row.id === id)!.sortOrder),
+      wanted.map((_, i) => (i + 1) * 10),
+    )
+    // Közben megváltozott (hiányos) lista: semmi nem íródik.
+    await rejectsWith('conflict', () => categories.reorder(actor, connector.id, null, wanted.slice(1)))
+    await rejectsWith('conflict', () => categories.reorder(actor, connector.id, null, [...wanted, wanted[0]]))
+    // „Nincs megadva”: a sorrend törölhető, a menüben a végére kerül.
+    await categories.update(actor, connector.id, start.id, { sortOrder: null })
+    assert.equal((await structure.listCategories(wiki.id)).find((row) => row.id === start.id)!.sortOrder, null)
+    assert.equal((await structure.listCategories(wiki.id)).at(-1)!.id, start.id)
+
+    await seed('start/how.md', 'start', 'Hogyan')
+    await seed('start/zz.md', 'start', 'Zz')
+    await categories.update(actor, connector.id, start.id, { pageSort: 'manual', pageOrder: ['start/zz.md', 'start/how.md'], pinnedPages: ['start/how.md'] })
+    await categories.update(actor, connector.id, sources.id, { collapsed: true, pageSort: 'updated_desc' })
+    // Csak a kategória publikált oldalai; legfeljebb 3 kiemelt; ismeretlen rendezés nem.
+    await assert.rejects(() => categories.update(actor, connector.id, start.id, { pinnedPages: ['partners/dkv.md'] }))
+    await assert.rejects(() => categories.update(actor, connector.id, start.id, { pinnedPages: ['a', 'b', 'c', 'd'] }))
+    await assert.rejects(() => categories.update(actor, connector.id, start.id, { pageSort: 'random' as never }))
+
+    const saved = (await structure.listCategories(wiki.id)).find((row) => row.id === start.id)!
+    assert.deepEqual([saved.pageSort, saved.pinnedPages, saved.pageOrder], ['manual', ['start/how.md'], ['start/zz.md', 'start/how.md']])
+    assert.equal((await structure.listCategories(wiki.id)).find((row) => row.id === sources.id)!.collapsed, true)
+
+    // Áthelyezés: a kiemelés és a kézi sorrend az új path-on folytatódik (ugyanabban a tranzakcióban).
+    const page = (await wikis.findPage(connector.id, 'start/how.md'))!
+    const moved = await wikis.applyChangeSet({
+      wikiId: wiki.id,
+      connectorId: connector.id,
+      changeSet: { create: { wikiId: wiki.id, connectorId: connector.id, agentId: agent.id, pages: [], approverScope: {} } },
+      ops: [
+        {
+          kind: 'update',
+          pageId: page.id,
+          expectedVersion: page.version,
+          previousPath: page.path,
+          page: { path: 'start/how-to-use.md', type: page.type, title: page.title, summary: page.summary, category: page.category, body: page.body, sourceRefs: [], outLinks: [], status: 'published', contentHash: randomUUID() },
+          updatedByAgentId: agent.id,
+          chunks: [],
+        },
+      ],
+      log: { op: 'schema', title: 'move', pagePaths: ['start/how-to-use.md'], actorAgentId: agent.id },
+      appliedAt: new Date(),
+    })
+    assert.equal(moved.ok, true, JSON.stringify(moved))
+    const afterMove = (await structure.listCategories(wiki.id)).find((row) => row.id === start.id)!
+    assert.deepEqual([afterMove.pinnedPages, afterMove.pageOrder], [['start/how-to-use.md'], ['start/zz.md', 'start/how-to-use.md']])
+
+    const audits = await prisma.auditLog.findMany({ where: { tenantId: tenant.id, action: 'kb.wiki.categories.reordered' }, select: { metadata: true } })
+    assert.equal(audits.length, 1)
+    // NFR-3: az audit-sorba darabszám kerül, oldal-path nem.
+    const updates = await prisma.auditLog.findMany({ where: { tenantId: tenant.id, action: 'kb.wiki.category.updated' }, select: { metadata: true } })
+    assert.ok(!JSON.stringify(updates.map((row) => row.metadata)).includes('start/how.md'))
+    assert.ok(updates.some((row) => (row.metadata as Record<string, unknown>).pinnedCount === 1))
+  })
+
   await check('kikapcsolás: a fa és a besorolás megmarad', async () => {
     await categories.disable(actor, connector.id)
     assert.equal(await structure.isManaged(wiki.id), false)
-    assert.equal((await structure.listCategories(wiki.id)).length, 2)
+    assert.equal((await structure.listCategories(wiki.id)).length, 4)
     assert.equal((await wikis.findPage(connector.id, 'partners/dkv.md'))!.category, 'fizetesi-partnerek')
   })
 

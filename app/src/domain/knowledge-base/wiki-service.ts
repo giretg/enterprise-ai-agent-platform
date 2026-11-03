@@ -914,6 +914,10 @@ export class WikiService {
           : {}),
       }
     }
+    const menuOf = (group: { pageSort: string; collapsed: boolean }) => ({
+      ...(group.pageSort !== 'title' ? { pageSort: group.pageSort } : {}),
+      ...(group.collapsed ? { collapsed: true } : {}),
+    })
     return {
       wikiId,
       name: connector ? wikiDisplayName(connector) : null,
@@ -922,25 +926,30 @@ export class WikiService {
       ...(scope.collectFocus ? { collect: scope.collectFocus } : {}),
       pageCount: pages.length,
       // #1061 F1: kezelt kategóriáknál a fa (kulcsút, név, leírás, védettség) — üres kategória is.
+      // A sorrend ugyanaz, mint az ember menüjében (kategóriák `order` szerint, oldalak `pageSort` szerint, kiemeltek elöl).
       ...(categories
         ? {
             managedCategories: true,
             categories: groupPagesByTree(pages, categories).map((group) => ({
               category: group.path ?? group.name,
               name: group.name,
+              order: group.order,
               ...(group.description ? { description: group.description } : {}),
               ...(group.protected ? { approval: 'always' } : {}),
+              ...menuOf(group),
               ...rulesOf(group.path),
-              pages: group.pages.map(pageRow),
+              pages: group.pages.map((page) => ({ ...pageRow(page), ...(group.pinned.includes(page.path) ? { pinned: true } : {}) })),
               ...(group.children.length
                 ? {
                     subcategories: group.children.map((child) => ({
                       category: child.path,
                       name: child.name,
+                      order: child.order,
                       ...(child.description ? { description: child.description } : {}),
                       ...(child.protected ? { approval: 'always' } : {}),
+                      ...menuOf(child),
                       ...rulesOf(child.path),
-                      pages: child.pages.map(pageRow),
+                      pages: child.pages.map((page) => ({ ...pageRow(page), ...(child.pinned.includes(page.path) ? { pinned: true } : {}) })),
                     })),
                   }
                 : {}),
@@ -967,7 +976,7 @@ export class WikiService {
       hint: [
         'Read a page with kb_get_page wikiId + path; the rules are in path "WIKI.md".',
         categories
-          ? 'This wiki has managed categories: set a page category to one of the category keys above (e.g. "partners/payment"); other values are rejected. approval "always" = changes there wait for approval. template.requiredSections = headings a page in that category must have; start new pages from template.skeleton.'
+          ? 'This wiki has managed categories: set a page category to one of the category keys above (e.g. "partners/payment"); other values are rejected. Categories and pages are listed in the same order as the menu people see (order, then name; pinned pages first, pageSort title unless stated) — use this order when you refer to the menu. approval "always" = changes there wait for approval. template.requiredSections = headings a page in that category must have; start new pages from template.skeleton.'
           : null,
         fields
           ? 'Metadata: put metadataFields values in the page frontmatter (multi_select as a list); requiredFields must be filled. Set docStatus "draft" on pages you write and owner {email, role} when known; docStatus "approved" always waits for a human. Never mark a page reviewed unless the person you talk to says they reviewed it. Views: kb_list_index wikiId + docStatus, owner, reviewOverdue, category, orphans or field.<key> (comma-separated values).'
@@ -2699,6 +2708,7 @@ function briefingCategories(categories: WikiCategoryRow[]) {
     .map((node) => ({
       key: node.path,
       name: node.name,
+      order: node.sortOrder,
       ...(node.description ? { description: node.description.slice(0, 160) } : {}),
       ...(node.protected ? { approval: 'always' as const } : {}),
       // #1061 F3/F4: kötelező mezők és fejezetek (a szülőé is).

@@ -4,7 +4,9 @@
  * - kulcs-szabály és szabad szövegből képzett kulcs (bekapcsoláskor),
  * - fa és kulcsút (`partners/payment` — ez kerül az oldal `category` mezőjébe),
  * - kategória-szabály: `always` a kategóriára és az alkategóriáira is érvényes,
- * - oldalak csoportosítása a fa szerint (menü, `index.md`, `kb_list_index`).
+ * - oldalak csoportosítása a fa szerint (menü, `index.md`, `kb_list_index`),
+ * - menüsorrend: explicit `sortOrder` (nincs → név szerint, a sorrendezettek után),
+ *   kategóriánként oldalrendezés (`pageSort`) és kiemelt oldalak (`pinnedPages`).
  */
 import type { WikiIndexPage } from './kb-wiki'
 
@@ -20,14 +22,33 @@ export const WIKI_CATEGORY_MAX_COUNT = 200
 
 export type WikiCategoryApprovalRule = 'inherit' | 'always'
 
+/** Oldalak sorrendje egy kategórián belül. */
+export const WIKI_PAGE_SORTS = ['title', 'updated_desc', 'date_desc', 'manual'] as const
+export type WikiPageSort = (typeof WIKI_PAGE_SORTS)[number]
+/** Ennyi oldal emelhető ki egy kategória tetejére. */
+export const WIKI_CATEGORY_MAX_PINNED = 3
+/** Kézi sorrendnél ennyi oldal sorrendje tárolódik (a többi utánuk, cím szerint). */
+export const WIKI_CATEGORY_MAX_PAGE_ORDER = 500
+/** Az új kategória sorrend-lépésköze: 10, 20, 30… — közé renumbering nélkül beszúrható (pl. 25). */
+export const WIKI_CATEGORY_ORDER_STEP = 10
+
 export type WikiCategoryRow = {
   id: string
   key: string
   parentId: string | null
   name: string
   description: string | null
-  sortOrder: number
+  /** Menüsorrend a testvérek között; `null` = nincs megadva (a sorrendezettek után, név szerint). */
+  sortOrder: number | null
   approval: WikiCategoryApprovalRule
+  /** Oldalak sorrendje a kategórián belül (alapból cím szerint). */
+  pageSort?: WikiPageSort
+  /** Kiemelt oldalak path-jai: a rendezéstől függetlenül felül, ebben a sorrendben. */
+  pinnedPages?: string[]
+  /** `manual` rendezésnél az oldalak sorrendje (path-lista). */
+  pageOrder?: string[]
+  /** Alapból becsukott csoport a menüben. */
+  collapsed?: boolean
   /**
    * #1061 F2: „kapcsolt wiki” menüpont — egy másik tudástárra mutat. Nem tartalmi
    * kategória: oldal nem kerülhet bele, az `index.md`-be, a briefingbe és a fába sem kerül.
@@ -76,8 +97,70 @@ export function slugifyCategory(name: string): string {
     .replace(/-+$/g, '')
 }
 
-function byOrder(a: WikiCategoryRow, b: WikiCategoryRow) {
-  return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name) || a.key.localeCompare(b.key)
+/** A sorrendezett elemek elöl (növekvő `sortOrder`), utánuk a többi név szerint. */
+export function byOrder(a: Pick<WikiCategoryRow, 'sortOrder' | 'name' | 'key'>, b: Pick<WikiCategoryRow, 'sortOrder' | 'name' | 'key'>) {
+  const ao = a.sortOrder ?? Number.POSITIVE_INFINITY
+  const bo = b.sortOrder ?? Number.POSITIVE_INFINITY
+  return (ao === bo ? 0 : ao < bo ? -1 : 1) || a.name.localeCompare(b.name) || a.key.localeCompare(b.key)
+}
+
+/** Ami az oldal-rendezéshez kell; a hiányzó mező a cím / path szerinti sorrendre esik vissza. */
+export type WikiSortablePage = {
+  path: string
+  title?: string
+  updatedAt?: Date | string
+  createdAt?: Date | string
+  frontmatter?: unknown
+}
+
+function time(value: unknown): number | null {
+  if (!(value instanceof Date) && typeof value !== 'string') return null
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
+/** A `date_desc` dátuma: a frontmatter `date` vagy `source_date` mezője, különben a létrehozás. */
+export function wikiPageDate(page: WikiSortablePage): number {
+  const fm = page.frontmatter && typeof page.frontmatter === 'object' ? (page.frontmatter as Record<string, unknown>) : {}
+  return time(fm.date) ?? time(fm.source_date) ?? time(page.createdAt) ?? 0
+}
+
+const byTitle = (a: WikiSortablePage, b: WikiSortablePage) =>
+  (a.title ?? a.path).localeCompare(b.title ?? b.path) || a.path.localeCompare(b.path)
+
+/**
+ * Egy kategória oldalai menüsorrendben: előbb a kiemeltek (a megadott sorrendben),
+ * aztán a `pageSort` szerint. Kézi sorrendnél a listán nem szereplő oldal a végére, cím szerint.
+ */
+export function sortCategoryPages<P extends WikiSortablePage>(
+  pages: P[],
+  rule: Pick<WikiCategoryRow, 'pageSort' | 'pinnedPages' | 'pageOrder'> | null,
+): P[] {
+  const pinned = rule?.pinnedPages ?? []
+  const pinRank = new Map(pinned.map((path, i) => [path, i]))
+  const manual = new Map((rule?.pageOrder ?? []).map((path, i) => [path, i]))
+  const sort = rule?.pageSort ?? 'title'
+  const compare = (a: P, b: P): number => {
+    if (sort === 'updated_desc') return (time(b.updatedAt) ?? 0) - (time(a.updatedAt) ?? 0) || byTitle(a, b)
+    if (sort === 'date_desc') return wikiPageDate(b) - wikiPageDate(a) || byTitle(a, b)
+    if (sort === 'manual') {
+      const am = manual.get(a.path) ?? Number.POSITIVE_INFINITY
+      const bm = manual.get(b.path) ?? Number.POSITIVE_INFINITY
+      return (am === bm ? 0 : am < bm ? -1 : 1) || byTitle(a, b)
+    }
+    return byTitle(a, b)
+  }
+  return [...pages].sort((a, b) => {
+    const ap = pinRank.get(a.path) ?? Number.POSITIVE_INFINITY
+    const bp = pinRank.get(b.path) ?? Number.POSITIVE_INFINITY
+    return (ap === bp ? 0 : ap < bp ? -1 : 1) || compare(a, b)
+  })
+}
+
+/** A kiemelt path-ok közül azok, amelyek ténylegesen az oldalak között vannak. */
+function pinnedAmong(pages: WikiSortablePage[], rule: Pick<WikiCategoryRow, 'pinnedPages'>): string[] {
+  const present = new Set(pages.map((page) => page.path))
+  return (rule.pinnedPages ?? []).filter((path) => present.has(path))
 }
 
 /**
@@ -112,7 +195,7 @@ export type WikiLinkedItem = {
   id: string
   key: string
   name: string
-  sortOrder: number
+  sortOrder: number | null
   linkedConnectorId: string
   /** A felső szintű kategória kulcsa, ha alatta van; `null` = felső szintű menüpont. */
   parentKey: string | null
@@ -192,6 +275,12 @@ export type WikiTreeGroup<P> = {
   name: string
   description: string | null
   protected: boolean
+  /** Menüsorrend (`null` = nincs megadva); az „Uncategorized” csoportnál mindig `null`. */
+  order: number | null
+  pageSort: WikiPageSort
+  collapsed: boolean
+  /** A `pages` elején álló kiemelt oldalak path-jai. */
+  pinned: string[]
   /** Az oldalak száma az alkategóriákkal együtt. */
   pageCount: number
   pages: P[]
@@ -202,7 +291,7 @@ export type WikiTreeGroup<P> = {
  * Oldalak a fa szerint. Az üres kategóriák is megjelennek (a menüben látszik, hová
  * lehet írni); a fában nem szereplő kategóriájú oldalak a végén, „Uncategorized” alatt.
  */
-export function groupPagesByTree<P extends Pick<WikiIndexPage, 'path' | 'category'>>(
+export function groupPagesByTree<P extends Pick<WikiIndexPage, 'path' | 'category'> & WikiSortablePage>(
   pages: P[],
   rows: WikiCategoryRow[],
 ): Array<WikiTreeGroup<P>> {
@@ -210,42 +299,51 @@ export function groupPagesByTree<P extends Pick<WikiIndexPage, 'path' | 'categor
   const buckets = new Map<string, P[]>()
   const rest: P[] = []
   const known = new Set(flattenCategoryTree(tree).map((node) => node.path))
-  for (const page of [...pages].sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const page of pages) {
     const path = normalizeCategoryPath(page.category)
     if (path && known.has(path)) buckets.set(path, [...(buckets.get(path) ?? []), page])
     else rest.push(page)
   }
   const groups: Array<WikiTreeGroup<P>> = tree.map((node) => {
-    const children = node.children.map((child) => {
-      const own = buckets.get(child.path) ?? []
+    const view = (category: WikiCategoryNode) => {
+      const own = sortCategoryPages(buckets.get(category.path) ?? [], category)
       return {
-        path: child.path,
-        name: child.name,
-        description: child.description,
-        protected: child.protected,
+        path: category.path,
+        name: category.name,
+        description: category.description,
+        protected: category.protected,
+        order: category.sortOrder,
+        pageSort: category.pageSort ?? 'title',
+        collapsed: !!category.collapsed,
+        pinned: pinnedAmong(own, category),
         pageCount: own.length,
         pages: own,
       }
-    })
-    const own = buckets.get(node.path) ?? []
-    return {
-      path: node.path,
-      name: node.name,
-      description: node.description,
-      protected: node.protected,
-      pageCount: own.length + children.reduce((sum, child) => sum + child.pageCount, 0),
-      pages: own,
-      children,
     }
+    const children = node.children.map(view)
+    const self = view(node)
+    return { ...self, pageCount: self.pageCount + children.reduce((sum, child) => sum + child.pageCount, 0), children }
   })
   if (rest.length > 0) {
-    groups.push({ path: null, name: WIKI_UNCATEGORIZED, description: null, protected: false, pageCount: rest.length, pages: rest, children: [] })
+    groups.push({
+      path: null,
+      name: WIKI_UNCATEGORIZED,
+      description: null,
+      protected: false,
+      order: null,
+      pageSort: 'title',
+      collapsed: false,
+      pinned: [],
+      pageCount: rest.length,
+      pages: sortCategoryPages(rest, null),
+      children: [],
+    })
   }
   return groups
 }
 
 /** `index.md` a fa szerint: `## Kategória` → `### Alkategória` (D8 determinisztikus). */
-export function renderWikiTreeIndex(pages: WikiIndexPage[], rows: WikiCategoryRow[]): string {
+export function renderWikiTreeIndex(pages: Array<WikiIndexPage & WikiSortablePage>, rows: WikiCategoryRow[]): string {
   const line = (page: WikiIndexPage) => `- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}: ${page.summary}`
   const lines = ['# Index', '', `${pages.length} page${pages.length === 1 ? '' : 's'}.`]
   for (const group of groupPagesByTree(pages, rows)) {

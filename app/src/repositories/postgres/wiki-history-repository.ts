@@ -7,7 +7,7 @@ import type {
   WikiRetentionCounts,
   WikiStateRow,
 } from '../interfaces'
-import { revisionData } from './wiki-repository'
+import { replaceCategoryPagePath, revisionData } from './wiki-repository'
 
 /** A wiki-írást lezáró gateway-sorok, amelyek még döntésre / futásra várnak. */
 const OPEN_GATEWAY_STATUSES = ['requested', 'awaiting_approval', 'approved', 'executing'] as const
@@ -433,6 +433,7 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
             })
             if (updated.count === 0) throw new ErasureAborted()
             const page = await tx.wikiPage.findUniqueOrThrow({ where: { id: write.pageId } })
+            await replaceCategoryPagePath(tx, input.wikiId, write.previousPath, page.path)
             if (container) {
               await tx.knowledgeChunk.deleteMany({
                 where: { artifactId: container.id, path: { in: [write.previousPath, page.path] } },

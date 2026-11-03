@@ -245,6 +245,14 @@ enum WikiCategoryApproval {
   always
 }
 
+/// Oldalak sorrendje egy kategórián belül a menüben és a `kb_list_index`-ben.
+enum WikiPageSort {
+  title
+  updated_desc
+  date_desc
+  manual
+}
+
 /// #1061 F3: az oldal dokumentum-állapota (külön a technikai `WikiPageStatus`-tól).
 enum WikiDocStatus {
   draft
@@ -1266,8 +1274,21 @@ model WikiCategory {
    * Az agent ebből tudja, mi kerül ide (briefing, `kb_list_index`).
    */
   description       String?
-  sortOrder         Int                  @default(0) @map("sort_order")
+  /**
+   * Menüsorrend a testvérek között (10-es lépésköz); `null` = nincs megadva → a
+   * sorrendezettek után, név szerint.
+   */
+  sortOrder         Int?                 @map("sort_order")
   approval          WikiCategoryApproval @default(inherit)
+  /**
+   * Oldalak sorrendje a kategórián belül; `manual`-nál a `pageOrder` path-listája.
+   * A `pinnedPages` a rendezéstől függetlenül felülre kerül. Áthelyezéskor a path a listákban is cserélődik.
+   */
+  pageSort          WikiPageSort         @default(title) @map("page_sort")
+  pinnedPages       String[]             @default([]) @map("pinned_pages")
+  pageOrder         String[]             @default([]) @map("page_order")
+  /** Alapból becsukott csoport a menüben (a nyitott oldal csoportja ettől még kinyílik). */
+  collapsed         Boolean              @default(false)
   /**
    * #1061 F2: „kapcsolt wiki” menüpont — egy másik tudástárra mutat, oldal nem kerülhet bele.
    * Csak annak látszik, aki a kapcsolt wikit is látja; az `index.md`-be nem kerül.
