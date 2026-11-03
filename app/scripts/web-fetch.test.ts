@@ -278,6 +278,25 @@ async function main() {
     plain.destroy()
   })
 
+  await check('letöltés: a túl nagy kitömörített válasz a forrás-socketet is elengedi (end-to-end)', async () => {
+    // A `fetchWebPage` úton át: a méret-korlát elérésekor a kitömörítő lezárul, és vele a forrás is.
+    const frame = gzipSync(Buffer.alloc(8192, 0x61))
+    let sourceDestroyed = false
+    const httpGet: HttpGet = async () => {
+      const source = new Readable({ read() { this.push(frame) } })
+      source.on('close', () => { sourceDestroyed = true })
+      const body = decodeResponseBody(source, 'gzip')
+      source.on('error', (e) => body.destroy(e))
+      return { status: 200, headers: { 'content-type': 'text/html', 'content-encoding': 'gzip' }, body }
+    }
+    await assert.rejects(
+      fetchWebPage(normalizeWebUrl('https://mnb.hu/')!, { checkRedirect: () => null, httpGet, limits: { maxBytes: 1000 } }),
+      (e: unknown) => e instanceof WebFetchError && e.code === 'web_fetch_too_large',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(sourceDestroyed, true, 'a túl nagy válasz forrás-socketje lezárult')
+  })
+
   await check('letöltés: átirányítás követése, méret- és ugráskorlát, HTTP-hiba', async () => {
     const http = fakeHttp({
       'https://mnb.hu/': { status: 301, headers: { location: '/arfolyamok' } },

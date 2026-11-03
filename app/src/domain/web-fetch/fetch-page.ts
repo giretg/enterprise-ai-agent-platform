@@ -78,7 +78,11 @@ function decoded(body: Readable, encoding: string | undefined): Readable {
  */
 export function decodeResponseBody(res: Readable, encoding: string | undefined): Readable {
   const body = decoded(res, encoding)
-  if (body !== res) body.once('close', () => void (res.destroyed || res.destroy()))
+  if (body !== res) {
+    body.once('close', () => {
+      if (!res.destroyed) res.destroy()
+    })
+  }
   return body
 }
 
@@ -175,6 +179,9 @@ export async function fetchWebPage(
     if (cause?.code === 'ENOTFOUND' || cause?.code === 'EAI_AGAIN') throw new WebFetchError('web_fetch_failed', 'dns_not_found')
     throw new WebFetchError('web_fetch_failed', cause?.code ?? 'request_failed')
   } finally {
+    // A socket elengedése minden kilépési ágon a `res.body` megsemmisítésén múlik (túl nagy válasz,
+    // HTTP-hiba, átirányítás) — a `decodeResponseBody` ezt vezeti át a forrásra; a time-out a
+    // `controller.abort()`-tal külön is bontja a kapcsolatot.
     clearTimeout(timer)
   }
 }
