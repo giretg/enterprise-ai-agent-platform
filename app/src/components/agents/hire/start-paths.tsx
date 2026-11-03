@@ -39,6 +39,7 @@ export function StartPaths({
   onCloneSource,
   cloneLoading,
   cloneLoadedName,
+  cloneSharedMailboxNames,
   onBlank,
 }: {
   locale: HireLocale
@@ -55,6 +56,8 @@ export function StartPaths({
   onCloneSource: (id: string) => void
   cloneLoading: boolean
   cloneLoadedName: string | null
+  /** A forrás közös postafiókjai — a másolat ezeket is megkapja, ezért figyelmeztetünk. */
+  cloneSharedMailboxNames: string[]
   onBlank: () => void
 }) {
   const t = asTranslate(useTranslations('AgentCreate'))
@@ -227,6 +230,11 @@ export function StartPaths({
             <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-ink">
               <span className="font-semibold text-sage">{t('start.clone.loaded', { name: cloneLoadedName })}</span>
               <span className="mt-1 block text-ink-soft">{t('start.clone.copied')}</span>
+            </p>
+          ) : null}
+          {cloneLoadedName && cloneSharedMailboxNames.length > 0 ? (
+            <p className="rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-ink">
+              {t('start.clone.sharedMailbox', { names: cloneSharedMailboxNames.join(', ') })}
             </p>
           ) : null}
         </div>
