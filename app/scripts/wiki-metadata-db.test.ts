@@ -354,6 +354,62 @@ async function main() {
     }
   })
 
+  await check('beépített mező a frontmatterből nem hamisítható; archivált oldal MCP-n nem nézhető át', async () => {
+    const before = (await wikis.findPage(connector.id, 'partners/p.md'))!
+    assert.equal(before.docStatus, 'draft')
+    const spoof = await wikiService.write(caller(), {
+      pages: [{ path: 'partners/p.md', action: 'patch', baseVersion: before.contentHash, frontmatter: { doc_status: 'approved', last_reviewed: '2026-11-01', owner_user_id: admin.id } }],
+    })
+    assert.equal(spoof.ok, true, JSON.stringify(spoof))
+    const after = (await wikis.findPage(connector.id, 'partners/p.md'))!
+    assert.equal(after.docStatus, 'draft')
+    assert.equal(after.reviewedAt, before.reviewedAt)
+    const stored = after.frontmatter as Record<string, unknown>
+    assert.equal('doc_status' in stored || 'last_reviewed' in stored || 'owner_user_id' in stored, false)
+    const page = await wikiService.readPage({ tenantId: tenant.id, connectorId: connector.id, path: 'partners/p.md', explicitWiki: true })
+    assert.match(String(page!.text), /doc_status: "draft"/)
+    assert.doesNotMatch(String(page!.text), /doc_status: "approved"/)
+
+    const other = (await wikis.findPage(connector.id, 'legacy/other.md'))!
+    const archived = await wikiService.write(caller(), { pages: [{ path: 'legacy/other.md', action: 'archive', baseVersion: other.contentHash }] })
+    assert.equal(archived.ok, true, JSON.stringify(archived))
+    const review = await wikiService.write(caller(), { pages: [{ path: 'legacy/other.md', action: 'review' }] })
+    assert.equal(review.ok, false)
+    assert.deepEqual(codes(review), ['page_not_found'])
+    assert.equal((await wikis.findPage(connector.id, 'legacy/other.md'))!.reviewedAt, null)
+  })
+
+  await check('átállás: kétértelmű név szerint nem párosul gazda (az e-mail igen)', async () => {
+    const twinA = await mkUser('Kovács Anna')
+    await mkUser('Kovács Anna')
+    const connector2 = (await prisma.connector.create({
+      data: { tenantId: tenant.id, type: 'knowledge_base', name: `kb:shared:${randomUUID()}`, authMode: 'agent_owned', scope: 'single', config: { displayName: 'Másik wiki' } },
+    })) as Connector
+    const wiki2 = await wikis.ensureForConnector({ connectorId: connector2.id, schemaMd: '# WIKI' })
+    for (const [path, owner] of [['a.md', 'Kovács Anna'], ['b.md', twinA.email]] as const) {
+      const seeded = await wikis.applyChangeSet({
+        wikiId: wiki2.id,
+        connectorId: connector2.id,
+        changeSet: { create: { wikiId: wiki2.id, connectorId: connector2.id, agentId: agent.id, pages: [], approverScope: {} } },
+        ops: [{
+          kind: 'create',
+          page: { path, type: 'entity', title: path, summary: 's', category: null, body: 'régi', frontmatter: { owner }, sourceRefs: [], outLinks: [], status: 'published', contentHash: randomUUID() },
+          createdByAgentId: agent.id,
+          chunks: [],
+        }],
+        log: { op: 'ingest', title: 'seed', pagePaths: [path], actorAgentId: agent.id },
+        appliedAt: new Date(),
+      })
+      assert.equal(seeded.ok, true, JSON.stringify(seeded))
+    }
+    const metadata2 = new WikiMetadataService({ wikiConsole: { authorize: async () => ({ connector: connector2, access }) }, wiki: wikiService, wikis, structure, users: consoleRepo, audit })
+    const preview = (await metadata2.get(actor, connector2.id)).importPreview!
+    assert.deepEqual({ owner: preview.owner, ownerUnmatched: preview.ownerUnmatched }, { owner: 1, ownerUnmatched: 1 })
+    await metadata2.enable(actor, connector2.id)
+    assert.equal((await wikis.findPage(connector2.id, 'a.md'))!.ownerUserId, null)
+    assert.equal((await wikis.findPage(connector2.id, 'b.md'))!.ownerUserId, twinA.id)
+  })
+
   await check('mező törlése: a kategória kötelező listájából is kikerül, az értékek maradnak; kikapcsolva a nézet leáll', async () => {
     const field = (await metadata.get(actor, connector.id)).fields.find((row) => row.key === 'country')!
     await metadata.removeField(actor, connector.id, field.id)

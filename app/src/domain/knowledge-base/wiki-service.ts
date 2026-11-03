@@ -89,6 +89,7 @@ import {
 } from '@/lib/wiki-categories'
 import {
   EMPTY_WIKI_META,
+  WIKI_BUILTIN_FRONTMATTER_KEYS,
   WIKI_FIELD_MAX_COUNT,
   categoryMatches,
   categoryRulesFor,
@@ -2201,6 +2202,11 @@ export class WikiService {
           conflicts.push(conflictPayload(existing, 'the page changed while its metadata was edited'))
           continue
         }
+        // „Átnéztem” csak élő oldalra (a felület gombja is csak ott látszik); az átemelés archiváltra is fut.
+        if (page.meta?.reviewedByUserId && existing.status !== 'published') {
+          error(path, 'page_not_found', `No published page at ${path} to mark reviewed.`)
+          continue
+        }
         const current = stateFromRow(existing)
         planned.push({
           input: page,
@@ -2355,6 +2361,9 @@ export class WikiService {
       for (const page of planned.filter(validatesContent)) {
         const before = page.existing ? stripManagedFrontmatter(page.existing.frontmatter) : {}
         const frontmatter = { ...page.state.frontmatter }
+        // A beépített mezők frontmatter-neve foglalt: az állapot / gazda / átnézés csak a saját
+        // mezőjén át változhat (D5). A `kb_get_page` szövegéből visszamásolt érték így sem hiba.
+        for (const key of WIKI_BUILTIN_FRONTMATTER_KEYS) delete frontmatter[key]
         for (const def of input.fields) {
           if (!(def.key in frontmatter)) continue
           const raw = frontmatter[def.key]

@@ -125,6 +125,13 @@ export const WIKI_RESERVED_FIELD_KEYS = new Set([
   'review_cycle_days',
 ])
 
+/**
+ * A beépített mezők OKF-frontmatter neve (`renderWikiPageMarkdown`). Metaadat-mezős wikin az
+ * agent ezeket nem írhatja a frontmatterbe: az állapot, a gazda és az átnézés csak a saját
+ * argumentumán / emberi műveleten át változhat (D5, §7).
+ */
+export const WIKI_BUILTIN_FRONTMATTER_KEYS = ['doc_status', 'owner_user_id', 'owner_role', 'last_reviewed', 'reviewed_at', 'review_cycle_days'] as const
+
 /** A kötelezővé tehető beépített mező (kategóriánként). */
 export const WIKI_REQUIRABLE_BUILTINS = ['owner'] as const
 

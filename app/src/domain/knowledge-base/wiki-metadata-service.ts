@@ -127,11 +127,16 @@ export class WikiMetadataService {
    */
   private async importPlan(tenantId: string, connectorId: string) {
     const [pages, users] = await Promise.all([this.allPages(connectorId), this.deps.users.listTenantUsers(tenantId)])
-    const byKey = new Map<string, string>()
+    // E-mail egyedi; a név nem feltétlenül — kétértelmű név nem párosul (a szöveg a frontmatterben marad).
+    const byEmail = new Map<string, string>()
+    const byName = new Map<string, string | null>()
     for (const user of users) {
-      byKey.set(user.label.trim().toLowerCase(), user.id)
-      if (user.email) byKey.set(user.email.trim().toLowerCase(), user.id)
+      if (user.email) byEmail.set(user.email.trim().toLowerCase(), user.id)
+      const name = user.label.trim().toLowerCase()
+      const seen = byName.get(name)
+      byName.set(name, seen === undefined || seen === user.id ? user.id : null)
     }
+    const matchOwner = (text: string) => byEmail.get(text.toLowerCase()) ?? byName.get(text.toLowerCase()) ?? null
     const labels = new Map(users.map((user) => [user.id, user.label]))
     const counts = { docStatus: 0, owner: 0, ownerUnmatched: 0, reviewedAt: 0 }
     const changes: Array<{ path: string; meta: Partial<WikiPageMeta>; frontmatter: Record<string, unknown>; baseVersion: string }> = []
@@ -148,7 +153,7 @@ export class WikiMetadataService {
         consumed.push('status')
       }
       if (legacy.owner && !current.ownerUserId) {
-        const ownerId = byKey.get(legacy.owner.toLowerCase())
+        const ownerId = matchOwner(legacy.owner)
         if (ownerId) {
           meta.ownerUserId = ownerId
           consumed.push('owner')

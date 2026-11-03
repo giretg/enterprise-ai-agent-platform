@@ -411,13 +411,14 @@ export function renderWikiPageMarkdown(state: Omit<WikiPageState, 'path'>): stri
     title: state.title,
     summary: state.summary,
     ...(state.category ? { category: state.category } : {}),
-    // #1061 F3: a beépített mezők is OKF-frontmatterként (exportban, olvasáskor).
+    ...state.frontmatter,
+    // #1061 F3: a beépített mezők is OKF-frontmatterként (exportban, olvasáskor). A frontmatter
+    // után jönnek: egy szabad `doc_status` / `last_reviewed` kulcs nem írhatja felül a valódi értéket.
     ...(meta?.docStatus ? { doc_status: meta.docStatus } : {}),
     ...(meta?.ownerUserId ? { owner_user_id: meta.ownerUserId } : {}),
     ...(meta?.ownerRole ? { owner_role: meta.ownerRole } : {}),
     ...(meta?.reviewedAt ? { last_reviewed: meta.reviewedAt.slice(0, 10) } : {}),
     ...(meta?.reviewCycleDays ? { review_cycle_days: meta.reviewCycleDays } : {}),
-    ...state.frontmatter,
     ...(state.sources.length ? { sources: state.sources } : {}),
   }
   const lines = Object.entries(fm).map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
