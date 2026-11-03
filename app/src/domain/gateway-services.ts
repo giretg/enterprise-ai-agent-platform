@@ -58,6 +58,7 @@ import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiService } from '@/domain/knowledge-base/wiki-service'
 import { WikiConsoleService } from '@/domain/knowledge-base/wiki-console-service'
 import { WikiCategoryService } from '@/domain/knowledge-base/wiki-category-service'
+import { WikiMetadataService } from '@/domain/knowledge-base/wiki-metadata-service'
 import { WikiHistoryService } from '@/domain/knowledge-base/wiki-history-service'
 import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
@@ -235,6 +236,7 @@ const wikiAccessService = new WikiAccessService({
   audit: repositories.audit,
 })
 
+const wikiConsoleRepository = new PostgresWikiConsoleRepository()
 const wikiService = new WikiService({
   wikis: repositories.wikis,
   documents: repositories.documents,
@@ -248,9 +250,15 @@ const wikiService = new WikiService({
     const user = await repositories.users.findById(userId)
     return user ? user.name || user.email : null
   },
+  // #1061 F3 D7: a gazda a szervezet aktív tagja.
+  async findTenantUser(tenantId, query) {
+    const users = await wikiConsoleRepository.listTenantUsers(tenantId)
+    const email = query.email?.trim().toLowerCase()
+    const user = users.find((row) => (query.userId ? row.id === query.userId : !!email && row.email.toLowerCase() === email))
+    return user ? { id: user.id, label: user.label } : null
+  },
 })
 
-const wikiConsoleRepository = new PostgresWikiConsoleRepository()
 const wikiConsoleService = new WikiConsoleService({
   documents: repositories.documents,
   connectors: repositories.connectors,
@@ -270,6 +278,16 @@ const wikiCategoryService = new WikiCategoryService({
   wiki: wikiService,
   wikis: repositories.wikis,
   structure: repositories.wikiStructure,
+  audit: repositories.audit,
+})
+
+// #1061 F3: metaadat-mezők és nézetek (Control Plane).
+const wikiMetadataService = new WikiMetadataService({
+  wikiConsole: wikiConsoleService,
+  wiki: wikiService,
+  wikis: repositories.wikis,
+  structure: repositories.wikiStructure,
+  users: wikiConsoleRepository,
   audit: repositories.audit,
 })
 
@@ -799,6 +817,7 @@ export const services = {
   wikiConsole: wikiConsoleService,
   wikiHistory: wikiHistoryService,
   wikiCategories: wikiCategoryService,
+  wikiMetadata: wikiMetadataService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

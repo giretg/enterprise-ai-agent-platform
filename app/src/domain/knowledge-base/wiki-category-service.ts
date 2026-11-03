@@ -23,6 +23,13 @@ import {
   type WikiCategoryApprovalRule,
   type WikiCategoryRow,
 } from '@/lib/wiki-categories'
+import {
+  WIKI_REQUIRABLE_BUILTINS,
+  WIKI_REVIEW_CYCLE_MAX_DAYS,
+  WIKI_SECTIONS_MAX_COUNT,
+  WIKI_TEMPLATE_MAX_CHARS,
+  uniqueSections,
+} from '@/lib/wiki-metadata'
 import { WikiConsoleError, type WikiConsoleActor, type WikiConsoleService } from './wiki-console-service'
 import type { WikiService } from './wiki-service'
 
@@ -33,6 +40,7 @@ export type WikiCategoryDeps = {
   structure: WikiStructureRepository
   audit: Pick<AuditRepository, 'append'>
 }
+
 
 export type WikiCategoryInput = {
   key: string
@@ -50,7 +58,16 @@ export type WikiCategoryPatch = {
   description?: string | null
   sortOrder?: number
   approval?: WikiCategoryApprovalRule
+  /** #1061 F3: átnézési ciklus (nap, `null` = nincs) és kötelező mezők (egyedi kulcs vagy `owner`). */
+  reviewCycleDays?: number | null
+  requiredFields?: string[]
+  /** #1061 F4: oldalsablon. */
+  requiredSections?: string[]
+  sectionRule?: 'warn' | 'error'
+  templateMd?: string | null
 }
+
+const RULE_KEYS = ['reviewCycleDays', 'requiredFields', 'requiredSections', 'sectionRule', 'templateMd'] as const
 
 /** A kategória-fa nem változhat úgy, hogy oldal vesszen el: ilyenkor `conflict`-tal áll meg. */
 export class WikiCategoryError extends Error {
@@ -101,8 +118,15 @@ export class WikiCategoryService {
       }
     })
     const known = new Set(flattenCategoryTree(buildCategoryTree(rows)).map((node) => node.path))
+    const fieldSettings = await this.deps.structure.fieldSettings?.(wikiId)
     return {
       managed,
+      /** #1061 F3: kötelezővé tehető mezők (a metaadat-mezők bekapcsolva). */
+      fieldsManaged: fieldSettings?.managed ?? false,
+      requirableFields: [
+        ...WIKI_REQUIRABLE_BUILTINS.map((key) => ({ key, name: null as string | null, builtin: true })),
+        ...(fieldSettings?.fields ?? []).map((field) => ({ key: field.key, name: field.name as string | null, builtin: false })),
+      ],
       maxCategories: WIKI_CATEGORY_MAX_COUNT,
       categories: tree,
       /** Oldalak, amelyek kategóriája nincs a fában (kategória nélküliek is). */
@@ -240,7 +264,9 @@ export class WikiCategoryService {
       if (parent.parentId || rows.some((row) => row.parentId === current.id)) throw new WikiCategoryError('too_deep')
     }
     const oldPath = pathOf(rows, current)
+    const rules = await this.cleanRules(wikiId, current, patch)
     const next = {
+      ...rules,
       ...(patch.name !== undefined ? { name: cleanName(patch.name) } : {}),
       ...(patch.description !== undefined ? { description: cleanDescription(patch.description) } : {}),
       ...(patch.sortOrder !== undefined ? { sortOrder: Math.max(0, Math.min(100_000, Math.floor(patch.sortOrder))) } : {}),
@@ -276,6 +302,12 @@ export class WikiCategoryService {
         wikiId,
         categoryId,
         ...(parentChanged ? { parentId: patch.parentId ?? null, pageCount: movedPages } : {}),
+        // #1061 F3/F4 NFR-3: a szabály alakja, tartalom (mezőnév, fejezetcím, váz) nélkül.
+        ...('reviewCycleDays' in rules ? { reviewCycleDays: rules.reviewCycleDays } : {}),
+        ...(rules.requiredFields ? { requiredFieldCount: rules.requiredFields.length } : {}),
+        ...(rules.requiredSections ? { requiredSectionCount: rules.requiredSections.length } : {}),
+        ...(rules.sectionRule ? { sectionRule: rules.sectionRule } : {}),
+        ...('templateMd' in rules ? { templateSet: !!rules.templateMd } : {}),
       })
     }
     return { id: categoryId, movedPages }
@@ -294,6 +326,39 @@ export class WikiCategoryService {
     if (!(await this.deps.structure.deleteCategory(wikiId, categoryId))) throw new WikiCategoryError('not_empty')
     await this.audit(connector, actor, 'kb.wiki.category.deleted', categoryId, { wikiId, categoryId })
     return { deleted: true }
+  }
+
+  /** #1061 F3/F4: a kategória-szabályok ellenőrzése; a kapcsolt wiki menüpontjára nem tehető szabály. */
+  private async cleanRules(wikiId: string, current: WikiCategoryRow, patch: WikiCategoryPatch) {
+    const out: Partial<Pick<WikiCategoryRow, (typeof RULE_KEYS)[number]>> = {}
+    if (!RULE_KEYS.some((key) => patch[key] !== undefined)) return out
+    if (current.linkedConnectorId) throw new WikiConsoleError('invalid_args')
+    if (patch.reviewCycleDays !== undefined) {
+      const days = patch.reviewCycleDays
+      if (days !== null && (!Number.isInteger(days) || days < 1 || days > WIKI_REVIEW_CYCLE_MAX_DAYS)) throw new WikiConsoleError('invalid_args')
+      out.reviewCycleDays = days
+    }
+    if (patch.requiredFields !== undefined) {
+      const known = new Set<string>([...WIKI_REQUIRABLE_BUILTINS, ...((await this.deps.structure.fieldSettings?.(wikiId))?.fields ?? []).map((field) => field.key)])
+      const keys = [...new Set(patch.requiredFields.map((key) => key.trim()).filter(Boolean))]
+      if (keys.some((key) => !known.has(key))) throw new WikiConsoleError('invalid_args')
+      out.requiredFields = keys
+    }
+    if (patch.requiredSections !== undefined) {
+      const sections = uniqueSections(patch.requiredSections)
+      if (sections.length > WIKI_SECTIONS_MAX_COUNT) throw new WikiConsoleError('invalid_args')
+      out.requiredSections = sections
+    }
+    if (patch.sectionRule !== undefined) {
+      if (patch.sectionRule !== 'warn' && patch.sectionRule !== 'error') throw new WikiConsoleError('invalid_args')
+      out.sectionRule = patch.sectionRule
+    }
+    if (patch.templateMd !== undefined) {
+      const text = (patch.templateMd ?? '').trim()
+      if (text.length > WIKI_TEMPLATE_MAX_CHARS) throw new WikiConsoleError('invalid_args')
+      out.templateMd = text || null
+    }
+    return out
   }
 
   private async recategorize(
@@ -355,6 +420,11 @@ function nodeView(node: ReturnType<typeof buildCategoryTree>[number]) {
     sortOrder: node.sortOrder,
     approval: node.approval,
     protected: node.protected,
+    reviewCycleDays: node.reviewCycleDays ?? null,
+    requiredFields: node.requiredFields ?? [],
+    requiredSections: node.requiredSections ?? [],
+    sectionRule: node.sectionRule ?? 'warn',
+    templateMd: node.templateMd ?? null,
   }
 }
 

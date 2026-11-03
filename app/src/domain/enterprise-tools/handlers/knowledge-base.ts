@@ -7,6 +7,7 @@ import type {
   WikiWriteOutcome,
 } from '@/domain/knowledge-base/wiki-service'
 import type { WikiSnapshotConnector } from '@/lib/wiki-access'
+import { parseWikiViewFilter } from '@/lib/wiki-metadata'
 import {
   KB_GET_DOCUMENT_TOOL,
   KB_GET_PAGE_TOOL,
@@ -160,6 +161,13 @@ export async function executeKnowledgeBaseTool(
   if (toolName === KB_LIST_INDEX_TOOL) {
     const pathPrefix = typeof args.pathPrefix === 'string' ? args.pathPrefix : undefined
     const artifactId = typeof args.artifactId === 'string' ? args.artifactId : undefined
+    // #1061 F3: szűrő-paraméterekkel a generált nézet (tervezetek, lejárt átnézés, gazdánként…).
+    const filter = wiki && caller && !pathPrefix && !artifactId ? parseWikiViewFilter(args) : null
+    if (filter && wiki && caller) {
+      const view = await wiki.viewFor(ctx.tenantId, ctx.connectorId, caller, filter)
+      if (!view.ok) throw new KbToolError(view.code, view.details)
+      return { wikiView: view.result }
+    }
     const listing = await service.listIndex({
       connectorId: ctx.connectorId,
       pathPrefix,

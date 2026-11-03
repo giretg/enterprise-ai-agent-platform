@@ -245,6 +245,26 @@ enum WikiCategoryApproval {
   always
 }
 
+/// #1061 F3: az oldal dokumentum-állapota (külön a technikai `WikiPageStatus`-tól).
+enum WikiDocStatus {
+  draft
+  approved
+}
+
+/// #1061 F3: wikinként definiált egyedi metaadat-mező típusa.
+enum WikiFieldType {
+  text
+  select
+  multi_select
+  date
+}
+
+/// #1061 F4: hiányzó kötelező fejezet — figyelmeztetés vagy hiba.
+enum WikiSectionRule {
+  warn
+  error
+}
+
 enum KnowledgeBaseVisibility {
   shared
   private_to_user
@@ -1149,11 +1169,16 @@ model AgentWiki {
    * #1061 F1: kezelt kategória-fa — bekapcsolva csak a `WikiCategory` kulcsai használhatók.
    */
   managedCategories   Boolean  @default(false) @map("managed_categories")
+  /**
+   * #1061 F3: metaadat-mezők (állapot, gazda, átnézés + egyedi mezők) — kikapcsolva minden a régi.
+   */
+  managedFields       Boolean  @default(false) @map("managed_fields")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   connector   Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   categories  WikiCategory[]
+  fields      WikiField[]
   pages       WikiPage[]
   changeSets  WikiChangeSet[]
   logEntries  WikiLogEntry[]
@@ -1192,6 +1217,19 @@ model WikiPage {
   createdByAgentId String?        @map("created_by_agent_id") @db.Uuid
   createdByUserId  String?        @map("created_by_user_id") @db.Uuid
   updatedByAgentId String?        @map("updated_by_agent_id") @db.Uuid
+  /**
+   * #1061 F3 beépített mezők (saját oszlopok, nem a `frontmatter`). A `docStatus`
+   * `approved` értékét agent csak jóváhagyással kaphatja (D5); az átnézés csak emberi.
+   */
+  docStatus        WikiDocStatus? @map("doc_status")
+  ownerUserId      String?        @map("owner_user_id") @db.Uuid
+  ownerRole        String?        @map("owner_role")
+  reviewedAt       DateTime?      @map("reviewed_at") @db.Timestamptz
+  reviewedByUserId String?        @map("reviewed_by_user_id") @db.Uuid
+  /**
+   * Oldalszintű felülírás; hiánya = a kategória ciklusa.
+   */
+  reviewCycleDays  Int?           @map("review_cycle_days")
   createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1201,6 +1239,12 @@ model WikiPage {
 
   @@unique([connectorId, path])
   @@index([wikiId, status])
+  /**
+   * #1061 F3: nézetek (tervezetek, gazdánként, egyedi mező szerint).
+   */
+  @@index([connectorId, docStatus])
+  @@index([connectorId, ownerUserId])
+  @@index([frontmatter(ops: JsonbPathOps)], type: Gin)
   /**
    * #1061 F1: „Mi hivatkozik erre?” — `out_links @> ARRAY[path]`.
    */
@@ -1229,6 +1273,17 @@ model WikiCategory {
    * Csak annak látszik, aki a kapcsolt wikit is látja; az `index.md`-be nem kerül.
    */
   linkedConnectorId String?              @map("linked_connector_id") @db.Uuid
+  /**
+   * #1061 F3: alapértelmezett átnézési ciklus (nap) és a kötelező mezők kulcsai.
+   */
+  reviewCycleDays   Int?                 @map("review_cycle_days")
+  requiredFields    String[]             @default([]) @map("required_fields")
+  /**
+   * #1061 F4: oldalsablon — kötelező fejezetek, a hiányuk súlya, induló váz.
+   */
+  requiredSections  String[]             @default([]) @map("required_sections")
+  sectionRule       WikiSectionRule      @default(warn) @map("section_rule")
+  templateMd        String?              @map("template_md") @db.Text
   createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1240,6 +1295,28 @@ model WikiCategory {
   @@unique([wikiId, key])
   @@index([wikiId, parentId])
   @@map("wiki_categories")
+}
+
+/**
+ * #1061 F3: wikinként definiált egyedi metaadat-mező (pl. termék, ország). Az érték
+ * az oldal `frontmatter`-ében él (OKF-export); a nem definiált kulcsok szabadok maradnak.
+ */
+model WikiField {
+  id        String        @id @default(uuid()) @db.Uuid
+  wikiId    String        @map("wiki_id") @db.Uuid
+  key       String
+  name      String
+  type      WikiFieldType
+  options   String[]      @default([])
+  help      String?
+  sortOrder Int           @default(0) @map("sort_order")
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  wiki AgentWiki @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+
+  @@unique([wikiId, key])
+  @@map("wiki_fields")
 }
 
 /**
@@ -1319,6 +1396,10 @@ model WikiPageRevision {
   type             WikiPageType?
   category         String?
   sourceRefs       Json?           @map("source_refs")
+  /**
+   * #1061 F3: a beépített mezők pillanatképe (NFR-4); NULL = a bevezetés előtti revízió.
+   */
+  meta             Json?
   createdByAgentId String?         @map("created_by_agent_id") @db.Uuid
   createdByUserId  String?         @map("created_by_user_id") @db.Uuid
   /**

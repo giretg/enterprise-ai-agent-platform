@@ -32,6 +32,8 @@ Inbox across sessions: kb_list_index inbox:true wikiId returns items and batch t
 
 History: when the briefing shows new changes, call kb_wiki_changes once at the start (a summary per change, no text) and read only the pages you need. kb_get_page asOf (change number or date) shows an earlier state, read-only. To undo a wrong change use kb_wiki_revert (changeSeq, or path + version) only when the user asks or the error is clear; it always waits for approval.
 
+Metadata and templates (when kb_list_index shows metadataFields or a category template): set docStatus "draft" on pages you write and owner {email, role} when you know who is responsible; put custom field values (product, country…) in frontmatter using the listed options; fill every requiredFields of the category. Requesting docStatus "approved" always waits for a human approver — say so. Never mark a page reviewed on your own: action "review" only when the person you talk to says they checked the page. When the briefing shows overdue reviews or drafts, you may list them (kb_list_index reviewOverdue:true / docStatus:"draft") and suggest updates to the owner. New pages in a templated category start from template.skeleton and keep its required headings.
+
 Contradictions: retain both claims with their dates and citations, mark ⚠️ contradiction explicitly, and use the newer source_date for current state only when it supersedes the earlier claim. Historical measurements stay in chronological order. Health wikis separate facts from interpretation and copy values, units, reference ranges and page citations exactly.
 
 Good: read one lab report, write its dated source page and append its cited measurements to existing labs pages, finalize it, then take the next report.

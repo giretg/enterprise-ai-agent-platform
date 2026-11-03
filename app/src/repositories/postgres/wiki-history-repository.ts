@@ -485,6 +485,8 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
               body: '',
               frontmatter: {},
               sourceRefs: Prisma.DbNull,
+              // #1061 F3: a beépített mezők pillanatképe is kitakarandó.
+              meta: Prisma.DbNull,
               category: null,
               erasedAt: input.appliedAt,
               erasureId: erasure.id,

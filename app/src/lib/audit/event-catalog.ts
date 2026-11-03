@@ -198,6 +198,14 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.category.updated',
   'kb.wiki.category.deleted',
   'kb.wiki.category.rule_changed',
+  // #1061 F3: metaadat-mezők (séma, átnézés, beépített mezők) és F4 sablon (category.updated).
+  'kb.wiki.fields.enabled',
+  'kb.wiki.fields.disabled',
+  'kb.wiki.field.created',
+  'kb.wiki.field.updated',
+  'kb.wiki.field.deleted',
+  'kb.wiki.page.reviewed',
+  'kb.wiki.page.metadata_changed',
   // #1061 F2: „csak a kijelöltek” névsor (D9: az admin önfelvétele külön esemény).
   'kb.members.added',
   'kb.members.removed',

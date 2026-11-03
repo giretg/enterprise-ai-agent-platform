@@ -26,7 +26,7 @@ function authorLabel(author: Author, t: HistoryT) {
   return `${author.name ?? '—'}${author.kind === 'agent' ? ` (${t('agent')})` : ''}`
 }
 
-const FIELD_KEYS = ['title', 'summary', 'path', 'status', 'category', 'sources'] as const
+const FIELD_KEYS = ['title', 'summary', 'path', 'status', 'category', 'sources', 'docStatus', 'owner', 'reviewed', 'reviewCycle'] as const
 type FieldKey = (typeof FIELD_KEYS)[number]
 
 export function DiffRows({ rows, unchangedLabel }: { rows: LineDiffRow[]; unchangedLabel: (count: number) => string }) {

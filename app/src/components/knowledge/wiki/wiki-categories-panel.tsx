@@ -28,7 +28,23 @@ type Node = {
   archived: number
   totalPublished?: number
   children: Node[]
+  /** #1061 F3/F4: átnézési ciklus, kötelező mezők, oldalsablon. */
+  reviewCycleDays?: number | null
+  requiredFields?: string[]
+  requiredSections?: string[]
+  sectionRule?: 'warn' | 'error'
+  templateMd?: string | null
 }
+
+type RulesPatch = {
+  reviewCycleDays?: number | null
+  requiredFields?: string[]
+  requiredSections?: string[]
+  sectionRule?: 'warn' | 'error'
+  templateMd?: string | null
+}
+
+type Requirable = { key: string; name: string | null; builtin: boolean }
 
 export type WikiCategoriesData = {
   managed: boolean
@@ -47,6 +63,9 @@ export type WikiCategoriesData = {
     targetVisible: boolean
   }>
   linkableWikis: Array<{ connectorId: string; name: string }>
+  /** #1061 F3: kötelezővé tehető mezők (csak bekapcsolt metaadat-mezőknél). */
+  fieldsManaged?: boolean
+  requirableFields?: Requirable[]
 }
 
 const CATEGORY_ERRORS = [
@@ -199,6 +218,7 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
                 {data.categories.map((node) => (
                   <li key={node.id}>
                     <CategoryRow
+                      requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
                       node={node}
                       parent={null}
                       topLevel={topLevel}
@@ -215,6 +235,7 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
                         {node.children.map((child) => (
                           <li key={child.id} className="pl-6">
                             <CategoryRow
+                              requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
                               node={child}
                               parent={node}
                               topLevel={topLevel}
@@ -289,6 +310,7 @@ function CategoryRow({
   pending,
   onSave,
   onDelete,
+  requirable,
 }: {
   node: Node
   parent: Node | null
@@ -296,8 +318,10 @@ function CategoryRow({
   editing: boolean
   onEdit: () => void
   pending: boolean
-  onSave: (patch: { name?: string; description?: string | null; parentId?: string | null; sortOrder?: number; approval?: Approval }) => void
+  onSave: (patch: { name?: string; description?: string | null; parentId?: string | null; sortOrder?: number; approval?: Approval } & RulesPatch) => void
   onDelete: () => void
+  /** `null` = a metaadat-mezők ki vannak kapcsolva (ciklus és kötelező mező nem állítható). */
+  requirable: Requirable[] | null
 }) {
   const t = useTranslations('ControlPlane.wiki.categories')
   const tw = useTranslations('ControlPlane.wiki')
@@ -306,7 +330,14 @@ function CategoryRow({
   const [parentId, setParentId] = useState(node.parentId ?? '')
   const [sortOrder, setSortOrder] = useState(node.sortOrder)
   const [approval, setApproval] = useState<Approval>(node.approval)
+  const [cycle, setCycle] = useState(node.reviewCycleDays ? String(node.reviewCycleDays) : '')
+  const [required, setRequired] = useState<string[]>(node.requiredFields ?? [])
+  const [sections, setSections] = useState((node.requiredSections ?? []).join('\n'))
+  const [sectionRule, setSectionRule] = useState<'warn' | 'error'>(node.sectionRule ?? 'warn')
+  const [template, setTemplate] = useState(node.templateMd ?? '')
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const sectionList = sections.split('\n').map((line) => line.replace(/^#+\s*/, '').trim()).filter(Boolean)
+  const cycleValue = cycle.trim() ? Math.max(1, Math.min(3650, Math.floor(Number(cycle)) || 0)) || null : null
   const pages = node.totalPublished ?? node.published
   const empty = node.published + node.archived === 0 && node.children.length === 0
   const inheritedProtection = !!parent && parent.approval === 'always'
@@ -323,6 +354,17 @@ function CategoryRow({
         {node.protected ? (
           <span className="rounded-full bg-amber-100 px-2 text-xs text-amber-800">
             {node.approval === 'always' ? t('ruleAlways') : t('ruleInherited')}
+          </span>
+        ) : null}
+        {node.reviewCycleDays && requirable ? (
+          <span className="rounded-full bg-ink/5 px-2 text-xs text-ink-soft">{t('rules.cycleBadge', { days: node.reviewCycleDays })}</span>
+        ) : null}
+        {node.requiredFields?.length && requirable ? (
+          <span className="rounded-full bg-ink/5 px-2 text-xs text-ink-soft">{t('rules.fieldsBadge', { count: node.requiredFields.length })}</span>
+        ) : null}
+        {node.requiredSections?.length || node.templateMd ? (
+          <span className="rounded-full bg-ink/5 px-2 text-xs text-ink-soft" data-testid="wiki-category-template-badge">
+            {t('rules.templateBadge', { count: node.requiredSections?.length ?? 0 })}
           </span>
         ) : null}
         <span className="ml-auto flex gap-2 text-xs">
@@ -358,12 +400,18 @@ function CategoryRow({
           className="mt-3 grid gap-3 sm:grid-cols-2"
           onSubmit={(event) => {
             event.preventDefault()
+            const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((item, i) => item === b[i])
             onSave({
               ...(name !== node.name ? { name } : {}),
               ...(description !== (node.description ?? '') ? { description: description || null } : {}),
               ...(parentChanged ? { parentId: parentId || null } : {}),
               ...(sortOrder !== node.sortOrder ? { sortOrder } : {}),
               ...(approval !== node.approval ? { approval } : {}),
+              ...(requirable && cycleValue !== (node.reviewCycleDays ?? null) ? { reviewCycleDays: cycleValue } : {}),
+              ...(requirable && !sameList(required, node.requiredFields ?? []) ? { requiredFields: required } : {}),
+              ...(!sameList(sectionList, node.requiredSections ?? []) ? { requiredSections: sectionList } : {}),
+              ...(sectionRule !== (node.sectionRule ?? 'warn') ? { sectionRule } : {}),
+              ...(template.trim() !== (node.templateMd ?? '') ? { templateMd: template.trim() || null } : {}),
             })
           }}
         >
@@ -439,6 +487,101 @@ function CategoryRow({
               {t('movePreview', { count: node.published + node.archived, path: movedPath })}
             </p>
           ) : null}
+
+          <fieldset className="space-y-3 rounded-lg border border-line/70 px-3 py-2 sm:col-span-2" data-testid="wiki-category-rules">
+            <legend className="px-1 text-sm font-medium text-ink">{t('rules.title')}</legend>
+            <p className="text-xs text-ink-soft">{parent ? t('rules.introChild', { parent: parent.name }) : t('rules.intro')}</p>
+            {requirable ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-sm">
+                  <span className="mb-1 flex items-center text-ink">
+                    {t('rules.cycleLabel')}
+                    <HelpHint>{t('rules.cycleHelp')}</HelpHint>
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3650}
+                    value={cycle}
+                    placeholder={t('rules.cyclePlaceholder')}
+                    onChange={(e) => setCycle(e.target.value)}
+                    className={inputClass}
+                    data-testid="wiki-category-cycle"
+                  />
+                </label>
+                <div className="text-sm">
+                  <span className="mb-1 flex items-center text-ink">
+                    {t('rules.requiredLabel')}
+                    <HelpHint>{t('rules.requiredHelp')}</HelpHint>
+                  </span>
+                  {requirable.length <= 1 ? <p className="text-xs text-ink-faint">{t('rules.requiredNoFields')}</p> : null}
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {requirable.map((field) => (
+                      <label key={field.key} className="flex items-center gap-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={required.includes(field.key)}
+                          onChange={(e) =>
+                            setRequired(e.target.checked ? [...required, field.key] : required.filter((key) => key !== field.key))
+                          }
+                        />
+                        {field.builtin ? t('rules.ownerField') : field.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-ink-faint">{t('rules.fieldsOff')}</p>
+            )}
+            <label className="block text-sm">
+              <span className="mb-1 flex items-center text-ink">
+                {t('rules.sectionsLabel')}
+                <HelpHint>{t('rules.sectionsHelp')}</HelpHint>
+              </span>
+              <textarea
+                value={sections}
+                onChange={(e) => setSections(e.target.value)}
+                rows={3}
+                placeholder={t('rules.sectionsPlaceholder')}
+                className={inputClass}
+                data-testid="wiki-category-sections"
+              />
+            </label>
+            {sectionList.length ? (
+              <label className="block text-sm">
+                <span className="mb-1 block text-ink">{t('rules.sectionRuleLabel')}</span>
+                <select value={sectionRule} onChange={(e) => setSectionRule(e.target.value as 'warn' | 'error')} className={inputClass}>
+                  <option value="warn">{t('rules.sectionRuleWarn')}</option>
+                  <option value="error">{t('rules.sectionRuleError')}</option>
+                </select>
+              </label>
+            ) : null}
+            <label className="block text-sm">
+              <span className="mb-1 flex items-center text-ink">
+                {t('rules.templateLabel')}
+                <HelpHint>{t('rules.templateHelp')}</HelpHint>
+              </span>
+              <textarea
+                value={template}
+                onChange={(e) => setTemplate(e.target.value)}
+                rows={4}
+                maxLength={5000}
+                placeholder={sectionList.map((section) => `## ${section}`).join('\n\n') || t('rules.templatePlaceholder')}
+                className={`${inputClass} font-mono text-xs`}
+              />
+            </label>
+            {sectionList.length ? (
+              <p className="rounded-lg bg-paper px-3 py-2 text-xs text-ink-soft" data-testid="wiki-category-sections-preview">
+                {sectionRule === 'error'
+                  ? t('rules.sectionsPreviewError', { count: pages, sections: sectionList.join(', ') })
+                  : t('rules.sectionsPreviewWarn', { count: pages, sections: sectionList.join(', ') })}
+              </p>
+            ) : null}
+            {requirable && required.some((key) => !(node.requiredFields ?? []).includes(key)) ? (
+              <p className="rounded-lg bg-paper px-3 py-2 text-xs text-ink-soft">{t('rules.requiredPreview', { count: pages })}</p>
+            ) : null}
+          </fieldset>
           <div className="sm:col-span-2">
             <button type="submit" disabled={pending} className="rounded-lg bg-ink px-3 py-1.5 text-sm text-white disabled:opacity-50">
               {pending ? tw('common.saving') : tw('common.save')}
