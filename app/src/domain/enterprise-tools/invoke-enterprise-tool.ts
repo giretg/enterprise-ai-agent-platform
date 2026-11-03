@@ -30,7 +30,7 @@ import {
 } from './definition-pin'
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
-import { executeHttpApiTool } from './handlers/http-api'
+import { executeHttpApiTool, type SaveHttpApiFile } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
 import { executeWebSearch as defaultExecuteWebSearch } from './handlers/web-search'
 import { executeWebFetch as defaultExecuteWebFetch, type WebFetchPage } from './handlers/web-fetch'
@@ -247,6 +247,8 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     /** #717: a modellnek szóló http_api hintek nyelve. */
     language?: TenantLanguage,
     allowedEgressHosts?: string[],
+    /** #1070: a fájl-válasz mentése a letölthető-fájl tárolóba. */
+    saveFile?: SaveHttpApiFile,
   ) => Promise<unknown>
   /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
   resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
@@ -340,7 +342,8 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     agentId: string
     definitionId: string
     client: string
-    document: RenderedDocument
+    /** #1024 előállított fájl, vagy #1070 kapcsolt rendszerből letöltött fájl. */
+    document: Pick<RenderedDocument, 'bytes' | 'fileName' | 'mimeType'> & { format: string }
     expiresAt: Date
   }) => Promise<{ id: string }>
   /** #1024: a kérő saját, még élő fájlja (Drive-mentés `exportId`-vel). */
@@ -598,6 +601,7 @@ async function tryDirectWrite(
     definitionId: string
     toolName: string
     args: Record<string, unknown>
+    client: McpClientName
   },
 ): Promise<EnterpriseToolMcpResult | null> {
   const { principal, definition, definitionId, toolName, args } = input
@@ -682,6 +686,7 @@ async function tryDirectWrite(
       accessToken,
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
+      saveFile: httpApiFileSaver(deps, { principal, definitionId, agentId: definition.agentId, client: input.client }),
     })
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -702,6 +707,7 @@ async function tryDirectWrite(
       connectorId: authorized.connectorId,
       ...mailboxMeta,
       approvalBypass: bypass,
+      ...httpApiFileAuditMeta(result),
     }
     console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
@@ -718,7 +724,7 @@ async function tryDirectWrite(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return textResult(result, upstreamFailure)
+    return withHttpApiFileLink(textResult(result, upstreamFailure), result)
   } catch (error) {
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -862,7 +868,7 @@ export async function invokeEnterpriseTool(
     // #1030/#1029: előbb a konkrét postafiók, aztán az aláírás — a jóváhagyó a végleges from+szöveget látja.
     const withAccount = await withResolvedMailAccount(deps, principal, definition, toolName, exportArgs.args)
     const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, withAccount)
-    const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs })
+    const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs, client: input.client ?? 'unknown' })
     if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args: writeArgs, origin, confirm })
   }
@@ -1003,6 +1009,7 @@ export async function invokeEnterpriseTool(
       accessToken,
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
+      saveFile: httpApiFileSaver(deps, { principal, definitionId, agentId: definition.agentId, client: input.client ?? 'unknown' }),
     })
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -1022,6 +1029,7 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
       ...mailboxMeta,
+      ...httpApiFileAuditMeta(result),
     }
     console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
@@ -1038,7 +1046,7 @@ export async function invokeEnterpriseTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return textResult(result, upstreamFailure)
+    return withHttpApiFileLink(textResult(result, upstreamFailure), result)
   } catch (error) {
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -1293,6 +1301,7 @@ async function dispatchTool(
     accessToken?: string
     actingUser?: HttpApiActingUser
     agent?: { id: string; version?: number }
+    saveFile?: SaveHttpApiFile
   },
 ): Promise<unknown> {
   if (isEnterpriseMailTool(input.toolName)) {
@@ -1328,6 +1337,7 @@ async function dispatchTool(
       input.agent,
       language,
       allowedEgressHosts,
+      input.saveFile,
     )
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
@@ -2437,6 +2447,68 @@ async function withDocumentExportContent(
       contentBase64: found.data.toString('base64'),
       mimeType: typeof args.mimeType === 'string' ? args.mimeType : found.mimeType.split(';')[0],
     },
+  }
+}
+
+/**
+ * #1070: a kapcsolt rendszer fájl-válasza a letölthető-fájl tárolóba kerül, ugyanazzal a lejárattal és
+ * „csak a kérőnek” láthatósággal, mint a `document_export`. Tároló nélkül nincs fájlátadás.
+ */
+function httpApiFileSaver(
+  deps: EnterpriseToolDeps,
+  input: { principal: ToolCallPrincipal; definitionId: string; agentId: string; client: McpClientName },
+): SaveHttpApiFile | undefined {
+  const save = deps.saveDocumentExport
+  if (!save) return undefined
+  return async (file) => {
+    const now = (deps.now ?? (() => new Date()))()
+    const expiresAt = new Date(now.getTime() + DOCUMENT_EXPORT_TTL_MS)
+    const saved = await save({
+      tenantId: input.principal.tenantId,
+      userId: input.principal.userId,
+      agentId: input.agentId,
+      definitionId: input.definitionId,
+      client: input.client,
+      document: { bytes: file.bytes, fileName: file.fileName, mimeType: file.mimeType, format: file.format },
+      expiresAt,
+    })
+    const downloadUrl = deps.documentExportUrl ? deps.documentExportUrl(saved.id) : documentExportPath(saved.id)
+    return { exportId: saved.id, downloadUrl, expiresAt }
+  }
+}
+
+type HttpApiFileResult = { exportId: string; fileName: string; mimeType: string; sizeBytes: number; sha256: string; downloadUrl: string; expiresAt: string }
+
+function httpApiFileOf(result: unknown): HttpApiFileResult | null {
+  if (!result || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  return typeof r.exportId === 'string' && typeof r.downloadUrl === 'string' && typeof r.sha256 === 'string'
+    ? (r as HttpApiFileResult)
+    : null
+}
+
+/** #1070: az audit rögzíti, hogy fájl jött át (név, méret, hash), a tartalom nélkül. */
+function httpApiFileAuditMeta(result: unknown): Record<string, unknown> {
+  const file = httpApiFileOf(result)
+  if (!file) return {}
+  return { file: { exportId: file.exportId, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.sizeBytes, sha256: file.sha256 } }
+}
+
+/** #1070: a letöltés `resource_link`-ként is megy, így a chat fájl-kártyát mutat (mint a `document_export`). */
+function withHttpApiFileLink(base: EnterpriseToolMcpResult, result: unknown): EnterpriseToolMcpResult {
+  const file = httpApiFileOf(result)
+  if (!file) return base
+  return {
+    ...base,
+    links: [
+      {
+        uri: file.downloadUrl,
+        name: file.fileName,
+        mimeType: file.mimeType,
+        size: file.sizeBytes,
+        description: `Letölthető fájl — ${formatExpiry(new Date(file.expiresAt))}-ig érhető el.`,
+      },
+    ],
   }
 }
 
