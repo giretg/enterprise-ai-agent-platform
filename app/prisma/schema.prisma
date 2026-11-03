@@ -237,6 +237,14 @@ enum WikiChangeSetStatus {
 /**
  * D13: `private_to_user` tartalmát csak `Connector.ownerUserId` éri el.
  */
+/**
+ * #1061 F1: kategória-szabály — csak szigoríthat (D4): `always` = minden oldalművelet jóváhagyással.
+ */
+enum WikiCategoryApproval {
+  inherit
+  always
+}
+
 enum KnowledgeBaseVisibility {
   shared
   private_to_user
@@ -1127,10 +1135,15 @@ model AgentWiki {
    * #978 D1: ennyi nap után a régi verziók törlődnek; null = soha.
    */
   retentionDeleteDays Int?     @default(365) @map("retention_delete_days")
+  /**
+   * #1061 F1: kezelt kategória-fa — bekapcsolva csak a `WikiCategory` kulcsai használhatók.
+   */
+  managedCategories   Boolean  @default(false) @map("managed_categories")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   connector   Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  categories  WikiCategory[]
   pages       WikiPage[]
   changeSets  WikiChangeSet[]
   logEntries  WikiLogEntry[]
@@ -1178,7 +1191,39 @@ model WikiPage {
 
   @@unique([connectorId, path])
   @@index([wikiId, status])
+  /**
+   * #1061 F1: „Mi hivatkozik erre?” — `out_links @> ARRAY[path]`.
+   */
+  @@index([outLinks], type: Gin)
   @@map("wiki_pages")
+}
+
+/**
+ * #1061 F1: kezelt kategória (legfeljebb 2 szint). Az oldal `category` mezője a
+ * kulcsút (`partners/payment`); a kulcs wikin belül egyedi és nem változtatható (D10).
+ */
+model WikiCategory {
+  id          String               @id @default(uuid()) @db.Uuid
+  wikiId      String               @map("wiki_id") @db.Uuid
+  key         String
+  parentId    String?              @map("parent_id") @db.Uuid
+  name        String
+  /**
+   * Az agent ebből tudja, mi kerül ide (briefing, `kb_list_index`).
+   */
+  description String?
+  sortOrder   Int                  @default(0) @map("sort_order")
+  approval    WikiCategoryApproval @default(inherit)
+  createdAt   DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime             @updatedAt @map("updated_at") @db.Timestamptz
+
+  wiki     AgentWiki      @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+  parent   WikiCategory?  @relation("WikiCategoryTree", fields: [parentId], references: [id], onDelete: NoAction)
+  children WikiCategory[] @relation("WikiCategoryTree")
+
+  @@unique([wikiId, key])
+  @@index([wikiId, parentId])
+  @@map("wiki_categories")
 }
 
 /**

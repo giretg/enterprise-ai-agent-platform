@@ -1,3 +1,4 @@
+import type { WikiCategoryRow } from '@/lib/wiki-categories'
 import type {
   Agent,
   AgentDefinitionVersion,
@@ -944,6 +945,8 @@ export type WikiApplyChangeSetInput = {
   wikiId: string
   connectorId: string
   ops: WikiApplyPageOp[]
+  /** Category path and page revisions must commit together. */
+  categoryUpdate?: { id: string; expectedParentId: string | null; patch: Partial<Omit<WikiCategoryRow, 'id' | 'key'>> }
   log: {
     op: WikiLogOp
     title: string
@@ -1077,6 +1080,28 @@ export interface WikiRepository {
   reopenInboxItem(input: { documentId: string; changeSetId: string }): Promise<boolean>
   /** A wiki-konténer artifact (keresési találatok jelöléséhez); még nincs → `null`. */
   findContainerArtifactId(connectorId: string): Promise<string | null>
+}
+
+/** #1061 F1: egy oldal, amely egy másikra hivatkozik („Mi hivatkozik erre?”). */
+export type WikiBacklinkRow = { path: string; title: string; category: string | null }
+
+/**
+ * #1061 F1: kezelt kategória-fa és visszahivatkozások. Külön repó, hogy a
+ * kategória nélküli wiki (és a meglévő in-memory tesztek) változatlanul működjenek.
+ */
+export interface WikiStructureRepository {
+  isManaged(wikiId: string): Promise<boolean>
+  setManaged(wikiId: string, managed: boolean): Promise<void>
+  listCategories(wikiId: string): Promise<WikiCategoryRow[]>
+  createCategory(input: Omit<WikiCategoryRow, 'id'> & { wikiId: string }): Promise<WikiCategoryRow>
+  updateCategory(
+    wikiId: string,
+    id: string,
+    patch: Partial<Pick<WikiCategoryRow, 'parentId' | 'name' | 'description' | 'sortOrder' | 'approval'>>,
+  ): Promise<WikiCategoryRow | null>
+  deleteCategory(wikiId: string, id: string): Promise<boolean>
+  /** Publikált oldalak, amelyek `outLinks`-e tartalmazza a path-t (GIN-index); a saját oldal nem számít. */
+  listBacklinks(connectorId: string, path: string, limit: number): Promise<{ count: number; pages: WikiBacklinkRow[] }>
 }
 
 /** #978: egy oldal állapota egy korábbi sorszámon (időutazás). */

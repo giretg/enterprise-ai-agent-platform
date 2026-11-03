@@ -10,6 +10,8 @@ export type AgentWikiBriefing = {
   batches?: Array<{ batchId: string; pending: number; inProgress: number; processed: number; skipped: number }>
   /** #978 §5.4: alkalmazott módosítások az agent legutóbbi átnézése óta. */
   changes?: { latestSeq: number; unseen: number }
+  /** #1061 F1: kezelt kategóriák — az agent csak ezek kulcsútját írhatja az oldal `category` mezőjébe. */
+  categories?: Array<{ key: string; name: string; description?: string; approval?: 'always' }>
 }
 
 export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: TenantLanguage): string {
@@ -26,7 +28,12 @@ export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: Te
           ? `${wiki.changes.unseen} new change${wiki.changes.unseen === 1 ? '' : 's'} since you last looked — call kb_wiki_changes once before working on this wiki`
           : `${wiki.changes.unseen} új módosítás a legutóbbi átnézés óta — a munka elején egyszer hívd a kb_wiki_changes-t`}`
       : ''
-    return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${inbox}${batches ? `; ${batches}` : ''}${changes}`
+    const categories = wiki.categories?.length && wiki.access !== 'read'
+      ? `\n  ${en ? 'Categories (use the key as page category; others are rejected)' : 'Kategóriák (az oldal category mezőjébe a kulcs kerül; más érték hibát ad)'}: ${wiki.categories
+          .map(category => `${category.key} = ${category.name}${category.description ? ` (${category.description})` : ''}${category.approval === 'always' ? (en ? ' [always needs approval]' : ' [mindig jóváhagyással]') : ''}`)
+          .join('; ')}`
+      : ''
+    return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${inbox}${batches ? `; ${batches}` : ''}${changes}${categories}`
   })
   if (wikis.some(wiki => wiki.access === 'write')) rows.push(en
     ? 'Read skill://llm-wiki-maintainer/SKILL.md. Process received sources NOW: kb_ingest processingMode:"wiki" → read source → kb_wiki_write, one source at a time; defer only on explicit request. Inbox: kb_list_index inbox:true → kb_get_document claimForWiki:true → write → finalize; report progress before stopping. Cite raw sources and wiki pages; retain and mark contradictions. Read WIKI.md (including ingest_review) and index.md first.'

@@ -928,7 +928,7 @@ export const kbWikiPageInputSchema = z
     title: z.string().max(200).optional(),
     type: z.enum(['source', 'entity', 'concept', 'analysis', 'overview']).optional(),
     summary: z.string().max(400).optional(),
-    category: z.string().max(120).optional(),
+    category: z.string().max(200).optional(),
     frontmatter: z.record(z.string(), z.unknown()).optional(),
     body: z.string().max(40_000).optional(),
     /** Az utoljára olvasott tartalom hash-e (`kb_get_page` `baseVersion`). */

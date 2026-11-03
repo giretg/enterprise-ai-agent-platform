@@ -13,7 +13,9 @@ import type {
   WikiChangeSetPageSummary,
   WikiInboxSummary,
   WikiRepository,
+  WikiStructureRepository,
 } from '../interfaces'
+import type { WikiCategoryRow } from '@/lib/wiki-categories'
 
 /** Tranzakció-megszakítás eredménnyel (a rollback után ezt adjuk vissza). */
 class ApplyAborted extends Error {
@@ -458,6 +460,11 @@ export class PostgresWikiRepository implements WikiRepository {
         // Egy wikin az írások sorban futnak: a konténer-artifact egyszer jön létre,
         // és két change-set chunk-cseréje nem keveredik.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.connectorId}))`
+        if (input.categoryUpdate) {
+          const { id, expectedParentId, patch } = input.categoryUpdate
+          const changed = await tx.wikiCategory.updateMany({ where: { id, wikiId: input.wikiId, parentId: expectedParentId }, data: patch })
+          if (changed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'conflict', path: null })
+        }
         // #978 D6: a sorszám az alkalmazáskor születik; a sor-zár miatt két párhuzamos
         // alkalmazás nem kaphatja ugyanazt (a rollback a számot is visszaadja).
         const [allocated] = await tx.$queryRaw<Array<{ seq: number }>>`
@@ -654,6 +661,71 @@ export class PostgresWikiRepository implements WikiRepository {
       select: { id: true },
       orderBy: { createdAt: 'asc' },
     })
+  }
+}
+
+const categorySelect = {
+  id: true,
+  key: true,
+  parentId: true,
+  name: true,
+  description: true,
+  sortOrder: true,
+  approval: true,
+} as const
+
+/** #1061 F1: kezelt kategória-fa és visszahivatkozások. */
+export class PostgresWikiStructureRepository implements WikiStructureRepository {
+  async isManaged(wikiId: string): Promise<boolean> {
+    const row = await prisma.agentWiki.findUnique({ where: { id: wikiId }, select: { managedCategories: true } })
+    return row?.managedCategories ?? false
+  }
+
+  async setManaged(wikiId: string, managed: boolean): Promise<void> {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { managedCategories: managed } })
+  }
+
+  listCategories(wikiId: string): Promise<WikiCategoryRow[]> {
+    return prisma.wikiCategory.findMany({
+      where: { wikiId },
+      select: categorySelect,
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+    })
+  }
+
+  createCategory(input: Omit<WikiCategoryRow, 'id'> & { wikiId: string }): Promise<WikiCategoryRow> {
+    return prisma.wikiCategory.create({ data: input, select: categorySelect })
+  }
+
+  async updateCategory(
+    wikiId: string,
+    id: string,
+    patch: Parameters<WikiStructureRepository['updateCategory']>[2],
+  ): Promise<WikiCategoryRow | null> {
+    const result = await prisma.wikiCategory.updateMany({ where: { id, wikiId }, data: patch })
+    if (result.count === 0) return null
+    return prisma.wikiCategory.findUnique({ where: { id }, select: categorySelect })
+  }
+
+  async deleteCategory(wikiId: string, id: string): Promise<boolean> {
+    const result = await prisma.wikiCategory.deleteMany({ where: { id, wikiId, children: { none: {} } } })
+    return result.count > 0
+  }
+
+  async listBacklinks(connectorId: string, path: string, limit: number) {
+    const rows = await prisma.$queryRaw<Array<{ path: string; title: string; category: string | null; total: bigint }>>`
+      SELECT path, title, category, count(*) OVER () AS total
+      FROM wiki_pages
+      WHERE connector_id = ${connectorId}::uuid
+        AND status = 'published'
+        AND out_links @> ARRAY[${path}]::text[]
+        AND path <> ${path}
+      ORDER BY category NULLS LAST, path
+      LIMIT ${limit}`
+    return {
+      count: rows.length ? Number(rows[0].total) : 0,
+      pages: rows.map(({ path: pagePath, title, category }) => ({ path: pagePath, title, category })),
+    }
   }
 }
 

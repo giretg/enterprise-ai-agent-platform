@@ -147,6 +147,7 @@ jobs:
           npm run test:wiki-foundation
           npm run test:kb-wiki
           npm run test:wiki-console
+          npm run test:wiki-categories
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -305,6 +306,9 @@ jobs:
       # #978: wiki-előzmények (visszavonás, sorszám, időutazás, megőrzés, GDPR-törlés) valódi Postgresen.
       - name: Wiki history (Postgres)
         run: npm run test:wiki-history-db
+      # #1061: kezelt kategória-fa (bekapcsolás, áthelyezés, törlés) és visszahivatkozások valódi Postgresen.
+      - name: Wiki structure (Postgres)
+        run: npm run test:wiki-structure-db
 
       # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
       - name: Wiki console queries (Postgres)

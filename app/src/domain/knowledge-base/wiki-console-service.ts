@@ -40,6 +40,13 @@ import {
 } from '@/lib/kb-wiki'
 import { isKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import {
+  categoryIndex,
+  groupPagesByTree,
+  normalizeCategoryPath,
+  renderWikiTreeIndex,
+  type WikiCategoryRow,
+} from '@/lib/wiki-categories'
+import {
   KB_CATALOG_CONNECTOR_NAME,
   canManageKnowledgeBaseLink,
   effectiveWikiAccess,
@@ -92,7 +99,8 @@ export type WikiConsoleDeps = {
     | 'updateSchema'
   >
   console: WikiConsoleRepository
-  wiki: Pick<WikiService, 'wikiIdForConnector' | 'previewChangeSet' | 'canDecide' | 'reject'>
+  wiki: Pick<WikiService, 'wikiIdForConnector' | 'previewChangeSet' | 'canDecide' | 'reject'> &
+    Partial<Pick<WikiService, 'managedCategories' | 'backlinks'>>
   wikiAccess: Pick<WikiAccessService, 'createPrivateKnowledgeBase' | 'linkKnowledgeBase' | 'setWikiAccess' | 'purgePrivateKnowledgeBase'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingestIntoKnowledgeBase'>
   audit: Pick<AuditRepository, 'append'>
@@ -293,6 +301,15 @@ export class WikiConsoleService {
       ...log.map((entry) => entry.actorUserId).filter((id): id is string => !!id),
     ])
     const counts = summary.wikis[0]
+    const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
+    const pageView = (page: WikiPage) => ({
+      path: page.path,
+      title: page.title,
+      summary: page.summary,
+      type: page.type,
+      updatedAt: page.updatedAt.toISOString(),
+      author: author(page, agentNames, users),
+    })
     return {
       connectorId: connector.id,
       wikiId,
@@ -303,20 +320,37 @@ export class WikiConsoleService {
       canManage: access.manage,
       canContribute: access.contribute,
       pageCount: pages.length,
-      categories: groupWikiIndex(pages).map((group) => ({
-        category: group.category,
-        pages: group.pages.map((indexPage) => {
-          const page = pages.find((row) => row.path === indexPage.path)!
-          return {
-            path: page.path,
-            title: page.title,
-            summary: page.summary,
-            type: page.type,
-            updatedAt: page.updatedAt.toISOString(),
-            author: author(page, agentNames, users),
-          }
-        }),
-      })),
+      /** #1061 F1: kezelt kategóriák — a menü a fát követi (üres kategória is látszik). */
+      managedCategories: !!managed,
+      menu: managed
+        ? groupPagesByTree(pages, managed).map((group) => ({
+            key: group.path ?? '__uncategorized',
+            name: group.path === null ? null : group.name,
+            description: group.description,
+            protected: group.protected,
+            pageCount: group.pageCount,
+            pages: group.pages.map(pageView),
+            children: group.children.map((child) => ({
+              key: child.path ?? '',
+              name: child.name,
+              description: child.description,
+              protected: child.protected,
+              pageCount: child.pageCount,
+              pages: child.pages.map(pageView),
+            })),
+          }))
+        : groupWikiIndex(pages).map((group) => {
+            const groupPages = group.pages.map((indexPage) => pageView(pages.find((row) => row.path === indexPage.path)!))
+            return {
+              key: group.category,
+              name: group.category === 'Uncategorized' ? null : group.category,
+              description: null,
+              protected: false,
+              pageCount: groupPages.length,
+              pages: groupPages,
+              children: [] as Array<{ key: string; name: string; description: string | null; protected: boolean; pageCount: number; pages: ReturnType<typeof pageView>[] }>,
+            }
+          }),
       log: [...log].reverse().map((entry) => ({
         id: entry.id,
         op: entry.op,
@@ -364,6 +398,9 @@ export class WikiConsoleService {
       [page.createdByAgentId, page.updatedByAgentId].filter((id): id is string => !!id),
     )
     const users = await this.deps.console.userLabels(page.createdByUserId ? [page.createdByUserId] : [])
+    const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
+    const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
+    const backlinks = page.status === 'published' ? await this.deps.wiki.backlinks?.(connector.id, page.path, 2_147_483_647) : null
     return {
       path: page.path,
       title: page.title,
@@ -384,6 +421,11 @@ export class WikiConsoleService {
         exists: documents.some((doc) => doc.id === ref.documentId),
       })),
       knownPaths: published.map((row) => row.path),
+      categoryName: categoryLabel(page.category, managed),
+      /** #1061 F1: „Erre az oldalra hivatkozik (N)”, kategória szerint csoportosítva. */
+      backlinks: backlinks
+        ? { count: backlinks.count, shown: backlinks.pages.length, groups: groupBacklinks(backlinks.pages, managed) }
+        : null,
       revisions: [...revisions]
         .sort((a, b) => b.version - a.version)
         .map((rev) => ({ version: rev.version, title: rev.title, createdAt: rev.createdAt.toISOString(), current: rev.version === page.version })),
@@ -551,7 +593,8 @@ export class WikiConsoleService {
     const entries: ZipWriteEntry[] = []
     const add = (path: string, text: string) => entries.push({ path: `${root}/${path}`, bytes: encoder.encode(text) })
     const published = pages.filter((page) => page.status === 'published')
-    add(WIKI_INDEX_PATH, renderWikiIndex(published))
+    const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
+    add(WIKI_INDEX_PATH, managed ? renderWikiTreeIndex(published, managed) : renderWikiIndex(published))
     if (wikiId) {
       add(WIKI_LOG_PATH, renderWikiLog(await this.deps.wikis.listLog(wikiId, 1000)))
     }
@@ -874,6 +917,7 @@ export class WikiConsoleService {
         finalPath: page.finalPath,
         kind: changeKind(page),
         othersPage: page.othersPage,
+        protectedCategory: page.protectedCategory,
         title: page.after.title || page.before?.title || page.path,
         summary: page.after.summary,
         titleChanged: !!page.before && page.before.title !== page.after.title,
@@ -922,6 +966,33 @@ export class WikiConsoleService {
       }),
     )
   }
+}
+
+/** #1061: a kategória olvasható neve („Partnerek › Fizetés”); kezeletlen wikinél maga a szöveg. */
+function categoryLabel(category: string | null, managed: WikiCategoryRow[] | null): string | null {
+  if (!category?.trim()) return null
+  if (!managed) return category.trim()
+  const node = categoryIndex(managed).get(normalizeCategoryPath(category))
+  if (!node) return category.trim()
+  const parent = node.parentId ? managed.find((row) => row.id === node.parentId) : null
+  return parent ? `${parent.name} › ${node.name}` : node.name
+}
+
+function groupBacklinks(
+  pages: Array<{ path: string; title: string; category: string | null }>,
+  managed: WikiCategoryRow[] | null,
+): Array<{ category: string | null; pages: Array<{ path: string; title: string }> }> {
+  const groups = new Map<string, { category: string | null; pages: Array<{ path: string; title: string }> }>()
+  for (const page of pages) {
+    const label = categoryLabel(page.category, managed)
+    const key = label ?? ''
+    const group = groups.get(key) ?? { category: label, pages: [] }
+    group.pages.push({ path: page.path, title: page.title })
+    groups.set(key, group)
+  }
+  return [...groups.values()].sort((a, b) =>
+    a.category === null ? 1 : b.category === null ? -1 : a.category.localeCompare(b.category),
+  )
 }
 
 function configObject(config: unknown): Record<string, unknown> {
