@@ -13,6 +13,7 @@ import {
 } from '@/domain/connector/google-account-binding'
 import { Prisma } from '@prisma/client'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
 import { isConnectorAssignableToAgent } from '@/domain/connector/runtime-config'
 import { prisma } from '@/lib/db'
@@ -438,6 +439,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       type: ConnectorType
       name: string
       connectorMode: 'fixed' | 'self_updating'
+      tenantMailbox?: { readOnly: boolean } | null
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>
@@ -449,6 +451,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         id: true,
         type: true,
         name: true,
+        authMode: true,
         config: true,
         connectorMode: true,
         activeSpecVersion: { select: { capabilitySet: true } },
@@ -464,18 +467,18 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           row.specSource,
         ),
       )
-      .map((row) => ({
-        id: row.id,
-        type: row.type,
-        name: row.name,
-        connectorMode: row.connectorMode,
-        templateKey: provenanceTemplateKey(row.config),
-        ...describeConnectorCatalog(
-          row.type,
-          row.config,
-          row.activeSpecVersion?.capabilitySet ?? null,
-        ),
-      }))
+      .map((row) => {
+        const mailbox = tenantMailboxOf({ authMode: row.authMode, config: row.config })
+        return {
+          id: row.id,
+          type: row.type,
+          name: row.name,
+          connectorMode: row.connectorMode,
+          templateKey: provenanceTemplateKey(row.config),
+          tenantMailbox: mailbox ? { readOnly: mailbox.readOnly } : null,
+          ...describeConnectorCatalog(row.type, row.config, row.activeSpecVersion?.capabilitySet ?? null),
+        }
+      })
   }
 }
 

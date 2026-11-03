@@ -270,6 +270,7 @@ type HubView =
   | { kind: 'self_updating'; id: string }
   | { kind: 'mcp'; id: string }
   | { kind: 'gap'; id: string }
+  | { kind: 'mailbox' }
   | { kind: 'catalog' }
 type HubFilter = 'all' | 'connected' | 'pending' | 'available'
 
@@ -558,7 +559,14 @@ export function ProvisioningPanel({
   const t = useProvT()
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [catalogRows, setCatalogRows] = useState<
-    Array<{ id: string; name: string; type: string; connectorMode?: 'fixed' | 'self_updating' }>
+    Array<{
+      id: string
+      name: string
+      type: string
+      connectorMode?: 'fixed' | 'self_updating'
+      templateKey?: string | null
+      tenantMailbox?: { readOnly: boolean } | null
+    }>
   >([])
   const [selfUpdatingRows, setSelfUpdatingRows] = useState<SelfUpdatingConnectorRow[]>([])
   const [tenantAuto, setTenantAuto] = useState(false)
@@ -862,8 +870,10 @@ export function ProvisioningPanel({
       ...selfUpdatingRows.map((row) => row.id),
       ...(mcpData?.connectors ?? []).map((row) => row.id),
     ])
-    return catalogRows.filter((row) => !listed.has(row.id))
+    // A közös postafiók nem draftból jön, de nem régi kapcsolat: a Postafiókok oldal kezeli.
+    return catalogRows.filter((row) => !listed.has(row.id) && !row.tenantMailbox)
   }, [catalogRows, drafts, mcpData, selfUpdatingRows])
+  const tenantMailboxRows = catalogRows.filter((row) => row.tenantMailbox)
   const activeSelfUpdatingRows = selfUpdatingRows.filter((row) => row.lifecycleState === 'active')
   const archivedSelfUpdatingRows = selfUpdatingRows
     .filter((row) => row.lifecycleState !== 'active')
@@ -1332,6 +1342,16 @@ export function ProvisioningPanel({
       action: t('hubManage'),
       target: { kind: 'mcp', id: row.id } as HubView,
     })),
+    ...tenantMailboxRows.map((row) => ({
+      key: `mailbox:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} ${row.type}`,
+      provider: row.templateKey ?? row.type,
+      subtitle: t('hubStatusConnected'),
+      tone: 'success' as const,
+      action: t('hubManage'),
+      target: { kind: 'mailbox' } as HubView,
+    })),
   ].sort((a, b) => a.name.localeCompare(b.name, 'hu'))
   const pendingDrafts = openDrafts.filter((d) => d.lifecycleState !== 'archived')
   const archivedDrafts = openDrafts.filter((d) => d.lifecycleState === 'archived')
@@ -1419,6 +1439,10 @@ export function ProvisioningPanel({
     .filter((section) => section.items.length > 0)
 
   const openHubItem = (item: HubItem) => {
+    if (item.target.kind === 'mailbox') {
+      router.push('/control-plane/provisioning/agentmail')
+      return
+    }
     if (item.target.kind === 'template') {
       const tpl = templates.find((row) => row.id === (item.target as { templateId: string }).templateId)
       if (!tpl) return
