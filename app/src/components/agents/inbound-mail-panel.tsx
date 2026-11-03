@@ -241,9 +241,12 @@ export function InboundMailPanel({ settings }: { settings: InboundMailSettings }
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" name="allowDirectWrites" defaultChecked={settings.rule.allowDirectWrites} className="mt-1" />
             <span>
-              <span className="text-ink">Jóváhagyás nélküli írás engedélyezése feldolgozáskor</span>
+              <span className="text-ink">Jóváhagyás nélküli írás engedélyezése feldolgozáskor</span>{' '}
+              <span title="Kikapcsolva a levélből indított minden írás (válaszlevél, feltöltés, CRM-módosítás, memória, wiki) a felelős kolléga jóváhagyására vár, a belső műveleteket (ütemezett feladat, mini app, munkafájl, adattárház-import, tudásbázis-feltöltés, átadás, weboldal-letöltés) pedig nem végezheti el. A cég levelezésének feladó-védelmét (SPF, DKIM, DMARC) a rendszergazda tudja beállítani." className="cursor-help text-ink-faint">
+                (?)
+              </span>
               <span className="mt-0.5 block text-xs text-ink-faint">
-                Kikapcsolva (ajánlott) a levélből indított minden írás — válaszlevél, feltöltés, CRM-módosítás, memória, wiki — a felelős kolléga jóváhagyására vár, a belső műveleteket (ütemezett feladat, mini app, munkafájl, adattárház-import, tudásbázis-feltöltés, átadás, weboldal-letöltés) pedig nem végezheti el. Csak akkor kapcsold be, ha a cég levelezésében a feladó-hamisítás ellen védelem van (SPF, DKIM, DMARC) — különben bárki írhat a felelős kolléga nevében.
+                Kikapcsolva hagyni ajánlott. Csak akkor kapcsold be, ha a cég levelezése kiszűri a hamis feladót — különben bárki írhat a felelős kolléga nevében, és a munkatárs jóváhagyás nélkül cselekszik.
               </span>
             </span>
           </label>
@@ -328,7 +331,7 @@ export function InboundMailList({
                 {open ? (
                   <div className="flex gap-2">
                     {canProcess ? (
-                      <button type="button" disabled={pending} onClick={() => run(e.id, 'process')} className={smallButton} title="A munkatárs most elolvassa és a feldolgozási utasítás szerint jár el (kimenő levél előtt jóváhagyást kér).">
+                      <button type="button" disabled={pending} onClick={() => run(e.id, 'process')} className={smallButton} title="A munkatárs most elolvassa és a feldolgozási utasítás szerint jár el (alapból minden írás előtt jóváhagyást kér).">
                         Feldolgozás most
                       </button>
                     ) : null}

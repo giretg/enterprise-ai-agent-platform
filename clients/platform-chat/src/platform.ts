@@ -51,7 +51,8 @@ export type ChatMessage =
   | { role: 'tool'; tool_call_id: string; content: string }
 
 export interface PlatformClient {
-  continuationToken(input: { chatToken: string; turnId: string; agentId: string }): Promise<string>
+  /** `background`: levélből indult forduló folytatása — a platform jóváhagyásra kényszeríti az írásokat. */
+  continuationToken(input: { chatToken: string; turnId: string; agentId: string; background?: true }): Promise<string>
   listAgents(input: { token: string; tenantSlug: string }): Promise<Array<Record<string, unknown>>>
   getDefinition(input: { token: string; tenantSlug: string; agentId: string; sessionId: string }): Promise<string>
   listTools(input: { token: string; tenantSlug: string; agentId: string; sessionId: string }): Promise<McpTool[]>
@@ -201,11 +202,11 @@ export function createPlatformClient(platformOrigin: string, fetchImpl: typeof f
   }
 
   return {
-    async continuationToken({ chatToken, turnId, agentId }) {
+    async continuationToken({ chatToken, turnId, agentId, background }) {
       const res = await fetchImpl(`${platformOrigin}/api/chat/continuation`, {
         method: 'POST',
         headers: { authorization: `Bearer ${chatToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ turnId, agentId }),
+        body: JSON.stringify({ turnId, agentId, ...(background ? { background: true } : {}) }),
       })
       const body = (await res.json().catch(() => ({}))) as { token?: string; error?: string }
       if (!res.ok || !body.token) throw new PlatformError('continuation token denied', res.status, body.error)

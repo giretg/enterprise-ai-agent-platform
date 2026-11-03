@@ -215,7 +215,15 @@ async function main() {
     assert.equal(claims?.aud, CHAT_TURN_TOKEN_AUDIENCE)
     assert.equal(claims?.agentId, AGENT)
     assert.equal(claims?.turnId, 'turn-1')
+    assert.equal(claims?.bg, undefined)
     assert.ok(audits.includes('platform_chat.continuation_issued'))
+    // Levélből indult forduló folytatása (Folytatás / kérdésre válasz a böngészőből): háttérfutás marad.
+    const resumed = await issueContinuationToken(deps as never, {
+      authorizationHeader: `Bearer ${chatToken()}`,
+      body: { turnId: 'turn-1', agentId: AGENT, background: true },
+    })
+    assert.ok(resumed.ok)
+    assert.equal(verifyChatToken(resumed.token, KEY, nowS)?.bg, true)
     const chained = await issueContinuationToken(deps as never, {
       authorizationHeader: `Bearer ${r.token}`,
       body: { turnId: 'turn-1', agentId: AGENT },
