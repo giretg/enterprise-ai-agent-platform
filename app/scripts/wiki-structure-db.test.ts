@@ -300,6 +300,23 @@ async function main() {
     // Közben megváltozott (hiányos) lista: semmi nem íródik.
     await rejectsWith('conflict', () => categories.reorder(actor, connector.id, null, wanted.slice(1)))
     await rejectsWith('conflict', () => categories.reorder(actor, connector.id, null, [...wanted, wanted[0]]))
+    // D4: a szolgáltatás olvasása után változó fa sem írható át részlegesen.
+    const orders = wanted.map((id, i) => ({ id, sortOrder: (wanted.length - i) * 10 }))
+    const snapshot = await roots()
+    const extra = await categories.create(actor, connector.id, { key: 'race', name: 'Race' })
+    assert.equal(await structure.reorderCategories(wiki.id, null, orders), false)
+    await categories.remove(actor, connector.id, extra.id)
+    assert.deepEqual(await roots(), snapshot)
+    // Egy közben másik szülő alá került sor is ütközés.
+    await structure.updateCategory(wiki.id, start.id, { parentId: sources.id })
+    assert.equal(await structure.reorderCategories(wiki.id, null, orders), false)
+    await structure.updateCategory(wiki.id, start.id, { parentId: null })
+    // A törölt testvér akkor is számít, ha a sorrendje nem változna.
+    const removed = await categories.create(actor, connector.id, { key: 'race', name: 'Race' })
+    const withRemoved = [...orders, { id: removed.id, sortOrder: (await roots()).find((row) => row.id === removed.id)!.sortOrder! }]
+    await categories.remove(actor, connector.id, removed.id)
+    assert.equal(await structure.reorderCategories(wiki.id, null, withRemoved), false)
+    assert.deepEqual((await roots()).map((row) => [row.id, row.sortOrder]), snapshot.map((row) => [row.id, row.sortOrder]))
     // „Nincs megadva”: a sorrend törölhető, a menüben a végére kerül.
     await categories.update(actor, connector.id, start.id, { sortOrder: null })
     assert.equal((await structure.listCategories(wiki.id)).find((row) => row.id === start.id)!.sortOrder, null)

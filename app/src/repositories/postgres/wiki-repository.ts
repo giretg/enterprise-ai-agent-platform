@@ -753,15 +753,24 @@ export class PostgresWikiStructureRepository implements WikiStructureRepository 
     return prisma.wikiCategory.findUnique({ where: { id }, select: categorySelect })
   }
 
-  async reorderCategories(wikiId: string, orders: Array<{ id: string; sortOrder: number }>): Promise<boolean> {
+  async reorderCategories(wikiId: string, parentId: string | null, orders: Array<{ id: string; sortOrder: number }>): Promise<boolean> {
     return prisma.$transaction(async (tx) => {
+      const siblings = await tx.wikiCategory.findMany({
+        where: { wikiId, parentId, linkedConnectorId: null },
+        select: { id: true, sortOrder: true },
+      })
+      const ids = new Set(orders.map((row) => row.id))
+      if (ids.size !== orders.length || siblings.length !== ids.size || siblings.some((row) => !ids.has(row.id))) {
+        throw new ReorderAborted()
+      }
       for (const row of orders) {
+        if (siblings.find((sibling) => sibling.id === row.id)!.sortOrder === row.sortOrder) continue
         const result = await tx.wikiCategory.updateMany({ where: { id: row.id, wikiId }, data: { sortOrder: row.sortOrder } })
         if (result.count === 0) throw new ReorderAborted()
       }
       return true
-    }).catch((error) => {
-      if (error instanceof ReorderAborted) return false
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch((error) => {
+      if (error instanceof ReorderAborted || (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034')) return false
       throw error
     })
   }

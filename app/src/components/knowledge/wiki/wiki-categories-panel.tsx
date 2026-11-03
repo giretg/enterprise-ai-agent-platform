@@ -343,6 +343,7 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
                 renderItem={(node, controls) => (
                   <>
                     <CategoryRow
+                      key={JSON.stringify(node)}
                       controls={controls}
                       requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
                       node={node}
@@ -367,6 +368,7 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
                         itemClassName="pl-6"
                         renderItem={(child, childControls) => (
                           <CategoryRow
+                            key={JSON.stringify(child)}
                             controls={childControls}
                             requirable={data.fieldsManaged ? data.requirableFields ?? [] : null}
                             node={child}
@@ -625,7 +627,7 @@ function CategoryRow({
               type="number"
               min={0}
               max={100000}
-              step={10}
+              step={1}
               value={sortOrder}
               placeholder={t('order.placeholder')}
               onChange={(e) => setSortOrder(e.target.value)}

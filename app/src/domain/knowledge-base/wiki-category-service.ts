@@ -356,11 +356,9 @@ export class WikiCategoryService {
     }
     const orders = ids.map((id, i) => ({ id, sortOrder: (i + 1) * WIKI_CATEGORY_ORDER_STEP }))
     const changed = orders.filter((row) => siblings.find((sibling) => sibling.id === row.id)!.sortOrder !== row.sortOrder)
-    if (changed.length === 0) return { changed: 0 }
-    const ok = this.deps.structure.reorderCategories
-      ? await this.deps.structure.reorderCategories(wikiId, changed)
-      : (await Promise.all(changed.map((row) => this.deps.structure.updateCategory(wikiId, row.id, { sortOrder: row.sortOrder })))).every(Boolean)
+    const ok = await this.deps.structure.reorderCategories(wikiId, parentId, orders)
     if (!ok) throw new WikiCategoryError('conflict')
+    if (changed.length === 0) return { changed: 0 }
     await this.audit(connector, actor, 'kb.wiki.categories.reordered', wikiId, {
       wikiId,
       ...(parentId ? { parentId } : {}),
