@@ -93,6 +93,9 @@ export function toolsNeedKnowledgeBase(toolNames: string[]): boolean {
       name === 'kb_ingest' ||
       name === 'kb_wiki_write' ||
       name === 'kb_wiki_changes' ||
-      name === 'kb_wiki_revert',
+      name === 'kb_wiki_revert' ||
+      name === 'kb_wiki_config_get' ||
+      name === 'kb_wiki_config_propose' ||
+      name === 'kb_wiki_config_withdraw',
   )
 }

@@ -81,6 +81,7 @@ export type WikiCategoryPatch = {
 
 const RULE_KEYS = ['reviewCycleDays', 'requiredFields', 'requiredSections', 'sectionRule', 'templateMd'] as const
 const MENU_KEYS = ['pageSort', 'pinnedPages', 'pageOrder', 'collapsed'] as const
+const TEMPLATE_KEYS = ['requiredFields', 'requiredSections', 'sectionRule', 'templateMd'] as const
 
 /** A kategória-fa nem változhat úgy, hogy oldal vesszen el: ilyenkor `conflict`-tal áll meg. */
 export class WikiCategoryError extends Error {
@@ -288,6 +289,8 @@ export class WikiCategoryService {
     const menu = await this.cleanMenu(connector.id, oldPath, current, patch)
     const next = {
       ...rules,
+      // #1075: kézi szerkesztés után a szabály már nem követi a névvel ellátott sablont.
+      ...(TEMPLATE_KEYS.some((key) => key in rules) && current.templateKey ? { templateKey: null } : {}),
       ...menu,
       ...(patch.name !== undefined ? { name: cleanName(patch.name) } : {}),
       ...(patch.description !== undefined ? { description: cleanDescription(patch.description) } : {}),

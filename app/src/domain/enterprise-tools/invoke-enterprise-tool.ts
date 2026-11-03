@@ -125,6 +125,9 @@ import {
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
   MCP_CALL_TOOL,
   MCP_LIST_TOOLS_TOOL,
   mcpCallInputSchema,
@@ -1803,6 +1806,9 @@ async function invokeKbTool(
     toolName === KB_WIKI_WRITE_TOOL ||
     toolName === KB_WIKI_CHANGES_TOOL ||
     toolName === KB_WIKI_REVERT_TOOL ||
+    toolName === KB_WIKI_CONFIG_GET_TOOL ||
+    toolName === KB_WIKI_CONFIG_PROPOSE_TOOL ||
+    toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL ||
     parsedArgs.processingMode === 'wiki' ||
     parsedArgs.inbox === true
   ) {
@@ -1915,6 +1921,10 @@ const WIKI_TOOL_CAPABILITIES: Record<string, readonly string[]> = {
   // #978: az előzmény-eszközök a meglévő wiki-képességre épülnek (a jog a kötésen dől el).
   [KB_WIKI_REVERT_TOOL]: [KB_WIKI_REVERT_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   [KB_WIKI_CHANGES_TOOL]: [KB_WIKI_CHANGES_TOOL, KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  // #1075: ugyanazok a képességek; a jog a kötésen és a wiki kapcsolóján dől el.
+  [KB_WIKI_CONFIG_GET_TOOL]: [KB_WIKI_CONFIG_GET_TOOL, KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  [KB_WIKI_CONFIG_PROPOSE_TOOL]: [KB_WIKI_CONFIG_PROPOSE_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_CONFIG_WITHDRAW_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   [KB_INGEST_TOOL]: [KB_INGEST_TOOL],
   [KB_LIST_INDEX_TOOL]: [KB_LIST_INDEX_TOOL],
 }
@@ -1966,12 +1976,12 @@ async function invokeWikiTool(
 
   if (outcome.ok === false) {
     await auditDenied(deps, principal, toolName, outcome.code, definitionId, definition.agentId)
-    return errorResult(outcome.code, outcome.details)
+    return errorResult(outcome.code, outcome.details && withApprovalUrls(outcome.details, input.origin))
   }
   if (outcome.ok === true) {
     const connectorId = asUuid(args.connectorId) ?? null
     await auditKbOk(deps, { principal, toolName, definitionId, agentId: definition.agentId, connectorId })
-    return textResult(outcome.result)
+    return textResult(withApprovalUrls(outcome.result, input.origin))
   }
 
   // Jóváhagyás: egy kártya a teljes change-setre a gateway-sorban (D1/D4).
@@ -2000,6 +2010,20 @@ async function invokeWikiTool(
   await deps.onWikiApprovalQueued?.({ tenantId: principal.tenantId, changeSetId: request.changeSetId, operationId })
   if (!operationId || !queuedPayload) return queued
   return textResult({ ...queuedPayload, ...outcome.result })
+}
+
+/** #1075: a szolgáltatás relatív útvonalat ad, a kérés origin-je csak itt ismert. */
+function withApprovalUrls<T>(value: T, origin: string | undefined): T {
+  if (!value || typeof value !== 'object') return value
+  const toUrl = (row: Record<string, unknown>) => {
+    if (typeof row.approvalPath !== 'string') return row
+    const { approvalPath, ...rest } = row
+    return { ...rest, approvalUrl: `${origin?.replace(/\/+$/, '') ?? ''}${approvalPath}` }
+  }
+  const row = toUrl(value as Record<string, unknown>)
+  return (Array.isArray(row.pendingProposals)
+    ? { ...row, pendingProposals: row.pendingProposals.map((item) => toUrl(item as Record<string, unknown>)) }
+    : row) as T
 }
 
 function parseToolJson(result: EnterpriseToolMcpResult): Record<string, unknown> | null {

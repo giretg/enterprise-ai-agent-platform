@@ -628,8 +628,84 @@
         "inbox": "Tálca",
         "log": "Napló",
         "access": "Kik férnek hozzá",
+        "proposals": "Javaslatok",
         "settings": "Beállítások"
       },
+        "proposals": {
+          "settingTitle": "Munkatársak javaslatai a beállításokra",
+          "intro": "Az AI-munkatárs megtervezheti a wiki beállításait (kategóriák, mezők, sablonok, szabályfájl, név), és egyben beküldheti neked. Semmi nem változik, amíg itt jóvá nem hagyod. Csak olyan munkatárs javasolhat, amelynek írási joga van ehhez a wikihez.",
+          "off": "Ki",
+          "on": "Javasolhat",
+          "offHelp": "Kikapcsolva a munkatársak nem tudnak javaslatot küldeni. A beállításokat továbbra is látják, és te szerkesztheted őket.",
+          "onHelp": "Bekapcsolva a munkatárs javaslatot küldhet, de közvetlenül akkor sem módosíthat semmit. A már beküldött javaslatokat kikapcsolás után is el tudod bírálni.",
+          "collectTitle": "Mit gyűjtsön ez a wiki",
+          "collectHelp": "Minden ide író munkatárs ezt látja, és azonnal érvényes, újrapublikálás nélkül. A munkatársanként megadott saját fókusz (Kik férnek hozzá fül) ezután következik, és az publikálás után él.",
+          "collectEmpty": "Nincs megadva: a munkatársak csak a saját fókuszukat követik.",
+          "collectSave": "Mentés",
+          "listTitle": "Elbírálásra váró javaslatok",
+          "emptyOn": "Nincs elbírálásra váró javaslat. Ha egy munkatárs beküld egyet, itt jelenik meg, és a munkatárs linket is ad hozzá.",
+          "emptyOff": "Nincs javaslat, és a munkatársak most nem is küldhetnek. Fent bekapcsolhatod.",
+          "rowTitle": "{agent}: {count} módosítás",
+          "unknownAgent": "Ismeretlen munkatárs",
+          "historyTitle": "Korábbi javaslatok",
+          "status": {
+            "pending": "elbírálásra vár",
+            "applied": "jóváhagyva",
+            "rejected": "elutasítva",
+            "withdrawn": "visszavonva"
+          },
+          "reviewTitle": "{agent} javaslata",
+          "decisionComment": "Üzenet a munkatársnak: {comment}",
+          "causes": {
+            "config_conflict": "Automatikusan elutasítva: közben megváltoztak a beállítások.",
+            "invalid_config_change": "Automatikusan elutasítva: a javaslat már nem volt érvényes.",
+            "proposal_not_pending": "Már elbírálták.",
+            "conflict": "Egy oldal közben változott.",
+            "forbidden": "Nincs jogosultság.",
+            "not_found": "Nem található.",
+            "generic": "Automatikusan lezárva."
+          },
+          "stale": "Mióta ez a javaslat készült, megváltoztak a beállítások, ezért így nem hagyható jóvá. Utasítsd el, és kérd meg a munkatársat, hogy a mostani állapotból készítsen újat.",
+          "invalidNow": "Ez a javaslat a mostani állapotra már nem alkalmazható:",
+          "warnings": {
+            "managed_categories_off": "A kezelt kategóriák ki vannak kapcsolva ezen a wikin. A kategóriák elmentődnek, de csak a bekapcsolás után lépnek életbe (Beállítások fül).",
+            "managed_fields_off": "A metaadat-mezők ki vannak kapcsolva ezen a wikin. A mezők elmentődnek, de csak a bekapcsolás után lépnek életbe (Beállítások fül)."
+          },
+          "destructive": {
+            "merge": "Összevonás: a(z) {from} kategória megszűnik, {count} oldala ide kerül: {to}.",
+            "rename": "Átnevezés: a(z) {field} mező „{from}” értéke „{to}” lesz, {count} oldalon átíródik.",
+            "remove": "Törlés: a(z) {field} mező „{option}” értéke megszűnik, {count} oldalon erre cserélődik: {to}."
+          },
+          "sections": {
+            "nameFocus": "Név és fókusz",
+            "wikiMd": "Szabályfájl (WIKI.md)",
+            "groups": "Csoportok",
+            "categories": "Kategóriák",
+            "fields": "Mezők",
+            "templates": "Sablonok",
+            "pages": "Érintett oldalak"
+          },
+          "name": "Név",
+          "collect": "Fókusz",
+          "noChange": "Nincs változás.",
+          "added": "Új",
+          "changed": "Módosul",
+          "removed": "Megszűnik",
+          "fieldsRewritten": "mezőérték átíródik",
+          "commentLabel": "Üzenet a munkatársnak (elutasításkor, nem kötelező)",
+          "approve": "Mindet jóváhagyom",
+          "reject": "Elutasítom",
+          "approveHelp": "Jóváhagyáskor minden egyszerre élesedik, és azonnal érvényes. Ha valami közben megváltozott, nem íródik semmi.",
+          "errors": {
+            "config_conflict": "Közben megváltoztak a beállítások, ezért nem íródott semmi, és a javaslat elutasítva lett. Kérd meg a munkatársat, hogy készítsen újat.",
+            "invalid_config_change": "A javaslat már nem érvényes, ezért nem íródott semmi, és elutasítva lett.",
+            "proposal_not_pending": "Ezt a javaslatot már elbírálták vagy visszavonták.",
+            "conflict": "Egy érintett oldal közben változott, nem íródott semmi. Próbáld újra.",
+            "forbidden": "Ehhez nincs jogosultságod.",
+            "not_found": "Ez a javaslat nem található.",
+            "generic": "Valami nem sikerült. Próbáld újra egy kicsit később."
+          }
+        },
       "kind": {
         "catalog": "Közös katalógus",
         "agent": "Munkatárs saját",

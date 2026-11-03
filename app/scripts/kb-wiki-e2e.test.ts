@@ -807,6 +807,38 @@ async function main() {
       assert.ok(auditJson.length > 2 && !auditJson.includes(SECRET) && !auditJson.includes('teszt kérelem'), 'privát KB: indoklás és kifejezés sem kerül az auditba')
     })
 
+    await check('8b. #1075 beállítás-javaslat az MCP-n: JSON-szöveges műveletek, kapcsoló, jóváhagyó link, jóváhagyás', async () => {
+      const mcp = session('config', owner)
+      // A régi (#947) képesség-lista elég: az eszközök a meglévő wiki-képességekkel járnak.
+      const before = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
+      assert.equal(before.agentConfigChanges, 'off')
+      const operations = JSON.stringify([
+        { op: 'setCollectFocus', collect: 'Laboreredmények időrendben' },
+        { op: 'upsertGroup', key: 'config-e2e', label: 'E2E csoport', order: 5 },
+      ])
+      const args = { definitionId, wikiId, baseConfigVersion: before.configVersion, operations, note: 'E2E' }
+      const disabled = await mcp.call('kb_wiki_config_propose', args)
+      assert.equal(disabled.isError, true)
+      assert.equal(disabled.json.code, 'config_changes_disabled', JSON.stringify(disabled.json))
+      await services.wikiConfig.setEnabled(actor(owner), connectorId, true)
+      const valid = await mcp.ok('kb_wiki_config_propose', { ...args, validateOnly: true })
+      assert.equal(valid.status, 'valid')
+      const proposed = await mcp.ok('kb_wiki_config_propose', args)
+      assert.equal(proposed.status, 'awaiting_approval')
+      assert.match(proposed.approvalUrl, new RegExp(`/control-plane/knowledge/${connectorId}\\?tab=proposals&proposal=${proposed.proposalId}$`))
+      assert.equal(proposed.approvalPath, undefined)
+      const pending = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
+      assert.equal(pending.pendingProposals[0].proposalId, proposed.proposalId)
+      assert.ok(pending.pendingProposals[0].approvalUrl)
+      await services.wikiConfig.approve(actor(owner), connectorId, proposed.proposalId)
+      const index = await mcp.ok('kb_list_index', { definitionId, wikiId })
+      assert.ok(String(index.wiki.collect).startsWith('Laboreredmények időrendben'), JSON.stringify(index.wiki.collect))
+      const after = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
+      assert.notEqual(after.configVersion, before.configVersion)
+      assert.ok(after.groups.some((row: any) => row.key === 'config-e2e'))
+      await services.wikiConfig.setEnabled(actor(owner), connectorId, false)
+    })
+
     await check('7. végleges törlés: semmilyen tartalom nem marad (DB + nyers PDF-bájtok)', async () => {
       const wikiRow = await prisma.agentWiki.findFirstOrThrow({ where: { connectorId } })
       const pageIds = (await prisma.wikiPage.findMany({ where: { connectorId }, select: { id: true } })).map((row) => row.id)

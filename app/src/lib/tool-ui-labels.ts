@@ -51,6 +51,19 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description:
       'Egy oldalt egy korábbi verziójára, vagy egy teljes módosítást az előtte lévő állapotra állít vissza. Mindig a wiki jóváhagyója fogadja el.',
   },
+  kb_wiki_config_get: {
+    label: 'Wiki beállításainak olvasása',
+    description: 'Megmutatja a wiki beállításait: kategóriák, mezők, sablonok, szabályfájl. Nem változtat semmit.',
+  },
+  kb_wiki_config_propose: {
+    label: 'Javaslat a wiki beállításaira',
+    description:
+      'Az AI-munkatárs javaslatot tesz a wiki beállításaira. Semmi nem változik, amíg a wiki kezelője jóvá nem hagyja. Csak akkor működik, ha a wikin engedélyezted a javaslatokat.',
+  },
+  kb_wiki_config_withdraw: {
+    label: 'Javaslat visszavonása',
+    description: 'Az AI-munkatárs visszavonja a saját, még el nem bírált javaslatát a wiki beállításaira.',
+  },
 
   'platform.projects.list': {
     label: 'Projektek',

@@ -100,6 +100,12 @@ import {
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
+  kbWikiConfigGetObject,
+  kbWikiConfigProposeObject,
+  kbWikiConfigWithdrawInputSchema,
   SANDBOX_RUN_TOOL,
   WEB_SEARCH_TOOL,
   webSearchInputSchema,
@@ -2205,6 +2211,36 @@ async function createMcpResourceHandler(
           inputSchema: kbWikiRevertObject,
         },
         async (args) => enterpriseToolResult(principal, KB_WIKI_REVERT_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CONFIG_GET_TOOL,
+        {
+          title: 'Read agent wiki configuration',
+          description:
+            'The full current configuration of an agent wiki: configVersion, name, collect focus, groups (top-level categories), categories (key group/child, order, pageSort, template, pinned), metadataFields (usedBy per option), templates, wikiMd, pendingProposals, recentProposals (status and the approver comment of your last proposals). Read it before kb_wiki_config_propose. Pass wikiId when several wikis are bound.',
+          inputSchema: kbWikiConfigGetObject,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CONFIG_GET_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CONFIG_PROPOSE_TOOL,
+        {
+          title: 'Propose agent wiki configuration change',
+          description:
+            'Propose configuration changes for an agent wiki you have write access to. Nothing changes until a wiki admin approves: returns awaiting_approval and an approvalUrl — show the link, say it is pending, do not poll. Use validateOnly:true first and fix every error. Bundle related changes in one proposal; validated in order, so one proposal can create fields, then templates, then categories. Propose only when the user asks, or when ingest is blocked (no fitting category) after asking the user. Operations: setName {name}; setCollectFocus {collect}; setWikiMd {text} (full replacement); upsertGroup {key,label,description?,order?,collapsed?}; upsertCategory {key "group/child",label,description?,order?,pageSort? (title|updated_desc|date_desc|manual),collapsed?,template?,approval? (inherit|always),reviewCycleDays?}; updateCategory {key, any of these}; removeCategory {key}; mergeCategory {from,to} (moves its pages); setPinned {category,paths} (max 3, existing pages); setManualOrder {category,paths}; upsertMetadataField {key,label,type (text|select|multi_select|date),options?,help?}; addFieldOption {field,option}; renameFieldOption {field,from,to}; removeFieldOption {field,option,remapTo?} (the last two rewrite pages); upsertTemplate {id,requiredFields,requiredSections,skeleton,sectionRule?}; removeTemplate {id}. Category keys are unique in a wiki across groups (key_taken). Errors: config_conflict (re-read, propose again), invalid_config_change (nothing created; errors lists every failing operation with index and code), proposal_pending (you already have an open one), config_changes_disabled (a wiki admin must allow proposals), wiki_write_not_allowed.',
+          inputSchema: kbWikiConfigProposeObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CONFIG_PROPOSE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CONFIG_WITHDRAW_TOOL,
+        {
+          title: 'Withdraw agent wiki configuration proposal',
+          description: 'Withdraw your own open configuration proposal for a wiki (proposalId from kb_wiki_config_propose or kb_wiki_config_get).',
+          inputSchema: kbWikiConfigWithdrawInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CONFIG_WITHDRAW_TOOL, args, deps),
       )
       server.registerTool(
         SANDBOX_RUN_TOOL,

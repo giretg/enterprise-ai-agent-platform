@@ -62,6 +62,8 @@ export type WikiCategoryRow = {
   requiredSections?: string[]
   sectionRule?: 'warn' | 'error'
   templateMd?: string | null
+  /** #1075: a névvel ellátott sablon, amelyből a szabályok jöttek (agent-javaslat); felületi szerkesztés után `null`. */
+  templateKey?: string | null
 }
 
 export type WikiCategoryNode = WikiCategoryRow & {

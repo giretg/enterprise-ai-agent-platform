@@ -6,6 +6,7 @@ import type {
   WikiWriteInput,
   WikiWriteOutcome,
 } from '@/domain/knowledge-base/wiki-service'
+import type { WikiConfigService } from '@/domain/knowledge-base/wiki-config-service'
 import type { WikiSnapshotConnector } from '@/lib/wiki-access'
 import { parseWikiViewFilter } from '@/lib/wiki-metadata'
 import {
@@ -14,6 +15,9 @@ import {
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
   KB_WIKI_REVERT_TOOL,
   KB_WIKI_WRITE_TOOL,
   type EnterpriseKbTool,
@@ -74,9 +78,33 @@ function wikiCaller(ctx: KbToolContext): WikiCaller | null {
 /** A wiki-útvonalak (beküldés, írás, tálca), amelyek nem egyetlen kiválasztott KB-kötésen futnak. */
 export function isWikiToolCall(toolName: string, args: Record<string, unknown>): boolean {
   if (toolName === KB_WIKI_WRITE_TOOL || toolName === KB_WIKI_CHANGES_TOOL || toolName === KB_WIKI_REVERT_TOOL) return true
+  if (isWikiConfigTool(toolName)) return true
   if (toolName === KB_INGEST_TOOL) return args.processingMode === 'wiki'
   if (toolName === KB_LIST_INDEX_TOOL) return args.inbox === true
   return false
+}
+
+export function isWikiConfigTool(toolName: string): boolean {
+  return toolName === KB_WIKI_CONFIG_GET_TOOL || toolName === KB_WIKI_CONFIG_PROPOSE_TOOL || toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL
+}
+
+/** #1075: a beállítás-eszközök; az érvényesítés és a jog a `WikiConfigService`-ben. */
+export function executeWikiConfigTool(
+  config: WikiConfigService,
+  toolName: EnterpriseKbTool,
+  args: Record<string, unknown>,
+  caller: WikiCaller,
+): Promise<WikiOutcome> {
+  const wikiId = typeof args.wikiId === 'string' ? args.wikiId : undefined
+  if (toolName === KB_WIKI_CONFIG_GET_TOOL) return config.get(caller, { wikiId })
+  if (toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL) return config.withdraw(caller, { wikiId, proposalId: String(args.proposalId) })
+  return config.propose(caller, {
+    wikiId,
+    baseConfigVersion: String(args.baseConfigVersion),
+    operations: args.operations as unknown[],
+    note: String(args.note),
+    validateOnly: args.validateOnly === true,
+  })
 }
 
 export async function executeWikiTool(
