@@ -1,6 +1,7 @@
 import type { Connector, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { ConnectorRepository } from '@/repositories/interfaces'
+import { effectiveWikiAccess, type WikiSnapshotConnector } from '@/lib/wiki-access'
 import { pinnedRuntimeConfig } from '@/domain/connector/runtime-config'
 
 /**
@@ -20,6 +21,18 @@ export function resolveRuntimeConnector(
 }
 
 export class PostgresConnectorRepository implements ConnectorRepository {
+  async agentAudienceCovers(tenantId: string, sourceId: string, citingId: string): Promise<boolean> {
+    // ponytail: scan tenant snapshots; use indexed JSON containment if definition history grows large.
+    const versions = await prisma.agentDefinitionVersion.findMany({
+      where: { agent: { tenantId } }, select: { snapshot: true },
+    })
+    return versions.every(({ snapshot }) => {
+      const rows = (snapshot as unknown as { connectors?: WikiSnapshotConnector[] }).connectors ?? []
+      const reads = (id: string) => rows.some(row => row.type === 'knowledge_base' && row.connectorId === id && effectiveWikiAccess(row) !== 'none')
+      return !reads(citingId) || reads(sourceId)
+    })
+  }
+
   async findById(id: string, tenantId?: string): Promise<Connector | null> {
     const row = await prisma.connector.findFirst({
       where: tenantId ? { id, tenantId } : { id },
@@ -111,13 +124,14 @@ export class PostgresConnectorRepository implements ConnectorRepository {
       visibility?: Connector['visibility']
       ownerUserId?: string | null
       /** #1061 F2: a `members` névsor (teljes csere). */
+      expectedMemberUserIds?: string[]
       kbMemberUserIds?: string[]
     },
   ): Promise<Connector> {
     if (input.visibility === 'private_to_user' && !input.ownerUserId) throw new Error('private_kb_owner_required')
     if (input.visibility === 'members' && !input.ownerUserId) throw new Error('members_kb_owner_required')
     return prisma.connector.update({
-      where: { id: connectorId, type: 'knowledge_base' },
+      where: { id: connectorId, type: 'knowledge_base', ...(input.expectedMemberUserIds ? { visibility: 'members', kbMemberUserIds: { equals: input.expectedMemberUserIds } } : {}) },
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.config !== undefined ? { config: input.config } : {}),

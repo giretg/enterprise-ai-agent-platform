@@ -378,6 +378,7 @@ export interface ConnectorTemplateRepository {
 }
 
 export interface ConnectorRepository {
+  agentAudienceCovers(tenantId: string, sourceId: string, citingId: string): Promise<boolean>
   findById(id: string, tenantId?: string): Promise<Connector | null>
   findByTenantTypeAndName(
     tenantId: string,
@@ -408,6 +409,7 @@ export interface ConnectorRepository {
       visibility?: Connector['visibility']
       ownerUserId?: string | null
       /** #1061 F2: a `members` névsor (teljes csere). */
+      expectedMemberUserIds?: string[]
       kbMemberUserIds?: string[]
     },
   ): Promise<Connector>

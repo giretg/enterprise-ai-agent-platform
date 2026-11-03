@@ -425,3 +425,16 @@ export function isDefaultWikiSchema(schemaMd: string, kbLanguage: string, templa
   }
   return false
 }
+
+/** Recheck external source references on every read, including history and exports. */
+export async function visibleWikiSources(
+  refs: WikiSourceRef[], connectorId: string, canRead: (id: string) => Promise<boolean>,
+): Promise<WikiSourceRef[]> {
+  const visibility = new Map<string, boolean>()
+  for (const ref of refs) {
+    if (isDocumentSource(ref) && ref.connectorId && ref.connectorId !== connectorId && !visibility.has(ref.connectorId)) {
+      visibility.set(ref.connectorId, await canRead(ref.connectorId))
+    }
+  }
+  return refs.filter(ref => !isDocumentSource(ref) || !ref.connectorId || ref.connectorId === connectorId || visibility.get(ref.connectorId))
+}

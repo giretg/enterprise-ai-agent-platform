@@ -200,7 +200,7 @@ export type WikiWriteInput = {
 export type WikiServiceDeps = {
   wikis: WikiRepository
   documents: Pick<DocumentRepository, 'findById'>
-  connectors: Pick<ConnectorRepository, 'findById'>
+  connectors: Pick<ConnectorRepository, 'findById'> & Partial<Pick<ConnectorRepository, 'agentAudienceCovers'>>
   agents: Pick<AgentRepository, 'findById'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingest' | 'getDocument'>
   audit: Pick<AuditRepository, 'append'>
@@ -650,7 +650,7 @@ export class WikiService {
     if (!wiki) return null
     const path = input.path.trim().replace(/^\/+/, '')
     if (input.asOf !== undefined && String(input.asOf).trim() !== '') {
-      return this.readPageAsOf(wiki.id, input.connectorId, path, input.asOf)
+      return this.readPageAsOf(wiki.id, input.connectorId, path, input.asOf, input.reader)
     }
     if (path === WIKI_SCHEMA_PATH || path.toLowerCase() === 'wiki.md') {
       return { found: true, kind: 'wiki_schema', wikiId: wiki.id, path: WIKI_SCHEMA_PATH, text: wiki.schemaMd }
@@ -725,7 +725,7 @@ export class WikiService {
     return out
   }
 
-  private async readPageAsOf(wikiId: string, connectorId: string, path: string, asOf: string | number) {
+  private async readPageAsOf(wikiId: string, connectorId: string, path: string, asOf: string | number, reader?: WikiReader) {
     const history = this.deps.history
     if (!history) return { found: false, wikiId, path, error: 'history_not_available' }
     const resolved = await this.resolveAsOf(wikiId, asOf)
@@ -768,6 +768,7 @@ export class WikiService {
       body: row.body,
       sources: readWikiSources(row.sourceRefs),
     }
+    const sources = await this.sourcesForReader(reader, connectorId, pageState.sources)
     return {
       found: true,
       kind: 'wiki_page',
@@ -780,9 +781,9 @@ export class WikiService {
       category: pageState.category,
       version: row.version,
       versionDate: row.createdAt.toISOString(),
-      sources: pageState.sources,
+      sources,
       note: 'Earlier state (read-only). Do not pass this as baseVersion; read the current page before writing.',
-      text: renderWikiPageMarkdown(pageState),
+      text: renderWikiPageMarkdown({ ...pageState, sources: sources.filter((ref): ref is WikiSourceRef => ref.kind !== 'restricted') }),
     }
   }
 
@@ -1629,7 +1630,9 @@ export class WikiService {
       const document = /^[0-9a-f-]{36}$/i.test(documentId) ? await this.deps.documents.findById(documentId) : null
       if (!document || document.connectorId !== connectorId || document.status !== 'processed') return 'unknown_source'
     }
-    return audienceCovers(live, citing.connector) ? 'ok' : 'source_audience_narrower'
+    return audienceCovers(live, citing.connector) &&
+      !!(await this.deps.connectors.agentAudienceCovers?.(citing.reader.tenantId, connectorId, citing.connector.id))
+      ? 'ok' : 'source_audience_narrower'
   }
 
   /** A másik tudástár élő sora, ha a hívó (agent-kötés ÉS ember) olvashatja; különben `null`. */

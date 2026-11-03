@@ -23,6 +23,7 @@ import { PostgresDocumentRepository } from '../src/repositories/postgres/knowled
 import { PostgresWikiConsoleRepository } from '../src/repositories/postgres/wiki-console-repository'
 import { WikiService, type WikiCaller } from '../src/domain/knowledge-base/wiki-service'
 import { WikiConsoleError, WikiConsoleService, type WikiConsoleActor } from '../src/domain/knowledge-base/wiki-console-service'
+import { WikiHistoryService } from '../src/domain/knowledge-base/wiki-history-service'
 import { WikiCategoryService } from '../src/domain/knowledge-base/wiki-category-service'
 import { authorizeToolCall } from '../src/domain/enterprise-tools/authorize-tool-call'
 import { withLiveKbAudience, type WikiSnapshotConnector } from '../src/lib/wiki-access'
@@ -109,6 +110,10 @@ async function main() {
     wikiAccess: {} as never,
     knowledgeBase: {} as never,
     audit,
+  })
+  const historyService = new WikiHistoryService({
+    history: new PostgresWikiHistoryRepository(), wikis, connectors,
+    console: new PostgresWikiConsoleRepository(), wikiConsole: consoleService, wiki: wikiService, audit,
   })
   const categories = new WikiCategoryService({ wikiConsole: consoleService, wiki: wikiService, wikis, structure, audit })
   const actor = (user: { id: string }, role: 'admin' | 'operator'): WikiConsoleActor => ({ userId: user.id, tenantId: tenant.id, role })
@@ -362,6 +367,15 @@ async function main() {
   })
 
   await check('AC10: tagság elvétele után az idézett forrás „nincs hozzáférésed” címkét kap, tartalom nélkül', async () => {
+    const previous = (await wikis.findPage(M.connector.id, 'contracts/acme.md'))!
+    const updated = await wikiService.write(await caller(alice), {
+      wikiId: M.wiki.id,
+      pages: [upsert(previous.path, previous.body, [
+        { documentId: S.doc.id, connectorId: S.connector.id },
+        { documentId: M2.doc.id, connectorId: M2.connector.id, filename: 'restricted-filename.pdf' },
+      ], { baseVersion: previous.contentHash })],
+    })
+    assert.equal(updated.ok, true, JSON.stringify(updated))
     await consoleService.removeMember(asAdmin, M2.connector.id, alice.id)
     const view = await consoleService.getPage(asAlice, M.connector.id, 'contracts/acme.md')
     assert.deepEqual(view.sources.map((row) => row.kind), ['document', 'restricted'])
@@ -375,6 +389,21 @@ async function main() {
     })
     assert.deepEqual((read!.sources as Array<{ kind?: string }>).map((row) => row.kind ?? 'document'), ['document', 'restricted'])
     assert.ok(!String(read!.text).includes(M2.doc.id))
+    const page = (await wikis.findPage(M.connector.id, 'contracts/acme.md'))!
+    const seq = await new PostgresWikiHistoryRepository().latestSeq(M.wiki.id)
+    const outputs = [
+      await wikiService.readPage({ tenantId: tenant.id, connectorId: M.connector.id, path: page.path, explicitWiki: true, asOf: seq, reader: await caller(alice) }),
+      await historyService.getRevision(asAlice, M.connector.id, page.path, page.version),
+      await historyService.getPageAt(asAlice, M.connector.id, page.path, String(seq)),
+      await historyService.diffRevisions(asAlice, M.connector.id, page.path, previous.version, page.version),
+      await historyService.getChangeSet(asAlice, M.connector.id, seq),
+    ]
+    for (const output of outputs) {
+      assert.ok(!JSON.stringify(output).includes(M2.doc.id), JSON.stringify(output))
+      assert.ok(!JSON.stringify(output).includes('restricted-filename.pdf'), JSON.stringify(output))
+    }
+    const exported = await consoleService.exportZip({ ...asAlice, role: 'admin' }, M.connector.id)
+    assert.ok(!new TextDecoder().decode(exported.bytes).includes(M2.doc.id))
     // A tulajdonos (még tag) látja.
     const ownerView = await consoleService.getPage(asAdmin, M.connector.id, 'contracts/acme.md')
     assert.deepEqual(ownerView.sources.map((row) => row.kind), ['document', 'document'])
@@ -422,6 +451,29 @@ async function main() {
     assert.equal((await consoleService.getOverview(asBob, M.connector.id)).kind, 'shared')
   })
 
+  await check('stale roster update cannot restore a removed member', async () => {
+    const before = (await connectors.findById(M2.connector.id, tenant.id))!
+    await consoleService.addMember(asAdmin, M2.connector.id, alice.id)
+    const stale = (await connectors.findById(M2.connector.id, tenant.id))!
+    await consoleService.removeMember(asAdmin, M2.connector.id, alice.id)
+    await assert.rejects(() => connectors.updateKnowledgeBase(M2.connector.id, {
+      expectedMemberUserIds: stale.kbMemberUserIds, kbMemberUserIds: [...stale.kbMemberUserIds, bob.id],
+    }))
+    assert.deepEqual((await connectors.findById(M2.connector.id, tenant.id))!.kbMemberUserIds, before.kbMemberUserIds)
+  })
+  await check('agent audience also covers published and pinned definitions', async () => {
+    const version = await prisma.agentDefinitionVersion.create({ data: {
+      agentId: agent.id, version: 1, publishedById: admin.id, contentHash: 'test',
+      snapshot: { connectors: [binding(M.connector)] },
+    } })
+    assert.equal(await connectors.agentAudienceCovers(tenant.id, S.connector.id, M.connector.id), false)
+    const result = await wikiService.write(await caller(admin), {
+      wikiId: M.wiki.id, pages: [upsert('contracts/agent-audience.md', 'x', [{ documentId: S.doc.id, connectorId: S.connector.id }])],
+    })
+    assert.ok(JSON.stringify(result).includes('source_audience_narrower'), JSON.stringify(result))
+    await prisma.agentDefinitionVersion.update({ where: { id: version.id }, data: { snapshot: { connectors: [binding(M.connector), binding(S.connector)] } } })
+    assert.equal(await connectors.agentAudienceCovers(tenant.id, S.connector.id, M.connector.id), true)
+  })
   await prisma.$disconnect()
   if (failures > 0) {
     console.log(`\n${failures} FAIL`)

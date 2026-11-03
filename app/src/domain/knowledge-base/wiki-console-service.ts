@@ -36,6 +36,7 @@ import {
   isDocumentSource,
   isHumanNoteSource,
   readWikiSources,
+  visibleWikiSources,
   renderWikiIndex,
   renderWikiLog,
   renderWikiPageMarkdown,
@@ -749,7 +750,7 @@ export class WikiConsoleService {
         category: page.category,
         frontmatter: stripManagedFrontmatter(page.frontmatter),
         body: page.body,
-        sources: readWikiSources(page.sourceRefs),
+        sources: await visibleWikiSources(readWikiSources(page.sourceRefs), connector.id, async id => !!(await this.viewableConnector(actor, id))),
       })
       add(page.status === 'archived' ? `_archived/${page.path}` : page.path, markdown)
     }
@@ -995,6 +996,7 @@ export class WikiConsoleService {
     const users = await this.deps.console.listTenantUsers(actor.tenantId)
     if (!users.some((user) => user.id === userId)) throw new WikiConsoleError('invalid_args')
     const updated = await this.deps.connectors.updateKnowledgeBase(connector.id, {
+      expectedMemberUserIds: connector.kbMemberUserIds,
       kbMemberUserIds: [...connector.kbMemberUserIds, userId],
     })
     // D9: ha az admin önmagát veszi fel, az külön kiemelt esemény.
@@ -1013,6 +1015,7 @@ export class WikiConsoleService {
     if (userId === connector.ownerUserId) throw new WikiConsoleError('invalid_args')
     if (!connector.kbMemberUserIds.includes(userId)) return { removed: false }
     const updated = await this.deps.connectors.updateKnowledgeBase(connector.id, {
+      expectedMemberUserIds: connector.kbMemberUserIds,
       kbMemberUserIds: connector.kbMemberUserIds.filter((id) => id !== userId),
     })
     await this.audit(updated, actor, 'kb.members.removed', connector.id, 'connector', {
