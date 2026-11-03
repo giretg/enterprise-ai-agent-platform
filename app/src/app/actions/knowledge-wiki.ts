@@ -13,6 +13,8 @@ import { canReadPublishedAgent } from '@/domain/agent-definition'
 import { MAX_WIKI_SCHEMA_CHARS, WikiConsoleError, WIKI_TEMPLATE_IDS, type WikiConsoleActor } from '@/domain/knowledge-base/wiki-console-service'
 import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiCategoryError } from '@/domain/knowledge-base/wiki-category-service'
+import { WikiMetadataError } from '@/domain/knowledge-base/wiki-metadata-service'
+import { WIKI_FIELD_TYPES, type WikiViewFilter } from '@/lib/wiki-metadata'
 import { fail, ok } from '@/lib/result'
 
 const uuid = z.string().uuid()
@@ -23,7 +25,12 @@ async function actor(): Promise<WikiConsoleActor> {
 }
 
 function failFrom(error: unknown, fallback: string) {
-  if (error instanceof WikiConsoleError || error instanceof WikiAccessError || error instanceof WikiCategoryError) {
+  if (
+    error instanceof WikiConsoleError ||
+    error instanceof WikiAccessError ||
+    error instanceof WikiCategoryError ||
+    error instanceof WikiMetadataError
+  ) {
     return fail(error.code)
   }
   if (error instanceof z.ZodError) return fail('invalid_args')
@@ -569,6 +576,11 @@ export async function updateWikiCategoryAction(input: {
   description?: string | null
   sortOrder?: number
   approval?: string
+  reviewCycleDays?: number | null
+  requiredFields?: string[]
+  requiredSections?: string[]
+  sectionRule?: string
+  templateMd?: string | null
 }) {
   try {
     const parsed = z
@@ -580,6 +592,12 @@ export async function updateWikiCategoryAction(input: {
         description: z.string().max(500).nullable().optional(),
         sortOrder: z.number().int().min(0).max(100_000).optional(),
         approval: categoryApproval.optional(),
+        // #1061 F3/F4: átnézési ciklus, kötelező mezők, oldalsablon.
+        reviewCycleDays: z.number().int().min(1).max(3650).nullable().optional(),
+        requiredFields: z.array(z.string().max(40)).max(31).optional(),
+        requiredSections: z.array(z.string().max(200)).max(20).optional(),
+        sectionRule: z.enum(['warn', 'error']).optional(),
+        templateMd: z.string().max(5000).nullable().optional(),
       })
       .parse(input)
     const { connectorId, categoryId, ...patch } = parsed
@@ -599,5 +617,180 @@ export async function deleteWikiCategoryAction(input: { connectorId: string; cat
     return ok(result)
   } catch (e) {
     return failFrom(e, 'Failed to delete category')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// #1061 F3: metaadat-mezők, „Átnéztem”, nézetek
+
+export async function getWikiMetadataAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiMetadata.get(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load metadata fields')
+  }
+}
+
+export async function setWikiMetadataManagedAction(input: { connectorId: string; managed: boolean }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, managed: z.boolean() }).parse(input)
+    const result = parsed.managed
+      ? await services.wikiMetadata.enable(await actor(), parsed.connectorId)
+      : await services.wikiMetadata.disable(await actor(), parsed.connectorId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to change metadata fields')
+  }
+}
+
+const fieldOptions = z.array(z.string().max(200)).max(50)
+
+export async function createWikiFieldAction(input: {
+  connectorId: string
+  key: string
+  name: string
+  type: string
+  options?: string[]
+  help?: string | null
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        key: z.string().trim().min(1).max(40),
+        name: z.string().trim().min(1).max(120),
+        type: z.enum(WIKI_FIELD_TYPES),
+        options: fieldOptions.optional(),
+        help: z.string().max(500).nullable().optional(),
+      })
+      .parse(input)
+    const { connectorId, ...field } = parsed
+    const result = await services.wikiMetadata.createField(await actor(), connectorId, field)
+    revalidateWiki(connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to create field')
+  }
+}
+
+export async function updateWikiFieldAction(input: {
+  connectorId: string
+  fieldId: string
+  name?: string
+  options?: string[]
+  help?: string | null
+  sortOrder?: number
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        fieldId: uuid,
+        name: z.string().trim().min(1).max(120).optional(),
+        options: fieldOptions.optional(),
+        help: z.string().max(500).nullable().optional(),
+        sortOrder: z.number().int().min(0).max(100_000).optional(),
+      })
+      .parse(input)
+    const { connectorId, fieldId, ...patch } = parsed
+    const result = await services.wikiMetadata.updateField(await actor(), connectorId, fieldId, patch)
+    revalidateWiki(connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to update field')
+  }
+}
+
+export async function deleteWikiFieldAction(input: { connectorId: string; fieldId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, fieldId: uuid }).parse(input)
+    const result = await services.wikiMetadata.removeField(await actor(), parsed.connectorId, parsed.fieldId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to delete field')
+  }
+}
+
+export async function getWikiPageMetaAction(input: { connectorId: string; path: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, path: z.string().min(1).max(300) }).parse(input)
+    return ok(await services.wikiMetadata.getPage(await actor(), parsed.connectorId, parsed.path))
+  } catch (e) {
+    return failFrom(e, 'Failed to load page metadata')
+  }
+}
+
+export async function reviewWikiPageAction(input: { connectorId: string; path: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, path: z.string().min(1).max(300) }).parse(input)
+    const result = await services.wikiMetadata.review(await actor(), parsed.connectorId, parsed.path)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to mark the page reviewed')
+  }
+}
+
+export async function setWikiPageMetaAction(input: {
+  connectorId: string
+  path: string
+  docStatus?: 'draft' | 'approved' | null
+  ownerUserId?: string | null
+  ownerRole?: string | null
+  reviewCycleDays?: number | null
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        path: z.string().min(1).max(300),
+        docStatus: z.enum(['draft', 'approved']).nullable().optional(),
+        ownerUserId: uuid.nullable().optional(),
+        ownerRole: z.string().max(200).nullable().optional(),
+        reviewCycleDays: z.number().int().min(1).max(3650).nullable().optional(),
+      })
+      .parse(input)
+    const { connectorId, path, ...patch } = parsed
+    const result = await services.wikiMetadata.setPage(await actor(), connectorId, path, patch)
+    revalidateWiki(connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save page metadata')
+  }
+}
+
+const WIKI_VIEWS = ['drafts', 'overdue', 'mine', 'owner', 'orphans', 'field'] as const
+
+/** A „Nézetek” fül: egy nézet a Control Plane-en (ugyanaz a mag, mint a `kb_list_index` szűrő). */
+export async function getWikiViewAction(input: { connectorId: string; view: string; owner?: string; field?: string; value?: string }) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        view: z.enum(WIKI_VIEWS),
+        owner: uuid.optional(),
+        field: z.string().max(40).optional(),
+        value: z.string().max(200).optional(),
+      })
+      .parse(input)
+    const filter: WikiViewFilter =
+      parsed.view === 'drafts'
+        ? { docStatus: ['draft'] }
+        : parsed.view === 'overdue'
+          ? { reviewOverdue: true }
+          : parsed.view === 'mine'
+            ? { owner: ['me'] }
+            : parsed.view === 'owner'
+              ? parsed.owner ? { owner: [parsed.owner] } : {}
+              : parsed.view === 'orphans'
+                ? { orphans: true }
+                : parsed.field && parsed.value
+                  ? { fields: [{ key: parsed.field, values: [parsed.value] }] }
+                  : {}
+    return ok(await services.wikiMetadata.views(await actor(), parsed.connectorId, filter))
+  } catch (e) {
+    return failFrom(e, 'Failed to load view')
   }
 }

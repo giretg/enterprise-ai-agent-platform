@@ -33,6 +33,14 @@ export type WikiCategoryRow = {
    * kategória: oldal nem kerülhet bele, az `index.md`-be, a briefingbe és a fába sem kerül.
    */
   linkedConnectorId?: string | null
+  /** #1061 F3: alapértelmezett átnézési ciklus (nap); az alkategória felülírja. */
+  reviewCycleDays?: number | null
+  /** #1061 F3: kötelező mezők kulcsai (egyedi mező vagy `owner`); az alkategória örökli. */
+  requiredFields?: string[]
+  /** #1061 F4: kötelező fejezetek, a hiányuk súlya és az induló váz. */
+  requiredSections?: string[]
+  sectionRule?: 'warn' | 'error'
+  templateMd?: string | null
 }
 
 export type WikiCategoryNode = WikiCategoryRow & {

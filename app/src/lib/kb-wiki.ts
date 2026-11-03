@@ -1,5 +1,6 @@
 import { WIKI_TEMPLATE_VERSION, renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
 import { resolveKbLanguage } from './kb-language'
+import type { WikiPageMeta } from './wiki-metadata'
 /**
  * #943 LLM Wiki 2/6 — a wiki-oldalak determinisztikus, DB-mentes része (#941 §1, D8, D9).
  *
@@ -84,6 +85,11 @@ export type WikiPageState = {
   frontmatter: Record<string, unknown>
   body: string
   sources: WikiSourceRef[]
+  /**
+   * #1061 F3: beépített mezők (állapot, gazda, átnézés). Nem része a tartalom-hash-nek:
+   * az átnézés vagy a gazdaváltás nem teszi elavulttá az agent `baseVersion`-jét.
+   */
+  meta?: WikiPageMeta
 }
 
 export function isValidWikiPath(path: string): boolean {
@@ -96,8 +102,8 @@ export function isReservedWikiPath(path: string): boolean {
   return WIKI_RESERVED_PATHS.has(path.toLowerCase())
 }
 
-/** `baseVersion` = a tartalom hash-e: ami változik, az eltér (cím, összefoglaló, törzs, források is). */
-export function wikiPageContentHash(state: Omit<WikiPageState, 'path'>): string {
+/** `baseVersion` = a tartalom hash-e: ami változik, az eltér (cím, összefoglaló, törzs, források is; a `meta` nem). */
+export function wikiPageContentHash(state: Omit<WikiPageState, 'path' | 'meta'>): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
@@ -399,12 +405,20 @@ export function renderWikiLog(entries: WikiLogRow[]): string {
 
 /** Az oldal markdownként (olvasáshoz / exporthoz), OKF-kompatibilis frontmatterrel. */
 export function renderWikiPageMarkdown(state: Omit<WikiPageState, 'path'>): string {
+  const meta = state.meta
   const fm: Record<string, unknown> = {
     type: state.type,
     title: state.title,
     summary: state.summary,
     ...(state.category ? { category: state.category } : {}),
     ...state.frontmatter,
+    // #1061 F3: a beépített mezők is OKF-frontmatterként (exportban, olvasáskor). A frontmatter
+    // után jönnek: egy szabad `doc_status` / `last_reviewed` kulcs nem írhatja felül a valódi értéket.
+    ...(meta?.docStatus ? { doc_status: meta.docStatus } : {}),
+    ...(meta?.ownerUserId ? { owner_user_id: meta.ownerUserId } : {}),
+    ...(meta?.ownerRole ? { owner_role: meta.ownerRole } : {}),
+    ...(meta?.reviewedAt ? { last_reviewed: meta.reviewedAt.slice(0, 10) } : {}),
+    ...(meta?.reviewCycleDays ? { review_cycle_days: meta.reviewCycleDays } : {}),
     ...(state.sources.length ? { sources: state.sources } : {}),
   }
   const lines = Object.entries(fm).map(([key, value]) => `${key}: ${JSON.stringify(value)}`)

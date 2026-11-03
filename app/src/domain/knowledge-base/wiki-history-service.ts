@@ -24,6 +24,7 @@ import {
   type WikiPageTypeName,
   type WikiSourceRef,
 } from '@/lib/kb-wiki'
+import { EMPTY_WIKI_META, readWikiMeta } from '@/lib/wiki-metadata'
 import {
   canDecideWikiChange,
   isKnowledgeBaseVisibleTo,
@@ -95,7 +96,17 @@ export class WikiHistoryService {
 
   private async visibleDiff(actor: WikiConsoleActor, connectorId: string, before: WikiPageRevision | null, after: WikiPageRevision, page: WikiPage) {
     const sanitize = async (rev: WikiPageRevision) => ({ ...rev, sourceRefs: await this.sourcesFor(actor, connectorId, rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)) })
-    return revisionDiff(before ? await sanitize(before) : null, await sanitize(after), page)
+    const diff = revisionDiff(before ? await sanitize(before) : null, await sanitize(after), page)
+    // #1061 F3: a gazda azonosítója helyett a neve.
+    const ownerIds = diff.fields.filter((row) => row.field === 'owner').flatMap((row) => [row.before, row.after]).filter(Boolean)
+    if (!ownerIds.length) return diff
+    const labels = await this.deps.console.userLabels(ownerIds)
+    return {
+      ...diff,
+      fields: diff.fields.map((row) =>
+        row.field === 'owner' ? { ...row, before: labels.get(row.before) ?? row.before, after: labels.get(row.after) ?? row.after } : row,
+      ),
+    }
   }
 
   private now() {
@@ -1032,8 +1043,22 @@ function sourceLabel(ref: WikiSourceRef): string {
 function revisionDiff(before: WikiPageRevision | null, after: WikiPageRevision, page: WikiPage) {
   const sources = (rev: WikiPageRevision | null) =>
     rev ? readWikiSources(rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)).map(sourceLabel).join(', ') : ''
-  const field = (name: 'title' | 'summary' | 'path' | 'status' | 'category' | 'sources', a: string, b: string) =>
-    a === b ? [] : [{ field: name, before: a, after: b }]
+  const field = (
+    name: 'title' | 'summary' | 'path' | 'status' | 'category' | 'sources' | 'docStatus' | 'owner' | 'reviewed' | 'reviewCycle',
+    a: string,
+    b: string,
+  ) => (a === b ? [] : [{ field: name, before: a, after: b }])
+  // #1061 F3 NFR-4: a beépített mezők is a diff részei (a pillanatkép nélküli régi revíziónál nem).
+  const beforeMeta = before ? readWikiMeta(before.meta) : EMPTY_WIKI_META
+  const afterMeta = readWikiMeta(after.meta)
+  const metaFields = beforeMeta && afterMeta
+    ? [
+        ...field('docStatus', beforeMeta.docStatus ?? '', afterMeta.docStatus ?? ''),
+        ...field('owner', beforeMeta.ownerUserId ?? '', afterMeta.ownerUserId ?? ''),
+        ...field('reviewed', beforeMeta.reviewedAt?.slice(0, 10) ?? '', afterMeta.reviewedAt?.slice(0, 10) ?? ''),
+        ...field('reviewCycle', beforeMeta.reviewCycleDays ? String(beforeMeta.reviewCycleDays) : '', afterMeta.reviewCycleDays ? String(afterMeta.reviewCycleDays) : ''),
+      ]
+    : []
   return {
     fields: [
       ...field('title', before?.title ?? '', after.title),
@@ -1042,6 +1067,7 @@ function revisionDiff(before: WikiPageRevision | null, after: WikiPageRevision, 
       ...field('status', before?.status ?? '', after.status ?? ''),
       ...(before?.type === null || after.type === null ? [] : field('category', before?.category ?? '', after.category ?? '')),
       ...field('sources', sources(before), sources(after)),
+      ...metaFields,
     ],
     diff: diffLines(before?.body ?? '', after.body),
   }

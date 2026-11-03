@@ -67,7 +67,7 @@ export interface WikiConsoleRepository {
    */
   listAgentsForWikiAccess(tenantId: string, userId: string | null): Promise<Array<{ id: string; name: string }>>
   /** #1061 F2: a tenant aktív tagjai (a „csak a kijelöltek” névsor-választójához). */
-  listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string }>>
+  listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string; email: string }>>
 }
 
 function effectiveStatusSql(now: Date) {
@@ -224,13 +224,13 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
     return new Map(rows.map((row) => [row.id, row.name || row.email]))
   }
 
-  async listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string }>> {
+  async listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string; email: string }>> {
     const rows = await prisma.tenantMembership.findMany({
       where: { tenantId, status: 'active' },
       select: { user: { select: { id: true, name: true, email: true } } },
     })
     return rows
-      .map((row) => ({ id: row.user.id, label: row.user.name || row.user.email }))
+      .map((row) => ({ id: row.user.id, label: row.user.name || row.user.email, email: row.user.email }))
       .sort((a, b) => a.label.localeCompare(b.label))
   }
 

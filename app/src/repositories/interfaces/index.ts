@@ -1,4 +1,5 @@
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
+import type { WikiFieldDef } from '@/lib/wiki-metadata'
 import type {
   Agent,
   AgentDefinitionVersion,
@@ -895,6 +896,15 @@ export type WikiPageWrite = {
   outLinks?: string[]
   status?: WikiPageStatus
   contentHash: string
+  /** #1061 F3: beépített mezők — hiánya = változatlan (létrehozáskor üres). */
+  meta?: {
+    docStatus: 'draft' | 'approved' | null
+    ownerUserId: string | null
+    ownerRole: string | null
+    reviewedAt: Date | null
+    reviewedByUserId: string | null
+    reviewCycleDays: number | null
+  }
 }
 
 /** #943: egy wiki-oldal chunk-sora a wiki-konténer artifact alatt. */
@@ -1101,7 +1111,12 @@ export interface WikiStructureRepository {
   updateCategory(
     wikiId: string,
     id: string,
-    patch: Partial<Pick<WikiCategoryRow, 'parentId' | 'name' | 'description' | 'sortOrder' | 'approval'>>,
+    patch: Partial<
+      Pick<
+        WikiCategoryRow,
+        'parentId' | 'name' | 'description' | 'sortOrder' | 'approval' | 'reviewCycleDays' | 'requiredFields' | 'requiredSections' | 'sectionRule' | 'templateMd'
+      >
+    >,
   ): Promise<WikiCategoryRow | null>
   deleteCategory(wikiId: string, id: string): Promise<boolean>
   /** Publikált oldalak, amelyek `outLinks`-e tartalmazza a path-t (GIN-index); a saját oldal nem számít. */
@@ -1115,6 +1130,45 @@ export interface WikiStructureRepository {
     outLink: string,
     limit: number,
   ): Promise<Array<{ wikiId: string; connectorId: string; path: string; title: string; category: string | null }>>
+  /** #1061 F3: metaadat-mezők kapcsolója + a wiki egyedi mezői. Hiánya = kikapcsolva. */
+  fieldSettings?(wikiId: string): Promise<{ managed: boolean; fields: WikiFieldDef[] }>
+  setFieldsManaged?(wikiId: string, managed: boolean): Promise<void>
+  createField?(input: Omit<WikiFieldDef, 'id'> & { wikiId: string }): Promise<WikiFieldDef>
+  updateField?(wikiId: string, id: string, patch: Partial<Pick<WikiFieldDef, 'name' | 'options' | 'help' | 'sortOrder'>>): Promise<WikiFieldDef | null>
+  deleteField?(wikiId: string, id: string): Promise<boolean>
+  /**
+   * #1061 F3 nézetek: publikált oldalak metaadattal, a szűrhető részt SQL-ben (indexen)
+   * szűrve. Az átnézési esedékességet a hívó számolja (a kategória-ciklus kell hozzá).
+   */
+  listPageMeta?(connectorId: string, filter: WikiPageMetaQuery): Promise<WikiPageMetaRow[]>
+}
+
+export type WikiPageMetaQuery = {
+  docStatus?: Array<'draft' | 'approved' | 'none'>
+  ownerUserIds?: string[]
+  /** Kulcsút-előtagok (`partners` → `partners`, `partners/…`). */
+  categories?: string[]
+  /** `frontmatter @> {key: value}` (GIN); egy kulcson belül bármelyik érték. */
+  fields?: Array<{ key: string; values: string[] }>
+  /** Csak a visszahivatkozás nélküli oldalak (az overview oldalak nélkül). */
+  orphansOnly?: boolean
+}
+
+export type WikiPageMetaRow = {
+  path: string
+  title: string
+  summary: string
+  type: string
+  category: string | null
+  frontmatter: unknown
+  docStatus: 'draft' | 'approved' | null
+  ownerUserId: string | null
+  ownerRole: string | null
+  reviewedAt: Date | null
+  reviewedByUserId: string | null
+  reviewCycleDays: number | null
+  createdAt: Date
+  updatedAt: Date
 }
 
 /** #978: egy oldal állapota egy korábbi sorszámon (időutazás). */

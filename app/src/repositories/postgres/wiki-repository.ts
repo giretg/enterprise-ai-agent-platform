@@ -16,6 +16,8 @@ import type {
   WikiStructureRepository,
 } from '../interfaces'
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
+import { metaFromColumns, type WikiFieldDef } from '@/lib/wiki-metadata'
+import type { WikiPageMetaQuery, WikiPageMetaRow } from '../interfaces'
 
 /** Tranzakció-megszakítás eredménnyel (a rollback után ezt adjuk vissza). */
 class ApplyAborted extends Error {
@@ -37,6 +39,17 @@ function pageData(page: WikiApplyPageOp['page']) {
     outLinks: page.outLinks ?? [],
     status: page.status ?? 'published',
     contentHash: page.contentHash,
+    // #1061 F3: a beépített mezők csak akkor íródnak, ha a tervezés adta őket.
+    ...(page.meta
+      ? {
+          docStatus: page.meta.docStatus,
+          ownerUserId: page.meta.ownerUserId,
+          ownerRole: page.meta.ownerRole,
+          reviewedAt: page.meta.reviewedAt,
+          reviewedByUserId: page.meta.reviewedByUserId,
+          reviewCycleDays: page.meta.reviewCycleDays,
+        }
+      : {}),
   }
 }
 
@@ -60,6 +73,8 @@ export function revisionData(
     type: page.type,
     category: page.category,
     sourceRefs: page.sourceRefs ?? [],
+    // #1061 F3 NFR-4: a beépített mezők is a revízió részei (diff, visszaállítás, időutazás).
+    meta: metaFromColumns(page) as unknown as Prisma.InputJsonValue,
     createdByAgentId: author.actorAgentId ?? null,
     createdByUserId: author.actorUserId ?? null,
   }
@@ -673,7 +688,14 @@ const categorySelect = {
   sortOrder: true,
   approval: true,
   linkedConnectorId: true,
+  reviewCycleDays: true,
+  requiredFields: true,
+  requiredSections: true,
+  sectionRule: true,
+  templateMd: true,
 } as const
+
+const fieldSelect = { id: true, key: true, name: true, type: true, options: true, help: true, sortOrder: true } as const
 
 /** #1061 F1: kezelt kategória-fa és visszahivatkozások. */
 export class PostgresWikiStructureRepository implements WikiStructureRepository {
@@ -747,6 +769,126 @@ export class PostgresWikiStructureRepository implements WikiStructureRepository 
       path: row.path,
       title: row.title,
       category: row.category,
+    }))
+  }
+
+  // #1061 F3: metaadat-mezők és nézetek ------------------------------------
+
+  async fieldSettings(wikiId: string): Promise<{ managed: boolean; fields: WikiFieldDef[] }> {
+    const [wiki, fields] = await Promise.all([
+      prisma.agentWiki.findUnique({ where: { id: wikiId }, select: { managedFields: true } }),
+      prisma.wikiField.findMany({ where: { wikiId }, select: fieldSelect, orderBy: [{ sortOrder: 'asc' }, { key: 'asc' }] }),
+    ])
+    return { managed: wiki?.managedFields ?? false, fields }
+  }
+
+  async setFieldsManaged(wikiId: string, managed: boolean): Promise<void> {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { managedFields: managed } })
+  }
+
+  createField(input: Omit<WikiFieldDef, 'id'> & { wikiId: string }): Promise<WikiFieldDef> {
+    return prisma.wikiField.create({ data: input, select: fieldSelect })
+  }
+
+  async updateField(
+    wikiId: string,
+    id: string,
+    patch: Partial<Pick<WikiFieldDef, 'name' | 'options' | 'help' | 'sortOrder'>>,
+  ): Promise<WikiFieldDef | null> {
+    const result = await prisma.wikiField.updateMany({ where: { id, wikiId }, data: patch })
+    if (result.count === 0) return null
+    return prisma.wikiField.findUnique({ where: { id }, select: fieldSelect })
+  }
+
+  async deleteField(wikiId: string, id: string): Promise<boolean> {
+    return prisma.$transaction(async (tx) => {
+      const field = await tx.wikiField.findFirst({ where: { id, wikiId }, select: { key: true } })
+      if (!field) return false
+      await tx.wikiField.delete({ where: { id } })
+      // A törölt mező kötelezősége se maradjon a kategóriákon (az értékek szabad kulcsként maradnak).
+      await tx.$executeRaw`
+        UPDATE wiki_categories SET required_fields = array_remove(required_fields, ${field.key}), updated_at = now()
+        WHERE wiki_id = ${wikiId}::uuid AND ${field.key} = ANY(required_fields)`
+      return true
+    })
+  }
+
+  async listPageMeta(connectorId: string, filter: WikiPageMetaQuery): Promise<WikiPageMetaRow[]> {
+    const conditions: Prisma.Sql[] = [Prisma.sql`p.connector_id = ${connectorId}::uuid`, Prisma.sql`p.status = 'published'`]
+    if (filter.docStatus?.length) {
+      const values = filter.docStatus.filter((value) => value !== 'none')
+      const none = filter.docStatus.includes('none')
+      const parts = [
+        ...(values.length ? [Prisma.sql`p.doc_status::text = ANY(${values}::text[])`] : []),
+        ...(none ? [Prisma.sql`p.doc_status IS NULL`] : []),
+      ]
+      conditions.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`)
+    }
+    if (filter.ownerUserIds) {
+      conditions.push(
+        filter.ownerUserIds.length ? Prisma.sql`p.owner_user_id = ANY(${filter.ownerUserIds}::uuid[])` : Prisma.sql`false`,
+      )
+    }
+    if (filter.categories?.length) {
+      const parts = filter.categories.map(
+        (path) => Prisma.sql`(lower(p.category) = ${path} OR lower(p.category) LIKE ${`${path.replace(/[\\%_]/g, '\\$&')}/%`})`,
+      )
+      conditions.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`)
+    }
+    for (const field of filter.fields ?? []) {
+      // `@>` a GIN (jsonb_path_ops) indexen: egyértékű és több-választós (tömb) mezőre is.
+      const parts = field.values.flatMap((value) => [
+        Prisma.sql`p.frontmatter @> ${JSON.stringify({ [field.key]: value })}::jsonb`,
+        Prisma.sql`p.frontmatter @> ${JSON.stringify({ [field.key]: [value] })}::jsonb`,
+      ])
+      conditions.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`)
+    }
+    if (filter.orphansOnly) {
+      conditions.push(Prisma.sql`p.type <> 'overview'`)
+      conditions.push(Prisma.sql`NOT EXISTS (
+        SELECT 1 FROM wiki_pages q
+        WHERE q.connector_id = p.connector_id AND q.status = 'published'
+          AND q.out_links @> ARRAY[p.path]::text[] AND q.path <> p.path)`)
+    }
+    const rows = await prisma.$queryRaw<
+      Array<{
+        path: string
+        title: string
+        summary: string
+        type: string
+        category: string | null
+        frontmatter: unknown
+        doc_status: 'draft' | 'approved' | null
+        owner_user_id: string | null
+        owner_role: string | null
+        reviewed_at: Date | null
+        reviewed_by_user_id: string | null
+        review_cycle_days: number | null
+        created_at: Date
+        updated_at: Date
+      }>
+    >(Prisma.sql`
+      SELECT p.path, p.title, p.summary, p.type::text AS type, p.category, p.frontmatter, p.doc_status::text AS doc_status,
+             p.owner_user_id, p.owner_role, p.reviewed_at, p.reviewed_by_user_id, p.review_cycle_days,
+             p.created_at, p.updated_at
+      FROM wiki_pages p
+      WHERE ${Prisma.join(conditions, ' AND ')}
+      ORDER BY p.category NULLS LAST, p.path`)
+    return rows.map((row) => ({
+      path: row.path,
+      title: row.title,
+      summary: row.summary,
+      type: row.type,
+      category: row.category,
+      frontmatter: row.frontmatter,
+      docStatus: row.doc_status,
+      ownerUserId: row.owner_user_id,
+      ownerRole: row.owner_role,
+      reviewedAt: row.reviewed_at,
+      reviewedByUserId: row.reviewed_by_user_id,
+      reviewCycleDays: row.review_cycle_days,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     }))
   }
 }

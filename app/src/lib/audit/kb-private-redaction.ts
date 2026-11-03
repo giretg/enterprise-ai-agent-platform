@@ -35,6 +35,10 @@ const SAFE_ENUM_KEYS = new Set([
   'approval',
   'fromapproval',
   'toapproval',
+  // #1061 F3/F4
+  'docstatus',
+  'fieldtype',
+  'sectionrule',
 ])
 const MAX_ENUM_LENGTH = 64
 

@@ -11,7 +11,17 @@ export type AgentWikiBriefing = {
   /** #978 §5.4: alkalmazott módosítások az agent legutóbbi átnézése óta. */
   changes?: { latestSeq: number; unseen: number }
   /** #1061 F1: kezelt kategóriák — az agent csak ezek kulcsútját írhatja az oldal `category` mezőjébe. */
-  categories?: Array<{ key: string; name: string; description?: string; approval?: 'always' }>
+  categories?: Array<{
+    key: string
+    name: string
+    description?: string
+    approval?: 'always'
+    /** #1061 F3/F4: kötelező mezők és fejezetek. */
+    requiredFields?: string[]
+    requiredSections?: string[]
+  }>
+  /** #1061 F3: metaadat-mezős wiki — lejárt átnézés, tervezetek, egyedi mezők kulcsai. */
+  metadata?: { reviewOverdue: number; drafts: number; fields: string[] }
   /** #1061 F2: „csak a kijelöltek” wiki — a tartalma nem kerülhet szélesebb körbe. */
   membersOnly?: boolean
 }
@@ -32,7 +42,7 @@ export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: Te
       : ''
     const categories = wiki.categories?.length && wiki.access !== 'read'
       ? `\n  ${en ? 'Categories (use the key as page category; others are rejected)' : 'Kategóriák (az oldal category mezőjébe a kulcs kerül; más érték hibát ad)'}: ${wiki.categories
-          .map(category => `${category.key} = ${category.name}${category.description ? ` (${category.description})` : ''}${category.approval === 'always' ? (en ? ' [always needs approval]' : ' [mindig jóváhagyással]') : ''}`)
+          .map(category => `${category.key} = ${category.name}${category.description ? ` (${category.description})` : ''}${category.approval === 'always' ? (en ? ' [always needs approval]' : ' [mindig jóváhagyással]') : ''}${category.requiredFields?.length ? ` [${en ? 'required fields' : 'kötelező mezők'}: ${category.requiredFields.join(', ')}]` : ''}${category.requiredSections?.length ? ` [${en ? 'required sections' : 'kötelező fejezetek'}: ${category.requiredSections.join(', ')}]` : ''}`)
           .join('; ')}`
       : ''
     const membersOnly = wiki.membersOnly
@@ -40,7 +50,13 @@ export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: Te
           ? 'members only — do not copy its content into a wider wiki or share it with people outside its list'
           : 'csak a kijelölteknek — a tartalmát ne vidd át szélesebb körű wikibe, és ne oszd meg a névsoron kívüliekkel'}`
       : ''
-    return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${membersOnly}${inbox}${batches ? `; ${batches}` : ''}${changes}${categories}`
+    // #1061 F3: az agent frissítést javasolhat a gazdának — átnézettnek viszont nem jelölheti.
+    const metadata = wiki.metadata
+      ? `\n  ${en
+          ? `Metadata: ${wiki.metadata.reviewOverdue} page${wiki.metadata.reviewOverdue === 1 ? '' : 's'} overdue for review, ${wiki.metadata.drafts} draft${wiki.metadata.drafts === 1 ? '' : 's'} waiting${wiki.metadata.fields.length ? `; fields: ${wiki.metadata.fields.join(', ')}` : ''}. You may suggest updates to the page owner; never mark a page reviewed or approved yourself.`
+          : `Metaadat: ${wiki.metadata.reviewOverdue} oldal átnézése lejárt, ${wiki.metadata.drafts} tervezet vár${wiki.metadata.fields.length ? `; mezők: ${wiki.metadata.fields.join(', ')}` : ''}. Frissítést javasolhatsz a gazdának; átnézettnek vagy jóváhagyottnak magad nem jelölheted.`}`
+      : ''
+    return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${membersOnly}${inbox}${batches ? `; ${batches}` : ''}${changes}${categories}${metadata}`
   })
   if (wikis.some(wiki => wiki.access === 'write')) rows.push(en
     ? 'Read skill://llm-wiki-maintainer/SKILL.md. Process received sources NOW: kb_ingest processingMode:"wiki" → read source → kb_wiki_write, one source at a time; defer only on explicit request. Inbox: kb_list_index inbox:true → kb_get_document claimForWiki:true → write → finalize; report progress before stopping. Cite raw sources and wiki pages; retain and mark contradictions. Read WIKI.md (including ingest_review) and index.md first.'

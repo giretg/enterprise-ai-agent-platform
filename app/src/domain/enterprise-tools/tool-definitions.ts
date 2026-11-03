@@ -845,6 +845,20 @@ export const kbListIndexInputSchema = z
     inbox: z.boolean().optional(),
     batchId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    /**
+     * #1061 F3 nézetek (metaadat-mezős wikin). Tömb a sémában nem lehet (Claude.ai), ezért
+     * a több érték vesszővel elválasztott szöveg; `field.<kulcs>` paraméter is jöhet (passthrough).
+     */
+    docStatus: z.string().max(100).optional().describe('Wiki view: "draft", "approved" or "none" (comma-separated).'),
+    owner: z.string().max(500).optional().describe('Wiki view: page owner — "me", an e-mail or a userId (comma-separated).'),
+    reviewOverdue: z.boolean().optional().describe('Wiki view: true = pages whose review is overdue (oldest first).'),
+    category: z.string().max(500).optional().describe('Wiki view: category keys (comma-separated); subcategories included.'),
+    orphans: z.boolean().optional().describe('Wiki view: true = pages no other page links to.'),
+    fields: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Wiki view: custom field filter, e.g. "country=HU,SK;product=Card" (or pass field.country="HU,SK").'),
   })
   .passthrough()
 
@@ -934,10 +948,21 @@ const wikiPatchOpSchema = z.discriminatedUnion('op', [
 
 const wikiPathSchema = z.string().min(1).max(200)
 
+/** #1061 F3 D7: a gazda a szervezet platform-felhasználója (e-mail vagy azonosító) + szerep. */
+const wikiOwnerSchema = z
+  .object({
+    email: z.string().email().max(320).optional(),
+    userId: z.string().uuid().optional(),
+    role: z.string().max(120).optional(),
+  })
+  .strict()
+  .refine((value) => !!value.email || !!value.userId, { message: 'owner needs email or userId' })
+
 export const kbWikiPageInputSchema = z
   .object({
     path: wikiPathSchema,
-    action: z.enum(['upsert', 'patch', 'archive', 'move']),
+    /** #1061 F3: `review` = „Átnéztem, rendben” — csak interaktív munkamenetből, az ember nevében. */
+    action: z.enum(['upsert', 'patch', 'archive', 'move', 'review']),
     title: z.string().max(200).optional(),
     type: z.enum(['source', 'entity', 'concept', 'analysis', 'overview']).optional(),
     summary: z.string().max(400).optional(),
@@ -949,6 +974,10 @@ export const kbWikiPageInputSchema = z
     patch: z.array(wikiPatchOpSchema).min(1).max(20).optional(),
     /** `move` cél-path. */
     newPath: wikiPathSchema.optional(),
+    /** #1061 F3: `approved` mindig jóváhagyásra megy (D5). */
+    docStatus: z.enum(['draft', 'approved']).optional(),
+    /** #1061 F3: gazda; `null` = törlés. */
+    owner: wikiOwnerSchema.nullable().optional(),
   })
   .strict()
 

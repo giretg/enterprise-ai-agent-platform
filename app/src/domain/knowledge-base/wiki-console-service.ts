@@ -45,6 +45,7 @@ import {
   type WikiSourceRef,
 } from '@/lib/kb-wiki'
 import { isKbLanguage, type KbLanguage } from '@/lib/kb-language'
+import { metaFromColumns, readWikiMeta, type WikiPageMeta } from '@/lib/wiki-metadata'
 import {
   categoryIndex,
   groupPagesByTree,
@@ -126,7 +127,7 @@ export type WikiConsoleDeps = {
   >
   console: WikiConsoleRepository
   wiki: Pick<WikiService, 'wikiIdForConnector' | 'previewChangeSet' | 'canDecide' | 'reject'> &
-    Partial<Pick<WikiService, 'managedCategories' | 'backlinks' | 'crossBacklinkRows'>>
+    Partial<Pick<WikiService, 'managedCategories' | 'backlinks' | 'crossBacklinkRows' | 'fieldSettings'>>
   wikiAccess: Pick<WikiAccessService, 'createPrivateKnowledgeBase' | 'linkKnowledgeBase' | 'setWikiAccess' | 'purgePrivateKnowledgeBase'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingestIntoKnowledgeBase'>
   audit: Pick<AuditRepository, 'append'>
@@ -412,6 +413,8 @@ export class WikiConsoleService {
       pageCount: pages.length,
       /** #1061 F1: kezelt kategóriák — a menü a fát követi (üres kategória is látszik). */
       managedCategories: !!managed,
+      /** #1061 F3: metaadat-mezők — „Nézetek” fül, metaadat-doboz az oldalon. */
+      managedFields: wikiId ? !!(await this.deps.wiki.fieldSettings?.(wikiId)) : false,
       /** #1061 F2: „kapcsolt wiki” menüpontok — csak az, amelyiket a néző is látja (AC9). */
       linkedWikis,
       menu: managed
@@ -708,7 +711,7 @@ export class WikiConsoleService {
     const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
     // #978 §5.5: „Exportálás ebben az állapotban” — egy címke szerinti állapot.
     let tagged: { name: string; seq: number } | null = null
-    let pages: Array<Pick<WikiPage, 'path' | 'type' | 'title' | 'summary' | 'category' | 'frontmatter' | 'body' | 'sourceRefs' | 'status'>>
+    let pages: Array<Pick<WikiPage, 'path' | 'type' | 'title' | 'summary' | 'category' | 'frontmatter' | 'body' | 'sourceRefs' | 'status'> & { meta?: WikiPageMeta | null }>
     if (options.tag) {
       if (!wikiId || !this.deps.history) throw new WikiConsoleError('not_found')
       const tag = (await this.deps.history.listTags(wikiId)).find((row) => row.name === options.tag)
@@ -726,6 +729,7 @@ export class WikiConsoleService {
           body: row.body,
           sourceRefs: row.sourceRefs ?? [],
           status: row.status === 'archived' ? 'archived' : 'published',
+          meta: readWikiMeta(row.meta),
         }))
     } else {
       pages = await this.deps.wikis.listPages(connector.id, { status: ['published', 'archived'] })
@@ -750,6 +754,8 @@ export class WikiConsoleService {
         category: page.category,
         frontmatter: stripManagedFrontmatter(page.frontmatter),
         body: page.body,
+        // #1061 F3: a beépített mezők OKF-frontmatterként (címkés exportnál az akkori érték).
+        meta: 'meta' in page ? page.meta ?? undefined : metaFromColumns(page as WikiPage),
         sources: await visibleWikiSources(readWikiSources(page.sourceRefs), connector.id, async id => !!(await this.viewableConnector(actor, id))),
       })
       add(page.status === 'archived' ? `_archived/${page.path}` : page.path, markdown)
@@ -1173,6 +1179,8 @@ export class WikiConsoleService {
         kind: changeKind(page),
         othersPage: page.othersPage,
         protectedCategory: page.protectedCategory,
+        /** #1061 F3: az agent jóváhagyott állapotot kér (a jóváhagyó döntése állítja be). */
+        docStatusChange: page.docStatusChange,
         title: page.after.title || page.before?.title || page.path,
         summary: page.after.summary,
         titleChanged: !!page.before && page.before.title !== page.after.title,
