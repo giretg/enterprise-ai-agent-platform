@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { getLocale, getTranslations } from 'next-intl/server'
 import {
   getWikiAgentAccessAction,
+  getWikiCategoriesAction,
   getWikiOverviewAction,
   getWikiPageAction,
   getWikiPageAtAction,
@@ -20,6 +21,8 @@ import { WikiOwnerActions } from '@/components/knowledge/wiki/wiki-owner-actions
 import { WikiSettingsPanel } from '@/components/knowledge/wiki/wiki-settings-panel'
 import { WikiRetentionPanel } from '@/components/knowledge/wiki/wiki-retention-panel'
 import { WikiErasurePanel } from '@/components/knowledge/wiki/wiki-erasure-panel'
+import { WikiCategoriesPanel } from '@/components/knowledge/wiki/wiki-categories-panel'
+import { WikiMenu } from '@/components/knowledge/wiki/wiki-menu'
 import {
   ChangesTab,
   PageHistoryPanel,
@@ -181,33 +184,13 @@ async function WikiTab({
         <h2 className="font-display text-lg font-semibold">{t('toc.title')}</h2>
         <HelpHint>{t('toc.help')}</HelpHint>
       </div>
-      {wiki.pageCount === 0 ? (
+      {wiki.pageCount === 0 && !wiki.managedCategories ? (
         <p className="text-sm text-ink-soft" data-testid="wiki-empty">{t('toc.empty')}</p>
       ) : (
-        <div className="space-y-3" data-testid="wiki-toc">
-          {wiki.categories.map((group) => (
-            <div key={group.category}>
-              <p className="text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
-                {group.category === 'Uncategorized' ? t('toc.uncategorized') : group.category}
-              </p>
-              <ul className="mt-1 space-y-0.5">
-                {group.pages.map((page) => (
-                  <li key={page.path}>
-                    <Link
-                      href={wikiHref(connectorId, { page: page.path })}
-                      className={`block truncate rounded px-1.5 py-0.5 text-sm hover:bg-coral/5 ${
-                        query.page === page.path ? 'bg-coral/10 font-medium text-coral-deep' : 'text-ink'
-                      }`}
-                      title={page.summary}
-                    >
-                      {page.title}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
+        <>
+          {wiki.pageCount === 0 ? <p className="mb-2 text-sm text-ink-soft" data-testid="wiki-empty">{t('toc.empty')}</p> : null}
+          <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} />
+        </>
       )}
     </Card>
   )
@@ -233,6 +216,7 @@ async function WikiTab({
           <h2 className="mt-1 font-display text-2xl font-semibold">{res.data.title}</h2>
           {res.data.summary ? <p className="mt-1 text-ink-soft">{res.data.summary}</p> : null}
           <p className="mt-2 text-xs text-ink-faint">
+            {res.data.categoryName ? `${t('page.category', { name: res.data.categoryName })} · ` : null}
             {res.data.author
               ? t('page.writtenBy', {
                   name: res.data.author.name ?? '—',
@@ -272,6 +256,7 @@ async function WikiTab({
               </ul>
             </div>
           ) : null}
+          {res.data.backlinks ? <BacklinksPanel connectorId={connectorId} backlinks={res.data.backlinks} t={t} /> : null}
           <PageHistoryPanel connectorId={connectorId} path={res.data.path} locale={locale} />
         </article>
       </Card>
@@ -443,6 +428,55 @@ function SourceView({
   )
 }
 
+type PageData = Extract<Awaited<ReturnType<typeof getWikiPageAction>>, { success: true }>['data']
+
+/** #1061 F1: „Erre az oldalra hivatkozik (N)” — kategória szerint csoportosítva. */
+function BacklinksPanel({
+  connectorId,
+  backlinks,
+  t,
+}: {
+  connectorId: string
+  backlinks: NonNullable<PageData['backlinks']>
+  t: T
+}) {
+  return (
+    <div className="mt-6 border-t border-line/70 pt-3" data-testid="wiki-backlinks">
+      <p className="mb-1 flex items-center text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+        {t('backlinks.title', { count: backlinks.count })}
+        <HelpHint>{t('backlinks.help')}</HelpHint>
+      </p>
+      {backlinks.count === 0 ? (
+        <p className="text-sm text-ink-faint">{t('backlinks.empty')}</p>
+      ) : (
+        <div className="space-y-2">
+          {backlinks.groups.map((group) => (
+            <div key={group.category ?? ''}>
+              <p className="text-xs text-ink-soft">{group.category ?? t('toc.uncategorized')}</p>
+              <ul className="mt-0.5 flex flex-wrap gap-1 text-sm">
+                {group.pages.map((page) => (
+                  <li key={page.path}>
+                    <Link
+                      href={wikiHref(connectorId, { page: page.path })}
+                      className="rounded bg-ink/5 px-1.5 py-0.5 text-ink hover:text-coral-deep"
+                      title={page.path}
+                    >
+                      {page.title}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {backlinks.count > backlinks.shown ? (
+            <p className="text-xs text-ink-faint">{t('backlinks.more', { count: backlinks.count - backlinks.shown })}</p>
+          ) : null}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Egy pillantásra: emberek és AI-munkatársak, akik elérik ezt a tudásbázist. */
 function WhoSees({ wiki, connectorId, t }: { wiki: Overview; connectorId: string; t: T }) {
   const agents = wiki.access.filter((row) => row.access !== 'none')
@@ -491,11 +525,16 @@ function wikiErrorMessage(
 }
 
 async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {
-  const [res, retention] = await Promise.all([getWikiSettingsAction({ connectorId }), getWikiRetentionAction({ connectorId })])
+  const [res, retention, categories] = await Promise.all([
+    getWikiSettingsAction({ connectorId }),
+    getWikiRetentionAction({ connectorId }),
+    getWikiCategoriesAction({ connectorId }),
+  ])
   if (!res.success) notFound()
   return (
     <div className="space-y-4">
       <WikiSettingsPanel connectorId={connectorId} settings={res.data} />
+      {categories.success ? <WikiCategoriesPanel connectorId={connectorId} data={categories.data} /> : null}
       {retention.success ? <WikiRetentionPanel connectorId={connectorId} retention={retention.data} /> : null}
       <WikiOwnerActions connectorId={connectorId} name={name} isPrivate={isPrivate} />
       <WikiErasurePanel connectorId={connectorId} name={name} isPrivate={isPrivate} />

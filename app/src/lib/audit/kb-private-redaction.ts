@@ -32,6 +32,9 @@ const SAFE_ENUM_KEYS = new Set([
   'towritemode',
   'trigger',
   'actortype',
+  'approval',
+  'fromapproval',
+  'toapproval',
 ])
 const MAX_ENUM_LENGTH = 64
 

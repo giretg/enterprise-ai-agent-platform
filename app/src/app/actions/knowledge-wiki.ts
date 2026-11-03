@@ -12,6 +12,7 @@ import { repositories } from '@/repositories/postgres'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
 import { MAX_WIKI_SCHEMA_CHARS, WikiConsoleError, WIKI_TEMPLATE_IDS, type WikiConsoleActor } from '@/domain/knowledge-base/wiki-console-service'
 import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
+import { WikiCategoryError } from '@/domain/knowledge-base/wiki-category-service'
 import { fail, ok } from '@/lib/result'
 
 const uuid = z.string().uuid()
@@ -22,7 +23,9 @@ async function actor(): Promise<WikiConsoleActor> {
 }
 
 function failFrom(error: unknown, fallback: string) {
-  if (error instanceof WikiConsoleError || error instanceof WikiAccessError) return fail(error.code)
+  if (error instanceof WikiConsoleError || error instanceof WikiAccessError || error instanceof WikiCategoryError) {
+    return fail(error.code)
+  }
   if (error instanceof z.ZodError) return fail('invalid_args')
   if (error instanceof Error && error.message === 'not_found') return fail('not_found')
   if (error instanceof Error && /too large/i.test(error.message)) return fail('too_large')
@@ -449,5 +452,99 @@ export async function executeWikiErasureAction(input: { connectorId: string; sco
     return ok(result)
   } catch (e) {
     return failFrom(e, 'Failed to erase')
+  }
+}
+
+// ---------------------------------------------------------------------------
+// #1061 F1: kezelt kategória-fa
+
+const categoryApproval = z.enum(['inherit', 'always'])
+
+export async function getWikiCategoriesAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiCategories.get(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load categories')
+  }
+}
+
+export async function setWikiCategoriesManagedAction(input: { connectorId: string; managed: boolean }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, managed: z.boolean() }).parse(input)
+    const result = parsed.managed
+      ? await services.wikiCategories.enable(await actor(), parsed.connectorId)
+      : await services.wikiCategories.disable(await actor(), parsed.connectorId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to change categories')
+  }
+}
+
+export async function createWikiCategoryAction(input: {
+  connectorId: string
+  key: string
+  name: string
+  parentId?: string | null
+  description?: string | null
+  approval?: string
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        key: z.string().trim().min(1).max(60),
+        name: z.string().trim().min(1).max(120),
+        parentId: uuid.nullable().optional(),
+        description: z.string().max(500).nullable().optional(),
+        approval: categoryApproval.optional(),
+      })
+      .parse(input)
+    const result = await services.wikiCategories.create(await actor(), parsed.connectorId, parsed)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to create category')
+  }
+}
+
+export async function updateWikiCategoryAction(input: {
+  connectorId: string
+  categoryId: string
+  name?: string
+  parentId?: string | null
+  description?: string | null
+  sortOrder?: number
+  approval?: string
+}) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        categoryId: uuid,
+        name: z.string().trim().min(1).max(120).optional(),
+        parentId: uuid.nullable().optional(),
+        description: z.string().max(500).nullable().optional(),
+        sortOrder: z.number().int().min(0).max(100_000).optional(),
+        approval: categoryApproval.optional(),
+      })
+      .parse(input)
+    const { connectorId, categoryId, ...patch } = parsed
+    const result = await services.wikiCategories.update(await actor(), connectorId, categoryId, patch)
+    revalidateWiki(connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to update category')
+  }
+}
+
+export async function deleteWikiCategoryAction(input: { connectorId: string; categoryId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, categoryId: uuid }).parse(input)
+    const result = await services.wikiCategories.remove(await actor(), parsed.connectorId, parsed.categoryId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to delete category')
   }
 }

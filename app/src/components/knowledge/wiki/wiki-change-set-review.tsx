@@ -172,6 +172,11 @@ export function WikiChangeSetReview({
                     {t('review.othersPageNote')}
                   </p>
                 ) : null}
+                {review.pages.some((page) => page.protectedCategory) ? (
+                  <p className="mt-4 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    {t('review.protectedCategoryNote')}
+                  </p>
+                ) : null}
               </section>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-line/70 px-4 py-3">
@@ -228,6 +233,7 @@ function PageDiff({ page }: { page: Review['pages'][number] }) {
           {page.finalPath !== page.path ? ` → ${page.finalPath}` : ''}
         </code>
         {page.othersPage ? <span className="text-xs font-medium text-amber-800">{t('review.othersPage')}</span> : null}
+        {page.protectedCategory ? <span className="text-xs font-medium text-amber-800">{t('review.protectedCategory')}</span> : null}
       </header>
       {page.summary ? <p className="px-3 pt-2 text-xs text-ink-soft">{page.summary}</p> : null}
       {page.kind === 'archived' ? (

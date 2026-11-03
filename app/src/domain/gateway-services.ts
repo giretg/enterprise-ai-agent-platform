@@ -57,6 +57,7 @@ import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-ser
 import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiService } from '@/domain/knowledge-base/wiki-service'
 import { WikiConsoleService } from '@/domain/knowledge-base/wiki-console-service'
+import { WikiCategoryService } from '@/domain/knowledge-base/wiki-category-service'
 import { WikiHistoryService } from '@/domain/knowledge-base/wiki-history-service'
 import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
 import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
@@ -242,6 +243,7 @@ const wikiService = new WikiService({
   knowledgeBase: knowledgeBaseService,
   audit: repositories.audit,
   history: repositories.wikiHistory,
+  structure: repositories.wikiStructure,
   async findUserLabel(userId) {
     const user = await repositories.users.findById(userId)
     return user ? user.name || user.email : null
@@ -260,6 +262,15 @@ const wikiConsoleService = new WikiConsoleService({
   knowledgeBase: knowledgeBaseService,
   audit: repositories.audit,
   history: repositories.wikiHistory,
+})
+
+// #1061 F1: kezelt kategória-fa (Control Plane).
+const wikiCategoryService = new WikiCategoryService({
+  wikiConsole: wikiConsoleService,
+  wiki: wikiService,
+  wikis: repositories.wikis,
+  structure: repositories.wikiStructure,
+  audit: repositories.audit,
 })
 
 // #978 Wiki-előzmények (konzol + napi megőrzés).
@@ -785,6 +796,7 @@ export const services = {
   wiki: wikiService,
   wikiConsole: wikiConsoleService,
   wikiHistory: wikiHistoryService,
+  wikiCategories: wikiCategoryService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

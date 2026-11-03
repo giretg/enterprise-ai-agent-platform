@@ -32,6 +32,7 @@ import type {
   WikiInboxItem,
   WikiRepository,
 } from '../src/repositories/interfaces'
+import type { WikiCategoryRow } from '../src/lib/wiki-categories'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
 
 const TENANT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -443,8 +444,27 @@ const kbService = new KnowledgeBaseService({
   connectors: connectorRepo as never,
   audit: audit as never,
 })
+// #1061 F1: kezelt kategóriák + visszahivatkozások (alapból kikapcsolva → a régi viselkedés).
+const structure = {
+  managed: new Set<string>(),
+  categories: new Map<string, WikiCategoryRow[]>(),
+  async isManaged(wikiId: string) {
+    return this.managed.has(wikiId)
+  },
+  async listCategories(wikiId: string) {
+    return this.categories.get(wikiId) ?? []
+  },
+  async listBacklinks(connectorId: string, path: string, limit: number) {
+    const rows = [...wikis.pages.values()]
+      .filter((p) => p.connectorId === connectorId && p.status === 'published' && p.outLinks.includes(path) && p.path !== path)
+      .sort((a, b) => a.path.localeCompare(b.path))
+    return { count: rows.length, pages: rows.slice(0, limit).map((p) => ({ path: p.path, title: p.title, category: p.category })) }
+  },
+}
+
 const wikiService = new WikiService({
   wikis: wikis as unknown as WikiRepository,
+  structure,
   documents: documentRepo as never,
   connectors: connectorRepo as never,
   agents: agentRepo as never,
@@ -869,7 +889,7 @@ async function main() {
     })
     assert.equal(archive.isError, false, JSON.stringify(archive))
     assert.equal(archive.status, 'awaiting_approval')
-    assert.deepEqual(archive.pendingPages, [{ path: 'concepts/cili.md', action: 'archive' }])
+    assert.deepEqual(archive.pendingPages, [{ path: 'concepts/cili.md', action: 'archive', reason: 'other_authors_page' }])
     assert.equal(archive.applied.pages[0].path, 'concepts/sajat.md')
     assert.equal((await wikis.findPage(KB_A, 'concepts/cili.md'))!.status, 'published')
     // #946 jóváhagyó kártya: a D5-ös tétel kiemelve, a mostani állapothoz képest, írás nélkül.
@@ -1101,6 +1121,155 @@ async function main() {
     } finally {
       connectors.set(KB_SHARED, original)
     }
+  })
+
+  // -------------------------------------------------------------------------
+  // #1061 F1: kezelt kategória-fa, kategóriánkénti jóváhagyás, visszahivatkozások
+
+  structure.categories.set(WIKI_A, [
+    { id: 'c-pol', key: 'policies', parentId: null, name: 'Policies', description: 'Belső szabályzatok', sortOrder: 10, approval: 'always' },
+    { id: 'c-src', key: 'sources', parentId: null, name: 'Sources', description: null, sortOrder: 20, approval: 'inherit' },
+    { id: 'c-par', key: 'partners', parentId: null, name: 'Partnerek', description: null, sortOrder: 30, approval: 'inherit' },
+    { id: 'c-pay', key: 'payment', parentId: 'c-par', name: 'Fizetés', description: 'Fizetési partnerek', sortOrder: 10, approval: 'inherit' },
+  ])
+  const upsert = (path: string, category: string, body = 'x') => ({
+    path,
+    action: 'upsert',
+    type: 'concept',
+    title: path,
+    summary: 's',
+    category,
+    body,
+  })
+
+  await check('#1061 kikapcsolva: a kategória szabad szöveg marad (NFR-2)', async () => {
+    const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      sourceDocumentIds: [sourceDoc],
+      pages: [upsert('concepts/szabad.md', 'Bármi Kategória')],
+    })
+    assert.equal(res.status, 'applied', JSON.stringify(res))
+    assert.equal((await wikis.findPage(KB_A, 'concepts/szabad.md'))!.category, 'Bármi Kategória')
+  })
+
+  await check('#1061 AC2: ismeretlen kategória → unknown_category, a kulcsok felsorolva, semmi nem íródik', async () => {
+    structure.managed.add(WIKI_A)
+    const before = wikis.pages.size
+    const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      sourceDocumentIds: [sourceDoc],
+      pages: [upsert('concepts/jo.md', 'sources'), upsert('concepts/kitalalt.md', 'Kitalált')],
+    })
+    assert.equal(res.isError, true)
+    assert.equal(res.code, 'invalid_wiki_change')
+    const issue = res.errors.find((e: any) => e.code === 'unknown_category')
+    assert.equal(issue.path, 'concepts/kitalalt.md')
+    assert.match(issue.message, /policies, sources, partners, partners\/payment/)
+    assert.deepEqual(res.allowedCategories, ['policies', 'sources', 'partners', 'partners/payment'])
+    assert.equal(wikis.pages.size, before)
+  })
+
+  await check('#1061 kulcsút kanonikus alakra; régi (változatlan) kategória nem blokkol', async () => {
+    const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      sourceDocumentIds: [sourceDoc],
+      pages: [upsert('concepts/teya-partner.md', ' Partners / Payment ', 'Lásd [[entities/teya]].')],
+    })
+    assert.equal(res.status, 'applied', JSON.stringify(res))
+    assert.equal((await wikis.findPage(KB_A, 'concepts/teya-partner.md'))!.category, 'partners/payment')
+    const legacy = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      pages: [{ path: 'concepts/szabad.md', action: 'patch', patch: [{ op: 'appendToSection', section: 'Új', text: 'kiegészítés' }] }],
+    })
+    assert.equal(legacy.status, 'applied', JSON.stringify(legacy))
+  })
+
+  await check('#1061 AC3: közvetlen írású kötésnél Policies + Sources → Sources lefut, Policies jóváhagyásra vár', async () => {
+    const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      sourceDocumentIds: [sourceDoc],
+      pages: [upsert('policies/szabadsag.md', 'policies'), upsert('sources/teya-arlista.md', 'sources')],
+    })
+    assert.equal(res.isError, false, JSON.stringify(res))
+    assert.equal(res.status, 'awaiting_approval')
+    assert.deepEqual(res.pendingPages, [{ path: 'policies/szabadsag.md', action: 'upsert', reason: 'category_rule', category: 'policies' }])
+    assert.deepEqual(res.applied.pages.map((p: any) => p.path), ['sources/teya-arlista.md'])
+    assert.match(res.note, /always needs approval/)
+    assert.equal(await wikis.findPage(KB_A, 'policies/szabadsag.md'), null)
+    assert.equal((await wikis.findPage(KB_A, 'sources/teya-arlista.md'))!.status, 'published')
+    const preview = await wikiService.previewChangeSet(TENANT, res.changeSetId)
+    assert.equal(preview!.pages[0].protectedCategory, true)
+    assert.ok(auditLog.some((row) => row.action === 'kb.wiki.changeset.submitted' && (row.metadata as any).kind === 'category_rule'))
+  })
+
+  await check('#1061 AC4: védett kategóriából kifelé (és befelé) áthelyezés is jóváhagyást kér', async () => {
+    // A védett oldalt ember hozza létre (jóváhagyás nélkül), aztán az agent kivinné.
+    const policyPage = wikis.pages.size
+    await wikiService.recategorizeAsHuman({
+      tenantId: TENANT,
+      userId: OWNER,
+      connector: connectors.get(KB_A)!,
+      wikiId: WIKI_A,
+      moves: [{ path: 'concepts/teya-partner.md', category: 'policies' }],
+      title: 'teszt',
+    })
+    assert.equal(wikis.pages.size, policyPage)
+    const moved = await wikis.findPage(KB_A, 'concepts/teya-partner.md')
+    assert.equal(moved!.category, 'policies')
+    const out = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      pages: [{ path: 'concepts/teya-partner.md', action: 'patch', category: 'sources' }],
+    })
+    assert.equal(out.status, 'awaiting_approval', JSON.stringify(out))
+    assert.equal(out.pendingPages[0].reason, 'category_rule')
+    assert.equal((await wikis.findPage(KB_A, 'concepts/teya-partner.md'))!.category, 'policies')
+    const inward = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      pages: [{ path: 'sources/teya-arlista.md', action: 'patch', category: 'policies' }],
+    })
+    assert.equal(inward.status, 'awaiting_approval', JSON.stringify(inward))
+    const archive = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      pages: [{ path: 'concepts/teya-partner.md', action: 'archive' }],
+    })
+    assert.equal(archive.status, 'awaiting_approval', JSON.stringify(archive))
+  })
+
+  await check('#1061 kb_list_index + index.md a fát követi; leírás és védettség látszik', async () => {
+    const listing = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A })
+    assert.equal(listing.wiki.managedCategories, true)
+    const policies = listing.wiki.categories.find((c: any) => c.category === 'policies')
+    assert.equal(policies.description, 'Belső szabályzatok')
+    assert.equal(policies.approval, 'always')
+    const partners = listing.wiki.categories.find((c: any) => c.category === 'partners')
+    assert.equal(partners.subcategories[0].category, 'partners/payment')
+    assert.equal(partners.subcategories[0].description, 'Fizetési partnerek')
+    assert.match(listing.wiki.hint, /managed categories/)
+    const index = await call(OWNER, DEF_A, 'kb_get_page', { wikiId: WIKI_A, path: 'index.md' })
+    assert.match(index.text, /## Policies\n\n- \[\[concepts\/teya-partner\]\]/)
+    assert.match(index.text, /## Sources\n\n- \[\[sources\/teya-arlista\]\]/)
+    // A fában nem szereplő régi kategóriák a végén, egy csoportban.
+    assert.match(index.text, /## Uncategorized[\s\S]*concepts\/szabad/)
+    const wikisList = await wikiService.listWikis({ tenantId: TENANT, userId: OWNER, agentId: AGENT_A, snapshot: definitions.get(DEF_A)!.snapshot as never })
+    const row = wikisList.find((w) => w.wikiId === WIKI_A)!
+    assert.deepEqual(row.categories?.map((c) => c.key), ['policies', 'sources', 'partners', 'partners/payment'])
+  })
+
+  await check('#1061 AC5: kb_get_page backlinks — a rá mutató publikált oldalak + darabszám', async () => {
+    const page = await call(OWNER, DEF_A, 'kb_get_page', { wikiId: WIKI_A, path: 'entities/teya.md' })
+    assert.equal(page.backlinkCount, page.backlinks.length)
+    assert.ok(page.backlinks.some((b: any) => b.path === 'concepts/teya-partner.md'), JSON.stringify(page.backlinks))
+    assert.ok(!page.backlinks.some((b: any) => b.path === 'entities/teya.md'))
+  })
+
+  await check('#1061 kikapcsolás után megint szabad a kategória', async () => {
+    structure.managed.delete(WIKI_A)
+    const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      sourceDocumentIds: [sourceDoc],
+      pages: [upsert('concepts/ujra-szabad.md', 'Policies Archive')],
+    })
+    assert.equal(res.status, 'applied', JSON.stringify(res))
   })
 
   if (failures > 0) {

@@ -187,6 +187,17 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.lint.run',
   'kb.wiki.schema.changed',
   'kb.wiki.access.changed',
+  // #965 Control Plane: WIKI.md mentése, sablonváltás, láthatóság-váltás.
+  'kb.wiki.schema.updated',
+  'kb.wiki.template.applied',
+  'kb.visibility.changed',
+  // #1061 F1: kezelt kategória-fa (azonosítókkal, név és leírás nélkül).
+  'kb.wiki.categories.enabled',
+  'kb.wiki.categories.disabled',
+  'kb.wiki.category.created',
+  'kb.wiki.category.updated',
+  'kb.wiki.category.deleted',
+  'kb.wiki.category.rule_changed',
   'kb.private.created',
   'kb.private.deleted',
   // #946 Control Plane: közös KB létrehozása, wiki-export (ZIP).
