@@ -10,6 +10,8 @@ import {
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
   hermesBotTitle,
+  hermesProfileName,
+  hermesSuffixedAgentIds,
   renderAgentBriefing,
   renderAgentCheckout,
   renderAgentPrompt,
@@ -528,6 +530,37 @@ async function main() {
     assert.match(bundle.writeRecipe, /hermes profile update exc-drive-asszisztens -y/)
     assert.match(bundle.writeRecipe, /display_name and ui_meta\.hermes-bots\.title/)
     assert.doesNotMatch(bundle.writeRecipe, /hermes profile delete exc/)
+  })
+
+  await check('hermes namesakes (#785): the oldest keeps exc-<name>, later ones get an agentId suffix', () => {
+    const otherId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const suffixed = hermesSuffixedAgentIds([
+      { id: otherId, name: 'Reka', createdAt: new Date('2026-10-02') },
+      { id: AGENT_ID, name: 'Réka', createdAt: new Date('2026-09-01') },
+      { id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', name: 'Zoli', createdAt: new Date('2026-10-03') },
+    ])
+    assert.deepEqual([...suffixed], [otherId])
+
+    const render = (agentId: string, suffixHermesProfile: boolean) => renderAgentCheckout({
+      definition: definition({ agentId, snapshot: { ...definition().snapshot, name: 'Réka' } }),
+      skills: [],
+      mcpUrl: MCP_URL,
+      harness: 'hermes',
+      suffixHermesProfile,
+    })
+    const a = render(AGENT_ID, false)
+    const b = render(otherId, true)
+    assert.equal(a.suggestedRoot, '.hermes/excellence/acme/reka')
+    assert.equal(b.suggestedRoot, '.hermes/excellence/acme/reka--bbbbbbbb')
+    assert.match(a.writeRecipe, /--name exc-reka -y/)
+    assert.match(b.writeRecipe, /--name exc-reka--bbbbbbbb -y/)
+    assert.match(b.files.find((f) => f.path === 'distribution.yaml')?.content ?? '', /name: exc-reka--bbbbbbbb/)
+    assert.match(b.files.find((f) => f.path === 'config.yaml')?.content ?? '', new RegExp(otherId))
+    // A re-sync nem írhat felül egy másik munkatárs profilját.
+    assert.match(a.writeRecipe, /X-Excellence-Agent-Id header in .* differs .* stop/)
+
+    const long = hermesProfileName('A'.repeat(80), otherId)
+    assert.ok(long.length <= 59 && long.endsWith('--bbbbbbbb'), long)
   })
 
   await check('hermes profile name stays within 60 chars for long agent names', () => {

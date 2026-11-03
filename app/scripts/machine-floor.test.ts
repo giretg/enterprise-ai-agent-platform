@@ -297,6 +297,26 @@ async function main() {
     assert.match(withBots.bots[0]?.files['config.yaml'] ?? '', /https:\/\/excellence\.example\/api\/mcp\/acme/)
   })
 
+  await check('névrokon Botok (#785): külön profil, egyik sem esik ki', async () => {
+    const bot = (agentId: string, name: string) => ({
+      agentId,
+      version: 1,
+      snapshot: { name, roleInstruction: 'x', capabilities: [] },
+    })
+    const pkg = await issueMachineFloor(
+      {
+        policyStore: storeFor({ 'agent-reka-1': 'bound', 'agent-reka-2': 'bound' }),
+        listVisibleAgentIds: async () => ['agent-reka-1', 'agent-reka-2'],
+        listVisibleBots: async () => [bot('agent-reka-1', 'Réka'), bot('2b2b2b2b-0000-4000-8000-000000000000', 'Reka')],
+        listHermesSuffixedAgentIds: async () => new Set(['2b2b2b2b-0000-4000-8000-000000000000']),
+        floors: memoryFloors(),
+        newInstallId: () => 'inst-namesake',
+      },
+      { tenantId: T, userId: U, gatewayBaseUrl: GATEWAY, mcpUrl: 'https://excellence.example/api/mcp/acme', tenantSlug: 'acme' },
+    )
+    assert.deepEqual(pkg.bots.map((b) => b.profile), ['exc-reka', 'exc-reka--2b2b2b2b'])
+  })
+
   await check('a gateway URL a publikus originból áll', () => {
     assert.equal(modelGatewayBaseUrl('https://excellence.example/'), GATEWAY)
     assert.throws(() => modelGatewayBaseUrl('not a url'), /bad_gateway_origin/)

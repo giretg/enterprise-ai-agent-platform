@@ -50,6 +50,7 @@ import {
   CHECKOUT_TOOL_DESCRIPTION,
   checkoutSlug,
   hermesBotTitle,
+  hermesSuffixedAgentIds,
   renderAgentBriefing,
   renderAgentCheckout,
   renderAgentPrompt,
@@ -294,6 +295,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
   loadAgentApproverName?: (input: { tenantId: string; agentId: string }) => Promise<string | null>
   /** #1029: az agent saját e-mail címe és a többi postafiók (briefing + get_definition). */
   loadAgentMailIdentity?: (input: { tenantId: string; agentId: string }) => Promise<AgentMailIdentity | null>
+  /** #785: a tenant agentjei közül azok, amelyek Hermes-profilja agentId-utótagot kap (névrokon). */
+  listHermesSuffixedAgentIds?: (tenantId: string) => Promise<Set<string>>
   loadAgentWriteModes?: (input: {
     tenantId: string
     agentId: string
@@ -491,6 +494,8 @@ export function productionMcpDeps(): McpRuntimeDeps {
       return user ? user.name || user.email : null
     },
     loadAgentMailIdentity: ({ tenantId, agentId }) => loadAgentMailIdentity(tenantId, agentId),
+    listHermesSuffixedAgentIds: async (tenantId) =>
+      hermesSuffixedAgentIds(await repositories.agents.findMany({ tenantId, unbounded: true })),
     loadAgentWriteModes: async ({ tenantId, agentId }) => {
       const agent = await repositories.agents.findById(agentId, tenantId)
       return agent ? modesFromAgentRow(agent) : null
@@ -1244,6 +1249,9 @@ async function checkoutToolResult(
   if (scoped.snapshot.skills.some(pin => pin.skillId === WIKI_MAINTAINER.skillId)) skills.push({ ...WIKI_MAINTAINER, status: 'active' })
   const wikis = await deps.loadAgentWikis?.(principal, scoped) ?? []
   const tenant = await deps.tenants.findById(principal.tenantId)
+  const harness = asCheckoutHarness(args.harness)
+  const suffixHermesProfile = harness === 'hermes'
+    && !!(await deps.listHermesSuffixedAgentIds?.(principal.tenantId))?.has(loaded.agentId)
   // A published snapshot történeti bizonyíték: a később visszavont skill csak
   // akkor kerülhetne újra helyi checkoutba, ha itt nem ellenőriznénk az élő státuszát.
   return textResult(
@@ -1254,8 +1262,9 @@ async function checkoutToolResult(
       publishedContentHash: hashSnapshot(loaded.snapshot),
       skills: skills.filter((skill) => skill.status === 'active'),
       mcpUrl: `${origin.replace(/\/+$/, '')}/api/mcp/${principal.tenantSlug}`,
-      harness: asCheckoutHarness(args.harness),
+      harness,
       warehouseAccess: warehouseAccessForAgent(readWarehouseSettings(tenant?.settings), loaded.agentId),
+      suffixHermesProfile,
     }),
   )
 }
