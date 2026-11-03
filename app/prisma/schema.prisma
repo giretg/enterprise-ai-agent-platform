@@ -2257,6 +2257,8 @@ model AgentInboundMailRule {
   /// Csak innen érkező levél indít feldolgozást/átadást (domain vagy cím); üres = bárki.
   senderAllowlist   String[]        @default([]) @map("sender_allowlist")
   dailyRunLimit     Int             @default(20) @map("daily_run_limit")
+  /// Feldolgozáskor is mehet jóváhagyás nélküli írás (az agent írási módja szerint). Alap: nem.
+  allowDirectWrites Boolean         @default(false) @map("allow_direct_writes")
   updatedById       String?         @map("updated_by_id") @db.Uuid
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz

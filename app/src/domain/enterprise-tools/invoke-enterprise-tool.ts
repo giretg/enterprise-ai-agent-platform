@@ -605,6 +605,7 @@ async function tryDirectWrite(
   },
 ): Promise<EnterpriseToolMcpResult | null> {
   const { principal, definition, definitionId, toolName, args } = input
+  if (principal.forceWriteApproval) return null
   const parsed = schemaForEnterpriseTool(toolName)?.safeParse(args)
   if (!parsed?.success) return null
   const parsedArgs = parsed.data as Record<string, unknown>
@@ -1575,7 +1576,7 @@ async function invokeMcpTool(
       gate.risk === 'write' && deps.findAgentWriteModes
         ? await deps.findAgentWriteModes({ agentId: definition.agentId, tenantId: principal.tenantId })
         : null
-    if (!skipsWriteApproval(MCP_CALL_TOOL, modes)) {
+    if (principal.forceWriteApproval || !skipsWriteApproval(MCP_CALL_TOOL, modes)) {
       if (!deps.enqueueWrite) return deny('tool_not_configured')
       return deps.enqueueWrite({ principal, toolName, args: callArgs, origin: input.origin, confirm: input.confirm })
     }
@@ -1710,7 +1711,11 @@ async function invokeKbTool(
     }
   }
 
-  const userConnectors = scopeSnapshotConnectorsToUser(definition.snapshot.connectors, principal.userId)
+  const scoped = scopeSnapshotConnectorsToUser(definition.snapshot.connectors, principal.userId)
+  // Bejövő levél feldolgozása: a wiki-írás is jóváhagyásra vár, a kapcsolat írási módjától függetlenül.
+  const userConnectors = principal.forceWriteApproval
+    ? scoped.map((row) => (row.type === 'knowledge_base' ? { ...row, wikiWriteMode: 'approval' as const } : row))
+    : scoped
   const kbBindings = userConnectors.filter((row) => row.type === 'knowledge_base')
   const wikiOverview =
     toolName === KB_LIST_INDEX_TOOL &&

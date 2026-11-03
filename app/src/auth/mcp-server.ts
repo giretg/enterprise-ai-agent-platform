@@ -20,6 +20,8 @@ import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
+import { prisma } from '@/lib/db'
+import { inboundMailBlocksTool, INBOUND_MAIL_TOOL_BLOCKED_MESSAGE } from '@/auth/inbound-mail-tool-guard'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
@@ -464,6 +466,9 @@ export function productionMcpDeps(): McpRuntimeDeps {
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
     verifyChatToken: productionChatTokenVerifier,
+    inboundMailAllowsDirectWrites: async ({ tenantId, agentId }) =>
+      (await prisma.agentInboundMailRule.findFirst({ where: { agentId, tenantId }, select: { allowDirectWrites: true } }))
+        ?.allowDirectWrites === true,
     users: repositories.users,
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
@@ -2340,6 +2345,11 @@ async function createMcpResourceHandler(
             { code: 'tool_not_allowed', message: 'Tool is not allowed on this MCP endpoint' },
             true,
           )
+        }
+        // Bejövő levél feldolgozása: csak olvasás és jóváhagyásra váró írás (engedélylista).
+        if (inboundMailBlocksTool(principal, toolName)) {
+          await auditMcpToolDenied(deps, principal, toolName, 'inbound_mail_blocked')
+          return textResult({ code: 'inbound_mail_blocked', message: INBOUND_MAIL_TOOL_BLOCKED_MESSAGE }, true)
         }
         const rawArgs = request.params.arguments
         let args =
