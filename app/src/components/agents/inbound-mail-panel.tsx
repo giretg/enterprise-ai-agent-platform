@@ -243,7 +243,7 @@ export function InboundMailPanel({ settings }: { settings: InboundMailSettings }
             <span>
               <span className="text-ink">Jóváhagyás nélküli írás engedélyezése feldolgozáskor</span>
               <span className="mt-0.5 block text-xs text-ink-faint">
-                Kikapcsolva (ajánlott) a levélből indított minden írás — válaszlevél, feltöltés, CRM-módosítás, memória — a felelős kolléga jóváhagyására vár, a munkatárs saját beállításától függetlenül. Csak akkor kapcsold be, ha a cég levelezésében a feladó-hamisítás ellen védelem van (SPF, DKIM, DMARC) — különben bárki írhat a felelős kolléga nevében.
+                Kikapcsolva (ajánlott) a levélből indított minden írás — válaszlevél, feltöltés, CRM-módosítás, memória, wiki — a felelős kolléga jóváhagyására vár, a belső műveleteket (ütemezett feladat, mini app, munkafájl, adattárház-import, tudásbázis-feltöltés, átadás, weboldal-letöltés) pedig nem végezheti el. Csak akkor kapcsold be, ha a cég levelezésében a feladó-hamisítás ellen védelem van (SPF, DKIM, DMARC) — különben bárki írhat a felelős kolléga nevében.
               </span>
             </span>
           </label>
