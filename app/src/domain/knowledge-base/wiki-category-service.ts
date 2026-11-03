@@ -215,23 +215,19 @@ export class WikiCategoryService {
       ...(patch.approval !== undefined ? { approval: patch.approval } : {}),
       ...(parentChanged ? { parentId: patch.parentId ?? null } : {}),
     }
-    const updated = await this.deps.structure.updateCategory(wikiId, categoryId, next)
-    if (!updated) throw new WikiConsoleError('not_found')
-
     let movedPages = 0
     if (parentChanged) {
+      const updated = { ...current, ...next }
       const newPath = pathOf(rows.map((row) => (row.id === updated.id ? updated : row)), updated)
       const pages = await this.allPages(connector.id)
       const moves = pages
         .filter((page) => normalizeCategoryPath(page.category) === oldPath)
         .map((page) => ({ path: page.path, category: newPath }))
-      try {
-        movedPages = await this.recategorize(actor, connector, wikiId, moves, `Category ${oldPath} moved to ${newPath}`)
-      } catch (error) {
-        // Ha az oldalak nem mentek át, a kategória is marad a régi helyén (oldal ne vesszen el).
-        await this.deps.structure.updateCategory(wikiId, categoryId, { parentId: current.parentId })
-        throw error
-      }
+      movedPages = await this.recategorize(actor, connector, wikiId, moves, `Category ${oldPath} moved to ${newPath}`, {
+        id: categoryId, expectedParentId: current.parentId, patch: next,
+      })
+    } else if (!(await this.deps.structure.updateCategory(wikiId, categoryId, next))) {
+      throw new WikiConsoleError('not_found')
     }
 
     if (patch.approval !== undefined && patch.approval !== current.approval) {
@@ -273,14 +269,16 @@ export class WikiCategoryService {
     wikiId: string,
     moves: Array<{ path: string; category: string | null }>,
     title: string,
+    categoryUpdate?: Parameters<WikiService['recategorizeAsHuman']>[0]['categoryUpdate'],
   ): Promise<number> {
-    if (moves.length === 0) return 0
+    if (moves.length === 0 && !categoryUpdate) return 0
     const result = await this.deps.wiki.recategorizeAsHuman({
       tenantId: actor.tenantId,
       userId: actor.userId,
       connector,
       wikiId,
       moves,
+      categoryUpdate,
       title,
     })
     if (!result.ok) throw new WikiCategoryError('conflict')

@@ -460,6 +460,11 @@ export class PostgresWikiRepository implements WikiRepository {
         // Egy wikin az írások sorban futnak: a konténer-artifact egyszer jön létre,
         // és két change-set chunk-cseréje nem keveredik.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.connectorId}))`
+        if (input.categoryUpdate) {
+          const { id, expectedParentId, patch } = input.categoryUpdate
+          const changed = await tx.wikiCategory.updateMany({ where: { id, wikiId: input.wikiId, parentId: expectedParentId }, data: patch })
+          if (changed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'conflict', path: null })
+        }
         // #978 D6: a sorszám az alkalmazáskor születik; a sor-zár miatt két párhuzamos
         // alkalmazás nem kaphatja ugyanazt (a rollback a számot is visszaadja).
         const [allocated] = await tx.$queryRaw<Array<{ seq: number }>>`

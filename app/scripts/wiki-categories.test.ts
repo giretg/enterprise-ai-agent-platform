@@ -78,4 +78,12 @@ assert.deepEqual(
   ],
 )
 
+const tricky = [{ category: 'Payment' }, { category: '💳' }, { category: '💳' }, { category: 'category-1' }, { category: 'fizetési partnerek' }, { category: 'Fizetési partnerek' }]
+const imported = planFreeCategoryImport(tricky, rows)
+assert.deepEqual(imported, planFreeCategoryImport([...tricky].reverse(), rows))
+assert.equal(imported.find((row) => row.name === 'Fizetési partnerek')?.pageCount, 2)
+assert.equal(imported.find((row) => row.name === '💳')?.pageCount, 2)
+assert.equal(new Set(imported.map((row) => row.key)).size, imported.length)
+assert.ok(imported.every((item) => !rows.some((row) => row.key === item.key)))
+assert.equal(planFreeCategoryImport([{ category: 'Fizetési partnerek' }], [row('f', 'fizetesi-partnerek', null, 'Partnerek')])[0].exists, true)
 console.log('wiki-categories: ok')

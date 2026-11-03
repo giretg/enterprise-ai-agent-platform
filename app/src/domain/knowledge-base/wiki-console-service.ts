@@ -400,7 +400,7 @@ export class WikiConsoleService {
     const users = await this.deps.console.userLabels(page.createdByUserId ? [page.createdByUserId] : [])
     const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
     const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
-    const backlinks = page.status === 'published' ? await this.deps.wiki.backlinks?.(connector.id, page.path) : null
+    const backlinks = page.status === 'published' ? await this.deps.wiki.backlinks?.(connector.id, page.path, 2_147_483_647) : null
     return {
       path: page.path,
       title: page.title,

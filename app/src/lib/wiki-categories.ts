@@ -115,15 +115,29 @@ export function planFreeCategoryImport(
 ): Array<{ key: string; name: string; pageCount: number; values: string[]; exists: boolean }> {
   const index = categoryIndex(existing)
   const byKey = new Map<string, { key: string; name: string; pageCount: number; values: string[]; exists: boolean }>()
-  let fallback = 0
+  // Stable names and fallback keys regardless of database collation / row order.
+  const counts = new Map<string, number>()
   for (const page of pages) {
     const value = page.category?.trim()
-    if (!value) continue
-    const existingNode = index.get(normalizeCategoryPath(value))
-    const key = existingNode?.path ?? (slugifyCategory(value) || `category-${++fallback}`)
-    const row = byKey.get(key) ?? { key, name: existingNode?.name ?? value, pageCount: 0, values: [], exists: !!existingNode }
-    row.pageCount++
-    if (!row.values.includes(value)) row.values.push(value)
+    if (value) counts.set(value, (counts.get(value) ?? 0) + 1)
+  }
+  const values = [...counts.keys()].sort()
+  const reserved = new Set([...existing.map((row) => row.key), ...values.map(slugifyCategory)])
+  const allocated = new Map<string, string>()
+  let fallback = 0
+  for (const value of values) {
+    const slug = slugifyCategory(value)
+    const node = index.get(normalizeCategoryPath(value)) ?? index.get(slug)
+    const token = slug || normalizeCategoryPath(value)
+    let key = node?.path ?? allocated.get(token) ?? slug
+    if (!key || (!node && !allocated.has(token) && existing.some((row) => row.key === key))) {
+      do { key = `category-${++fallback}` } while (reserved.has(key))
+      reserved.add(key)
+    }
+    allocated.set(token, key)
+    const row = byKey.get(key) ?? { key, name: node?.name ?? value, pageCount: 0, values: [], exists: !!node }
+    row.pageCount += counts.get(value)!
+    row.values.push(value)
     byKey.set(key, row)
   }
   return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name))

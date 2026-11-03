@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto'
 import type { Connector } from '@prisma/client'
 import { prisma } from '../src/lib/db'
 import { PostgresWikiRepository, PostgresWikiStructureRepository } from '../src/repositories/postgres/wiki-repository'
+import { PostgresWikiHistoryRepository } from '../src/repositories/postgres/wiki-history-repository'
 import { PostgresAuditRepository } from '../src/repositories/postgres/audit-repository'
 import { PostgresConnectorRepository } from '../src/repositories/postgres/connector-repository'
 import { PostgresAgentRepository } from '../src/repositories/postgres/agent-repository'
@@ -67,6 +68,7 @@ async function main() {
 
   const wikiService = new WikiService({
     wikis,
+    history: new PostgresWikiHistoryRepository(),
     structure,
     documents: new PostgresDocumentRepository(),
     connectors: new PostgresConnectorRepository(),
@@ -80,6 +82,7 @@ async function main() {
     wikiConsole: { authorize: async () => ({ connector, access: { view: true, contribute: true, manage: true, metaOnly: false } }) },
     wiki: wikiService,
     wikis,
+    history: new PostgresWikiHistoryRepository(),
     structure,
     audit,
   })
@@ -211,6 +214,49 @@ async function main() {
     const back = await categories.update(actor, connector.id, projects.id, { parentId: null })
     assert.equal(back.movedPages, 2)
     assert.equal((await wikis.findPage(connector.id, 'projects/fuel.md'))!.category, 'projektek')
+  })
+
+  await check('emberi visszaállítás megtartja a kezelt kulcsot a régi szabad kategória helyett', async () => {
+    const restored = await wikiService.revertAsHuman({ tenantId: tenant.id, userId: user.id, connector, wikiId: wiki.id,
+      target: { kind: 'page', path: 'partners/dkv.md', version: 1 } })
+    assert.equal(restored.ok, true, JSON.stringify(restored))
+    assert.equal((await wikis.findPage(connector.id, 'partners/dkv.md'))!.category, 'fizetesi-partnerek')
+  })
+
+  await check('101 oldal áthelyezése: ütközésnél a kategória és minden oldal visszagördül', async () => {
+    const parent = (await structure.listCategories(wiki.id)).find((row) => row.key === 'fizetesi-partnerek')!
+    const bulk = await categories.create(actor, connector.id, { key: 'bulk', name: 'Bulk', approval: 'always' })
+    await prisma.wikiPage.createMany({ data: Array.from({ length: 101 }, (_, i) => ({
+      connectorId: connector.id, wikiId: wiki.id, path: `bulk/p-${i}.md`, title: 'Bulk', summary: 's', body: 'b',
+      category: 'bulk', contentHash: randomUUID(), sourceRefs: [], outLinks: ['partners/dkv.md'], type: 'entity' as const,
+    })) })
+    assert.equal((await wikiService.backlinks(connector.id, 'partners/dkv.md'))!.pages.length, 50)
+    const allBacklinks = await wikiService.backlinks(connector.id, 'partners/dkv.md', 2_147_483_647)
+    assert.equal(allBacklinks!.pages.length, allBacklinks!.count)
+    assert.ok(allBacklinks!.count > 100)
+    const apply = wikis.applyChangeSet.bind(wikis)
+    let count = 0
+    wikis.applyChangeSet = async (input) => {
+      if (input.categoryUpdate) {
+        count++
+        assert.equal(input.ops.length, 101)
+        const last = input.ops.at(-1)!
+        if (last.kind === 'update') last.expectedVersion = -1
+      }
+      return apply(input)
+    }
+    try {
+      await rejectsWith('conflict', () => categories.update(actor, connector.id, bulk.id, { parentId: parent.id }))
+      assert.equal(count, 1)
+      assert.equal((await structure.listCategories(wiki.id)).find((row) => row.id === bulk.id)!.parentId, null)
+      const pages = await prisma.wikiPage.findMany({ where: { wikiId: wiki.id, path: { startsWith: 'bulk/' } } })
+      assert.equal(pages.length, 101)
+      assert.ok(pages.every((page) => page.category === 'bulk' && page.version === 1))
+    } finally {
+      wikis.applyChangeSet = apply
+      await prisma.wikiPage.deleteMany({ where: { wikiId: wiki.id, path: { startsWith: 'bulk/' } } })
+      await categories.remove(actor, connector.id, bulk.id)
+    }
   })
 
   await check('szabály-váltás és törlés: csak üres kategória törölhető; audit a valódi katalógussal', async () => {

@@ -112,8 +112,6 @@ export type WikiLogOpName = 'ingest' | 'query' | 'lint' | 'note' | 'revert' | 's
 
 /** #1061 F1: a `kb_get_page` visszahivatkozás-listájának felső határa. */
 export const WIKI_BACKLINK_LIMIT = 50
-/** #1061 F1: egy emberi kategória-átrendezés ennyi oldalt ír egy change-setben. */
-const RECATEGORIZE_BATCH = 100
 
 export type WikiRevertTarget =
   | { kind: 'changeset'; seq: number }
@@ -349,8 +347,8 @@ export class WikiService {
   }
 
   /** #1061 F1: „Mi hivatkozik erre?” — publikált oldalak (legfeljebb 50) és a teljes darabszám. */
-  async backlinks(connectorId: string, path: string) {
-    return this.deps.structure ? this.deps.structure.listBacklinks(connectorId, path, WIKI_BACKLINK_LIMIT) : null
+  async backlinks(connectorId: string, path: string, limit = WIKI_BACKLINK_LIMIT) {
+    return this.deps.structure ? this.deps.structure.listBacklinks(connectorId, path, limit) : null
   }
 
   async listWikis(caller: WikiCaller, need: WikiNeed = 'read') {
@@ -1216,7 +1214,7 @@ export class WikiService {
     const { connector, wikiId, scope } = resolved
     const planned = await this.planRevert(connector, wikiId, input.target)
     if (!planned.ok) return planned
-    const plan = await this.plan({ connectorId: connector.id, agentId: caller.agentId, pages: planned.pages, sourceDocumentIds: [] })
+    const plan = await this.plan({ connectorId: connector.id, agentId: caller.agentId, pages: planned.pages, sourceDocumentIds: [], categories: await this.managedCategories(wikiId) })
     if (!plan.ok) return plan
     const approverScope = await this.approverScopeFor(connector)
     const log = { ...planned.log, note: input.note?.trim() || null }
@@ -1282,7 +1280,7 @@ export class WikiService {
       snapshot: { connectors: [] },
       human: true,
     }
-    const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: planned.pages, sourceDocumentIds: [] })
+    const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: planned.pages, sourceDocumentIds: [], categories: await this.managedCategories(input.wikiId) })
     if (!plan.ok) return plan
     const approverScope = await this.approverScopeFor(input.connector)
     return this.apply({
@@ -1313,7 +1311,7 @@ export class WikiService {
   /**
    * #1061 F1: kategória-átrendezés a Control Plane-ről (bekapcsolás, kategória
    * áthelyezése). Az oldalak csak kategóriát váltanak, de ez is revízió (NFR-4):
-   * emberi change-setek, legfeljebb 100 oldal / change-set. A jogot a hívó ellenőrizte.
+   * egyetlen atomi emberi change-set. A jogot a hívó ellenőrizte.
    */
   async recategorizeAsHuman(input: {
     tenantId: string
@@ -1321,6 +1319,7 @@ export class WikiService {
     connector: Connector
     wikiId: string
     moves: Array<{ path: string; category: string | null }>
+    categoryUpdate?: Parameters<WikiRepository['applyChangeSet']>[0]['categoryUpdate']
     title: string
   }): Promise<WikiOutcome<{ changeSets: number; pages: number }>> {
     const caller: WikiCaller = {
@@ -1332,44 +1331,39 @@ export class WikiService {
     }
     const approverScope = await this.approverScopeFor(input.connector)
     const log = { op: 'schema' as const, title: input.title.slice(0, 200), note: null }
-    let changeSets = 0
-    let pages = 0
-    for (let start = 0; start < input.moves.length; start += RECATEGORIZE_BATCH) {
-      const batch: WikiPageInput[] = []
-      for (const move of input.moves.slice(start, start + RECATEGORIZE_BATCH)) {
-        const page = await this.deps.wikis.findPage(input.connector.id, move.path)
-        if (!page || page.status === 'pending_approval' || (page.category ?? null) === move.category) continue
-        batch.push({ path: page.path, action: 'recategorize', category: move.category ?? '', baseVersion: page.contentHash })
-      }
-      if (batch.length === 0) continue
-      const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: batch, sourceDocumentIds: [] })
-      if (!plan.ok) return plan
-      const result = await this.apply({
-        caller,
-        connector: input.connector,
-        wikiId: input.wikiId,
-        planned: plan.planned,
-        changeSet: {
-          create: {
-            wikiId: input.wikiId,
-            connectorId: input.connector.id,
-            agentId: null,
-            userId: input.userId,
-            pages: batch as unknown as Prisma.InputJsonValue,
-            validation: { issues: [] } as unknown as Prisma.InputJsonValue,
-            logEntry: log as unknown as Prisma.InputJsonValue,
-            sourceDocumentIds: [],
-            approverScope: approverScope as unknown as Prisma.InputJsonValue,
-          },
-        },
-        log,
-        inbox: null,
-      })
-      if (!result.ok) return result
-      changeSets++
-      pages += result.result.pages.length
+    const batch: WikiPageInput[] = []
+    for (const move of input.moves) {
+      const page = await this.deps.wikis.findPage(input.connector.id, move.path)
+      if (!page || page.status === 'pending_approval' || (page.category ?? null) === move.category) continue
+      batch.push({ path: page.path, action: 'recategorize', category: move.category ?? '', baseVersion: page.contentHash })
     }
-    return { ok: true, result: { changeSets, pages } }
+    if (batch.length === 0 && !input.categoryUpdate) return { ok: true, result: { changeSets: 0, pages: 0 } }
+    const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: batch, sourceDocumentIds: [] })
+    if (!plan.ok) return plan
+    const result = await this.apply({
+      caller,
+      connector: input.connector,
+      wikiId: input.wikiId,
+      planned: plan.planned,
+      categoryUpdate: input.categoryUpdate,
+      changeSet: {
+        create: {
+          wikiId: input.wikiId,
+          connectorId: input.connector.id,
+          agentId: null,
+          userId: input.userId,
+          pages: batch as unknown as Prisma.InputJsonValue,
+          validation: { issues: [] } as unknown as Prisma.InputJsonValue,
+          logEntry: log as unknown as Prisma.InputJsonValue,
+          sourceDocumentIds: [],
+          approverScope: approverScope as unknown as Prisma.InputJsonValue,
+        },
+      },
+      log,
+      inbox: null,
+    })
+    if (!result.ok) return result
+    return { ok: true, result: { changeSets: 1, pages: result.result.pages.length } }
   }
 
   // -------------------------------------------------------------------------
@@ -1790,6 +1784,7 @@ export class WikiService {
     inbox: Parameters<WikiRepository['applyChangeSet']>[0]['inbox']
     /** #978 D5: a visszavont change-set (audithoz; a repó a change-set sorából is tudja). */
     revertsId?: string | null
+    categoryUpdate?: Parameters<WikiRepository['applyChangeSet']>[0]['categoryUpdate']
   }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
     const { caller, connector } = input
     const agentId = caller.human ? null : caller.agentId
@@ -1820,6 +1815,7 @@ export class WikiService {
       wikiId: input.wikiId,
       connectorId: connector.id,
       ops,
+      categoryUpdate: input.categoryUpdate,
       log: {
         ...input.log,
         pagePaths: input.planned.map((page) => page.state.path),

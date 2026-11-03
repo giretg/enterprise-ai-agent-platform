@@ -937,6 +937,8 @@ export type WikiApplyChangeSetInput = {
   wikiId: string
   connectorId: string
   ops: WikiApplyPageOp[]
+  /** Category path and page revisions must commit together. */
+  categoryUpdate?: { id: string; expectedParentId: string | null; patch: Partial<Omit<WikiCategoryRow, 'id' | 'key'>> }
   log: {
     op: WikiLogOp
     title: string
