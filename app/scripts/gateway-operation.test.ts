@@ -791,6 +791,64 @@ async function main() {
     assert.match(message, /"name":"Bob"/)
   })
 
+  await check('jóváhagyott HTTP-fájl a kérőhöz kerül, linkkel és audittal', async () => {
+    const bytes = Buffer.from('%PDF-file')
+    const hash = 'file-sha256'
+    const wired = deps({
+      executeHttpApiTool: async (...args) => {
+        const save = args[8]
+        assert.ok(save)
+        const saved = await save({ bytes, fileName: 'invoice.pdf', mimeType: 'application/pdf', format: 'pdf', sha256: hash })
+        return { ok: true, ...saved, expiresAt: saved.expiresAt.toISOString(), fileName: 'invoice.pdf', mimeType: 'application/pdf', sizeBytes: bytes.length, sha256: hash }
+      },
+    })
+    const withHttp: GatewayOperationServiceDeps = {
+      ...wired.deps,
+      now: () => new Date('2026-11-03T10:00:00Z'),
+      saveDocumentExport: async (input) => {
+        assert.equal(input.userId, USER_ID)
+        assert.equal(input.tenantId, TENANT_ID)
+        assert.equal(input.definitionId, DEFINITION_ID)
+        assert.equal(input.expiresAt.toISOString(), '2026-11-10T10:00:00.000Z')
+        assert.deepEqual(input.document.bytes, bytes)
+        return { id: 'export-approved' }
+      },
+      documentExportUrl: (id) => `https://app.example/exports/${id}`,
+      async loadDefinition() {
+        const base = definition()
+        return {
+          ...base,
+          snapshot: {
+            ...base.snapshot,
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write', name: 'CRM' }],
+            capabilities: [
+              ...base.snapshot.capabilities,
+              { toolName: HTTP_API_REQUEST_TOOL, allowed: true },
+            ],
+          },
+        }
+      },
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'api_key' })
+      },
+    }
+    const enqueued = await enqueueGatewayOperation(withHttp, {
+      principal: principal(), toolName: HTTP_API_REQUEST_TOOL,
+      args: { definitionId: DEFINITION_ID, method: 'POST', path: '/reports', body: '{}', idempotencyKey: 'approved-file' },
+    })
+    assert.ok(enqueued.ok)
+    const approved = await approveGatewayOperation(withHttp, {
+      tenantId: TENANT_ID, operationId: enqueued.view.operationId, actor: principal({ userId: APPROVER_ID }),
+    })
+    assert.ok(approved.ok)
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal((approved.view.result as { downloadUrl: string }).downloadUrl, 'https://app.example/exports/export-approved')
+    const audit = wired.audit.find(row => row.action === 'gateway.operation.succeeded')
+    assert.deepEqual((audit?.metadata as { file: unknown }).file, {
+      exportId: 'export-approved', fileName: 'invoice.pdf', mimeType: 'application/pdf', byteSize: bytes.length, sha256: hash,
+    })
+  })
+
   await check('http_api_request If-Match 412 is failed, not succeeded', async () => {
     const conflict = { ok: false, status: 412, body: { error: 'precondition failed' }, etag: '"5"' }
     const wired = deps({

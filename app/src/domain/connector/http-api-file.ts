@@ -102,10 +102,11 @@ function safeFileName(raw: string | null, mimeType: string): string {
 
 /** Fájl-e a válasz; ha igen, a név és a típus. Szöveges/JSON válasz (`attachment` nélkül) nem fájl. */
 export function detectHttpApiFile(headers: Headers): { fileName: string; mimeType: string; format: string } | null {
-  const mimeType = baseMime(headers.get('content-type')) || 'application/octet-stream'
+  const declaredMimeType = baseMime(headers.get('content-type'))
   const disposition = headers.get('content-disposition')
   const attachment = disposition ? /^\s*attachment\b/i.test(disposition) : false
-  if (!attachment && !FILE_MIME_PATTERNS.some((p) => p.test(mimeType))) return null
+  if (!attachment && !FILE_MIME_PATTERNS.some((p) => p.test(declaredMimeType))) return null
+  const mimeType = declaredMimeType || 'application/octet-stream'
   const fileName = safeFileName(contentDispositionFileName(disposition), mimeType)
   const format = fileName.match(/\.([a-z0-9]{1,8})$/i)?.[1].toLowerCase() ?? 'bin'
   return { fileName, mimeType, format }

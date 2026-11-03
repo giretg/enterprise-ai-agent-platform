@@ -2454,9 +2454,9 @@ async function withDocumentExportContent(
  * #1070: a kapcsolt rendszer fájl-válasza a letölthető-fájl tárolóba kerül, ugyanazzal a lejárattal és
  * „csak a kérőnek” láthatósággal, mint a `document_export`. Tároló nélkül nincs fájlátadás.
  */
-function httpApiFileSaver(
-  deps: EnterpriseToolDeps,
-  input: { principal: ToolCallPrincipal; definitionId: string; agentId: string; client: McpClientName },
+export function httpApiFileSaver(
+  deps: Pick<EnterpriseToolDeps, 'saveDocumentExport' | 'documentExportUrl' | 'now'>,
+  input: { principal: Pick<ToolCallPrincipal, 'userId' | 'tenantId'>; definitionId: string; agentId: string; client: McpClientName },
 ): SaveHttpApiFile | undefined {
   const save = deps.saveDocumentExport
   if (!save) return undefined
@@ -2488,7 +2488,7 @@ function httpApiFileOf(result: unknown): HttpApiFileResult | null {
 }
 
 /** #1070: az audit rögzíti, hogy fájl jött át (név, méret, hash), a tartalom nélkül. */
-function httpApiFileAuditMeta(result: unknown): Record<string, unknown> {
+export function httpApiFileAuditMeta(result: unknown): Record<string, unknown> {
   const file = httpApiFileOf(result)
   if (!file) return {}
   return { file: { exportId: file.exportId, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.sizeBytes, sha256: file.sha256 } }

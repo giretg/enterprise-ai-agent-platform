@@ -170,6 +170,16 @@ async function main() {
     assert.equal(text.file, undefined)
   })
 
+  await check('regresszió: Content-Type nélküli szöveg és üres 204 nem fájl', async () => {
+    for (const response of [new Response('ok'), new Response(null, { status: 204 })]) {
+      response.headers.delete('content-type')
+      const res = await withFetch(() => response, () => new HttpApiClient(config).request({ method: 'GET', path: '/reports/query' }))
+      assert.equal(res.file, undefined)
+      assert.equal(res.body, response.status === 204 ? '' : 'ok')
+    }
+    assert.equal(detectHttpApiFile(new Headers({ 'content-disposition': 'attachment; filename="report.bin"' }))?.mimeType, 'application/octet-stream')
+  })
+
   await check('hibás válasz (4xx) attachment fejléccel sem fájl — a hiba-hint megmarad', async () => {
     const res = await withFetch(
       () => new Response('{"error":"not_ready"}', { status: 409, headers: { 'content-type': 'application/octet-stream' } }),
