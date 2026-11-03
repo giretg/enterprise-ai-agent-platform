@@ -22,6 +22,7 @@ import type {
   WikiChunkRow,
   WikiHistoryRepository,
   WikiPageChangeAction,
+  WikiConfigApplyPlan,
   WikiRepository,
   WikiStructureRepository,
 } from '@/repositories/interfaces'
@@ -78,6 +79,7 @@ import {
   type WikiScope,
   type WikiSnapshotConnector,
 } from '@/lib/wiki-access'
+import type { WikiConfigPageChange } from '@/lib/wiki-config'
 import {
   buildCategoryTree,
   categoryIndex,
@@ -287,7 +289,7 @@ export type WikiChangeSetPreview = {
     protectedCategory: boolean
     /** #1061 F3: dokumentum-állapot váltása (pl. tervezet → jóváhagyott), ha van. */
     docStatusChange: { from: WikiDocStatusName | null; to: WikiDocStatusName | null } | null
-    status: 'published' | 'archived'
+    status: WikiPage['status']
     before: { title: string; summary: string; body: string; status: string } | null
     after: { title: string; summary: string; body: string; sources: WikiSourceRef[] }
   }>
@@ -302,7 +304,7 @@ type PlannedPage = {
   input: WikiPageInput
   existing: WikiPage | null
   state: WikiPageState
-  status: 'published' | 'archived'
+  status: WikiPage['status']
   /** D5: más agent / ember oldalának archiválása vagy áthelyezése. */
   othersPage: boolean
 }
@@ -378,6 +380,11 @@ export class WikiService {
     return { wikiId: wiki.id, connector, scope: target.scope }
   }
 
+  /** #1075: a cél-wiki feloldása a beállítás-eszközöknek (ugyanaz a jog, mint az írásnál). */
+  resolveTarget(caller: WikiCaller, wikiId: string | undefined, need: WikiNeed) {
+    return this.resolve(caller, wikiId, need)
+  }
+
   /** Egy KB = egy wiki (D11); az első használat hozza létre az alap-sémával. */
   private ensureWiki(connector: Connector) {
     return this.deps.wikis.ensureForConnector({
@@ -439,7 +446,7 @@ export class WikiService {
         name: wikiDisplayName(connector),
         access: scope.access,
         ...(scope.access === 'write' ? { writeMode: scope.writeMode } : {}),
-        ...(scope.collectFocus ? { collect: scope.collectFocus } : {}),
+        ...collectOf(wiki.collectFocus, scope.collectFocus),
         ...(scope.visibility === 'private_to_user' ? { private: true } : {}),
         // #1061 F2: „csak a kijelöltek” — a tartalmát csak a névsoron lévőkkel szabad megosztani.
         ...(scope.visibility === 'members' ? { membersOnly: true } : {}),
@@ -923,7 +930,7 @@ export class WikiService {
       name: connector ? wikiDisplayName(connector) : null,
       access: scope.access,
       ...(scope.access === 'write' ? { writeMode: scope.writeMode } : {}),
-      ...(scope.collectFocus ? { collect: scope.collectFocus } : {}),
+      ...collectOf((await this.deps.wikis.findById(wikiId))?.collectFocus, scope.collectFocus),
       pageCount: pages.length,
       // #1061 F1: kezelt kategóriáknál a fa (kulcsút, név, leírás, védettség) — üres kategória is.
       // A sorrend ugyanaz, mint az ember menüjében (kategóriák `order` szerint, oldalak `pageSort` szerint, kiemeltek elöl).
@@ -1715,6 +1722,60 @@ export class WikiService {
   }
 
   /**
+   * #1075: jóváhagyott beállítás-javaslat. A beállítás és az érintett oldalak (kategória,
+   * frontmatter) egyetlen emberi change-setben, egy tranzakcióban íródnak. A jogot a hívó ellenőrizte.
+   */
+  async applyConfigChange(input: {
+    tenantId: string
+    userId: string
+    connector: Connector
+    wikiId: string
+    pages: WikiConfigPageChange[]
+    configPlan: WikiConfigApplyPlan
+    title: string
+    note: string | null
+  }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
+    const caller: WikiCaller = { tenantId: input.tenantId, userId: input.userId, agentId: input.userId, snapshot: { connectors: [] }, human: true }
+    const batch: WikiPageInput[] = []
+    for (const change of input.pages) {
+      const page = await this.deps.wikis.findPage(input.connector.id, change.path)
+      if (!page) continue
+      batch.push({
+        path: page.path,
+        action: 'recategorize',
+        category: change.toCategory ?? '',
+        baseVersion: page.contentHash,
+        ...(change.frontmatter ? { frontmatter: change.frontmatter } : {}),
+      })
+    }
+    const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: batch, sourceDocumentIds: [] })
+    if (!plan.ok) return plan
+    const log = { op: 'schema' as const, title: input.title.slice(0, 200), note: input.note }
+    return this.apply({
+      caller,
+      connector: input.connector,
+      wikiId: input.wikiId,
+      planned: plan.planned,
+      configPlan: input.configPlan,
+      changeSet: {
+        create: {
+          wikiId: input.wikiId,
+          connectorId: input.connector.id,
+          agentId: null,
+          userId: input.userId,
+          pages: batch as unknown as Prisma.InputJsonValue,
+          validation: { issues: [] } as unknown as Prisma.InputJsonValue,
+          logEntry: log as unknown as Prisma.InputJsonValue,
+          sourceDocumentIds: [],
+          approverScope: (await this.approverScopeFor(input.connector)) as unknown as Prisma.InputJsonValue,
+        },
+      },
+      log,
+      inbox: null,
+    })
+  }
+
+  /**
    * #1061 F3: beépített mezők a Control Plane-ről (átnézés, állapot, gazda, ciklus) és a
    * bekapcsoláskori átemelés. Emberi change-set (revízió, napló, NFR-4); jóváhagyásra nem
    * vár — a jogot a hívó ellenőrizte. A `frontmatter` csak az átemelésnél cserélődik.
@@ -2194,8 +2255,13 @@ export class WikiService {
         planned.push({
           input: page,
           existing,
-          state: { ...stateFromRow(existing), category: page.category?.trim() || null },
-          status: existing.status === 'archived' ? 'archived' : 'published',
+          state: {
+            ...stateFromRow(existing),
+            category: page.category?.trim() || null,
+            // #1075: mező-opció átnevezésekor a frontmatter is ugyanebben a lépésben változik.
+            ...(page.frontmatter ? { frontmatter: stripManagedFrontmatter(page.frontmatter) } : {}),
+          },
+          status: existing.status,
           othersPage: false,
         })
         continue
@@ -2526,12 +2592,13 @@ export class WikiService {
     /** #978 D5: a visszavont change-set (audithoz; a repó a change-set sorából is tudja). */
     revertsId?: string | null
     categoryUpdate?: Parameters<WikiRepository['applyChangeSet']>[0]['categoryUpdate']
+    configPlan?: WikiConfigApplyPlan
   }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
     const { caller, connector } = input
     const agentId = caller.human ? null : caller.agentId
     const ops: WikiApplyPageOp[] = input.planned.map((page) => {
       const write = toPageWrite(page)
-      const chunks = page.status === 'archived' ? [] : pageChunks(page.state)
+      const chunks = page.status === 'published' ? pageChunks(page.state) : []
       if (!page.existing) {
         return {
           kind: 'create',
@@ -2557,6 +2624,7 @@ export class WikiService {
       connectorId: connector.id,
       ops,
       categoryUpdate: input.categoryUpdate,
+      configPlan: input.configPlan,
       log: {
         ...input.log,
         pagePaths: input.planned.map((page) => page.state.path),
@@ -2570,6 +2638,7 @@ export class WikiService {
     if (!result.ok) {
       if (result.reason === 'changeset_not_pending') return { ok: false, code: 'changeset_not_pending' }
       if (result.reason === 'changeset_not_revertible') return { ok: false, code: 'changeset_not_revertible' }
+      if (result.reason === 'config_conflict' || result.reason === 'proposal_not_pending') return { ok: false, code: result.reason }
       const existing = result.path ? await this.deps.wikis.findPage(connector.id, result.path) : null
       return {
         ok: false,
@@ -2719,6 +2788,12 @@ function briefingCategories(categories: WikiCategoryRow[]) {
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+/** #1075: elöl a wiki élő fókusza, utána az agent-kötés saját (publikált) fókusza. */
+function collectOf(wikiFocus: string | null | undefined, agentFocus: string | null) {
+  const collect = [wikiFocus?.trim(), agentFocus].filter(Boolean).join('\n')
+  return collect ? { collect } : {}
 }
 
 export function wikiDisplayName(connector: Pick<Connector, 'name' | 'config' | 'visibility'>): string {

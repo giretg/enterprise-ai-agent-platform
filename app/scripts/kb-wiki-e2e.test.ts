@@ -676,6 +676,7 @@ async function main() {
       }
       await notFound('kb_get_page', { wikiId, path: 'labs/ldl-koleszterin.md' })
       await notFound('kb_get_page', { wikiId, path: 'index.md' })
+      await notFound('kb_wiki_config_get', { wikiId })
       await notFound('kb_list_index', { wikiId, inbox: true })
       await notFound('kb_get_document', { documentId: documentIds[0] })
       await notFound('kb_get_document', { documentId: documentIds[0], pageImages: true })
@@ -691,6 +692,7 @@ async function main() {
       const denied = async (label: string, fn: () => Promise<unknown>) => {
         await assert.rejects(fn, (error: unknown) => error instanceof WikiConsoleError && error.code === 'not_found', label)
       }
+      await denied('wikiConfig.overview', () => services.wikiConfig.overview(actor(admin), connectorId))
       await denied('getOverview', () => services.wikiConsole.getOverview(actor(admin), connectorId))
       await denied('getPage', () => services.wikiConsole.getPage(actor(admin), connectorId, 'labs/ldl-koleszterin.md'))
       await denied('getSource', () => services.wikiConsole.getSource(actor(admin), connectorId, documentIds[0]))
@@ -805,6 +807,39 @@ async function main() {
         (_key, value) => (typeof value === 'bigint' ? String(value) : value),
       )
       assert.ok(auditJson.length > 2 && !auditJson.includes(SECRET) && !auditJson.includes('teszt kérelem'), 'privát KB: indoklás és kifejezés sem kerül az auditba')
+    })
+
+    await check('8b. #1075 beállítás-javaslat az MCP-n: JSON-szöveges műveletek, kapcsoló, jóváhagyó link, jóváhagyás', async () => {
+      const mcp = session('config', owner)
+      // A régi (#947) képesség-lista elég: az eszközök a meglévő wiki-képességekkel járnak.
+      const before = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
+      assert.equal(before.agentConfigChanges, 'off')
+      const operations = JSON.stringify([
+        { op: 'setCollectFocus', collect: 'Laboreredmények időrendben' },
+        { op: 'upsertGroup', key: 'config-e2e', label: 'E2E csoport', order: 5 },
+      ])
+      const args = { definitionId, wikiId, baseConfigVersion: before.configVersion, operations, note: 'E2E' }
+      const disabled = await mcp.call('kb_wiki_config_propose', args)
+      assert.equal(disabled.isError, true)
+      assert.equal(disabled.json.code, 'config_changes_disabled', JSON.stringify(disabled.json))
+      await services.wikiConfig.setEnabled(actor(owner), connectorId, true)
+      const valid = await mcp.ok('kb_wiki_config_propose', { ...args, validateOnly: true })
+      assert.equal(valid.status, 'valid')
+      const proposed = await mcp.ok('kb_wiki_config_propose', args)
+      assert.equal(proposed.status, 'awaiting_approval')
+      assert.match(proposed.approvalUrl, new RegExp(`/control-plane/knowledge/${connectorId}\\?tab=proposals&proposal=${proposed.proposalId}$`))
+      assert.equal(proposed.approvalPath, undefined)
+      const pending = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
+      assert.equal(pending.pendingProposals[0].proposalId, proposed.proposalId)
+      assert.ok(pending.pendingProposals[0].approvalUrl)
+      await assert.rejects(() => services.wikiConfig.approve(actor(admin), connectorId, proposed.proposalId), (e: unknown) => e instanceof WikiConsoleError && e.code === 'not_found')
+      await services.wikiConfig.approve(actor(owner), connectorId, proposed.proposalId)
+      const index = await mcp.ok('kb_list_index', { definitionId, wikiId })
+      assert.ok(String(index.wiki.collect).startsWith('Laboreredmények időrendben'), JSON.stringify(index.wiki.collect))
+      const after = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
+      assert.notEqual(after.configVersion, before.configVersion)
+      assert.ok(after.groups.some((row: any) => row.key === 'config-e2e'))
+      await services.wikiConfig.setEnabled(actor(owner), connectorId, false)
     })
 
     await check('7. végleges törlés: semmilyen tartalom nem marad (DB + nyers PDF-bájtok)', async () => {

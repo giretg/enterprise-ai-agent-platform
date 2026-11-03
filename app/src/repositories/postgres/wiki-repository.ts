@@ -11,11 +11,14 @@ import type {
   WikiApplyChangeSetResult,
   WikiApplyPageOp,
   WikiChangeSetPageSummary,
+  WikiConfigApplyPlan,
+  WikiConfigRepository,
   WikiInboxSummary,
   WikiRepository,
   WikiStructureRepository,
 } from '../interfaces'
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
+import { configVersionOf, configPagesVersionOf, type WikiConfigState } from '@/lib/wiki-config'
 import { metaFromColumns, type WikiFieldDef } from '@/lib/wiki-metadata'
 import type { WikiPageMetaQuery, WikiPageMetaRow } from '../interfaces'
 
@@ -493,6 +496,7 @@ export class PostgresWikiRepository implements WikiRepository {
         // Egy wikin az írások sorban futnak: a konténer-artifact egyszer jön létre,
         // és két change-set chunk-cseréje nem keveredik.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.connectorId}))`
+        if (input.configPlan) await applyConfigPlan(tx, input.wikiId, input.connectorId, input.configPlan)
         if (input.categoryUpdate) {
           const { id, expectedParentId, patch } = input.categoryUpdate
           const changed = await tx.wikiCategory.updateMany({ where: { id, wikiId: input.wikiId, parentId: expectedParentId }, data: patch })
@@ -627,6 +631,10 @@ export class PostgresWikiRepository implements WikiRepository {
           })
         }
 
+        if (input.configPlan) {
+          await tx.wikiConfigProposal.update({ where: { id: input.configPlan.proposalId }, data: { changeSetId } })
+        }
+
         await tx.wikiLogEntry.create({
           data: {
             wikiId: input.wikiId,
@@ -716,9 +724,188 @@ const categorySelect = {
   pinnedPages: true,
   pageOrder: true,
   collapsed: true,
+  templateKey: true,
 } as const
 
 const fieldSelect = { id: true, key: true, name: true, type: true, options: true, help: true, sortOrder: true } as const
+
+async function loadConfigState(client: Prisma.TransactionClient, wikiId: string): Promise<WikiConfigState | null> {
+  const wiki = await client.agentWiki.findUnique({
+    where: { id: wikiId },
+    select: {
+      schemaMd: true,
+      collectFocus: true,
+      managedCategories: true,
+      managedFields: true,
+      connector: { select: { config: true } },
+      categories: { select: { ...categorySelect, parent: { select: { key: true } } } },
+      fields: { select: fieldSelect },
+    },
+  })
+  if (!wiki) return null
+  const config = wiki.connector.config && typeof wiki.connector.config === 'object' && !Array.isArray(wiki.connector.config)
+    ? (wiki.connector.config as Record<string, unknown>)
+    : {}
+  return {
+    name: typeof config.displayName === 'string' && config.displayName.trim() ? config.displayName.trim() : null,
+    collect: wiki.collectFocus,
+    wikiMd: wiki.schemaMd,
+    managedCategories: wiki.managedCategories,
+    managedFields: wiki.managedFields,
+    categories: wiki.categories.map((row) => ({
+      key: row.key,
+      parentKey: row.parent?.key ?? null,
+      name: row.name,
+      description: row.description,
+      sortOrder: row.sortOrder,
+      approval: row.approval,
+      pageSort: row.pageSort,
+      pinnedPages: row.pinnedPages,
+      pageOrder: row.pageOrder,
+      collapsed: row.collapsed,
+      reviewCycleDays: row.reviewCycleDays,
+      requiredFields: row.requiredFields,
+      requiredSections: row.requiredSections,
+      sectionRule: row.sectionRule,
+      templateMd: row.templateMd,
+      templateKey: row.templateKey,
+      linkedConnectorId: row.linkedConnectorId,
+    })),
+    fields: wiki.fields.map((row) => ({
+      key: row.key,
+      name: row.name,
+      type: row.type,
+      options: row.options,
+      help: row.help,
+      sortOrder: row.sortOrder,
+    })),
+  }
+}
+
+/**
+ * #1075: a jóváhagyott állapot kiírása a change-set tranzakciójában. Itt, a zár alatt
+ * dől el véglegesen, hogy a beállítás azóta nem változott, és a javaslat még függőben van.
+ */
+async function applyConfigPlan(tx: Prisma.TransactionClient, wikiId: string, connectorId: string, plan: WikiConfigApplyPlan) {
+  const claimed = await tx.wikiConfigProposal.updateMany({
+    where: { id: plan.proposalId, wikiId, connectorId, status: 'pending' },
+    data: { status: 'applied', decidedByUserId: plan.decidedByUserId, decidedAt: new Date() },
+  })
+  if (claimed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'proposal_not_pending' })
+  // A felületi írások nem veszik fel a change-set zárát: a sor-zárak miatt a lenyomat után már nem
+  // csúszhat be mentés, amit a kiírás felülírna. A wiki-sor FOR UPDATE-je az új kategória / mező
+  // beszúrását is megvárja (idegen kulcs); a connectornál elég a gyengébb, más táblákat nem fogó zár.
+  await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${connectorId}::uuid FOR NO KEY UPDATE`
+  await tx.$queryRaw`SELECT id FROM agent_wikis WHERE id = ${wikiId}::uuid FOR UPDATE`
+  await tx.$queryRaw`SELECT id FROM wiki_categories WHERE wiki_id = ${wikiId}::uuid ORDER BY id FOR UPDATE`
+  await tx.$queryRaw`SELECT id FROM wiki_fields WHERE wiki_id = ${wikiId}::uuid ORDER BY id FOR UPDATE`
+  const current = await loadConfigState(tx, wikiId)
+  if (!current || configVersionOf(current) !== plan.expectedVersion) throw new ApplyAborted({ ok: false, reason: 'config_conflict' })
+  const pages = await tx.wikiPage.findMany({ where: { wikiId, connectorId }, select: { id: true, version: true } })
+  if (configPagesVersionOf(pages) !== plan.expectedPagesVersion) throw new ApplyAborted({ ok: false, reason: 'conflict', path: null })
+  const { next } = plan
+
+  // A fa kulcsokkal jön; előbb a felső szint, hogy a gyerek megtalálja a szülőjét.
+  const wanted = new Set(next.categories.map((row) => row.key))
+  const removed = current.categories.filter((row) => !wanted.has(row.key))
+  const before = new Map(current.categories.map((row) => [row.key, JSON.stringify(row)]))
+  for (const row of [...next.categories].sort((a, b) => Number(!!a.parentKey) - Number(!!b.parentKey))) {
+    if (before.get(row.key) === JSON.stringify(row)) continue
+    const parentId = row.parentKey
+      ? (await tx.wikiCategory.findUniqueOrThrow({ where: { wikiId_key: { wikiId, key: row.parentKey } }, select: { id: true } })).id
+      : null
+    const data = {
+      name: row.name,
+      description: row.description,
+      sortOrder: row.sortOrder,
+      approval: row.approval,
+      pageSort: row.pageSort,
+      pinnedPages: row.pinnedPages,
+      pageOrder: row.pageOrder,
+      collapsed: row.collapsed,
+      reviewCycleDays: row.reviewCycleDays,
+      requiredFields: row.requiredFields,
+      requiredSections: row.requiredSections,
+      sectionRule: row.sectionRule,
+      templateMd: row.templateMd,
+      templateKey: row.templateKey,
+      parentId,
+    }
+    await tx.wikiCategory.upsert({
+      where: { wikiId_key: { wikiId, key: row.key } },
+      create: { ...data, key: row.key, wikiId },
+      update: data,
+    })
+  }
+  // Előbb a megmaradó gyerekek kapják meg az új szülőt, csak utána törölhető a régi.
+  for (const row of [...removed].sort((a, b) => Number(!!b.parentKey) - Number(!!a.parentKey))) {
+    await tx.wikiCategory.deleteMany({ where: { wikiId, key: row.key } })
+  }
+  for (const row of next.fields) {
+    const { key, ...data } = row
+    await tx.wikiField.upsert({ where: { wikiId_key: { wikiId, key } }, create: { ...row, wikiId }, update: data })
+  }
+  await tx.agentWiki.update({ where: { id: wikiId }, data: { schemaMd: next.wikiMd, collectFocus: next.collect } })
+  if (next.name !== current.name && next.name) {
+    const connector = await tx.connector.findUniqueOrThrow({ where: { id: connectorId }, select: { config: true } })
+    const config = connector.config && typeof connector.config === 'object' && !Array.isArray(connector.config) ? connector.config : {}
+    await tx.connector.update({ where: { id: connectorId }, data: { config: { ...config, displayName: next.name } } })
+  }
+}
+
+/** #1075: agent-javaslatok és a javasolható beállítások élő állapota. */
+export class PostgresWikiConfigRepository implements WikiConfigRepository {
+  readState(wikiId: string) {
+    return loadConfigState(prisma, wikiId)
+  }
+
+  async createProposal(input: Parameters<WikiConfigRepository['createProposal']>[0]) {
+    try {
+      return await prisma.wikiConfigProposal.create({ data: input })
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return null
+      throw error
+    }
+  }
+
+  findProposal(id: string) {
+    return prisma.wikiConfigProposal.findUnique({ where: { id } })
+  }
+
+  findPendingForAgent(wikiId: string, agentId: string) {
+    return prisma.wikiConfigProposal.findFirst({ where: { wikiId, agentId, status: 'pending' } })
+  }
+
+  listProposals(wikiId: string, filter: { pending: boolean; agentId?: string; limit: number }) {
+    return prisma.wikiConfigProposal.findMany({
+      where: {
+        wikiId,
+        ...(filter.agentId ? { agentId: filter.agentId } : {}),
+        status: filter.pending ? 'pending' : { not: 'pending' },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: filter.limit,
+    })
+  }
+
+  async closeProposal(id: string, to: 'rejected' | 'withdrawn', extra: Parameters<WikiConfigRepository['closeProposal']>[2]) {
+    const closed = await prisma.wikiConfigProposal.updateMany({ where: { id, status: 'pending' }, data: { status: to, ...extra } })
+    return closed.count === 1 ? prisma.wikiConfigProposal.findUnique({ where: { id } }) : null
+  }
+
+  async agentConfigChanges(wikiId: string) {
+    const row = await prisma.agentWiki.findUnique({ where: { id: wikiId }, select: { agentConfigChanges: true } })
+    return row?.agentConfigChanges ?? false
+  }
+
+  async setAgentConfigChanges(wikiId: string, on: boolean) {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { agentConfigChanges: on } })
+  }
+
+  async setCollectFocus(wikiId: string, collect: string | null) {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { collectFocus: collect } })
+  }
+}
 
 /** #1061 F1: kezelt kategória-fa és visszahivatkozások. */
 export class PostgresWikiStructureRepository implements WikiStructureRepository {

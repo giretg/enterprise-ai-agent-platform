@@ -61,7 +61,8 @@ import { WikiCategoryService } from '@/domain/knowledge-base/wiki-category-servi
 import { WikiMetadataService } from '@/domain/knowledge-base/wiki-metadata-service'
 import { WikiHistoryService } from '@/domain/knowledge-base/wiki-history-service'
 import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
-import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { executeKnowledgeBaseTool, executeWikiConfigTool, executeWikiTool, isWikiConfigTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { WikiConfigService } from '@/domain/knowledge-base/wiki-config-service'
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { getPolicySnapshot } from '@/domain/client-policy/policy-service'
@@ -289,6 +290,16 @@ const wikiMetadataService = new WikiMetadataService({
   wikis: repositories.wikis,
   structure: repositories.wikiStructure,
   users: wikiConsoleRepository,
+  audit: repositories.audit,
+})
+
+// #1075: agent által javasolt wiki-beállítás.
+const wikiConfigService = new WikiConfigService({
+  wiki: wikiService,
+  wikiConsole: wikiConsoleService,
+  wikis: repositories.wikis,
+  config: repositories.wikiConfig,
+  agentNames: (tenantId, ids) => wikiConsoleRepository.agentNames(tenantId, ids),
   audit: repositories.audit,
 })
 
@@ -738,7 +749,10 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx, wikiService),
-  executeWikiTool: (toolName, args, ctx) => executeWikiTool(wikiService, toolName, args, ctx),
+  executeWikiTool: (toolName, args, ctx) =>
+    isWikiConfigTool(toolName)
+      ? executeWikiConfigTool(wikiConfigService, toolName, args, ctx)
+      : executeWikiTool(wikiService, toolName, args, ctx),
   resolveKbConnector: async ({ tenantId, wikiId, documentId }) => {
     const connectorId = wikiId
       ? (await repositories.wikis.findById(wikiId))?.connectorId
@@ -834,6 +848,7 @@ export const services = {
   wikiHistory: wikiHistoryService,
   wikiCategories: wikiCategoryService,
   wikiMetadata: wikiMetadataService,
+  wikiConfig: wikiConfigService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

@@ -14,8 +14,10 @@ import { MAX_WIKI_SCHEMA_CHARS, WikiConsoleError, WIKI_TEMPLATE_IDS, type WikiCo
 import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiCategoryError } from '@/domain/knowledge-base/wiki-category-service'
 import { WikiMetadataError } from '@/domain/knowledge-base/wiki-metadata-service'
+import { WikiConfigError } from '@/domain/knowledge-base/wiki-config-service'
 import { WIKI_FIELD_TYPES, type WikiViewFilter } from '@/lib/wiki-metadata'
 import { WIKI_CATEGORY_MAX_COUNT, WIKI_CATEGORY_MAX_PAGE_ORDER, WIKI_CATEGORY_MAX_PINNED, WIKI_PAGE_SORTS } from '@/lib/wiki-categories'
+import { WIKI_COLLECT_MAX_CHARS } from '@/lib/wiki-config'
 import { fail, ok } from '@/lib/result'
 
 const uuid = z.string().uuid()
@@ -30,7 +32,8 @@ function failFrom(error: unknown, fallback: string) {
     error instanceof WikiConsoleError ||
     error instanceof WikiAccessError ||
     error instanceof WikiCategoryError ||
-    error instanceof WikiMetadataError
+    error instanceof WikiMetadataError ||
+    error instanceof WikiConfigError
   ) {
     return fail(error.code)
   }
@@ -816,5 +819,69 @@ export async function getWikiViewAction(input: { connectorId: string; view: stri
     return ok(await services.wikiMetadata.views(await actor(), parsed.connectorId, filter))
   } catch (e) {
     return failFrom(e, 'Failed to load view')
+  }
+}
+
+// -------------------------------------------------------------------------
+// #1075: agent által javasolt beállítás (Javaslatok fül)
+
+export async function getWikiConfigProposalsAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiConfig.overview(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load proposals')
+  }
+}
+
+export async function getWikiConfigProposalAction(input: { connectorId: string; proposalId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, proposalId: uuid }).parse(input)
+    return ok(await services.wikiConfig.review(await actor(), parsed.connectorId, parsed.proposalId))
+  } catch (e) {
+    return failFrom(e, 'Failed to load proposal')
+  }
+}
+
+export async function approveWikiConfigProposalAction(input: { connectorId: string; proposalId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, proposalId: uuid }).parse(input)
+    const result = await services.wikiConfig.approve(await actor(), parsed.connectorId, parsed.proposalId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to approve proposal')
+  }
+}
+
+export async function rejectWikiConfigProposalAction(input: { connectorId: string; proposalId: string; comment?: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, proposalId: uuid, comment: z.string().max(1000).optional() }).parse(input)
+    const result = await services.wikiConfig.reject(await actor(), parsed.connectorId, parsed.proposalId, parsed.comment ?? null)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to reject proposal')
+  }
+}
+
+export async function setWikiAgentConfigChangesAction(input: { connectorId: string; enabled: boolean }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, enabled: z.boolean() }).parse(input)
+    const result = await services.wikiConfig.setEnabled(await actor(), parsed.connectorId, parsed.enabled)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to change setting')
+  }
+}
+
+export async function setWikiCollectFocusAction(input: { connectorId: string; collect: string | null }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, collect: z.string().max(WIKI_COLLECT_MAX_CHARS).nullable() }).parse(input)
+    const result = await services.wikiConfig.setCollect(await actor(), parsed.connectorId, parsed.collect)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save collect focus')
   }
 }

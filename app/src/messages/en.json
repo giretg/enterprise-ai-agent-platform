@@ -628,8 +628,129 @@
         "inbox": "Inbox",
         "log": "Log",
         "access": "Who has access",
+        "proposals": "Proposals",
         "settings": "Settings"
       },
+        "proposals": {
+          "settingTitle": "Proposals from AI teammates",
+          "intro": "An AI teammate can design this wiki's configuration (categories, fields, templates, rules file, name) and send it to you in one go. Nothing changes until you approve it here. Only a teammate with write access to this wiki can propose.",
+          "off": "Off",
+          "on": "Can propose",
+          "offHelp": "While off, teammates cannot send proposals. They can still read the configuration, and you can still edit it.",
+          "onHelp": "While on, a teammate can send a proposal but still cannot change anything directly. You can still decide proposals already sent after switching this off.",
+          "collectTitle": "What this wiki should collect",
+          "collectHelp": "Every teammate writing here sees this, and it applies immediately, without republishing. A teammate's own focus (Who has access tab) follows it and applies after publishing.",
+          "collectEmpty": "Not set: teammates follow only their own focus.",
+          "collectSave": "Save",
+          "listTitle": "Proposals waiting for a decision",
+          "emptyOn": "No proposals are waiting. When a teammate sends one it appears here, and the teammate gives you a link to it.",
+          "emptyOff": "No proposals, and teammates cannot send any right now. You can switch this on above.",
+          "rowTitle": "{agent}: {count} changes",
+          "unknownAgent": "Unknown teammate",
+          "historyTitle": "Earlier proposals",
+          "status": {
+            "pending": "waiting for a decision",
+            "applied": "approved",
+            "rejected": "rejected",
+            "withdrawn": "withdrawn"
+          },
+          "reviewTitle": "Proposal from {agent}",
+          "decisionComment": "Message to the teammate: {comment}",
+          "causes": {
+            "config_conflict": "Rejected automatically: the configuration changed in the meantime.",
+            "invalid_config_change": "Rejected automatically: the proposal was no longer valid.",
+            "proposal_not_pending": "Already decided.",
+            "conflict": "A page changed in the meantime.",
+            "forbidden": "No permission.",
+            "not_found": "Not found.",
+            "generic": "Closed automatically."
+          },
+          "stale": "The configuration changed after this proposal was made, so it cannot be approved as it is. Reject it and ask the teammate to make a new one from the current state.",
+          "invalidNow": "This proposal no longer applies to the current state:",
+          "warnings": {
+            "managed_categories_off": "Managed categories are switched off for this wiki. The categories are saved but only take effect once you switch them on (Settings tab).",
+            "managed_fields_off": "Metadata fields are switched off for this wiki. The fields are saved but only take effect once you switch them on (Settings tab)."
+          },
+          "destructive": {
+            "merge": "Merge: category {from} goes away and its {count} pages move to {to}.",
+            "rename": "Rename: value \"{from}\" of field {field} becomes \"{to}\", rewritten on {count} pages.",
+            "remove": "Remove: value \"{option}\" of field {field} goes away, replaced on {count} pages with: {to}."
+          },
+          "sections": {
+            "nameFocus": "Name and focus",
+            "wikiMd": "Rules file (WIKI.md)",
+            "groups": "Groups",
+            "categories": "Categories",
+            "fields": "Fields",
+            "templates": "Templates",
+            "pages": "Affected pages"
+          },
+          "name": "Name",
+          "collect": "Focus",
+          "noChange": "No change.",
+          "added": "New",
+          "changed": "Changes",
+          "removed": "Goes away",
+          "fieldsRewritten": "field value rewritten",
+            "yes": "yes",
+            "no": "no",
+            "noValues": "No values set.",
+            "props": {
+              "name": "Name",
+              "description": "Description",
+              "sortOrder": "Menu order",
+              "approval": "Approval",
+              "pageSort": "Page order",
+              "pinnedPages": "Pinned pages",
+              "pageOrder": "Manual page order",
+              "collapsed": "Collapsed by default",
+              "reviewCycleDays": "Review cycle (days)",
+              "requiredFields": "Required fields",
+              "requiredSections": "Required sections",
+              "sectionRule": "When a section is missing",
+              "templateMd": "Starting page outline",
+              "templateKey": "Template",
+              "linkedConnectorId": "Linked wiki",
+              "type": "Type",
+              "options": "Options",
+              "help": "Help text"
+            },
+            "values": {
+              "pageSort": {
+                "title": "by title",
+                "updated_desc": "recently updated first",
+                "date_desc": "newest first",
+                "manual": "manual order"
+              },
+              "approval": {
+                "inherit": "follows the wiki's rule",
+                "always": "always needs approval"
+              },
+              "sectionRule": {
+                "warn": "only warns",
+                "error": "blocks saving"
+              },
+              "type": {
+                "text": "text",
+                "select": "one value",
+                "multi_select": "several values",
+                "date": "date"
+              }
+            },
+          "commentLabel": "Message to the teammate (when rejecting, optional)",
+          "approve": "Approve all",
+          "reject": "Reject",
+          "approveHelp": "On approval everything goes live together and applies immediately. If something changed in the meantime, nothing is written.",
+          "errors": {
+            "config_conflict": "The configuration changed in the meantime, so nothing was written and the proposal was rejected. Ask the teammate to make a new one.",
+            "invalid_config_change": "The proposal is no longer valid, so nothing was written and it was rejected.",
+            "proposal_not_pending": "This proposal has already been decided or withdrawn.",
+            "conflict": "An affected page changed in the meantime and nothing was written. Try again.",
+            "forbidden": "You don't have permission for this.",
+            "not_found": "This proposal was not found.",
+            "generic": "Something went wrong. Please try again a little later."
+          }
+        },
       "kind": {
         "catalog": "Shared catalog",
         "agent": "Teammate's own",

@@ -1,4 +1,5 @@
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
+import type { WikiConfigState } from '@/lib/wiki-config'
 import type { WikiFieldDef } from '@/lib/wiki-metadata'
 import type {
   Agent,
@@ -970,6 +971,8 @@ export type WikiApplyChangeSetInput = {
   ops: WikiApplyPageOp[]
   /** Category path and page revisions must commit together. */
   categoryUpdate?: { id: string; expectedParentId: string | null; patch: Partial<Omit<WikiCategoryRow, 'id' | 'key'>> }
+  /** #1075: jóváhagyott beállítás-javaslat — a beállítás és az oldalmozgatások együtt íródnak. */
+  configPlan?: WikiConfigApplyPlan
   log: {
     op: WikiLogOp
     title: string
@@ -991,6 +994,56 @@ export type WikiApplyChangeSetResult =
   | { ok: false; reason: 'changeset_not_pending' }
   /** #978 D5: a visszavonandó change-set már nem `applied` (pl. közben visszavonták). */
   | { ok: false; reason: 'changeset_not_revertible' }
+  /** #1075: közben változott a beállítás, vagy a javaslat már nem függőben van. */
+  | { ok: false; reason: 'config_conflict' }
+  | { ok: false; reason: 'proposal_not_pending' }
+
+export type WikiConfigApplyPlan = {
+  proposalId: string
+  expectedVersion: string
+  expectedPagesVersion: string
+  decidedByUserId: string
+  next: WikiConfigState
+}
+
+export type WikiConfigProposalStatusName = 'pending' | 'applied' | 'rejected' | 'withdrawn'
+
+export type WikiConfigProposalRow = {
+  id: string
+  wikiId: string
+  connectorId: string
+  agentId: string
+  userId: string
+  status: WikiConfigProposalStatusName
+  baseConfigVersion: string
+  operations: unknown
+  note: string
+  decidedByUserId: string | null
+  decidedAt: Date | null
+  decisionComment: string | null
+  decisionReason: string | null
+  changeSetId: string | null
+  createdAt: Date
+}
+
+/** #1075: agent-javaslatok és a javasolható beállítások élő állapota. */
+export interface WikiConfigRepository {
+  readState(wikiId: string): Promise<WikiConfigState | null>
+  /** Agentenként és wikinként egy nyitott lehet; ha már van, `null`. */
+  createProposal(input: Pick<WikiConfigProposalRow, 'wikiId' | 'connectorId' | 'agentId' | 'userId' | 'baseConfigVersion' | 'note'> & { operations: Prisma.InputJsonValue }): Promise<WikiConfigProposalRow | null>
+  findProposal(id: string): Promise<WikiConfigProposalRow | null>
+  findPendingForAgent(wikiId: string, agentId: string): Promise<WikiConfigProposalRow | null>
+  listProposals(wikiId: string, filter: { pending: boolean; agentId?: string; limit: number }): Promise<WikiConfigProposalRow[]>
+  /** CAS a `pending` állapotból; ha már nem függőben van, `null`. */
+  closeProposal(
+    id: string,
+    to: 'rejected' | 'withdrawn',
+    extra: { decidedByUserId: string | null; decidedAt: Date; decisionComment?: string | null; decisionReason?: string | null },
+  ): Promise<WikiConfigProposalRow | null>
+  agentConfigChanges(wikiId: string): Promise<boolean>
+  setAgentConfigChanges(wikiId: string, on: boolean): Promise<void>
+  setCollectFocus(wikiId: string, collect: string | null): Promise<void>
+}
 
 export interface WikiRepository {
   findById(wikiId: string): Promise<AgentWiki | null>
@@ -1123,7 +1176,7 @@ export interface WikiStructureRepository {
     patch: Partial<
       Pick<
         WikiCategoryRow,
-        'parentId' | 'name' | 'description' | 'sortOrder' | 'approval' | 'reviewCycleDays' | 'requiredFields' | 'requiredSections' | 'sectionRule' | 'templateMd'
+        'parentId' | 'name' | 'description' | 'sortOrder' | 'approval' | 'reviewCycleDays' | 'requiredFields' | 'requiredSections' | 'sectionRule' | 'templateMd' | 'templateKey'
         | 'pageSort' | 'pinnedPages' | 'pageOrder' | 'collapsed'
       >
     >,

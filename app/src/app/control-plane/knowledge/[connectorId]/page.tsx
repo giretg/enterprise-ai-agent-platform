@@ -11,6 +11,8 @@ import {
   getWikiPageAction,
   getWikiPageAtAction,
   getWikiRetentionAction,
+  getWikiConfigProposalAction,
+  getWikiConfigProposalsAction,
   getWikiSettingsAction,
   getWikiStateAtAction,
   getWikiSourceAction,
@@ -23,6 +25,7 @@ import { WikiMarkdown } from '@/components/knowledge/wiki/wiki-markdown'
 import { WikiAgentAccessEditor } from '@/components/knowledge/wiki/wiki-agent-access-editor'
 import { WikiOwnerActions } from '@/components/knowledge/wiki/wiki-owner-actions'
 import { WikiSettingsPanel } from '@/components/knowledge/wiki/wiki-settings-panel'
+import { WikiProposalsPanel } from '@/components/knowledge/wiki/wiki-proposals-panel'
 import { WikiRetentionPanel } from '@/components/knowledge/wiki/wiki-retention-panel'
 import { WikiErasurePanel } from '@/components/knowledge/wiki/wiki-erasure-panel'
 import { WikiCategoriesPanel } from '@/components/knowledge/wiki/wiki-categories-panel'
@@ -41,7 +44,7 @@ import { HelpHint } from '@/components/onboarding/onboarding-ui'
 
 export const dynamic = 'force-dynamic'
 
-const TABS = ['wiki', 'views', 'changes', 'inbox', 'log', 'access', 'settings'] as const
+const TABS = ['wiki', 'views', 'changes', 'inbox', 'log', 'access', 'proposals', 'settings'] as const
 type Tab = (typeof TABS)[number]
 
 export default async function KnowledgeBaseWikiPage({
@@ -68,7 +71,7 @@ export default async function KnowledgeBaseWikiPage({
     notFound()
   }
   const wiki = overviewRes.data
-  const tabs = TABS.filter((tab) => (tab !== 'settings' || wiki.canManage) && (tab !== 'views' || wiki.managedFields))
+  const tabs = TABS.filter((tab) => (tab !== 'settings' || wiki.canManage) && (tab !== 'proposals' || wiki.canManage) && (tab !== 'views' || wiki.managedFields))
   const tab: Tab = (tabs as readonly string[]).includes(query.tab ?? '') ? (query.tab as Tab) : 'wiki'
 
   return (
@@ -147,6 +150,7 @@ export default async function KnowledgeBaseWikiPage({
         </Card>
       ) : null}
       {tab === 'access' ? <AccessTab connectorId={connectorId} /> : null}
+      {tab === 'proposals' && wiki.canManage ? <ProposalsTab connectorId={connectorId} proposalId={query.proposal} /> : null}
       {tab === 'settings' && wiki.canManage ? <SettingsTab connectorId={connectorId} name={wiki.name} isPrivate={wiki.private} /> : null}
     </div>
   )
@@ -154,6 +158,8 @@ export default async function KnowledgeBaseWikiPage({
 
 type WikiQuery = {
   tab?: string
+  /** #1075: a Javaslatok fülön megnyitott javaslat. */
+  proposal?: string
   page?: string
   source?: string
   p?: string
@@ -549,6 +555,16 @@ function wikiErrorMessage(
     return `errors.${code}`
   }
   return 'errors.generic'
+}
+
+/** #1075: agent által javasolt beállítás — a kiválasztott javaslatot mindig az élő állapotból számoljuk. */
+async function ProposalsTab({ connectorId, proposalId }: { connectorId: string; proposalId?: string }) {
+  const [overview, review] = await Promise.all([
+    getWikiConfigProposalsAction({ connectorId }),
+    proposalId ? getWikiConfigProposalAction({ connectorId, proposalId }) : null,
+  ])
+  if (!overview.success) notFound()
+  return <WikiProposalsPanel connectorId={connectorId} overview={overview.data} review={review?.success ? review.data : null} />
 }
 
 async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {

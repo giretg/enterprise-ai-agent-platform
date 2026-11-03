@@ -31,6 +31,11 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   // #943
   invalid_wiki_change: 'The wiki change is invalid — nothing was written; fix the listed errors and retry',
   conflict: 'The page changed since you read it — nothing was written; merge with the current content and retry with its baseVersion',
+  config_conflict: 'The wiki configuration changed since you read it — nothing was created; call kb_wiki_config_get and propose again',
+  invalid_config_change: 'The configuration proposal is invalid — nothing was created; fix every operation listed in errors and retry',
+  proposal_pending: 'You already have an open configuration proposal for this wiki — wait for the decision or withdraw it',
+  proposal_not_pending: 'This configuration proposal is no longer waiting for a decision',
+  config_changes_disabled: 'Agent configuration proposals are switched off for this wiki — a wiki admin can allow them on its Proposals tab',
   already_claimed: 'Another agent is processing this inbox item (see claimedBy and claimExpiresAt)',
   not_in_inbox: 'This document is not waiting in the wiki inbox',
   changeset_not_pending: 'This wiki change-set is no longer waiting for approval',

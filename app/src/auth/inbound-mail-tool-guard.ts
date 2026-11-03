@@ -48,6 +48,7 @@ const INBOUND_MAIL_ALLOWED_TOOLS = new Set<string>([
   'kb_get_page',
   'kb_get_document',
   'kb_wiki_changes',
+  'kb_wiki_config_get',
   'mcp_list_tools',
   'web_search',
   // Kimenet csak a beszélgetésbe / hálózat nélküli sandboxba

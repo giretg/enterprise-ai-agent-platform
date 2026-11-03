@@ -46,6 +46,7 @@ import {
 } from '@/lib/kb-wiki'
 import { isKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import { metaFromColumns, readWikiMeta, type WikiPageMeta } from '@/lib/wiki-metadata'
+import { WIKI_MD_MAX_CHARS } from '@/lib/wiki-config'
 import {
   categoryIndex,
   groupPagesByTree,
@@ -73,7 +74,7 @@ import type { WikiService } from './wiki-service'
 export const WIKI_TEMPLATE_IDS = ['general', 'health-journal'] as const
 export type WikiTemplateChoice = (typeof WIKI_TEMPLATE_IDS)[number]
 /** A WIKI.md szabályfájl felső mérete (a sablonok ~3 KB-osak). */
-export const MAX_WIKI_SCHEMA_CHARS = 20_000
+export const MAX_WIKI_SCHEMA_CHARS = WIKI_MD_MAX_CHARS
 /** D17: ennyi után a váró tétel kiemelt a wiki gazdájának. */
 export const WIKI_INBOX_STALE_MS = 3 * 24 * 60 * 60 * 1000
 const MAX_KB_NAME = 120

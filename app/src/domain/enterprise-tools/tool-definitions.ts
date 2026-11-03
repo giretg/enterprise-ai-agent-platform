@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { WIKI_CONFIG_MAX_NOTE, WIKI_CONFIG_MAX_OPERATIONS } from '@/lib/wiki-config'
 
 export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
 export const GOOGLE_DRIVE_READ_FILE_TOOL = 'google_drive_read_file'
@@ -90,6 +91,10 @@ export const KB_WIKI_WRITE_TOOL = 'kb_wiki_write'
 export const KB_WIKI_CHANGES_TOOL = 'kb_wiki_changes'
 /** #978 §5.2: oldal / change-set visszaállítása — D2: MINDIG jóváhagyással. */
 export const KB_WIKI_REVERT_TOOL = 'kb_wiki_revert'
+/** #1075: a wiki beállításai + javaslat rájuk — az agent soha nem alkalmaz, mindig ember hagyja jóvá. */
+export const KB_WIKI_CONFIG_GET_TOOL = 'kb_wiki_config_get'
+export const KB_WIKI_CONFIG_PROPOSE_TOOL = 'kb_wiki_config_propose'
+export const KB_WIKI_CONFIG_WITHDRAW_TOOL = 'kb_wiki_config_withdraw'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
@@ -100,6 +105,9 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
 ] as const
 
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
@@ -119,6 +127,10 @@ const CAPABILITY_ALIASES: Record<string, readonly string[]> = {
   [WEB_FETCH_TOOL]: [WEB_SEARCH_TOOL],
   // #1071: a mentett nagy válasz olvasása bármelyik http_api joggal jár (a listázáshoz, pl. Hermes Bot).
   http_api_saved_read: ENTERPRISE_HTTP_TOOLS,
+  // #1075: a meglévő wiki-képességekkel jár, a tényleges jog a kötésen és a wiki kapcsolóján dől el.
+  [KB_WIKI_CONFIG_GET_TOOL]: [KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  [KB_WIKI_CONFIG_PROPOSE_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
 }
 
 /** Az agent-képességek, amelyek közül bármelyik engedi az eszközt. */
@@ -192,6 +204,7 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   KB_GET_PAGE_TOOL,
   KB_GET_DOCUMENT_TOOL,
   KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
   MCP_LIST_TOOLS_TOOL,
   WEB_SEARCH_TOOL,
   WEB_FETCH_TOOL,
@@ -1133,6 +1146,35 @@ export const kbWikiRevertInputSchema = kbWikiRevertObject
     message: 'Pass either changeSeq, or path and version.',
   })
 
+export const kbWikiConfigGetObject = z.object({ definitionId, agentId: optionalAgentId, wikiId: optionalWikiId }).passthrough()
+
+/** MCP-n JSON-szöveg (a Claude.ai eldobja a tömb-sémát); az elemzés a `…InputSchema`-val megy. */
+export const kbWikiConfigProposeObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    baseConfigVersion: z.string().min(1).max(64).describe('configVersion from kb_wiki_config_get.'),
+    operations: z
+      .string()
+      .min(2)
+      .max(2_000_000)
+      .describe(
+        `JSON array of operations (max ${WIKI_CONFIG_MAX_OPERATIONS}), applied in order, e.g. [{"op":"upsertMetadataField","key":"direction","label":"Direction","type":"select","options":["in","out"]},{"op":"upsertTemplate","id":"partner","requiredFields":["direction","owner"],"requiredSections":["Summary"],"skeleton":"## Summary"},{"op":"upsertGroup","key":"partners","label":"Partners","order":60},{"op":"upsertCategory","key":"partners/acceptance","label":"Acceptance","order":10,"template":"partner"}]`,
+      ),
+    note: z.string().trim().min(1).max(WIKI_CONFIG_MAX_NOTE).describe('Why the change is needed — shown to the approver.'),
+    validateOnly: z.boolean().optional().describe('Validate and return the summary without creating a proposal. Always do this first.'),
+  })
+  .passthrough()
+
+export const kbWikiConfigProposeInputSchema = kbWikiConfigProposeObject.extend({
+  operations: z.preprocess(parseJsonText, z.array(z.unknown()).min(1).max(WIKI_CONFIG_MAX_OPERATIONS)),
+})
+
+export const kbWikiConfigWithdrawInputSchema = z
+  .object({ definitionId, agentId: optionalAgentId, wikiId: optionalWikiId, proposalId: z.string().uuid() })
+  .passthrough()
+
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
@@ -1141,6 +1183,9 @@ export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_WIKI_WRITE_TOOL) return kbWikiWriteInputSchema
   if (toolName === KB_WIKI_CHANGES_TOOL) return kbWikiChangesInputSchema
   if (toolName === KB_WIKI_REVERT_TOOL) return kbWikiRevertInputSchema
+  if (toolName === KB_WIKI_CONFIG_GET_TOOL) return kbWikiConfigGetObject
+  if (toolName === KB_WIKI_CONFIG_PROPOSE_TOOL) return kbWikiConfigProposeInputSchema
+  if (toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL) return kbWikiConfigWithdrawInputSchema
   return kbSearchInputSchema
 }
 
