@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
-import { createKnowledgeBaseAction } from '@/app/actions/knowledge-wiki'
+import { createKnowledgeBaseAction, joinKnowledgeBaseAction } from '@/app/actions/knowledge-wiki'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Badge, Card } from '@/components/ui/shell'
 import { formatBytes, wikiHref } from './wiki-format'
@@ -12,7 +12,7 @@ import { formatBytes, wikiHref } from './wiki-format'
 export type KnowledgeBaseListRow =
   | {
       connectorId: string
-      kind: 'catalog' | 'agent' | 'shared' | 'private'
+      kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
       metadataOnly: true
       ownerLabel: string | null
       sourceCount: number
@@ -21,7 +21,7 @@ export type KnowledgeBaseListRow =
     }
   | {
       connectorId: string
-      kind: 'catalog' | 'agent' | 'shared' | 'private'
+      kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
       metadataOnly: false
       name: string
       ownerLabel: string | null
@@ -72,10 +72,11 @@ export function KnowledgeBasesList({
                 data-testid="kb-row-private-meta"
                 className="flex flex-wrap items-center gap-2 rounded-lg border border-line/70 bg-paper/50 px-3 py-2 text-sm text-ink-soft"
               >
-                <Badge tone="warning">{t('kind.private')}</Badge>
+                <Badge tone="warning">{t(`kind.${row.kind === 'members' ? 'members' : 'private'}`)}</Badge>
                 <span>{row.ownerLabel ?? t('list.unknownOwner')}</span>
                 <span className="text-ink-faint">· {stats(row)}</span>
-                <HelpHint>{t('list.privateMetaHelp')}</HelpHint>
+                <HelpHint>{t(row.kind === 'members' ? 'list.membersMetaHelp' : 'list.privateMetaHelp')}</HelpHint>
+                {row.kind === 'members' ? <JoinButton connectorId={row.connectorId} /> : null}
               </li>
             ) : (
               <li key={row.connectorId}>
@@ -85,7 +86,7 @@ export function KnowledgeBasesList({
                   className="flex flex-wrap items-center gap-2 rounded-lg border border-line/70 px-3 py-2 text-sm hover:border-coral/50"
                 >
                   <span className="font-medium text-ink">{row.name}</span>
-                  <Badge tone={row.kind === 'private' ? 'warning' : 'neutral'}>{t(`kind.${row.kind}`)}</Badge>
+                  <Badge tone={row.kind === 'private' || row.kind === 'members' ? 'warning' : 'neutral'}>{t(`kind.${row.kind}`)}</Badge>
                   {row.template !== 'general' ? <Badge tone="neutral">{t(`templates.${row.template}.name`)}</Badge> : null}
                   <span className="text-ink-faint">{stats(row)}</span>
                   {row.inbox.pending + row.inbox.inProgress > 0 ? (
@@ -201,4 +202,36 @@ const KNOWN_ERRORS = ['not_found', 'forbidden', 'invalid_args', 'too_large'] as 
 
 export function errorKey(code: string): (typeof KNOWN_ERRORS)[number] | 'generic' {
   return (KNOWN_ERRORS as readonly string[]).includes(code) ? (code as (typeof KNOWN_ERRORS)[number]) : 'generic'
+}
+
+/** #1061 F2 D9: a nem-tag admin felveheti magát a névsorra — a tartalmat csak tagként látja. */
+function JoinButton({ connectorId }: { connectorId: string }) {
+  const t = useTranslations('ControlPlane.wiki')
+  const router = useRouter()
+  const [pending, start] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <span className="ml-auto flex items-center gap-2">
+      {error ? <span className="text-xs text-coral-deep">{error}</span> : null}
+      <button
+        type="button"
+        disabled={pending}
+        data-testid="kb-join-members"
+        onClick={() =>
+          start(async () => {
+            setError(null)
+            const res = await joinKnowledgeBaseAction({ connectorId })
+            if (!res.success) {
+              setError(t(`errors.${errorKey(res.error)}`))
+              return
+            }
+            router.refresh()
+          })
+        }
+        className="rounded-lg border border-line px-2 py-1 text-xs font-medium text-ink hover:border-coral/60 disabled:opacity-50"
+      >
+        {t('list.joinMembers')}
+      </button>
+    </span>
+  )
 }

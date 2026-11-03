@@ -757,6 +757,11 @@ export async function invokeEnterpriseTool(
      * Csak hiteles kliens (platform-chat token) adhatja; a modell nem tudja befolyásolni.
      */
     attestedUrlHashes?: readonly string[]
+    /**
+     * #1061 F2: interaktív emberi munkamenet — az MCP-réteg állítja (ütemezett futásnál
+     * `false`). Hiánya = háttérfutás: emberi rögzítés (`human_note`) nem jöhet létre.
+     */
+    interactive?: boolean
   },
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, origin, confirm } = input
@@ -839,6 +844,7 @@ export async function invokeEnterpriseTool(
       definitionId,
       definition,
       origin,
+      interactive: input.interactive === true,
     })
   }
 
@@ -1661,6 +1667,7 @@ async function invokeKbTool(
     definitionId: string
     definition: AgentDefinition
     origin?: string
+    interactive?: boolean
   },
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, definitionId, definition } = input
@@ -1731,6 +1738,7 @@ async function invokeKbTool(
       agentId: definition.agentId,
       userId: principal.userId,
       snapshot: { connectors: userConnectors },
+      ...(input.interactive ? { interactive: true } : {}),
     })
     await auditKbOk(deps, { principal, toolName, definitionId, agentId: definition.agentId, connectorId: authorized.connectorId })
     return textResult(result)
@@ -1839,6 +1847,7 @@ async function invokeWikiTool(
     definition: AgentDefinition
     origin?: string
     userConnectors: AgentDefinition['snapshot']['connectors']
+    interactive?: boolean
   },
 ): Promise<EnterpriseToolMcpResult | InputRequiredToolResult> {
   const { principal, toolName, args, definitionId, definition } = input
@@ -1854,6 +1863,7 @@ async function invokeWikiTool(
       userId: principal.userId,
       agentId: definition.agentId,
       snapshot: { connectors: input.userConnectors },
+      ...(input.interactive ? { interactive: true } : {}),
     })
   } catch (error) {
     const code =

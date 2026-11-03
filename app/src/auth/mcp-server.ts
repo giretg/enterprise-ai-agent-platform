@@ -60,7 +60,7 @@ import {
 import { localRootsDefinitionBlock, withLocalRootsMemoryNote } from '@/lib/agent-local-roots'
 import { parseSkillContent, parseSkillRequires } from '@/lib/skill/skill-content'
 import { readTenantLanguage } from '@/lib/tenant-language'
-import { scopeSnapshotToUser } from '@/lib/wiki-access'
+import { scopeSnapshotToUser, withoutKbMemberLists } from '@/lib/wiki-access'
 import {
   GMAIL_CREATE_DRAFT_TOOL,
   GMAIL_GET_MESSAGE_TOOL,
@@ -310,6 +310,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
     confirm?: WriteConfirmInput
     client?: McpClientName
     attestedUrlHashes?: readonly string[]
+    /** #1061 F2: interaktív emberi munkamenet (ütemezett futásnál `false`). */
+    interactive?: boolean
   }) => Promise<EnterpriseToolMcpResult | InputRequiredToolResult>
   /**
    * #1020: a user effektív kliens-policyja a „harness-pótló” eszközök listázásához
@@ -955,7 +957,7 @@ async function getDefinitionToolResult(
     }),
     ...loaded,
     // #967 D12: a mini app útmutatót csak a platform.mini_app.guide adja, a definíció nem viszi.
-    snapshot: withoutMiniAppGuide(loaded.snapshot),
+    snapshot: withoutMiniAppGuide(withoutKbMemberLists(loaded.snapshot)),
     // A publikált (szűretlen) snapshot hash-e — a vázlat/közzétett összevetés ezt várja.
     contentHash: hashSnapshot(loadedRaw.snapshot),
     ...localRootsDefinitionBlock(roots),
@@ -1152,7 +1154,7 @@ async function createDraftToolResult(
       skills,
       connectors,
     })
-    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
+    return textResult({ ...result, workingSet: withoutKbMemberLists(scopeSnapshotToUser(result.workingSet, principal.userId)) })
   } catch (error) {
     if (error instanceof AgentScaffoldError && error.code === 'invalid_args') {
       return invalidArgs(error.message)
@@ -1182,7 +1184,7 @@ async function getWorkingSetToolResult(
       agentId,
       tenantId: principal.tenantId,
     })
-    return textResult({ ...result, workingSet: scopeSnapshotToUser(result.workingSet, principal.userId) })
+    return textResult({ ...result, workingSet: withoutKbMemberLists(scopeSnapshotToUser(result.workingSet, principal.userId)) })
   } catch {
     return definitionNotFound()
   }
@@ -1205,7 +1207,7 @@ async function publishAgentToolResult(
       tenantId: principal.tenantId,
       publishedById: principal.userId,
     })
-    return textResult({ ...result, snapshot: withoutMiniAppGuide(scopeSnapshotToUser(result.snapshot, principal.userId)) })
+    return textResult({ ...result, snapshot: withoutMiniAppGuide(withoutKbMemberLists(scopeSnapshotToUser(result.snapshot, principal.userId))) })
   } catch (error) {
     if (error instanceof AgentScaffoldError) {
       if (error.code === 'not_found') return definitionNotFound()
@@ -1496,6 +1498,7 @@ async function createMcpResourceHandler(
       externalClientsEnabled: readExternalClientsEnabled(tenant?.settings),
     })
   }
+  // #1061 F2: ütemezett futás (`x-scheduled-run-id`) nem interaktív — ott nem rögzíthető emberi forrás.
   const enterpriseToolResult = (
     principal: McpPrincipal,
     toolName: string,
@@ -1503,7 +1506,8 @@ async function createMcpResourceHandler(
     deps: McpRuntimeDeps,
     origin?: string,
     confirm?: WriteConfirmInput,
-  ) => invokeEnterpriseToolResult(principal, toolName, args, deps, origin, confirm, client, attestedUrlHashes)
+    interactive = !scheduledRunHeader && !principal.background,
+  ) => invokeEnterpriseToolResult(principal, toolName, args, deps, origin, confirm, client, attestedUrlHashes, interactive)
 
   return createMcpHandler(
     async (server) => {
@@ -2157,7 +2161,7 @@ async function createMcpResourceHandler(
         {
           title: 'Write agent wiki pages',
           description:
-            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category (when the wiki has managed categories: one of its category keys from kb_list_index, e.g. partners/payment; otherwise unknown_category), frontmatter (sources [{documentId}], source_date required on source pages), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a raw source of this knowledge base. Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. On success the response lists every written page with its new baseVersion — that is the confirmation; do not re-read the pages to verify. Errors: invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode, or for a category that always needs approval, returns awaiting_approval and an approvalUrl — show the link, do not poll.',
+            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category (when the wiki has managed categories: one of its category keys from kb_list_index, e.g. partners/payment; otherwise unknown_category), frontmatter (sources [{documentId}], source_date required on source pages), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a source: a raw source of this knowledge base {documentId}; a raw source of another knowledge base you can read {documentId, connectorId} (only if that one is at least as widely visible as this wiki, else source_audience_narrower); or, when the person you are talking to states it live, {kind:"human_note", occasion, participants?} — the server records who and when (from a scheduled or background run: human_note_requires_session). Link another wiki with [[wiki:<wikiId>/<path>]]. Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. On success the response lists every written page with its new baseVersion — that is the confirmation; do not re-read the pages to verify. Errors: invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode, or for a category that always needs approval, returns awaiting_approval and an approvalUrl — show the link, do not poll.',
           inputSchema: kbWikiWriteObject,
         },
         async (args) => enterpriseToolResult(principal, KB_WIKI_WRITE_TOOL, args, deps),
@@ -2403,7 +2407,7 @@ async function createMcpResourceHandler(
         if (isEnterpriseTool(toolName)) {
           const confirm =
             isEnterpriseWriteTool(toolName) || toolName === MCP_CALL_TOOL ? writeConfirmInput(ctx, codec) : undefined
-          return enterpriseToolResult(principal, toolName, args, deps, origin, confirm)
+          return enterpriseToolResult(principal, toolName, args, deps, origin, confirm, !scheduledRunId && !principal.background)
         }
         return whoamiToolResult(principal, deps)
       })
@@ -2428,9 +2432,10 @@ async function invokeEnterpriseToolResult(
   confirm?: WriteConfirmInput,
   client?: McpClientName,
   attestedUrlHashes?: readonly string[],
+  interactive = false,
 ) {
   // InputRequiredToolResult is the wire shape of the SDK's InputRequiredResult.
-  const result = await deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm, client, attestedUrlHashes }) as
+  const result = await deps.invokeEnterpriseTool({ principal, toolName, args, origin, confirm, client, attestedUrlHashes, interactive }) as
     CallToolResult | InputRequiredResult
   return toolName === KB_GET_DOCUMENT_TOOL && args.pageImages === true && 'content' in result
     ? kbDocumentImageResult(result as CallToolResult)

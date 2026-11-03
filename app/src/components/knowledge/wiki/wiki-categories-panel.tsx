@@ -36,6 +36,17 @@ export type WikiCategoriesData = {
   categories: Node[]
   outsideTree: number
   importPreview: Array<{ key: string; name: string; pageCount: number; exists: boolean }>
+  /** #1061 F2: „kapcsolt wiki” menüpontok és a felvehető célok. */
+  linkedWikis: Array<{
+    id: string
+    key: string
+    name: string
+    parentKey: string | null
+    linkedConnectorId: string
+    targetName: string | null
+    targetVisible: boolean
+  }>
+  linkableWikis: Array<{ connectorId: string; name: string }>
 }
 
 const CATEGORY_ERRORS = [
@@ -227,6 +238,14 @@ export function WikiCategoriesPanel({ connectorId, data }: { connectorId: string
                 ))}
               </ul>
             )}
+
+            <LinkedWikisSection
+              data={data}
+              topLevel={topLevel}
+              pending={pending}
+              onCreate={(input) => run(() => createWikiCategoryAction({ connectorId, ...input }), t('linked.created'))}
+              onDelete={(categoryId) => run(() => deleteWikiCategoryAction({ connectorId, categoryId }), t('deleted'))}
+            />
 
             {adding ? (
               <NewCategoryForm
@@ -533,5 +552,114 @@ function NewCategoryForm({
         </button>
       </div>
     </form>
+  )
+}
+
+/**
+ * #1061 F2: „kapcsolt wiki” — menüpont, amely egy másik tudástárra mutat (pl. Szerződések).
+ * Csak annak látszik, aki azt a wikit is látja; oldal nem kerül bele, az index.md-be sem.
+ */
+function LinkedWikisSection({
+  data,
+  topLevel,
+  pending,
+  onCreate,
+  onDelete,
+}: {
+  data: WikiCategoriesData
+  topLevel: Node[]
+  pending: boolean
+  onCreate: (input: { key: string; name: string; parentId: string | null; linkedConnectorId: string }) => void
+  onDelete: (categoryId: string) => void
+}) {
+  const t = useTranslations('ControlPlane.wiki.categories.linked')
+  const [target, setTarget] = useState('')
+  const [name, setName] = useState('')
+  const [parentId, setParentId] = useState('')
+  const chosen = data.linkableWikis.find((row) => row.connectorId === target)
+  const label = name.trim() || chosen?.name || ''
+  return (
+    <div className="space-y-2 rounded-lg border border-line/70 p-3" data-testid="wiki-linked-wikis">
+      <p className="text-sm font-medium text-ink">{t('title')}</p>
+      <p className="text-xs text-ink-soft">{t('intro')}</p>
+      {data.linkedWikis.length === 0 ? (
+        <p className="text-xs text-ink-faint">{t('empty')}</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {data.linkedWikis.map((item) => (
+            <li key={item.id} className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{item.name}</span>
+              <span className="text-xs text-ink-faint">
+                → {item.targetVisible ? item.targetName : t('hiddenTarget')}
+                {item.parentKey ? ` · ${t('under', { parent: item.parentKey })}` : ''}
+              </span>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => onDelete(item.id)}
+                className="ml-auto rounded-md border border-line px-2 py-0.5 text-xs disabled:opacity-50"
+              >
+                {t('remove')}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {data.linkableWikis.length === 0 ? (
+        <p className="text-xs text-ink-faint">{t('noTargets')}</p>
+      ) : (
+        <form
+          className="flex flex-wrap items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!target || !label) return
+            onCreate({
+              key: slugifyCategory(label) || 'linked-wiki',
+              name: label,
+              parentId: parentId || null,
+              linkedConnectorId: target,
+            })
+            setTarget('')
+            setName('')
+            setParentId('')
+          }}
+        >
+          <label className="text-xs text-ink-faint">
+            {t('target')}
+            <select value={target} onChange={(event) => setTarget(event.target.value)} className={inputClass} data-testid="wiki-linked-target">
+              <option value="">{t('targetPlaceholder')}</option>
+              {data.linkableWikis.map((row) => (
+                <option key={row.connectorId} value={row.connectorId}>
+                  {row.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-ink-faint">
+            {t('name')}
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={chosen?.name ?? ''} className={inputClass} maxLength={120} />
+          </label>
+          <label className="text-xs text-ink-faint">
+            {t('parent')}
+            <select value={parentId} onChange={(event) => setParentId(event.target.value)} className={inputClass}>
+              <option value="">{t('topLevel')}</option>
+              {topLevel.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="submit"
+            disabled={pending || !target || !label}
+            data-testid="wiki-linked-add"
+            className="rounded-lg border border-line px-3 py-1.5 text-sm disabled:opacity-50"
+          >
+            {t('add')}
+          </button>
+        </form>
+      )}
+    </div>
   )
 }

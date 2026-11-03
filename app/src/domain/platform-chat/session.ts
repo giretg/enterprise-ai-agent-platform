@@ -130,6 +130,7 @@ export async function issueContinuationToken(
       adminInsight: false,
       turnId: b.turnId,
       agentId: b.agentId,
+      ...(chat.origin || chat.bg ? { bg: true as const } : {}),
     },
     key,
     now,

@@ -1,5 +1,5 @@
 /**
- * #942 D13: privát tudásbázis audit-eseményei tartalommentesek — csak azonosítók,
+ * #942 D13: privát (és #1061 F2 névsoros) tudásbázis audit-eseményei tartalommentesek — csak azonosítók,
  * darabszámok, hash-ek és rövid enum-szerű értékek maradnak. Oldalcím, path,
  * fájlnév, cél (`purpose`) nem kerülhet bele: már egy path (`conditions/cukorbetegseg.md`)
  * is egészségügyi adat.
@@ -8,7 +8,7 @@
  * bemenet változatlanul megy tovább.
  */
 import type { AuditAppendInput } from './types'
-import { isPrivateKnowledgeBase, type KbVisibilityRow } from '../wiki-access'
+import { isMembersKnowledgeBase, isRestrictedKnowledgeBase, type KbVisibilityRow } from '../wiki-access'
 
 /** Azonosító / hash / szám jellegű kulcsok (normalizált: kisbetű, `_`/`-` nélkül). */
 const SAFE_STRING_KEY = /(id|ids|hash|hashes)$/
@@ -79,7 +79,7 @@ export function redactKbAuditForVisibility(
   connector: KbVisibilityRow | null | undefined,
   entry: AuditAppendInput,
 ): AuditAppendInput {
-  if (!isPrivateKnowledgeBase(connector)) return entry
+  if (!isRestrictedKnowledgeBase(connector)) return entry
   const metadata =
     entry.metadata && typeof entry.metadata === 'object' && !Array.isArray(entry.metadata)
       ? redactMetadata(entry.metadata as Record<string, unknown>)
@@ -88,7 +88,8 @@ export function redactKbAuditForVisibility(
     ...entry,
     inputRef: idOnly(entry.inputRef),
     outputRef: idOnly(entry.outputRef),
-    metadata: { ...metadata, privateKb: true },
+    // #1061 F2: a „csak a kijelöltek” tudástár ugyanígy tartalommentes (NFR-3).
+    metadata: { ...metadata, ...(isMembersKnowledgeBase(connector) ? { membersKb: true } : { privateKb: true }) },
   }
 }
 

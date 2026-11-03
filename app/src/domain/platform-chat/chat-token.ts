@@ -38,6 +38,11 @@ export type ChatTokenClaims = {
   origin?: 'inbound_mail'
   /** #1032: a beszélgetés `instructions` mezőjének sha256-ja (a worker egyezést követel). */
   ih?: string
+  /**
+   * #1061 F2: háttérfutás (pl. bejövő levél) folytatási tokenje — nincs interaktív ember,
+   * így emberi rögzítés (`human_note`) sem jöhet létre vele.
+   */
+  bg?: true
   jti: string
   iat: number
   exp: number

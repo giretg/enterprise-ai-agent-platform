@@ -12,6 +12,8 @@ export type AgentWikiBriefing = {
   changes?: { latestSeq: number; unseen: number }
   /** #1061 F1: kezelt kategóriák — az agent csak ezek kulcsútját írhatja az oldal `category` mezőjébe. */
   categories?: Array<{ key: string; name: string; description?: string; approval?: 'always' }>
+  /** #1061 F2: „csak a kijelöltek” wiki — a tartalma nem kerülhet szélesebb körbe. */
+  membersOnly?: boolean
 }
 
 export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: TenantLanguage): string {
@@ -33,7 +35,12 @@ export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: Te
           .map(category => `${category.key} = ${category.name}${category.description ? ` (${category.description})` : ''}${category.approval === 'always' ? (en ? ' [always needs approval]' : ' [mindig jóváhagyással]') : ''}`)
           .join('; ')}`
       : ''
-    return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${inbox}${batches ? `; ${batches}` : ''}${changes}${categories}`
+    const membersOnly = wiki.membersOnly
+      ? `; ${en
+          ? 'members only — do not copy its content into a wider wiki or share it with people outside its list'
+          : 'csak a kijelölteknek — a tartalmát ne vidd át szélesebb körű wikibe, és ne oszd meg a névsoron kívüliekkel'}`
+      : ''
+    return `- ${wiki.name} (wikiId: ${wiki.wikiId}): ${access}${membersOnly}${inbox}${batches ? `; ${batches}` : ''}${changes}${categories}`
   })
   if (wikis.some(wiki => wiki.access === 'write')) rows.push(en
     ? 'Read skill://llm-wiki-maintainer/SKILL.md. Process received sources NOW: kb_ingest processingMode:"wiki" → read source → kb_wiki_write, one source at a time; defer only on explicit request. Inbox: kb_list_index inbox:true → kb_get_document claimForWiki:true → write → finalize; report progress before stopping. Cite raw sources and wiki pages; retain and mark contradictions. Read WIKI.md (including ingest_review) and index.md first.'

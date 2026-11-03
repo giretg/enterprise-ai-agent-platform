@@ -12,6 +12,7 @@ export function WikiMarkdown({
   body,
   knownPaths,
   linkQuery,
+  crossLinks,
 }: {
   connectorId: string
   body: string
@@ -19,6 +20,8 @@ export function WikiMarkdown({
   knownPaths?: string[]
   /** #978: időutazásban a linkek is az adott állapotra mutatnak. */
   linkQuery?: Record<string, string>
+  /** #1061 F2: `[[wiki:…]]` célok — `connectorId: null` = a néző nem látja azt a wikit. */
+  crossLinks?: Array<{ wikiId: string; path: string; connectorId: string | null; exists: boolean }>
 }) {
   const t = useTranslations('ControlPlane.wiki')
   const known = knownPaths ? new Set(knownPaths) : null
@@ -28,6 +31,29 @@ export function WikiMarkdown({
         remarkPlugins={[remarkGfm]}
         components={{
           a({ href, children }) {
+            if (href?.startsWith('#xwiki:')) {
+              const raw = href.slice('#xwiki:'.length)
+              const slash = raw.indexOf('/')
+              const wikiId = raw.slice(0, slash)
+              const path = decodeURIComponent(raw.slice(slash + 1))
+              const target = crossLinks?.find((link) => link.wikiId === wikiId && link.path === path)
+              if (!target?.connectorId) {
+                return (
+                  <span className="text-ink-faint" title={t('page.crossLinkNoAccess')} data-testid="wiki-cross-link-restricted">
+                    {children} ({t('page.crossLinkNoAccess')})
+                  </span>
+                )
+              }
+              return (
+                <Link
+                  href={wikiHref(target.connectorId, { page: path })}
+                  className={target.exists ? undefined : 'opacity-60'}
+                  title={target.exists ? path : t('page.missingLink', { path })}
+                >
+                  {children}
+                </Link>
+              )
+            }
             if (href?.startsWith('#wiki:')) {
               const path = decodeURIComponent(href.slice('#wiki:'.length))
               const exists = !known || known.has(path)

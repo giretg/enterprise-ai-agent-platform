@@ -14,13 +14,24 @@ import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { diffLines, type LineDiffRow } from '@/lib/text-line-diff'
 import {
   groupWikiIndex,
+  isDocumentSource,
+  isHumanNoteSource,
   readWikiSources,
+  visibleWikiSources,
   stripManagedFrontmatter,
   wikiPageContentHash,
   type WikiPageState,
   type WikiPageTypeName,
+  type WikiSourceRef,
 } from '@/lib/kb-wiki'
-import { canDecideWikiChange, isPrivateKnowledgeBase, type WikiApproverScope } from '@/lib/wiki-access'
+import {
+  canDecideWikiChange,
+  isKnowledgeBaseVisibleTo,
+  isKnowledgeBaseMember,
+  isMembersKnowledgeBase,
+  isPrivateKnowledgeBase,
+  type WikiApproverScope,
+} from '@/lib/wiki-access'
 import type {
   AuditRepository,
   ConnectorRepository,
@@ -74,6 +85,19 @@ type Author = { kind: 'agent' | 'human'; name: string | null } | null
 export class WikiHistoryService {
   constructor(private readonly deps: WikiHistoryDeps) {}
 
+  private async sourcesFor(actor: WikiConsoleActor, connectorId: string, refs: unknown) {
+    return visibleWikiSources(readWikiSources(refs), connectorId, async id => {
+      const target = await this.deps.connectors.findById(id, actor.tenantId)
+      return !!target && target.tenantId === actor.tenantId && target.type === 'knowledge_base' &&
+        target.lifecycleState === 'active' && isKnowledgeBaseVisibleTo(target, actor.userId)
+    })
+  }
+
+  private async visibleDiff(actor: WikiConsoleActor, connectorId: string, before: WikiPageRevision | null, after: WikiPageRevision, page: WikiPage) {
+    const sanitize = async (rev: WikiPageRevision) => ({ ...rev, sourceRefs: await this.sourcesFor(actor, connectorId, rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)) })
+    return revisionDiff(before ? await sanitize(before) : null, await sanitize(after), page)
+  }
+
   private now() {
     return this.deps.now?.() ?? new Date()
   }
@@ -89,12 +113,13 @@ export class WikiHistoryService {
   private async canRevert(actor: WikiConsoleActor, connector: Connector): Promise<boolean> {
     if (isPrivateKnowledgeBase(connector)) return connector.ownerUserId === actor.userId
     const scope: WikiApproverScope = await this.deps.wiki.approverScopeFor(connector)
-    return canDecideWikiChange({ userId: actor.userId, role: String(actor.role), assumed: actor.assumed }, scope)
+    return canDecideWikiChange({ userId: actor.userId, role: String(actor.role), assumed: actor.assumed }, scope, connector)
   }
 
   /** §8: címke — közösnél szerkesztő (operátor) vagy admin, privátnál a tulajdonos. */
   private canTag(actor: WikiConsoleActor, connector: Connector): boolean {
     if (isPrivateKnowledgeBase(connector)) return connector.ownerUserId === actor.userId
+    if (isMembersKnowledgeBase(connector) && !isKnowledgeBaseMember(connector, actor.userId)) return false
     return hasMinimumRole(actor.role as UserRole, 'operator')
   }
 
@@ -179,7 +204,7 @@ export class WikiHistoryService {
       body: rev.erasedAt ? '' : rev.body,
       revisionPath: rev.path,
       status: rev.status,
-      sources: rev.erasedAt ? [] : readWikiSources(rev.sourceRefs ?? page.sourceRefs),
+      sources: rev.erasedAt ? [] : await this.sourcesFor(actor, connector.id, rev.sourceRefs ?? page.sourceRefs),
       author: author({ agentId: rev.createdByAgentId, userId: rev.createdByUserId }),
       canRevert: rev.version !== page.version && !rev.erasedAt && (await this.canRevert(actor, connector)),
     }
@@ -198,7 +223,7 @@ export class WikiHistoryService {
       path: page.path,
       from: { version: from.version, createdAt: from.createdAt.toISOString(), erased: !!from.erasedAt },
       to: { version: to.version, createdAt: to.createdAt.toISOString(), erased: !!to.erasedAt },
-      ...revisionDiff(from, to, page),
+      ...await this.visibleDiff(actor, connector.id, from, to, page),
     }
   }
 
@@ -278,7 +303,7 @@ export class WikiHistoryService {
         prunedBefore,
         linesAdded: row?.linesAdded ?? null,
         linesRemoved: row?.linesRemoved ?? null,
-        ...(rev.erasedAt || before?.erasedAt || !current ? { fields: [], diff: [] as LineDiffRow[] } : revisionDiff(before, rev, current)),
+        ...(rev.erasedAt || before?.erasedAt || !current ? { fields: [], diff: [] as LineDiffRow[] } : await this.visibleDiff(actor, connector.id, before, rev, current)),
       })
     }
     const log = (changeSet.logEntry ?? {}) as { op?: string; title?: string; note?: string | null }
@@ -388,7 +413,7 @@ export class WikiHistoryService {
       title: row.erasedAt ? '' : row.title,
       summary: row.erasedAt ? '' : row.summary,
       body: row.erasedAt ? '' : row.body,
-      sources: row.erasedAt ? [] : readWikiSources(row.sourceRefs),
+      sources: row.erasedAt ? [] : await this.sourcesFor(actor, connector.id, row.sourceRefs),
       knownPaths: state.filter((item) => item.status !== 'archived' && item.path).map((item) => item.path!),
     }
   }
@@ -783,11 +808,11 @@ export class WikiHistoryService {
       const oldPaths = new Map<string, string>()
       const sourceIds = new Set<string>()
       for (const page of pages) {
-        for (const source of readWikiSources(page.sourceRefs)) sourceIds.add(source.documentId)
+        for (const source of localDocumentSources(page.sourceRefs)) sourceIds.add(source.documentId)
         const newPath = erasedPath(page.id)
         const revisions = await this.deps.history.listRevisions(connector.id, page.id)
         for (const rev of revisions) {
-          for (const source of readWikiSources(rev.sourceRefs)) sourceIds.add(source.documentId)
+          for (const source of localDocumentSources(rev.sourceRefs)) sourceIds.add(source.documentId)
           if (rev.path) oldPaths.set(rev.path, newPath)
           if (rev.erasedAt) continue
           write.tombstoneRevisionIds.push(rev.id)
@@ -993,10 +1018,20 @@ function changeRow(
   }
 }
 
+/** Az oldal saját tudástárbeli nyers forrásai (a másik wikiből vett és az emberi rögzítés nem). */
+function localDocumentSources(value: unknown) {
+  return readWikiSources(value).filter(isDocumentSource).filter((ref) => !ref.connectorId)
+}
+
+function sourceLabel(ref: WikiSourceRef): string {
+  if (isHumanNoteSource(ref)) return `human_note: ${ref.occasion}`
+  return ref.filename ?? ref.documentId
+}
+
 /** Két revízió mezőnkénti és törzs-szintű eltérése (`before` nélkül: új oldal). */
 function revisionDiff(before: WikiPageRevision | null, after: WikiPageRevision, page: WikiPage) {
   const sources = (rev: WikiPageRevision | null) =>
-    rev ? readWikiSources(rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)).map((ref) => ref.filename ?? ref.documentId).join(', ') : ''
+    rev ? readWikiSources(rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)).map(sourceLabel).join(', ') : ''
   const field = (name: 'title' | 'summary' | 'path' | 'status' | 'category' | 'sources', a: string, b: string) =>
     a === b ? [] : [{ field: name, before: a, after: b }]
   return {

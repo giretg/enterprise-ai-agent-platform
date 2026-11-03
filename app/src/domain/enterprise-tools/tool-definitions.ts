@@ -903,15 +903,28 @@ export const kbIngestInputSchema = kbIngestObject
     path: ['processingMode'],
   })
 
-const wikiSourceRefSchema = z
+const wikiDocumentSourceRefSchema = z
   .object({
     documentId: z.string().uuid(),
+    /** #1061 F2: másik tudástár dokumentuma (olvasási jog + közönség-szabály). */
+    connectorId: z.string().uuid().optional(),
     filename: z.string().max(255).optional(),
     page: z.number().int().min(1).optional(),
     section: z.string().max(200).optional(),
     cell: z.string().max(64).optional(),
   })
   .strict()
+
+/** #1061 F2: emberi rögzítés — a szerzőt és az időt a szerver adja (ezért nincs ilyen mező). */
+const wikiHumanNoteSourceSchema = z
+  .object({
+    kind: z.literal('human_note'),
+    occasion: z.string().min(1).max(200),
+    participants: z.string().max(500).optional(),
+  })
+  .strict()
+
+const wikiSourceRefSchema = z.union([wikiHumanNoteSourceSchema, wikiDocumentSourceRefSchema])
 
 const wikiPatchOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('appendToSection'), section: z.string().min(1).max(200), text: z.string().min(1).max(20_000) }),

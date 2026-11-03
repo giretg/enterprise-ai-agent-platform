@@ -461,7 +461,9 @@ async function resolveDesignatedApprover(input: {
   const approverUserId = wikiScope
     ? wikiScope.kind === 'owner_user'
       ? wikiScope.userId
-      : wikiScope.approverUserId
+      : wikiScope.kind === 'members'
+        ? (wikiScope.approverUserId ?? wikiScope.ownerUserId)
+        : wikiScope.approverUserId
     : (connector?.approverUserId ?? agent?.approverUserId ?? null)
   if (!approverUserId) return resolveDesignatedApproverBinding({ approverUserId: null, membershipStatus: null, user: null })
   const [membership, user] = await Promise.all([

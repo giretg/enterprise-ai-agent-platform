@@ -348,6 +348,8 @@
     "test:kb-wiki-db": "tsx scripts/kb-wiki-db.test.ts",
     "test:wiki-categories": "tsx scripts/wiki-categories.test.ts",
     "test:wiki-structure-db": "tsx scripts/wiki-structure-db.test.ts",
+    "test:wiki-sources": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-sources.test.ts",
+    "test:wiki-sources-members-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/wiki-sources-members-db.test.ts",
     "test:wiki-history-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/wiki-history-db.test.ts",
     "test:wiki-private-purge-db": "tsx scripts/wiki-private-purge-db.test.ts",
     "test:kb-wiki-e2e": "tsx --require ./scripts/_server-only-shim.cjs scripts/kb-wiki-e2e.test.ts",

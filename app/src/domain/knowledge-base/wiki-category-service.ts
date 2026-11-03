@@ -17,6 +17,7 @@ import {
   buildCategoryTree,
   flattenCategoryTree,
   isValidCategoryKey,
+  linkedWikiItems,
   normalizeCategoryPath,
   planFreeCategoryImport,
   type WikiCategoryApprovalRule,
@@ -26,7 +27,7 @@ import { WikiConsoleError, type WikiConsoleActor, type WikiConsoleService } from
 import type { WikiService } from './wiki-service'
 
 export type WikiCategoryDeps = {
-  wikiConsole: Pick<WikiConsoleService, 'authorize'>
+  wikiConsole: Pick<WikiConsoleService, 'authorize'> & Partial<Pick<WikiConsoleService, 'displayName' | 'listKnowledgeBases'>>
   wiki: Pick<WikiService, 'wikiIdForConnector' | 'recategorizeAsHuman'>
   wikis: Pick<WikiRepository, 'listPages'>
   structure: WikiStructureRepository
@@ -39,6 +40,8 @@ export type WikiCategoryInput = {
   parentId?: string | null
   description?: string | null
   approval?: WikiCategoryApprovalRule
+  /** #1061 F2: „kapcsolt wiki” menüpont — a másik tudástár, amelyre mutat. */
+  linkedConnectorId?: string | null
 }
 
 export type WikiCategoryPatch = {
@@ -107,7 +110,28 @@ export class WikiCategoryService {
       importPreview: managed
         ? []
         : planFreeCategoryImport(pages, rows).map(({ key, name, pageCount, exists }) => ({ key, name, pageCount, exists })),
+      /** #1061 F2: „kapcsolt wiki” menüpontok; a cél neve csak annak látszik, aki azt a wikit is látja. */
+      linkedWikis: await this.linkedViews(actor, rows),
+      /** Amire kapcsolt wiki menüpont tehető: a kezelő által látott többi tudástár. */
+      linkableWikis: ((await this.deps.wikiConsole.listKnowledgeBases?.(actor)) ?? [])
+        .filter((row) => !row.metadataOnly && row.connectorId !== connector.id)
+        .map((row) => ({ connectorId: row.connectorId, name: 'name' in row ? row.name : row.connectorId, kind: row.kind })),
     }
+  }
+
+  private async linkedViews(actor: WikiConsoleActor, rows: WikiCategoryRow[]) {
+    const out = []
+    for (const item of linkedWikiItems(rows)) {
+      let targetName: string | null = null
+      try {
+        const { connector } = await this.deps.wikiConsole.authorize(actor, item.linkedConnectorId, 'view')
+        targetName = (await this.deps.wikiConsole.displayName?.(connector)) ?? null
+      } catch {
+        targetName = null
+      }
+      out.push({ ...item, targetName, targetVisible: targetName !== null })
+    }
+    return out
   }
 
   /**
@@ -169,8 +193,14 @@ export class WikiCategoryService {
     const parentId = input.parentId ?? null
     if (parentId) {
       const parent = rows.find((row) => row.id === parentId)
-      if (!parent) throw new WikiConsoleError('invalid_args')
+      if (!parent || parent.linkedConnectorId) throw new WikiConsoleError('invalid_args')
       if (parent.parentId) throw new WikiCategoryError('too_deep')
+    }
+    // #1061 F2: kapcsolt wiki — másik, a kezelő által is látott tudástár (a saját nem).
+    const linkedConnectorId = input.linkedConnectorId?.trim().toLowerCase() || null
+    if (linkedConnectorId) {
+      if (linkedConnectorId === connector.id) throw new WikiConsoleError('invalid_args')
+      await this.deps.wikiConsole.authorize(actor, linkedConnectorId, 'view')
     }
     const siblings = rows.filter((row) => (row.parentId ?? null) === parentId)
     const created = await this.deps.structure.createCategory({
@@ -180,12 +210,14 @@ export class WikiCategoryService {
       name: cleanName(input.name),
       description: cleanDescription(input.description),
       sortOrder: siblings.reduce((max, row) => Math.max(max, row.sortOrder), 0) + 10,
-      approval: input.approval ?? 'inherit',
+      approval: linkedConnectorId ? 'inherit' : input.approval ?? 'inherit',
+      ...(linkedConnectorId ? { linkedConnectorId } : {}),
     })
     await this.audit(connector, actor, 'kb.wiki.category.created', created.id, {
       wikiId,
       categoryId: created.id,
       ...(parentId ? { parentId } : {}),
+      ...(linkedConnectorId ? { linkedConnectorId } : {}),
       approval: created.approval,
     })
     return { id: created.id, path: parentId ? `${rows.find((row) => row.id === parentId)!.key}/${key}` : key }
@@ -204,7 +236,7 @@ export class WikiCategoryService {
     const parentChanged = patch.parentId !== undefined && (patch.parentId ?? null) !== (current.parentId ?? null)
     if (parentChanged && patch.parentId) {
       const parent = rows.find((row) => row.id === patch.parentId)
-      if (!parent || parent.id === current.id) throw new WikiConsoleError('invalid_args')
+      if (!parent || parent.id === current.id || parent.linkedConnectorId) throw new WikiConsoleError('invalid_args')
       if (parent.parentId || rows.some((row) => row.parentId === current.id)) throw new WikiCategoryError('too_deep')
     }
     const oldPath = pathOf(rows, current)
@@ -216,7 +248,8 @@ export class WikiCategoryService {
       ...(parentChanged ? { parentId: patch.parentId ?? null } : {}),
     }
     let movedPages = 0
-    if (parentChanged) {
+    // A kapcsolt wiki menüpontjában nincs oldal — áthelyezéskor nincs mit átvinni.
+    if (parentChanged && !current.linkedConnectorId) {
       const updated = { ...current, ...next }
       const newPath = pathOf(rows.map((row) => (row.id === updated.id ? updated : row)), updated)
       const pages = await this.allPages(connector.id)
@@ -256,7 +289,7 @@ export class WikiCategoryService {
     if (!current) throw new WikiConsoleError('not_found')
     if (rows.some((row) => row.parentId === categoryId)) throw new WikiCategoryError('not_empty')
     const path = pathOf(rows, current)
-    const pages = await this.allPages(connector.id)
+    const pages = current.linkedConnectorId ? [] : await this.allPages(connector.id)
     if (pages.some((page) => normalizeCategoryPath(page.category) === path)) throw new WikiCategoryError('not_empty')
     if (!(await this.deps.structure.deleteCategory(wikiId, categoryId))) throw new WikiCategoryError('not_empty')
     await this.audit(connector, actor, 'kb.wiki.category.deleted', categoryId, { wikiId, categoryId })

@@ -629,7 +629,8 @@
         "catalog": "Közös katalógus",
         "agent": "Munkatárs saját",
         "shared": "Megosztott",
-        "private": "Privát"
+        "private": "Privát",
+        "members": "Csak a kijelöltek"
       },
       "levels": {
         "none": "Nincs hozzáférés",
@@ -656,7 +657,8 @@
       },
       "header": {
         "body": "Az AI-munkatársak ebből a tudásbázisból dolgoznak. A wiki az ide feltöltött anyagokból készül: az írási joggal rendelkező munkatárs oldalakba rendezi és összekapcsolja őket.",
-        "privateBody": "Ezt a tudásbázist csak te látod. Amikor egy AI-munkatárs feldolgozza vagy olvassa, a tartalom eljut a használt AI-szolgáltatóhoz (pl. Claude, OpenAI)."
+        "privateBody": "Ezt a tudásbázist csak te látod. Amikor egy AI-munkatárs feldolgozza vagy olvassa, a tartalom eljut a használt AI-szolgáltatóhoz (pl. Claude, OpenAI).",
+        "membersBody": "Ezt a tudásbázist csak a névsoron lévők látják. Egy AI-munkatárs is csak akkor éri el, ha névsoron lévő emberrel dolgozik."
       },
       "list": {
         "title": "Tudásbázisok és wikik",
@@ -665,7 +667,9 @@
         "stats": "{sources} forrás · {pages} oldal · {size}",
         "inboxBadge": "{count} vár a tálcán",
         "unknownOwner": "ismeretlen tulajdonos",
-        "privateMetaHelp": "Ez valaki más privát tudásbázisa. Adminisztrátorként csak azt látod, hogy létezik és mekkora — a tartalmát nem nyithatod meg."
+        "privateMetaHelp": "Ez valaki más privát tudásbázisa. Adminisztrátorként csak azt látod, hogy létezik és mekkora — a tartalmát nem nyithatod meg.",
+        "membersMetaHelp": "Ezt a tudásbázist csak a névsoron lévők látják. Adminisztrátorként a tartalmát csak akkor nyithatod meg, ha felveszed magad a névsorra — ez naplózódik.",
+        "joinMembers": "Felveszem magam"
       },
       "create": {
         "open": "Új tudásbázis",
@@ -697,7 +701,9 @@
         "uncategorized": "Egyéb",
         "protected": "Ebben a kategóriában minden változáshoz jóváhagyás kell.",
         "protectedShort": "jóváhagyással",
-        "emptyCategory": "Még nincs oldal ebben a kategóriában."
+        "emptyCategory": "Még nincs oldal ebben a kategóriában.",
+        "linkedWiki": "Kapcsolt wiki: egy másik tudástárba visz",
+        "linkedWikiShort": "másik wiki"
       },
       "overview": {
         "title": "Áttekintés",
@@ -716,7 +722,13 @@
         "sourceMissing": "a forrás már nem elérhető",
         "notFound": "Ez az oldal nem található. Lehet, hogy áthelyezték vagy még jóváhagyásra vár.",
         "missingLink": "{path} — még nincs ilyen oldal",
-        "category": "Kategória: {name}"
+        "category": "Kategória: {name}",
+        "sourceRestricted": "Forrás egy másik tudástárban – nincs hozzáférésed",
+        "humanNote": "Emberi rögzítés",
+        "unknownRecorder": "ismeretlen rögzítő",
+        "participants": "jelen volt: {names}",
+        "sourceOtherWiki": "másik tudástárból",
+        "crossLinkNoAccess": "másik wikiben – nincs hozzáférésed"
       },
       "source": {
         "eyebrow": "Eredeti forrás",
@@ -792,7 +804,8 @@
         "change": "módosítás",
         "humansBy": {
           "private": "csak te (az admin sem)",
-          "shared": "a szervezet operátorai és adminjai, valamint bárki, aki egy ide kapcsolt munkatársat használ"
+          "shared": "a szervezet operátorai és adminjai, valamint bárki, aki egy ide kapcsolt munkatársat használ",
+          "members": "csak a névsoron lévők (az admin is csak akkor, ha felveszi magát)"
         }
       },
       "owner": {
@@ -836,8 +849,10 @@
           "agent": "Egy másik munkatárs saját tudásbázisa. Az operátorok, az adminok és bárki, aki azt a munkatársat használhatja, látja.",
           "catalog": "A szervezet közös katalógusa. Az operátorok, az adminok és a hozzá kapcsolt munkatársak használói látják.",
           "shared": "Megosztott tudásbázis: az operátorok, az adminok és a hozzá kapcsolt munkatársak használói látják. Az admin a wiki Beállítások fülén priváttá teheti.",
-          "private": "Privát: csak te látod, az admin sem. A munkatárs is csak akkor éri el, amikor te használod."
-        }
+          "private": "Privát: csak te látod, az admin sem. A munkatárs is csak akkor éri el, amikor te használod.",
+          "members": "Csak a kijelöltek: a munkatárs csak akkor éri el, ha névsoron lévő emberrel dolgozik."
+        },
+        "membersOwnerOnly": "Ez egy csak a kijelölteknek szóló tudásbázis; a tulajdonosa vagy egy tag adminisztrátor kapcsolhatja."
       },
       "settings": {
         "visibilityTitle": "Ki láthatja?",
@@ -857,7 +872,10 @@
           "private3": "Ami eddig már kikerült (korábbi válaszok, munkatárs-memória, napló), az ott marad. A váltás csak mostantól véd.",
           "shared1": "A szervezet operátorai és adminjai látni fogják a teljes tartalmat, a forrásokat is.",
           "shared2": "Más felhasználók a munkatársak következő élesítése után érik el. A jogokat ezután az admin állítja.",
-          "shared3": "A függőben lévő wiki-módosítások elutasítódnak, a tálcatételek újra várakoznak."
+          "shared3": "A függőben lévő wiki-módosítások elutasítódnak, a tálcatételek újra várakoznak.",
+          "members1": "A tartalmat csak a névsoron lévők látják, az adminisztrátor sem, amíg fel nem veszi magát. Kezdetben csak te vagy a névsoron, utána bárkit felvehetsz.",
+          "members2": "Az ide kapcsolt munkatársak csak akkor érik el, ha egy névsoron lévő emberrel dolgoznak. Más ember kérésére úgy viselkednek, mintha nem is létezne.",
+          "members3": "A függőben lévő wiki-módosítások elutasítódnak. Ami eddig már kikerült (korábbi válaszok, napló), az ott marad. A váltás csak mostantól véd."
         },
         "understood": "Értem, és így szeretném.",
         "confirmPrivate": "Igen, legyen privát",
@@ -873,7 +891,29 @@
         "templateApplied": "Sablon alkalmazva.",
         "editorLabel": "Szabályszöveg",
         "customized": "saját módosításokkal",
-        "rulesSaved": "Mentve. A munkatársak a következő wiki-írásnál már ezt követik."
+        "rulesSaved": "Mentve. A munkatársak a következő wiki-írásnál már ezt követik.",
+        "nowMembers": "Csak a kijelöltek: csak a lenti névsoron lévők látják. Az adminisztrátor is csak akkor, ha felveszi magát. Az AI-munkatársak csak akkor érik el, ha névsoron lévő emberrel dolgoznak.",
+        "makeMembers": "Csak a kijelöltek lássák",
+        "confirmMembers": "Igen, csak a kijelöltek lássák",
+        "preview": {
+          "loading": "Megnézzük, kit érint a váltás…",
+          "losing": "Elveszíti a hozzáférést: {count} fő ({names}).",
+          "losingNone": "Senki nem veszíti el a hozzáférést.",
+          "agents": "Ezek a munkatársak ezentúl csak a jogosultakkal dolgozva érik el: {names}.",
+          "rejected": "Elutasítódik {count} függő wiki-módosítás."
+        },
+        "members": {
+          "title": "Névsor: kik látják?",
+          "intro": "Csak a névsoron lévők nyithatják meg ezt a tudásbázist, és egy AI-munkatárs is csak velük dolgozva éri el. A tulajdonos mindig rajta van. Tagot a tulajdonos vagy az adminisztrátor vehet fel és vehet le.",
+          "loading": "Névsor betöltése…",
+          "owner": "tulajdonos",
+          "remove": "Eltávolítom",
+          "add": "Felveszem",
+          "pickPlaceholder": "Válassz felhasználót…",
+          "noCandidates": "A szervezet minden tagja már a névsoron van.",
+          "readOnly": "A névsort a tulajdonos vagy az adminisztrátor módosíthatja.",
+          "unknownUser": "ismeretlen felhasználó"
+        }
       },
       "review": {
         "loading": "A wiki-változás betöltése…",
@@ -929,7 +969,8 @@
         "title": "Erre az oldalra hivatkozik ({count})",
         "help": "Azok a wiki-oldalak, amelyek linkkel hivatkoznak erre az oldalra. Az archivált és a jóváhagyásra váró oldalak nem számítanak bele.",
         "empty": "Még egyetlen oldal sem hivatkozik erre az oldalra.",
-        "more": "és még {count} oldal"
+        "more": "és még {count} oldal",
+        "otherWikis": "Más wikikből hivatkozik ide ({count})"
       },
       "categories": {
         "title": "Kategóriák",
@@ -995,6 +1036,22 @@
           "too_many": "Elérted a kategóriák felső számát ebben a wikiben.",
           "conflict": "Közben egy munkatárs módosított egy érintett oldalt, ezért semmi nem változott. Próbáld újra.",
           "generic": "Valami nem sikerült. Próbáld újra egy kicsit később."
+        },
+        "linked": {
+          "title": "Kapcsolt wikik a menüben",
+          "intro": "Egy másik tudástárat (pl. a csak a kijelölteknek szóló Szerződések wikit) menüpontként tehetsz ide. Csak az látja a menüpontot, aki azt a wikit is látja. A tartalma nem kerül ebbe a wikibe, és oldalt sem lehet bele sorolni.",
+          "empty": "Még nincs kapcsolt wiki – a menüben csak ennek a wikinek a kategóriái látszanak.",
+          "hiddenTarget": "olyan wiki, amelyet te nem látsz",
+          "under": "itt: {parent}",
+          "remove": "Eltávolítom a menüből",
+          "noTargets": "Nincs másik wiki, amelyet látsz – kapcsolni csak olyat lehet, amelyhez neked is van hozzáférésed.",
+          "target": "Melyik wiki?",
+          "targetPlaceholder": "Válassz wikit…",
+          "name": "Menüpont neve",
+          "parent": "Hová kerüljön?",
+          "topLevel": "Legfelső szintre",
+          "add": "Hozzáadom a menühöz",
+          "created": "A kapcsolt wiki bekerült a menübe."
         }
       }
     },

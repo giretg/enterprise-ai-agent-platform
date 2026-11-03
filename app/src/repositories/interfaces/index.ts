@@ -378,6 +378,7 @@ export interface ConnectorTemplateRepository {
 }
 
 export interface ConnectorRepository {
+  agentAudienceCovers(tenantId: string, sourceId: string, citingId: string): Promise<boolean>
   findById(id: string, tenantId?: string): Promise<Connector | null>
   findByTenantTypeAndName(
     tenantId: string,
@@ -407,6 +408,9 @@ export interface ConnectorRepository {
       config?: Prisma.InputJsonValue
       visibility?: Connector['visibility']
       ownerUserId?: string | null
+      /** #1061 F2: a `members` névsor (teljes csere). */
+      expectedMemberUserIds?: string[]
+      kbMemberUserIds?: string[]
     },
   ): Promise<Connector>
 }
@@ -1102,6 +1106,15 @@ export interface WikiStructureRepository {
   deleteCategory(wikiId: string, id: string): Promise<boolean>
   /** Publikált oldalak, amelyek `outLinks`-e tartalmazza a path-t (GIN-index); a saját oldal nem számít. */
   listBacklinks(connectorId: string, path: string, limit: number): Promise<{ count: number; pages: WikiBacklinkRow[] }>
+  /**
+   * #1061 F2: más wikik publikált oldalai, amelyek `outLinks`-e tartalmazza a `wiki:<wikiId>/<path>`
+   * bejegyzést (ugyanabban a tenantban). A láthatóságot a hívó szűri.
+   */
+  listCrossBacklinks?(
+    tenantId: string,
+    outLink: string,
+    limit: number,
+  ): Promise<Array<{ wikiId: string; connectorId: string; path: string; title: string; category: string | null }>>
 }
 
 /** #978: egy oldal állapota egy korábbi sorszámon (időutazás). */

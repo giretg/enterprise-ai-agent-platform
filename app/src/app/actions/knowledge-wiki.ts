@@ -185,15 +185,66 @@ export async function applyWikiTemplateAction(input: { connectorId: string; temp
   }
 }
 
+const visibilityTarget = z.enum(['private', 'shared', 'members'])
+
 export async function changeKnowledgeBaseVisibilityAction(input: { connectorId: string; to: string }) {
   try {
-    const parsed = z.object({ connectorId: uuid, to: z.enum(['private', 'shared']) }).parse(input)
+    const parsed = z.object({ connectorId: uuid, to: visibilityTarget }).parse(input)
     const result = await services.wikiConsole.changeVisibility(await actor(), parsed.connectorId, parsed.to)
     revalidatePath('/control-plane/knowledge')
     revalidatePath(`/control-plane/knowledge/${parsed.connectorId}`)
     return ok(result)
   } catch (e) {
     return failFrom(e, 'Failed to change visibility')
+  }
+}
+
+/** #1061 NFR-1: a láthatóság-váltás előnézete (ki veszti el a hozzáférést, mely munkatársak). */
+export async function previewKnowledgeBaseVisibilityAction(input: { connectorId: string; to: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, to: visibilityTarget }).parse(input)
+    return ok(await services.wikiConsole.previewVisibilityChange(await actor(), parsed.connectorId, parsed.to))
+  } catch (e) {
+    return failFrom(e, 'Failed to preview visibility change')
+  }
+}
+
+// #1061 F2: „csak a kijelöltek” névsor.
+
+export async function getKnowledgeBaseMembersAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiConsole.getMembers(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load members')
+  }
+}
+
+export async function setKnowledgeBaseMemberAction(input: { connectorId: string; userId: string; member: boolean }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, userId: uuid, member: z.boolean() }).parse(input)
+    const current = await actor()
+    const result = parsed.member
+      ? await services.wikiConsole.addMember(current, parsed.connectorId, parsed.userId)
+      : await services.wikiConsole.removeMember(current, parsed.connectorId, parsed.userId)
+    revalidatePath('/control-plane/knowledge')
+    revalidatePath(`/control-plane/knowledge/${parsed.connectorId}`)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to change members')
+  }
+}
+
+/** D9: az admin önmagát veszi fel egy névsoros tudástárra (külön auditált esemény). */
+export async function joinKnowledgeBaseAction(input: { connectorId: string }) {
+  try {
+    const current = await actor()
+    const connectorId = uuid.parse(input.connectorId)
+    const result = await services.wikiConsole.addMember(current, connectorId, current.userId)
+    revalidatePath('/control-plane/knowledge')
+    revalidatePath(`/control-plane/knowledge/${connectorId}`)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to join')
   }
 }
 
@@ -488,6 +539,7 @@ export async function createWikiCategoryAction(input: {
   parentId?: string | null
   description?: string | null
   approval?: string
+  linkedConnectorId?: string | null
 }) {
   try {
     const parsed = z
@@ -498,6 +550,7 @@ export async function createWikiCategoryAction(input: {
         parentId: uuid.nullable().optional(),
         description: z.string().max(500).nullable().optional(),
         approval: categoryApproval.optional(),
+        linkedConnectorId: uuid.nullable().optional(),
       })
       .parse(input)
     const result = await services.wikiCategories.create(await actor(), parsed.connectorId, parsed)

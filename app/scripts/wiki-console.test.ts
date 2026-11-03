@@ -385,7 +385,7 @@ async function main() {
     assert.equal(overview.log[0].title, 'Lelet feldolgozva')
     assert.deepEqual(overview.access[0], { agentId: AGENT, agentName: 'Réka', access: 'write', writeMode: 'direct', collectFocus: 'Leletek' })
     const detail = await service.getPage(owner, KB_PRIV, 'labs/hba1c.md')
-    assert.deepEqual(detail.sources[0], { documentId: DOC, page: 2, filename: 'lelet.pdf', exists: true })
+    assert.deepEqual(detail.sources[0], { kind: 'document', documentId: DOC, page: 2, section: null, filename: 'lelet.pdf', exists: true })
     assert.ok(detail.knownPaths.includes('overview.md'))
     await rejectsWith('not_found', () => service.getPage(owner, KB_PRIV, 'nincs.md'))
   })
