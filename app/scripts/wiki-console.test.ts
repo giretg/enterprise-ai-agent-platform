@@ -400,7 +400,7 @@ async function main() {
     await rejectsWith('not_found', () => service.getOverview(viewer, KB_SHARED))
   })
 
-  await check('tálca: 30 fájl egy kötegben, duplikátum külön jelezve, 10 MB fölött elutasítva', async () => {
+  await check('tálca: 30 fájl egy kötegben, duplikátum külön jelezve, 25 MB fölött elutasítva', async () => {
     const { service, documents, audit } = setup()
     const results = []
     for (let i = 0; i < 30; i++) {
@@ -416,7 +416,7 @@ async function main() {
     const dup = await service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 30, filename: 'ujra.txt', buffer: Buffer.from('lelet 3') })
     assert.equal(dup.status, 'duplicate')
     await rejectsWith('too_large', () =>
-      service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 31, filename: 'nagy.pdf', buffer: Buffer.alloc(10 * 1024 * 1024 + 1) }),
+      service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 31, filename: 'nagy.pdf', buffer: Buffer.alloc(25 * 1024 * 1024 + 1) }),
     )
     await rejectsWith('invalid_args', () =>
       service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: 'nem-uuid', batchSeq: 0, filename: 'x.txt', buffer: Buffer.from('x') }),

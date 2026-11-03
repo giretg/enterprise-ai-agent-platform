@@ -17,8 +17,8 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
   experimental: {
     serverActions: {
-      // 10 MB-os fájl (KB_MAX_FILE_BYTES) + a multipart-boríték (#946 tálca-feltöltés).
-      bodySizeLimit: '11mb',
+      // 25 MB-os fájl (KB_MAX_FILE_BYTES) + a multipart-boríték (#946 tálca-feltöltés).
+      bodySizeLimit: '26mb',
     },
   },
 };
