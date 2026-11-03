@@ -234,6 +234,32 @@ async function main() {
     assert.equal(r.principal.client, 'platform_chat')
   })
 
+  await check('MCP principal: bejövő levél háttérfutása alapból kötelező jóváhagyással ír; a szabály engedheti', async () => {
+    const bgToken = signChatToken(
+      { aud: CHAT_TOKEN_AUDIENCE, sub: USER, tenant: 'acme', tid: TENANT, role: 'operator', adminInsight: false, agentId: AGENT, bg: true },
+      KEY,
+      NOW,
+    ).token
+    const resolve = (over: Partial<McpPrincipalDeps> = {}) =>
+      resolveMcpPrincipal(
+        { authorizationHeader: `Bearer ${bgToken}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' },
+        principalDeps(over),
+      )
+    const missing = await resolve()
+    assert.ok(missing.ok && missing.principal.background && missing.principal.forceWriteApproval)
+    const denied = await resolve({ inboundMailAllowsDirectWrites: async () => false })
+    assert.ok(denied.ok && denied.principal.forceWriteApproval)
+    const failing = await resolve({ inboundMailAllowsDirectWrites: async () => { throw new Error('db') } })
+    assert.ok(failing.ok && failing.principal.forceWriteApproval)
+    const allowed = await resolve({ inboundMailAllowsDirectWrites: async ({ agentId }) => agentId === AGENT })
+    assert.ok(allowed.ok && allowed.principal.background && !allowed.principal.forceWriteApproval)
+    const interactive = await resolveMcpPrincipal(
+      { authorizationHeader: `Bearer ${chatToken()}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' },
+      principalDeps(),
+    )
+    assert.ok(interactive.ok && !interactive.principal.forceWriteApproval)
+  })
+
   await check('MCP principal: más tenant URL-jén a chat-token érvénytelen', async () => {
     const r = await resolveMcpPrincipal(
       { authorizationHeader: `Bearer ${chatToken()}`, tenantSlug: 'other', resourceOrigin: 'https://app.example.com' },

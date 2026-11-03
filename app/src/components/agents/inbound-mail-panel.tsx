@@ -25,7 +25,7 @@ const MODES: Array<{ id: InboundMailMode; title: string; help: string }> = [
   {
     id: 'process',
     title: 'Dolgozza fel',
-    help: 'A munkatárs azonnal elolvassa a levelet, és az alábbi utasítás szerint jár el. Minden kimenő levél és feltöltés előtt jóváhagyást kér a felelős kollégától.',
+    help: 'A munkatárs azonnal elolvassa a levelet, és az alábbi utasítás szerint jár el. Alapból minden írás (levél, feltöltés, módosítás) előtt jóváhagyást kér a felelős kollégától.',
   },
   {
     id: 'handoff',
@@ -84,6 +84,7 @@ export function InboundMailPanel({ settings }: { settings: InboundMailSettings }
         handoffToAgentId: mode === 'handoff' && handoffKind === 'agent' ? String(data.get('handoffToAgentId') ?? '') : '',
         senderAllowlist: String(data.get('senderAllowlist') ?? ''),
         dailyRunLimit: String(data.get('dailyRunLimit') ?? ''),
+        allowDirectWrites: mode === 'process' && data.get('allowDirectWrites') === 'on',
       })
       if (!res.success) return setError(res.error)
       setNotice('Elmentve. Az új szabály a következő beérkező levéltől érvényes.')
@@ -235,6 +236,18 @@ export function InboundMailPanel({ settings }: { settings: InboundMailSettings }
             <input type="hidden" name="dailyRunLimit" value={settings.rule.dailyRunLimit} />
           </>
         )}
+
+        {mode === 'process' ? (
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" name="allowDirectWrites" defaultChecked={settings.rule.allowDirectWrites} className="mt-1" />
+            <span>
+              <span className="text-ink">Jóváhagyás nélküli írás engedélyezése feldolgozáskor</span>
+              <span className="mt-0.5 block text-xs text-ink-faint">
+                Kikapcsolva (ajánlott) a levélből indított minden írás — válaszlevél, feltöltés, CRM-módosítás, memória — a felelős kolléga jóváhagyására vár, a munkatárs saját beállításától függetlenül. Csak akkor kapcsold be, ha a cég levelezésében a feladó-hamisítás ellen védelem van (SPF, DKIM, DMARC) — különben bárki írhat a felelős kolléga nevében.
+              </span>
+            </span>
+          </label>
+        ) : null}
 
         <p className="text-xs text-ink-faint">
           A kéretlen leveleket, az automatikus válaszokat (pl. „házon kívül vagyok”) és a többi AI munkatárs leveleit sosem dolgozza fel magától — ezekről csak jelzés megy.

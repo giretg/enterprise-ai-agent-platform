@@ -17,6 +17,11 @@ export type InboundMailRule = {
   /** Domain (`ceg.hu`) vagy cím (`anna@ceg.hu`), kisbetűvel. Üres = bárki. */
   senderAllowlist: string[]
   dailyRunLimit: number
+  /**
+   * Feldolgozáskor is mehet-e jóváhagyás nélküli írás (az agent saját írási módja szerint).
+   * Alap: nem — a feladó címe hamisítható, ezért a levélből indított írás mindig jóváhagyásra vár.
+   */
+  allowDirectWrites: boolean
 }
 
 export const DEFAULT_INBOUND_MAIL_RULE: InboundMailRule = {
@@ -27,6 +32,7 @@ export const DEFAULT_INBOUND_MAIL_RULE: InboundMailRule = {
   handoffToAgentId: null,
   senderAllowlist: [],
   dailyRunLimit: 20,
+  allowDirectWrites: false,
 }
 
 export const INSTRUCTIONS_MAX = 4000
@@ -88,6 +94,7 @@ export type RuleInput = {
   handoffToAgentId?: unknown
   senderAllowlist?: unknown
   dailyRunLimit?: unknown
+  allowDirectWrites?: unknown
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -139,6 +146,7 @@ export function validateInboundMailRule(input: RuleInput): { ok: true; rule: Inb
       handoffToAgentId: mode === 'handoff' ? handoffToAgentId : null,
       senderAllowlist: allowlist.entries,
       dailyRunLimit: limitRaw,
+      allowDirectWrites: mode === 'process' && input.allowDirectWrites === true,
     },
   }
 }

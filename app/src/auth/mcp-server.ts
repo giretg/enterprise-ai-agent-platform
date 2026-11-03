@@ -20,6 +20,7 @@ import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
+import { prisma } from '@/lib/db'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
@@ -464,6 +465,9 @@ export function productionMcpDeps(): McpRuntimeDeps {
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
     verifyChatToken: productionChatTokenVerifier,
+    inboundMailAllowsDirectWrites: async ({ tenantId, agentId }) =>
+      (await prisma.agentInboundMailRule.findFirst({ where: { agentId, tenantId }, select: { allowDirectWrites: true } }))
+        ?.allowDirectWrites === true,
     users: repositories.users,
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
