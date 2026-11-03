@@ -1255,6 +1255,43 @@ async function main() {
     assert.deepEqual(row.categories?.map((c) => c.key), ['policies', 'sources', 'partners', 'partners/payment'])
   })
 
+  await check('menüsorrend: kb_list_index a menü sorrendjében, order mezővel, kiemelt oldal elöl; a briefing is', async () => {
+    const rows = structure.categories.get(WIKI_A)!
+    const saved = rows.map((row) => ({ ...row }))
+    // A Sources a végére (nincs sorrend, becsukva), a Partnerek előre; a Policies-ben kiemelt oldal.
+    rows.find((row) => row.key === 'sources')!.sortOrder = null
+    rows.find((row) => row.key === 'sources')!.collapsed = true
+    rows.find((row) => row.key === 'sources')!.pageSort = 'updated_desc'
+    rows.find((row) => row.key === 'partners')!.sortOrder = 5
+    try {
+      const listing = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A })
+      const cats = listing.wiki.categories.filter((c: any) => c.category !== 'Uncategorized')
+      assert.deepEqual(cats.map((c: any) => [c.category, c.order]), [['partners', 5], ['policies', 10], ['sources', null]])
+      const sources = cats.find((c: any) => c.category === 'sources')
+      assert.equal(sources.collapsed, true)
+      assert.equal(sources.pageSort, 'updated_desc')
+      assert.equal(cats[0].subcategories[0].order, 10)
+      assert.equal(cats[0].pageSort, undefined)
+      assert.match(listing.wiki.hint, /same order as the menu/)
+      const index = await call(OWNER, DEF_A, 'kb_get_page', { wikiId: WIKI_A, path: 'index.md' })
+      assert.ok(index.text.indexOf('## Partnerek') < index.text.indexOf('## Policies'))
+      assert.ok(index.text.indexOf('## Policies') < index.text.indexOf('## Sources'))
+      const wikisList = await wikiService.listWikis({ tenantId: TENANT, userId: OWNER, agentId: AGENT_A, snapshot: definitions.get(DEF_A)!.snapshot as never })
+      const briefing = wikisList.find((w) => w.wikiId === WIKI_A)!.categories!
+      assert.deepEqual(briefing.map((c) => [c.key, c.order]), [['partners', 5], ['partners/payment', 10], ['policies', 10], ['sources', null]])
+
+      const policyPages = listing.wiki.categories.find((c: any) => c.category === 'policies').pages
+      if (policyPages.length > 0) {
+        rows.find((row) => row.key === 'policies')!.pinnedPages = [policyPages.at(-1).path]
+        const pinned = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A })
+        const first = pinned.wiki.categories.find((c: any) => c.category === 'policies').pages[0]
+        assert.deepEqual([first.path, first.pinned], [policyPages.at(-1).path, true])
+      }
+    } finally {
+      structure.categories.set(WIKI_A, saved)
+    }
+  })
+
   await check('#1061 AC5: kb_get_page backlinks — a rá mutató publikált oldalak + darabszám', async () => {
     const page = await call(OWNER, DEF_A, 'kb_get_page', { wikiId: WIKI_A, path: 'entities/teya.md' })
     assert.equal(page.backlinkCount, page.backlinks.length)

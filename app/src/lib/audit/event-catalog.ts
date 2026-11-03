@@ -198,6 +198,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.category.updated',
   'kb.wiki.category.deleted',
   'kb.wiki.category.rule_changed',
+  // Menüsorrend: testvér-kategóriák húzásos átrendezése (azonosítók és darabszám).
+  'kb.wiki.categories.reordered',
   // #1061 F3: metaadat-mezők (séma, átnézés, beépített mezők) és F4 sablon (category.updated).
   'kb.wiki.fields.enabled',
   'kb.wiki.fields.disabled',

@@ -423,6 +423,8 @@ export class WikiConsoleService {
             name: group.path === null ? null : group.name,
             description: group.description,
             protected: group.protected,
+            collapsed: group.collapsed,
+            pinned: group.pinned,
             pageCount: group.pageCount,
             pages: group.pages.map(pageView),
             children: group.children.map((child) => ({
@@ -430,6 +432,8 @@ export class WikiConsoleService {
               name: child.name,
               description: child.description,
               protected: child.protected,
+              collapsed: child.collapsed,
+              pinned: child.pinned,
               pageCount: child.pageCount,
               pages: child.pages.map(pageView),
             })),
@@ -441,9 +445,20 @@ export class WikiConsoleService {
               name: group.category === 'Uncategorized' ? null : group.category,
               description: null,
               protected: false,
+              collapsed: false,
+              pinned: [] as string[],
               pageCount: groupPages.length,
               pages: groupPages,
-              children: [] as Array<{ key: string; name: string; description: string | null; protected: boolean; pageCount: number; pages: ReturnType<typeof pageView>[] }>,
+              children: [] as Array<{
+                key: string
+                name: string
+                description: string | null
+                protected: boolean
+                collapsed: boolean
+                pinned: string[]
+                pageCount: number
+                pages: ReturnType<typeof pageView>[]
+              }>,
             }
           }),
       log: [...log].reverse().map((entry) => ({

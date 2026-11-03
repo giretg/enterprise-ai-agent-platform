@@ -26,6 +26,24 @@ class ApplyAborted extends Error {
   }
 }
 
+/**
+ * Áthelyezett (vagy törléskor átnevezett) oldal: a kategóriák kiemelt és kézi sorrendű
+ * listájában is az új path álljon, ugyanabban a tranzakcióban.
+ */
+export async function replaceCategoryPagePath(tx: Prisma.TransactionClient, wikiId: string, from: string, to: string) {
+  if (from === to) return
+  await tx.$executeRaw`
+    UPDATE wiki_categories
+    SET pinned_pages = array_replace(pinned_pages, ${from}, ${to}),
+        page_order = array_replace(page_order, ${from}, ${to}),
+        updated_at = now()
+    WHERE wiki_id = ${wikiId}::uuid
+      AND (pinned_pages @> ARRAY[${from}]::text[] OR page_order @> ARRAY[${from}]::text[])`
+}
+
+/** A kategória-átrendezés közben eltűnt sor: az egész sorrend visszagörgetődik. */
+class ReorderAborted extends Error {}
+
 function pageData(page: WikiApplyPageOp['page']) {
   return {
     path: page.path,
@@ -593,6 +611,7 @@ export class PostgresWikiRepository implements WikiRepository {
               })),
             })
           }
+          if (op.kind === 'update') await replaceCategoryPagePath(tx, input.wikiId, op.previousPath, page.path)
           await tx.wikiPageRevision.create({ data: revisionData(page, changeSetId, input.log) })
           pages.push(page)
         }
@@ -693,6 +712,10 @@ const categorySelect = {
   requiredSections: true,
   sectionRule: true,
   templateMd: true,
+  pageSort: true,
+  pinnedPages: true,
+  pageOrder: true,
+  collapsed: true,
 } as const
 
 const fieldSelect = { id: true, key: true, name: true, type: true, options: true, help: true, sortOrder: true } as const
@@ -712,7 +735,7 @@ export class PostgresWikiStructureRepository implements WikiStructureRepository 
     return prisma.wikiCategory.findMany({
       where: { wikiId },
       select: categorySelect,
-      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      orderBy: [{ sortOrder: { sort: 'asc', nulls: 'last' } }, { name: 'asc' }],
     })
   }
 
@@ -728,6 +751,28 @@ export class PostgresWikiStructureRepository implements WikiStructureRepository 
     const result = await prisma.wikiCategory.updateMany({ where: { id, wikiId }, data: patch })
     if (result.count === 0) return null
     return prisma.wikiCategory.findUnique({ where: { id }, select: categorySelect })
+  }
+
+  async reorderCategories(wikiId: string, parentId: string | null, orders: Array<{ id: string; sortOrder: number }>): Promise<boolean> {
+    return prisma.$transaction(async (tx) => {
+      const siblings = await tx.wikiCategory.findMany({
+        where: { wikiId, parentId, linkedConnectorId: null },
+        select: { id: true, sortOrder: true },
+      })
+      const ids = new Set(orders.map((row) => row.id))
+      if (ids.size !== orders.length || siblings.length !== ids.size || siblings.some((row) => !ids.has(row.id))) {
+        throw new ReorderAborted()
+      }
+      for (const row of orders) {
+        if (siblings.find((sibling) => sibling.id === row.id)!.sortOrder === row.sortOrder) continue
+        const result = await tx.wikiCategory.updateMany({ where: { id: row.id, wikiId }, data: { sortOrder: row.sortOrder } })
+        if (result.count === 0) throw new ReorderAborted()
+      }
+      return true
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch((error) => {
+      if (error instanceof ReorderAborted || (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034')) return false
+      throw error
+    })
   }
 
   async deleteCategory(wikiId: string, id: string): Promise<boolean> {

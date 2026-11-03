@@ -708,7 +708,8 @@
         "protectedShort": "jóváhagyással",
         "emptyCategory": "Még nincs oldal ebben a kategóriában.",
         "linkedWiki": "Kapcsolt wiki: egy másik tudástárba visz",
-        "linkedWikiShort": "másik wiki"
+        "linkedWikiShort": "másik wiki",
+        "pinned": "Kiemelt oldal"
       },
       "overview": {
         "title": "Áttekintés",
@@ -1200,7 +1201,53 @@
         "approvalInherit": "A munkatárs beállítása szerint",
         "approvalAlways": "Mindig jóváhagyással",
         "orderLabel": "Sorrend",
-        "orderHelp": "Kisebb szám előrébb kerül a menüben.",
+        "orderHelp": "Kisebb szám előrébb kerül a menüben. 10-es lépésközzel érdemes számozni (10, 20, 30…), így két kategória közé átszámozás nélkül beszúrhatsz egy újat (pl. 25). Üresen hagyva a kategória a sorrendezettek után, név szerint jelenik meg. A listában húzással is rendezhetsz.",
+        "order": {
+          "badge": "sorrend: {order}",
+          "unset": "nincs sorrend",
+          "placeholder": "nincs megadva",
+          "saved": "Az új sorrend elmentve. A menü és az AI-munkatársak is így látják.",
+          "treeHint": "A sorrendet húzással (⋮⋮) vagy a ↑/↓ gombokkal módosíthatod. A főkategóriák egymáshoz képest, az alkategóriák a saját főkategóriájukon belül rendeződnek.",
+          "dragHint": "Húzd ide-oda a sorrend módosításához",
+          "moveUp": "Feljebb",
+          "moveDown": "Lejjebb"
+        },
+        "menu": {
+          "title": "Megjelenés a menüben",
+          "sortLabel": "Oldalak sorrendje",
+          "sortHelp": "Így rendeződnek az oldalak ebben a kategóriában a menüben és az AI-munkatársak tartalomjegyzékében is.",
+          "sort": {
+            "title": "Cím szerint (ábécé)",
+            "updated_desc": "Legutóbb frissített elöl",
+            "date_desc": "Legújabb dátum elöl (pl. döntésnapló)",
+            "manual": "Kézi sorrend"
+          },
+          "sortBadge": {
+            "title": "cím szerint",
+            "updated_desc": "frissítés szerint",
+            "date_desc": "dátum szerint",
+            "manual": "kézi sorrend"
+          },
+          "collapsedLabel": "Alapból becsukva",
+          "collapsedHelp": "A menüben csak a csoport neve látszik, amíg rá nem kattintanak. Ha valaki ebben a csoportban lévő oldalt nyit meg, a csoport kinyílik.",
+          "collapsedBadge": "becsukva",
+          "pinnedLabel": "Kiemelt oldalak (legfeljebb {max})",
+          "pinnedHelp": "A kiemelt oldalak a rendezéstől függetlenül a kategória tetején állnak, abban a sorrendben, ahogy bejelölted őket. Jó például egy „Hogyan használd ezt a wikit” vagy egy áttekintő oldalhoz.",
+          "pinnedBadge": "{count, plural, other {# kiemelt}}",
+          "pinnedShort": "kiemelt",
+          "noPages": "Még nincs oldal ebben a kategóriában.",
+          "manualLabel": "Kézi sorrend: húzd az oldalakat a kívánt helyre",
+          "previewOrder": "Mentés után a kategória sorrend-értéke {order}: a kisebb értékű testvérei után, a nagyobbak előtt áll.",
+          "previewNoOrder": "Mentés után a kategória a sorrendezett kategóriák után, név szerint áll.",
+          "previewPinned": "Felül: {titles}.",
+          "preview": {
+            "title": "Az oldalak cím szerint, ábécérendben követik egymást.",
+            "updated_desc": "Az oldalak közül a legutóbb frissített áll elöl.",
+            "date_desc": "Az oldalak közül a legújabb dátumú áll elöl (az oldal „date” vagy „source_date” mezője, ennek hiányában a létrehozás napja).",
+            "manual": "Az oldalak a fenti kézi sorrendben követik egymást. Az új oldalak a végére kerülnek, cím szerint."
+          },
+          "previewCollapsed": "A csoport a menüben alapból becsukva jelenik meg."
+        },
         "rulePreview": "Mentés után a(z) „{name}” kategória {count, plural, =0 {új oldalaihoz} other {# oldalához és az új oldalaihoz}} jóváhagyás kell, akkor is, ha a munkatárs közvetlenül írhat a wikibe.",
         "ruleRelax": "Mentés után ismét a munkatársak írási módja dönt. Ahol a munkatárs eddig is jóváhagyással írt, ott ez nem változik.",
         "ruleRelaxParent": "A főkategória szabálya miatt ez az alkategória továbbra is jóváhagyást kér.",

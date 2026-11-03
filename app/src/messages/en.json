@@ -708,7 +708,8 @@
         "protectedShort": "approval",
         "emptyCategory": "No pages in this category yet.",
         "linkedWiki": "Linked wiki: opens another knowledge base",
-        "linkedWikiShort": "other wiki"
+        "linkedWikiShort": "other wiki",
+        "pinned": "Pinned page"
       },
       "overview": {
         "title": "Overview",
@@ -1200,7 +1201,53 @@
         "approvalInherit": "As the coworker is set up",
         "approvalAlways": "Always with approval",
         "orderLabel": "Order",
-        "orderHelp": "Smaller numbers come first in the menu.",
+        "orderHelp": "Smaller numbers come first in the menu. Number in steps of 10 (10, 20, 30…) so you can insert a new category between two without renumbering (e.g. 25). Leave it empty to list the category after the ordered ones, by name. You can also drag to reorder in the list.",
+        "order": {
+          "badge": "order: {order}",
+          "unset": "no order",
+          "placeholder": "not set",
+          "saved": "New order saved. The menu and the AI colleagues now see it this way.",
+          "treeHint": "Change the order by dragging (⋮⋮) or with the ↑/↓ buttons. Top-level categories are ordered among themselves, subcategories within their own parent.",
+          "dragHint": "Drag to change the order",
+          "moveUp": "Move up",
+          "moveDown": "Move down"
+        },
+        "menu": {
+          "title": "How it appears in the menu",
+          "sortLabel": "Page order",
+          "sortHelp": "Pages in this category are ordered this way in the menu and in the AI colleagues’ table of contents.",
+          "sort": {
+            "title": "By title (A–Z)",
+            "updated_desc": "Most recently updated first",
+            "date_desc": "Newest date first (e.g. decision log)",
+            "manual": "Manual order"
+          },
+          "sortBadge": {
+            "title": "by title",
+            "updated_desc": "by update",
+            "date_desc": "by date",
+            "manual": "manual order"
+          },
+          "collapsedLabel": "Collapsed by default",
+          "collapsedHelp": "Only the group name shows in the menu until someone clicks it. When someone opens a page in this group, the group opens.",
+          "collapsedBadge": "collapsed",
+          "pinnedLabel": "Pinned pages (up to {max})",
+          "pinnedHelp": "Pinned pages stay at the top of the category regardless of the page order, in the order you ticked them. Good for a “How to use this wiki” or an overview page.",
+          "pinnedBadge": "{count, plural, other {# pinned}}",
+          "pinnedShort": "pinned",
+          "noPages": "No pages in this category yet.",
+          "manualLabel": "Manual order: drag the pages where you want them",
+          "previewOrder": "After saving, the category’s order is {order}: after siblings with a smaller value, before those with a larger one.",
+          "previewNoOrder": "After saving, the category is listed after the ordered categories, by name.",
+          "previewPinned": "At the top: {titles}.",
+          "preview": {
+            "title": "Pages follow each other by title, A–Z.",
+            "updated_desc": "The most recently updated page comes first.",
+            "date_desc": "The page with the newest date comes first (the page’s “date” or “source_date” field, otherwise the day it was created).",
+            "manual": "Pages follow the manual order above. New pages go to the end, by title."
+          },
+          "previewCollapsed": "The group appears collapsed in the menu by default."
+        },
         "rulePreview": "After saving, {count, plural, =0 {new pages} other {the # pages and new pages}} in “{name}” need approval, even if the coworker may write directly.",
         "ruleRelax": "After saving, the coworkers’ write mode decides again. Where a coworker already writes with approval, nothing changes.",
         "ruleRelaxParent": "Because of the parent category’s rule, this subcategory still needs approval.",
