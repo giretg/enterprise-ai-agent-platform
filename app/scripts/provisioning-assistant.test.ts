@@ -32,6 +32,8 @@ import {
 import { ProvisioningError } from '../src/domain/provisioning/errors'
 import {
   describeGitHubRepositoryAccess,
+  gitHubRepositoryAccessFromText,
+  splitGitHubRepositories,
   type GitHubRepositoryAccess,
 } from '../src/domain/connector/github-repository-access'
 import { isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
@@ -2109,6 +2111,22 @@ async function run() {
     )
     const crmRow = (await svc.listDrafts(adminActor)).find((d) => d.draftId === crm.draftId)
     assert.equal(crmRow?.githubRepositoryView, null)
+  })
+
+  await test('GitHub kódtár-kör: a bemásolt link query, fragment és .git/ végződéssel is helyes', () => {
+    const links = [
+      'https://github.com/Acme/CRM?tab=readme-ov-file',
+      'https://github.com/Acme/CRM#readme',
+      'https://github.com/Acme/CRM.git/',
+      'github.com/Acme/CRM/tree/main',
+      'https://www.github.com/Acme/CRM/',
+    ]
+    assert.deepEqual(splitGitHubRepositories(links.join('\n')), links.map(() => 'Acme/CRM'))
+    assert.deepEqual(gitHubRepositoryAccessFromText(links.join('\n')), {
+      mode: 'selected', repositories: ['acme/crm'],
+    })
+    assert.throws(() => gitHubRepositoryAccessFromText('https://example.com/acme/crm'))
+    assert.throws(() => gitHubRepositoryAccessFromText('acme/crm/extra'))
   })
 
   await test('GitHub kódtár-kör: az agent a definícióban megkapja a megengedett kódtárakat', () => {

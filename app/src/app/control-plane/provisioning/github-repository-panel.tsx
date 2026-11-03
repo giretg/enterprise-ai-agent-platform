@@ -6,25 +6,10 @@ import { updateGitHubRepositoryAccess } from '@/lib/connector-update-publishing'
 import {
   GITHUB_REPOSITORY_PATTERN,
   MAX_GITHUB_REPOSITORIES,
+  splitGitHubRepositories,
   type GitHubRepositoryAccess,
 } from '@/domain/connector/github-repository-access'
 import { DetailSection, FilterChip, PillButton } from './connector-hub-ui'
-
-/** Soronként / vesszővel elválasztott lista; a bemásolt GitHub-linkből owner/repo lesz. */
-function splitRepositories(text: string): string[] {
-  return text
-    .split(/[\s,]+/)
-    .map((item) =>
-      item
-        .trim()
-        .replace(/^(?:https?:\/\/)?(?:www\.)?github\.com\//i, '')
-        .replace(/\.git$/i, '')
-        .split('/')
-        .slice(0, 2)
-        .join('/'),
-    )
-    .filter(Boolean)
-}
 
 /**
  * GitHub-kapcsolat kódtár-köre: mely owner/repo-khoz nyúlhatnak a munkatársak. Bekapcsolás
@@ -46,7 +31,7 @@ export function GitHubRepositoryPanel({
   const [mode, setMode] = useState<GitHubRepositoryAccess['mode']>(access.mode)
   const [text, setText] = useState('')
 
-  const repositories = splitRepositories(text)
+  const repositories = splitGitHubRepositories(text)
   const invalid = repositories.filter((repo) => !GITHUB_REPOSITORY_PATTERN.test(repo))
   const tooMany = new Set(repositories.map((repo) => repo.toLowerCase())).size > MAX_GITHUB_REPOSITORIES
   const canSave =

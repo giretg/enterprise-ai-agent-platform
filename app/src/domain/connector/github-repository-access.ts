@@ -26,12 +26,23 @@ function normalizeRepositories(repositories: unknown[]): string[] {
   return normalized
 }
 
+/** Soronként / vesszővel elválasztott owner/repo lista, bemásolt GitHub-linkekkel is. */
+export function splitGitHubRepositories(text: string): string[] {
+  return text.split(/[\s,]+/).filter(Boolean).map((item) => {
+    if (/^(?:https?:\/\/)?(?:www\.)?github\.com\//i.test(item)) {
+      const url = new URL(/^https?:\/\//i.test(item) ? item : `https://${item}`)
+      return url.pathname.split('/').slice(1, 3).join('/').replace(/\.git$/i, '')
+    }
+    return item
+  })
+}
+
 export function gitHubRepositoryAccessFromText(value: string): GitHubRepositoryAccess {
   const trimmed = value.trim()
   if (trimmed === '*') return { mode: 'any' }
   return {
     mode: 'selected',
-    repositories: normalizeRepositories(trimmed.split(/[\s,]+/).filter(Boolean)),
+    repositories: normalizeRepositories(splitGitHubRepositories(trimmed)),
   }
 }
 
