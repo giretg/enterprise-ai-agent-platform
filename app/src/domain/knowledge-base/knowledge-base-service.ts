@@ -42,7 +42,7 @@ import { renderPdfPages, PdfPageImageError } from '@/lib/kb-pdf-images'
 import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
-export const KB_MAX_FILE_BYTES = 10 * 1024 * 1024
+export const KB_MAX_FILE_BYTES = 25 * 1024 * 1024
 
 export type KnowledgeBaseDeps = {
   documents: DocumentRepository

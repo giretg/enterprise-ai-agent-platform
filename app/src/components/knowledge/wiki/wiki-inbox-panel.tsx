@@ -12,8 +12,8 @@ import { Badge, Card } from '@/components/ui/shell'
 import { errorKey } from './knowledge-bases-list'
 import { formatWhen } from './wiki-format'
 
-/** D12: fájlonként legfeljebb 10 MB (a szerver is ellenőrzi). */
-const MAX_FILE_BYTES = 10 * 1024 * 1024
+/** D12: fájlonként legfeljebb 25 MB (a szerver is ellenőrzi: KB_MAX_FILE_BYTES). */
+const MAX_FILE_BYTES = 25 * 1024 * 1024
 const POLL_MS = 10_000
 const PARALLEL_UPLOADS = 3
 
