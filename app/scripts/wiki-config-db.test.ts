@@ -18,6 +18,7 @@ import { WikiConsoleError, WikiConsoleService, type WikiConsoleActor } from '../
 import { WikiConfigError, WikiConfigService } from '../src/domain/knowledge-base/wiki-config-service'
 import { WikiCategoryService } from '../src/domain/knowledge-base/wiki-category-service'
 import { extractWikiLinks } from '../src/lib/kb-wiki'
+import { configPagesVersionOf } from '../src/lib/wiki-config'
 
 let failures = 0
 async function check(name: string, fn: () => Promise<void>) {
@@ -249,6 +250,63 @@ async function main() {
     assert.equal(proposal.baseConfigVersion, (await repo.findProposal(id))!.baseConfigVersion)
     assert.equal(((await connectors.findById(connector.id, tenant.id)) as Connector & { config: Row }).config.displayName, 'MOL Card Product Management Wiki')
     okResult(await service.withdraw(caller, { wikiId: wiki.id, proposalId: id }))
+  })
+
+  // P1: a felületi írás nem veszi fel a change-set zárát; a jóváhagyás sor-zára miatt a mentés nem veszhet el.
+  const raceWith = async (name: string, write: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<unknown>) => {
+    const id = String(okResult(await propose([{ op: 'setName', name }])).proposalId)
+    const stateBefore = (await repo.readState(wiki.id))!
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let written!: () => void
+    const writtenYet = new Promise<void>((resolve) => { written = resolve })
+    const writer = prisma.$transaction(async (tx) => {
+      await write(tx)
+      written()
+      await gate
+    })
+    await writtenYet
+    const approval = wikiService.applyConfigChange({
+      tenantId: tenant.id,
+      userId: user.id,
+      connector,
+      wikiId: wiki.id,
+      pages: [],
+      configPlan: {
+        proposalId: id,
+        expectedVersion: (await repo.findProposal(id))!.baseConfigVersion,
+        expectedPagesVersion: configPagesVersionOf(await prisma.wikiPage.findMany({ where: { wikiId: wiki.id }, select: { id: true, version: true } })),
+        decidedByUserId: user.id,
+        next: { ...stateBefore, name },
+      },
+      title: 'x',
+      note: null,
+    })
+    // A jóváhagyás a sor-záron áll, amíg a felületi mentés be nem fejeződik.
+    const early = await Promise.race([approval.then(() => 'finished'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 400))])
+    assert.equal(early, 'waiting')
+    release()
+    await writer
+    const result = await approval
+    assert.equal(result.ok, false)
+    assert.equal((result as { code: string }).code, 'config_conflict')
+    assert.equal((await repo.findProposal(id))!.status, 'pending')
+    okResult(await service.withdraw(caller, { wikiId: wiki.id, proposalId: id }))
+  }
+
+  await check('P1: közben futó felületi mentés nem vész el, a jóváhagyás config_conflict', async () => {
+    await raceWith('Versengő 1', (tx) => tx.agentWiki.update({ where: { id: wiki.id }, data: { collectFocus: 'EMBERI MENTÉS' } }))
+    assert.equal((await wikis.findById(wiki.id))!.collectFocus, 'EMBERI MENTÉS')
+    assert.equal(((await connectors.findById(connector.id, tenant.id)) as Connector & { config: Row }).config.displayName, 'MOL Card Product Management Wiki')
+  })
+
+  await check('P1: közben beszúrt új kategória és módosított kategória sem vész el', async () => {
+    await raceWith('Versengő 2', (tx) => tx.wikiCategory.create({ data: { wikiId: wiki.id, key: 'emberi-uj', name: 'Emberi új' } }))
+    assert.ok((await structure.listCategories(wiki.id)).some((row) => row.key === 'emberi-uj'))
+    await raceWith('Versengő 3', (tx) => tx.wikiCategory.updateMany({ where: { wikiId: wiki.id, key: 'group-3' }, data: { name: 'Emberi név' } }))
+    assert.equal((await structure.listCategories(wiki.id)).find((row) => row.key === 'group-3')!.name, 'Emberi név')
+    await raceWith('Versengő 4', (tx) => tx.wikiField.updateMany({ where: { wikiId: wiki.id, key: 'phase' }, data: { name: 'Emberi mező' } }))
+    assert.equal((await structure.fieldSettings!(wiki.id)).fields.find((row) => row.key === 'phase')!.name, 'Emberi mező')
   })
 
   await seed('a.md', 'group-0/cat-0', { direction: 'a', other: 'megmarad' })

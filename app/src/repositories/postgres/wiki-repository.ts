@@ -792,6 +792,13 @@ async function applyConfigPlan(tx: Prisma.TransactionClient, wikiId: string, con
     data: { status: 'applied', decidedByUserId: plan.decidedByUserId, decidedAt: new Date() },
   })
   if (claimed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'proposal_not_pending' })
+  // A felületi írások nem veszik fel a change-set zárát: a sor-zárak miatt a lenyomat után már nem
+  // csúszhat be mentés, amit a kiírás felülírna. A wiki-sor FOR UPDATE-je az új kategória / mező
+  // beszúrását is megvárja (idegen kulcs); a connectornál elég a gyengébb, más táblákat nem fogó zár.
+  await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${connectorId}::uuid FOR NO KEY UPDATE`
+  await tx.$queryRaw`SELECT id FROM agent_wikis WHERE id = ${wikiId}::uuid FOR UPDATE`
+  await tx.$queryRaw`SELECT id FROM wiki_categories WHERE wiki_id = ${wikiId}::uuid ORDER BY id FOR UPDATE`
+  await tx.$queryRaw`SELECT id FROM wiki_fields WHERE wiki_id = ${wikiId}::uuid ORDER BY id FOR UPDATE`
   const current = await loadConfigState(tx, wikiId)
   if (!current || configVersionOf(current) !== plan.expectedVersion) throw new ApplyAborted({ ok: false, reason: 'config_conflict' })
   const pages = await tx.wikiPage.findMany({ where: { wikiId, connectorId }, select: { id: true, version: true } })

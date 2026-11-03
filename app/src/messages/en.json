@@ -692,6 +692,51 @@
           "changed": "Changes",
           "removed": "Goes away",
           "fieldsRewritten": "field value rewritten",
+            "yes": "yes",
+            "no": "no",
+            "noValues": "No values set.",
+            "props": {
+              "name": "Name",
+              "description": "Description",
+              "sortOrder": "Menu order",
+              "approval": "Approval",
+              "pageSort": "Page order",
+              "pinnedPages": "Pinned pages",
+              "pageOrder": "Manual page order",
+              "collapsed": "Collapsed by default",
+              "reviewCycleDays": "Review cycle (days)",
+              "requiredFields": "Required fields",
+              "requiredSections": "Required sections",
+              "sectionRule": "When a section is missing",
+              "templateMd": "Starting page outline",
+              "templateKey": "Template",
+              "linkedConnectorId": "Linked wiki",
+              "type": "Type",
+              "options": "Options",
+              "help": "Help text"
+            },
+            "values": {
+              "pageSort": {
+                "title": "by title",
+                "updated_desc": "recently updated first",
+                "date_desc": "newest first",
+                "manual": "manual order"
+              },
+              "approval": {
+                "inherit": "follows the wiki's rule",
+                "always": "always needs approval"
+              },
+              "sectionRule": {
+                "warn": "only warns",
+                "error": "blocks saving"
+              },
+              "type": {
+                "text": "text",
+                "select": "one value",
+                "multi_select": "several values",
+                "date": "date"
+              }
+            },
           "commentLabel": "Message to the teammate (when rejecting, optional)",
           "approve": "Approve all",
           "reject": "Reject",

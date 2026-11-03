@@ -555,7 +555,10 @@ function replaceFieldValue(value: unknown, option: string, to: string | null): u
 // ---------------------------------------------------------------------------
 // Változás-összefoglaló (jóváhagyó oldal, agent-válasz)
 
-export type WikiConfigListDiff = { added: string[]; changed: string[]; removed: string[] }
+/** A jóváhagyónak: egy tétel tényleges régi és új értékei, tulajdonságonként. */
+export type WikiConfigValueChange = { prop: string; from: unknown; to: unknown }
+export type WikiConfigDiffItem = { key: string; kind: 'added' | 'changed' | 'removed'; label: string | null; changes: WikiConfigValueChange[] }
+export type WikiConfigListDiff = { added: string[]; changed: string[]; removed: string[]; items: WikiConfigDiffItem[] }
 
 export type WikiConfigDiff = {
   name: { from: string | null; to: string | null } | null
@@ -567,14 +570,48 @@ export type WikiConfigDiff = {
   templates: WikiConfigListDiff
 }
 
-function listDiff<T>(before: readonly T[], after: readonly T[], keyOf: (row: T) => string): WikiConfigListDiff {
-  const old = new Map(before.map((row) => [keyOf(row), JSON.stringify(row)]))
-  const now = new Map(after.map((row) => [keyOf(row), JSON.stringify(row)]))
-  return {
-    added: [...now.keys()].filter((key) => !old.has(key)),
-    changed: [...now.keys()].filter((key) => old.has(key) && old.get(key) !== now.get(key)),
-    removed: [...old.keys()].filter((key) => !now.has(key)),
+/** Azonosító jellegű mezők: a tétel kulcsában már látszanak. */
+const DIFF_HIDDEN_PROPS = new Set(['key', 'parentKey', 'id'])
+/** Új tételnél ezek az alapértékek nem mondanak semmit. */
+const DIFF_DEFAULTS: Record<string, unknown> = { approval: 'inherit', pageSort: 'title', sectionRule: 'warn', collapsed: false }
+/** A sablonból másolt szabályok: új kategóriánál a Sablonok résznél egyszer látszanak. */
+const DIFF_TEMPLATE_PROPS = new Set(['requiredFields', 'requiredSections', 'sectionRule', 'templateMd'])
+
+function isEmptyDiffValue(prop: string, value: unknown): boolean {
+  return value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0) || DIFF_DEFAULTS[prop] === value
+}
+
+function listDiff<T extends object>(before: readonly T[], after: readonly T[], keyOf: (row: T) => string): WikiConfigListDiff {
+  const old = new Map(before.map((row) => [keyOf(row), row]))
+  const now = new Map(after.map((row) => [keyOf(row), row]))
+  const labelOf = (row: T) => {
+    const name = (row as { name?: unknown }).name
+    return typeof name === 'string' ? name : null
   }
+  const entries = (row: T) => Object.entries(row).filter(([prop]) => !DIFF_HIDDEN_PROPS.has(prop))
+  const items: WikiConfigDiffItem[] = []
+  for (const [key, row] of now) {
+    const previous = old.get(key)
+    if (!previous) {
+      const fromTemplate = !!(row as { templateKey?: unknown }).templateKey
+      const changes = entries(row)
+        .filter(([prop, value]) => !isEmptyDiffValue(prop, value) && !(fromTemplate && DIFF_TEMPLATE_PROPS.has(prop)))
+        .map(([prop, to]) => ({ prop, from: null, to }))
+      items.push({ key, kind: 'added', label: labelOf(row), changes })
+      continue
+    }
+    const changes = entries(row)
+      .filter(([prop, value]) => JSON.stringify((previous as Record<string, unknown>)[prop]) !== JSON.stringify(value))
+      .map(([prop, to]) => ({ prop, from: (previous as Record<string, unknown>)[prop] ?? null, to }))
+    if (changes.length) items.push({ key, kind: 'changed', label: labelOf(row), changes })
+  }
+  for (const [key, row] of old) {
+    if (now.has(key)) continue
+    const changes = entries(row).filter(([prop, value]) => !isEmptyDiffValue(prop, value)).map(([prop, from]) => ({ prop, from, to: null }))
+    items.push({ key, kind: 'removed', label: labelOf(row), changes })
+  }
+  const keysOf = (kind: WikiConfigDiffItem['kind']) => items.filter((item) => item.kind === kind).map((item) => item.key)
+  return { added: keysOf('added'), changed: keysOf('changed'), removed: keysOf('removed'), items }
 }
 
 export function diffConfig(before: WikiConfigState, after: WikiConfigState): WikiConfigDiff {
@@ -595,6 +632,10 @@ export function diffConfig(before: WikiConfigState, after: WikiConfigState): Wik
   }
 }
 
+function keysOnly({ added, changed, removed }: WikiConfigListDiff) {
+  return { added, changed, removed }
+}
+
 /** Rövid összefoglaló az agentnek: darabszámok és érintett kulcsok, szöveg nélkül. */
 export function summarizeSimulation(state: WikiConfigState, simulation: WikiConfigSimulation) {
   const diff = diffConfig(state, simulation.next)
@@ -603,10 +644,10 @@ export function summarizeSimulation(state: WikiConfigState, simulation: WikiConf
     ...(diff.name ? { nameChanged: true } : {}),
     ...(diff.collect ? { collectChanged: true } : {}),
     ...(diff.wikiMd ? { wikiMdChanged: true } : {}),
-    groups: diff.groups,
-    categories: diff.categories,
-    fields: diff.fields,
-    templates: diff.templates,
+    groups: keysOnly(diff.groups),
+    categories: keysOnly(diff.categories),
+    fields: keysOnly(diff.fields),
+    templates: keysOnly(diff.templates),
     pageChanges: simulation.pageChanges.length,
   }
 }

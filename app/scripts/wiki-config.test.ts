@@ -9,6 +9,7 @@ import {
   configVersionOf,
   diffConfig,
   simulateConfigOperations,
+  summarizeSimulation,
   type WikiConfigPage,
   type WikiConfigState,
 } from '../src/lib/wiki-config'
@@ -205,6 +206,28 @@ check('diff: csoportok, kategóriák, mezők és sablonok külön', () => {
   assert.deepEqual(diff.categories.added.sort(), ['partners/acceptance', 'partners/other'])
   assert.deepEqual(diff.fields.added, ['direction', 'tags'])
   assert.deepEqual(diff.templates.added, ['partner'])
+})
+
+check('diff: a jóváhagyó a tényleges értékeket kapja, az agent-összefoglaló csak a kulcsokat', () => {
+  const diff = diffConfig(empty, state)
+  const field = diff.fields.items.find((item) => item.key === 'direction')!
+  assert.deepEqual(field.changes.find((row) => row.prop === 'options')?.to, ['in', 'out'])
+  const template = diff.templates.items.find((item) => item.key === 'partner')!
+  assert.equal(template.changes.find((row) => row.prop === 'templateMd')?.to, '## Summary')
+  // Új, sablonos kategóriánál a szabályok a Sablonok résznél látszanak; a saját értékei itt.
+  const category = diff.categories.items.find((item) => item.key === 'partners/acceptance')!
+  assert.deepEqual(category.changes.map((row) => row.prop).sort(), ['name', 'pageSort', 'reviewCycleDays', 'sortOrder', 'templateKey'])
+  assert.equal(category.label, 'Elfogadás')
+  const changed = diffConfig(state, run([{ op: 'updateCategory', key: 'partners/other', label: 'Új név', order: 77 }], state).next)
+  assert.deepEqual(changed.categories.items[0].changes, [
+    { prop: 'name', from: 'Egyéb', to: 'Új név' },
+    { prop: 'sortOrder', from: 20, to: 77 },
+  ])
+  const removed = diffConfig(state, run([{ op: 'removeCategory', key: 'partners/other' }], state).next)
+  assert.equal(removed.categories.items[0].kind, 'removed')
+  assert.equal(removed.categories.items[0].changes.find((row) => row.prop === 'name')?.from, 'Egyéb')
+  const summary = summarizeSimulation(empty, base)
+  assert.deepEqual(summary.fields, { added: ['direction', 'tags'], changed: [], removed: [] })
 })
 
 check('figyelmeztet, ha a kezelt kategóriák vagy mezők ki vannak kapcsolva', () => {

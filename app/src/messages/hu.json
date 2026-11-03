@@ -692,6 +692,51 @@
           "changed": "Módosul",
           "removed": "Megszűnik",
           "fieldsRewritten": "mezőérték átíródik",
+            "yes": "igen",
+            "no": "nem",
+            "noValues": "Nincs megadott érték.",
+            "props": {
+              "name": "Név",
+              "description": "Leírás",
+              "sortOrder": "Sorrend a menüben",
+              "approval": "Jóváhagyás",
+              "pageSort": "Oldalak sorrendje",
+              "pinnedPages": "Kiemelt oldalak",
+              "pageOrder": "Kézi oldalsorrend",
+              "collapsed": "Alapból becsukva",
+              "reviewCycleDays": "Átnézési ciklus (nap)",
+              "requiredFields": "Kötelező mezők",
+              "requiredSections": "Kötelező fejezetek",
+              "sectionRule": "Hiányzó fejezetnél",
+              "templateMd": "Induló oldalváz",
+              "templateKey": "Sablon",
+              "linkedConnectorId": "Kapcsolt wiki",
+              "type": "Típus",
+              "options": "Választható értékek",
+              "help": "Súgó"
+            },
+            "values": {
+              "pageSort": {
+                "title": "cím szerint",
+                "updated_desc": "legutóbb frissített elöl",
+                "date_desc": "legújabb elöl",
+                "manual": "kézi sorrend"
+              },
+              "approval": {
+                "inherit": "a wiki szabálya szerint",
+                "always": "mindig jóváhagyással"
+              },
+              "sectionRule": {
+                "warn": "csak figyelmeztet",
+                "error": "nem engedi menteni"
+              },
+              "type": {
+                "text": "szöveg",
+                "select": "egy érték választható",
+                "multi_select": "több érték választható",
+                "date": "dátum"
+              }
+            },
           "commentLabel": "Üzenet a munkatársnak (elutasításkor, nem kötelező)",
           "approve": "Mindet jóváhagyom",
           "reject": "Elutasítom",

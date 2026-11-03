@@ -14,12 +14,11 @@ import {
 } from '@/app/actions/knowledge-wiki'
 import { Card } from '@/components/ui/shell'
 import { collapseUnchanged, diffLines } from '@/lib/text-line-diff'
-import { WIKI_COLLECT_MAX_CHARS } from '@/lib/wiki-config'
+import { WIKI_COLLECT_MAX_CHARS, type WikiConfigDiffItem, type WikiConfigListDiff } from '@/lib/wiki-config'
 import { formatWhen } from './wiki-format'
 
 type Overview = Extract<Awaited<ReturnType<typeof getWikiConfigProposalsAction>>, { success: true }>['data']
 type Review = Extract<Awaited<ReturnType<typeof getWikiConfigProposalAction>>, { success: true }>['data']
-type ListDiff = { added: string[]; changed: string[]; removed: string[] }
 
 const PROPOSAL_ERRORS = ['config_conflict', 'invalid_config_change', 'proposal_not_pending', 'conflict', 'forbidden', 'not_found'] as const
 
@@ -252,21 +251,65 @@ function Change({ label, from, to }: { label: string; from: string | null; to: s
   return <p className="whitespace-pre-wrap text-sm text-ink">{label}: <span className="text-ink-faint line-through">{from ?? '—'}</span> → {to ?? '—'}</p>
 }
 
-function KeyList({ title, diff }: { title: string; diff: ListDiff }) {
+const DIFF_KINDS = ['added', 'changed', 'removed'] as const
+const ENUM_PROPS = new Set(['pageSort', 'approval', 'sectionRule', 'type'])
+
+/** A jóváhagyó a tényleges értékeket látja, nem csak a kulcsokat: tételenként lenyitható. */
+function KeyList({ title, diff }: { title: string; diff: WikiConfigListDiff }) {
   const t = useTranslations('ControlPlane.wiki.proposals')
-  const rows = [
-    { label: t('added'), keys: diff.added },
-    { label: t('changed'), keys: diff.changed },
-    { label: t('removed'), keys: diff.removed },
-  ].filter((row) => row.keys.length > 0)
   return (
-    <Section title={title} empty={rows.length === 0}>
-      {rows.map((row) => (
-        <p key={row.label} className="text-sm text-ink-soft">
-          <span className="font-medium text-ink">{row.label} ({row.keys.length}):</span> {row.keys.join(', ')}
-        </p>
-      ))}
+    <Section title={title} empty={diff.items.length === 0}>
+      <div className="space-y-2">
+        {DIFF_KINDS.map((kind) => {
+          const items = diff.items.filter((item) => item.kind === kind)
+          if (items.length === 0) return null
+          return (
+            <div key={kind}>
+              <p className="text-sm font-medium text-ink">{t(kind)} ({items.length})</p>
+              <ul className="space-y-0.5">
+                {items.map((item) => <DiffItem key={item.key} item={item} />)}
+              </ul>
+            </div>
+          )
+        })}
+      </div>
     </Section>
+  )
+}
+
+function DiffItem({ item }: { item: WikiConfigDiffItem }) {
+  const t = useTranslations('ControlPlane.wiki.proposals')
+  const value = (prop: string, raw: unknown): string => {
+    if (raw === null || raw === undefined || raw === '' || (Array.isArray(raw) && raw.length === 0)) return '—'
+    if (Array.isArray(raw)) return raw.join(', ')
+    if (typeof raw === 'boolean') return raw ? t('yes') : t('no')
+    if (ENUM_PROPS.has(prop)) return t(`values.${prop}.${String(raw)}` as never)
+    return String(raw)
+  }
+  return (
+    <li className="text-sm text-ink-soft" data-testid={`wiki-proposal-item-${item.key}`}>
+      <details>
+        <summary className="cursor-pointer">
+          <code className="text-xs">{item.key}</code>
+          {item.label ? ` · ${item.label}` : ''}
+        </summary>
+        {item.changes.length === 0 ? (
+          <p className="mt-1 pl-4 text-xs text-ink-faint">{t('noValues')}</p>
+        ) : (
+          <dl className="mt-1 space-y-1 border-l border-line/70 pl-4">
+            {item.changes.map((change) => (
+              <div key={change.prop}>
+                <dt className="text-xs font-medium text-ink-soft">{t(`props.${change.prop}` as never)}</dt>
+                <dd className="whitespace-pre-wrap text-sm text-ink">
+                  {item.kind === 'changed' ? <><span className="text-ink-faint line-through">{value(change.prop, change.from)}</span> → </> : null}
+                  {value(change.prop, item.kind === 'removed' ? change.from : change.to)}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </details>
+    </li>
   )
 }
 
