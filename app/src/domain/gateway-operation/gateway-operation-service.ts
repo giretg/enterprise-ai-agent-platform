@@ -73,7 +73,7 @@ import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import { redactMetadata } from '@/lib/audit/kb-private-redaction'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
-import { isPrivateKnowledgeBase } from '@/lib/wiki-access'
+import { isRestrictedKnowledgeBase } from '@/lib/wiki-access'
 
 export type GatewayActor = ToolCallPrincipal
 
@@ -175,9 +175,9 @@ function wikiChangeSetIdOf(row: { toolName: string; argsJson: unknown }): string
   return asUuid(asRecord(row.argsJson).changeSetId) ?? null
 }
 
-/** D13: privát wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
+/** D13: privát (és #1061 F2 névsoros) wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
 function wikiApplyResultJson(connector: { visibility?: unknown }, result: unknown): unknown {
-  if (!isPrivateKnowledgeBase(connector)) return result
+  if (!isRestrictedKnowledgeBase(connector)) return result
   if (!result || typeof result !== 'object' || Array.isArray(result)) return { privateKb: true }
   const row = result as Record<string, unknown>
   const pageCount = Array.isArray(row.pages) ? row.pages.length : undefined

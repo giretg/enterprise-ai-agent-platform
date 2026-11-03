@@ -110,9 +110,12 @@ export class PostgresConnectorRepository implements ConnectorRepository {
       config?: Prisma.InputJsonValue
       visibility?: Connector['visibility']
       ownerUserId?: string | null
+      /** #1061 F2: a `members` névsor (teljes csere). */
+      kbMemberUserIds?: string[]
     },
   ): Promise<Connector> {
     if (input.visibility === 'private_to_user' && !input.ownerUserId) throw new Error('private_kb_owner_required')
+    if (input.visibility === 'members' && !input.ownerUserId) throw new Error('members_kb_owner_required')
     return prisma.connector.update({
       where: { id: connectorId, type: 'knowledge_base' },
       data: {
@@ -120,6 +123,7 @@ export class PostgresConnectorRepository implements ConnectorRepository {
         ...(input.config !== undefined ? { config: input.config } : {}),
         ...(input.visibility !== undefined ? { visibility: input.visibility, ownerMissingSince: null } : {}),
         ...(input.ownerUserId !== undefined ? { ownerUserId: input.ownerUserId } : {}),
+        ...(input.kbMemberUserIds !== undefined ? { kbMemberUserIds: [...new Set(input.kbMemberUserIds)] } : {}),
       },
     })
   }

@@ -248,6 +248,10 @@ enum WikiCategoryApproval {
 enum KnowledgeBaseVisibility {
   shared
   private_to_user
+  /**
+   * #1061 F2 D1: „csak a kijelöltek” — a tartalmat csak a `Connector.kbMemberUserIds` névsor éri el.
+   */
+  members
 }
 
 enum ConnectorAuthMode {
@@ -835,6 +839,11 @@ model Connector {
   visibility        KnowledgeBaseVisibility @default(shared)
   ownerUserId       String?                 @map("owner_user_id") @db.Uuid
   ownerMissingSince DateTime?               @map("owner_missing_since") @db.Timestamptz
+  /**
+   * #1061 F2: `members` láthatóságnál a névsor (felhasználó-azonosítók). Hatásos hozzáférés =
+   * agent-kötés ÉS tagság; a tulajdonos is a listán van. Más láthatóságnál üres.
+   */
+  kbMemberUserIds   String[]                @default([]) @map("kb_member_user_ids") @db.Uuid
   /// #1016 D4: nyilvános tudásbázis („ami ide kerül, az nyilvános”) — csak ilyen köthető nyilvános asszisztenshez.
   publicKb          Boolean                 @default(false) @map("public_kb")
   createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz
@@ -843,22 +852,23 @@ model Connector {
   activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
   activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
 
-  tenant             Tenant                 @relation(fields: [tenantId], references: [id])
-  agentConnectors    AgentConnector[]
-  primaryForAgents   Agent[]                @relation("AgentPrimaryMailbox")
-  grants             ConnectorGrant[]
-  draft              ConnectorDraft?
-  gatewayOperations  GatewayOperation[]
-  specSource         ConnectorSpecSource?
-  specVersions       ConnectorSpecVersion[] @relation("SpecVersions")
-  documents          Document[]
-  knowledgeArtifacts KnowledgeArtifact[]
-  knowledgeChunks    KnowledgeChunk[]
-  wiki               AgentWiki?
-  wikiPages          WikiPage[]
-  wikiChangeSets     WikiChangeSet[]
-  inboundMailEvents  InboundMailEvent[]
-  mailWatch          MailWatchSubscription?
+  tenant                   Tenant                 @relation(fields: [tenantId], references: [id])
+  agentConnectors          AgentConnector[]
+  primaryForAgents         Agent[]                @relation("AgentPrimaryMailbox")
+  linkedFromWikiCategories WikiCategory[]         @relation("WikiCategoryLinkedWiki")
+  grants                   ConnectorGrant[]
+  draft                    ConnectorDraft?
+  gatewayOperations        GatewayOperation[]
+  specSource               ConnectorSpecSource?
+  specVersions             ConnectorSpecVersion[] @relation("SpecVersions")
+  documents                Document[]
+  knowledgeArtifacts       KnowledgeArtifact[]
+  knowledgeChunks          KnowledgeChunk[]
+  wiki                     AgentWiki?
+  wikiPages                WikiPage[]
+  wikiChangeSets           WikiChangeSet[]
+  inboundMailEvents        InboundMailEvent[]
+  mailWatch                MailWatchSubscription?
 
   @@unique([tenantId, type, name])
   @@index([tenantId, visibility, ownerUserId])
@@ -956,22 +966,22 @@ model ConnectorSpecVersion {
 }
 
 model ConnectorGrant {
-  id              String               @id @default(uuid()) @db.Uuid
-  tenantId        String               @map("tenant_id") @db.Uuid
-  connectorId     String               @map("connector_id") @db.Uuid
+  id              String                  @id @default(uuid()) @db.Uuid
+  tenantId        String                  @map("tenant_id") @db.Uuid
+  connectorId     String                  @map("connector_id") @db.Uuid
   /// #1028: `ownerType = tenant` esetén kötelezően NULL (DB check constraint).
   userId          String?                 @map("user_id") @db.Uuid
   ownerType       ConnectorGrantOwnerType @default(user) @map("owner_type")
-  status          ConnectorGrantStatus @default(active)
-  scopes          Json                 @default("[]")
-  tokenRef        String               @unique @map("token_ref")
-  accountLabel    String?              @map("account_label")
-  nickname        String?              @map("nickname")
-  grantedAt       DateTime             @default(now()) @map("granted_at") @db.Timestamptz
-  expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
-  lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
-  revokedAt       DateTime?            @map("revoked_at") @db.Timestamptz
-  metadata        Json                 @default("{}")
+  status          ConnectorGrantStatus    @default(active)
+  scopes          Json                    @default("[]")
+  tokenRef        String                  @unique @map("token_ref")
+  accountLabel    String?                 @map("account_label")
+  nickname        String?                 @map("nickname")
+  grantedAt       DateTime                @default(now()) @map("granted_at") @db.Timestamptz
+  expiresAt       DateTime?               @map("expires_at") @db.Timestamptz
+  lastRefreshedAt DateTime?               @map("last_refreshed_at") @db.Timestamptz
+  revokedAt       DateTime?               @map("revoked_at") @db.Timestamptz
+  metadata        Json                    @default("{}")
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
@@ -1203,23 +1213,29 @@ model WikiPage {
  * kulcsút (`partners/payment`); a kulcs wikin belül egyedi és nem változtatható (D10).
  */
 model WikiCategory {
-  id          String               @id @default(uuid()) @db.Uuid
-  wikiId      String               @map("wiki_id") @db.Uuid
-  key         String
-  parentId    String?              @map("parent_id") @db.Uuid
-  name        String
+  id                String               @id @default(uuid()) @db.Uuid
+  wikiId            String               @map("wiki_id") @db.Uuid
+  key               String
+  parentId          String?              @map("parent_id") @db.Uuid
+  name              String
   /**
    * Az agent ebből tudja, mi kerül ide (briefing, `kb_list_index`).
    */
-  description String?
-  sortOrder   Int                  @default(0) @map("sort_order")
-  approval    WikiCategoryApproval @default(inherit)
-  createdAt   DateTime             @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt   DateTime             @updatedAt @map("updated_at") @db.Timestamptz
+  description       String?
+  sortOrder         Int                  @default(0) @map("sort_order")
+  approval          WikiCategoryApproval @default(inherit)
+  /**
+   * #1061 F2: „kapcsolt wiki” menüpont — egy másik tudástárra mutat, oldal nem kerülhet bele.
+   * Csak annak látszik, aki a kapcsolt wikit is látja; az `index.md`-be nem kerül.
+   */
+  linkedConnectorId String?              @map("linked_connector_id") @db.Uuid
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz
 
-  wiki     AgentWiki      @relation(fields: [wikiId], references: [id], onDelete: Cascade)
-  parent   WikiCategory?  @relation("WikiCategoryTree", fields: [parentId], references: [id], onDelete: NoAction)
-  children WikiCategory[] @relation("WikiCategoryTree")
+  wiki            AgentWiki      @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+  linkedConnector Connector?     @relation("WikiCategoryLinkedWiki", fields: [linkedConnectorId], references: [id], onDelete: Cascade)
+  parent          WikiCategory?  @relation("WikiCategoryTree", fields: [parentId], references: [id], onDelete: NoAction)
+  children        WikiCategory[] @relation("WikiCategoryTree")
 
   @@unique([wikiId, key])
   @@index([wikiId, parentId])
@@ -2012,25 +2028,25 @@ model PublicAssistant {
 
 /// #1016 D11/D17: egy névtelen látogató egy beszélgetése (`public_web` csatorna). 30 nap után törlődik.
 model PublicChatSession {
-  id             String    @id @default(uuid()) @db.Uuid
-  tenantId       String    @map("tenant_id") @db.Uuid
-  agentId        String    @map("agent_id") @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  agentId        String   @map("agent_id") @db.Uuid
   /// A böngészőben tárolt névtelen látogató-azonosító (véletlen, ≥ 32 karakter) — a beszélgetés kulcsa is.
-  visitorId      String    @map("visitor_id")
+  visitorId      String   @map("visitor_id")
   /// D22: „Kipróbálás látogatóként” — az analitikán kívül.
-  isTest         Boolean   @default(false) @map("is_test")
+  isTest         Boolean  @default(false) @map("is_test")
   /// D2/D3: a widget által átadott, MEGBÍZHATATLAN kontextus (≤ 8 kB).
   context        Json?
   /// [{ role: 'user' | 'assistant', content, at }]
-  messages       Json      @default("[]")
-  messageCount   Int       @default(0) @map("message_count")
+  messages       Json     @default("[]")
+  messageCount   Int      @default(0) @map("message_count")
   /// none | forwarded | callback_requested
-  handoff        String    @default("none")
-  handoffContact String?   @map("handoff_contact")
-  handoffSummary String?   @map("handoff_summary")
-  ipHash         String?   @map("ip_hash")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
+  handoff        String   @default("none")
+  handoffContact String?  @map("handoff_contact")
+  handoffSummary String?  @map("handoff_summary")
+  ipHash         String?  @map("ip_hash")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  lastActivityAt DateTime @default(now()) @map("last_activity_at") @db.Timestamptz
 
   tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   assistant PublicAssistant    @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
@@ -2173,7 +2189,7 @@ model InboundMailEvent {
   handoffId         String?                @map("handoff_id") @db.Uuid
   source            String                 @default("poll")
   error             String?
-  runStartedAt      DateTime? @map("run_started_at") @db.Timestamptz
+  runStartedAt      DateTime?              @map("run_started_at") @db.Timestamptz
   createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz
 

@@ -15,6 +15,7 @@ import {
 } from '@/app/actions/knowledge-wiki'
 import { Badge, Card } from '@/components/ui/shell'
 import { WikiInboxPanel } from '@/components/knowledge/wiki/wiki-inbox-panel'
+import { WikiSourceList } from '@/components/knowledge/wiki/wiki-sources'
 import { WikiMarkdown } from '@/components/knowledge/wiki/wiki-markdown'
 import { WikiAgentAccessEditor } from '@/components/knowledge/wiki/wiki-agent-access-editor'
 import { WikiOwnerActions } from '@/components/knowledge/wiki/wiki-owner-actions'
@@ -74,11 +75,11 @@ export default async function KnowledgeBaseWikiPage({
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
         <div className="mt-1 flex flex-wrap items-center gap-2">
           <h1 className="font-display text-3xl font-semibold" data-testid="wiki-title">{wiki.name}</h1>
-          <Badge tone={wiki.private ? 'warning' : 'neutral'}>{t(`kind.${wiki.kind}`)}</Badge>
+          <Badge tone={wiki.private || wiki.kind === 'members' ? 'warning' : 'neutral'}>{t(`kind.${wiki.kind}`)}</Badge>
           <Badge tone="neutral">{t(`templates.${wiki.template}.name`)}</Badge>
         </div>
         <p className="mt-1 max-w-2xl text-sm text-ink-soft">
-          {wiki.private ? t('header.privateBody') : t('header.body')}
+          {wiki.private ? t('header.privateBody') : wiki.kind === 'members' ? t('header.membersBody') : t('header.body')}
         </p>
         <WhoSees wiki={wiki} connectorId={connectorId} t={t} />
       </div>
@@ -189,7 +190,7 @@ async function WikiTab({
       ) : (
         <>
           {wiki.pageCount === 0 ? <p className="mb-2 text-sm text-ink-soft" data-testid="wiki-empty">{t('toc.empty')}</p> : null}
-          <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} />
+          <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} linkedWikis={wiki.linkedWikis} />
         </>
       )}
     </Card>
@@ -228,7 +229,7 @@ async function WikiTab({
             {res.data.status === 'archived' ? ` · ${t('page.archived')}` : ''}
           </p>
           <div className="mt-4">
-            <WikiMarkdown connectorId={connectorId} body={res.data.body} knownPaths={res.data.knownPaths} />
+            <WikiMarkdown connectorId={connectorId} body={res.data.body} knownPaths={res.data.knownPaths} crossLinks={res.data.crossLinks} />
           </div>
           {res.data.sources.length ? (
             <div className="mt-6 border-t border-line/70 pt-3">
@@ -236,27 +237,11 @@ async function WikiTab({
                 {t('page.sources')}
                 <HelpHint>{t('page.sourcesHelp')}</HelpHint>
               </p>
-              <ul className="space-y-1 text-sm" data-testid="wiki-page-sources">
-                {res.data.sources.map((ref, index) => (
-                  <li key={`${ref.documentId}-${index}`}>
-                    {ref.exists ? (
-                      <Link
-                        href={`${wikiHref(connectorId, { source: ref.documentId, p: ref.page ? String(ref.page) : undefined })}${ref.page ? `#p-${ref.page}` : ''}`}
-                        className="text-coral-deep hover:underline"
-                      >
-                        {ref.filename ?? ref.documentId}
-                        {ref.page ? `, ${t('page.pageN', { n: ref.page })}` : ''}
-                        {ref.section ? ` · ${ref.section}` : ''}
-                      </Link>
-                    ) : (
-                      <span className="text-ink-faint">{ref.filename ?? ref.documentId} ({t('page.sourceMissing')})</span>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <WikiSourceList connectorId={connectorId} sources={res.data.sources} />
             </div>
           ) : null}
           {res.data.backlinks ? <BacklinksPanel connectorId={connectorId} backlinks={res.data.backlinks} t={t} /> : null}
+          {res.data.crossBacklinks.length ? <CrossBacklinksPanel rows={res.data.crossBacklinks} t={t} /> : null}
           <PageHistoryPanel connectorId={connectorId} path={res.data.path} locale={locale} />
         </article>
       </Card>
@@ -431,6 +416,30 @@ function SourceView({
 type PageData = Extract<Awaited<ReturnType<typeof getWikiPageAction>>, { success: true }>['data']
 
 /** #1061 F1: „Erre az oldalra hivatkozik (N)” — kategória szerint csoportosítva. */
+/** #1061 F2: más wikik oldalai, amelyek ide mutatnak (csak a néző által látott wikikből). */
+function CrossBacklinksPanel({ rows, t }: { rows: PageData['crossBacklinks']; t: T }) {
+  return (
+    <div className="mt-4 border-t border-line/70 pt-3" data-testid="wiki-cross-backlinks">
+      <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
+        {t('backlinks.otherWikis', { count: rows.length })}
+      </p>
+      <ul className="flex flex-wrap gap-1 text-sm">
+        {rows.map((row) => (
+          <li key={`${row.connectorId}:${row.path}`}>
+            <Link
+              href={wikiHref(row.connectorId, { page: row.path })}
+              className="rounded bg-ink/5 px-1.5 py-0.5 text-ink hover:text-coral-deep"
+              title={row.path}
+            >
+              {row.wikiName} · {row.title}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function BacklinksPanel({
   connectorId,
   backlinks,
@@ -484,7 +493,9 @@ function WhoSees({ wiki, connectorId, t }: { wiki: Overview; connectorId: string
     <dl className="mt-3 grid max-w-2xl gap-1 rounded-lg border border-line/70 bg-paper/60 px-3 py-2 text-sm" data-testid="wiki-who-sees">
       <div className="flex flex-wrap gap-x-2">
         <dt className="font-medium text-ink">{t('whoSees.humans')}</dt>
-        <dd className="text-ink-soft">{t(`whoSees.humansBy.${wiki.private ? 'private' : 'shared'}`)}</dd>
+        <dd className="text-ink-soft">
+          {t(`whoSees.humansBy.${wiki.private ? 'private' : wiki.kind === 'members' ? 'members' : 'shared'}`)}
+        </dd>
       </div>
       <div className="flex flex-wrap gap-x-2">
         <dt className="font-medium text-ink">{t('whoSees.agents')}</dt>

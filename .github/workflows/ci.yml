@@ -148,6 +148,7 @@ jobs:
           npm run test:kb-wiki
           npm run test:wiki-console
           npm run test:wiki-categories
+          npm run test:wiki-sources
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -309,6 +310,9 @@ jobs:
       # #1061: kezelt kategória-fa (bekapcsolás, áthelyezés, törlés) és visszahivatkozások valódi Postgresen.
       - name: Wiki structure (Postgres)
         run: npm run test:wiki-structure-db
+      # #1061 F2: emberi rögzítés, másik tudástár forrása, „csak a kijelöltek” wiki, kapcsolt wiki.
+      - name: Wiki sources and members-only wikis (Postgres)
+        run: npm run test:wiki-sources-members-db
 
       # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
       - name: Wiki console queries (Postgres)

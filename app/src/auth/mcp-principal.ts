@@ -66,6 +66,8 @@ export type McpPrincipal = {
   /** Folytatási token (#1004 §7): csak erre az agentre és fordulóra jó. */
   boundAgentId?: string
   turnId?: string
+  /** #1061 F2: platform által indított háttérfutás (pl. bejövő levél) — nincs interaktív ember. */
+  background?: true
 }
 
 export type McpPrincipalFailureCode =
@@ -284,6 +286,7 @@ async function resolveChatPrincipal(
       client: 'platform_chat',
       ...(chat.agentId ? { boundAgentId: chat.agentId } : {}),
       ...(chat.turnId ? { turnId: chat.turnId } : {}),
+      ...(chat.origin || chat.bg ? { background: true as const } : {}),
     },
   }
 }

@@ -672,6 +672,7 @@ const categorySelect = {
   description: true,
   sortOrder: true,
   approval: true,
+  linkedConnectorId: true,
 } as const
 
 /** #1061 F1: kezelt kategória-fa és visszahivatkozások. */
@@ -726,6 +727,27 @@ export class PostgresWikiStructureRepository implements WikiStructureRepository 
       count: rows.length ? Number(rows[0].total) : 0,
       pages: rows.map(({ path: pagePath, title, category }) => ({ path: pagePath, title, category })),
     }
+  }
+
+  async listCrossBacklinks(tenantId: string, outLink: string, limit: number) {
+    const rows = await prisma.$queryRaw<
+      Array<{ wiki_id: string; connector_id: string; path: string; title: string; category: string | null }>
+    >`
+      SELECT p.wiki_id, p.connector_id, p.path, p.title, p.category
+      FROM wiki_pages p
+      JOIN connectors c ON c.id = p.connector_id
+      WHERE c.tenant_id = ${tenantId}::uuid
+        AND p.status = 'published'
+        AND p.out_links @> ARRAY[${outLink}]::text[]
+      ORDER BY p.connector_id, p.category NULLS LAST, p.path
+      LIMIT ${limit}`
+    return rows.map((row) => ({
+      wikiId: row.wiki_id,
+      connectorId: row.connector_id,
+      path: row.path,
+      title: row.title,
+      category: row.category,
+    }))
   }
 }
 

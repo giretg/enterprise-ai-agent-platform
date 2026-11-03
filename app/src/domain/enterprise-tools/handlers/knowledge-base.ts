@@ -27,6 +27,8 @@ export type KbToolContext = {
   userId: string
   /** #943: a hívóra szűkített snapshot-kötések (wiki-jog feloldásához). */
   snapshot?: { connectors: WikiSnapshotConnector[] }
+  /** #1061 F2: interaktív emberi munkamenet (nem ütemezett futás) — `human_note` csak így. */
+  interactive?: boolean
 }
 
 /** Hibakód + javítható részletek a modellnek (pl. `already_claimed`). */
@@ -59,7 +61,13 @@ function decodeIngestBuffer(args: Record<string, unknown>): Buffer {
 
 function wikiCaller(ctx: KbToolContext): WikiCaller | null {
   if (!ctx.snapshot) return null
-  return { tenantId: ctx.tenantId, userId: ctx.userId, agentId: ctx.agentId, snapshot: ctx.snapshot }
+  return {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    snapshot: ctx.snapshot,
+    ...(ctx.interactive ? { interactive: true } : {}),
+  }
 }
 
 /** A wiki-útvonalak (beküldés, írás, tálca), amelyek nem egyetlen kiválasztott KB-kötésen futnak. */
@@ -205,6 +213,7 @@ export async function executeKnowledgeBaseTool(
         path: String(args.path),
         explicitWiki: typeof args.wikiId === 'string',
         asOf: typeof args.asOf === 'string' || typeof args.asOf === 'number' ? args.asOf : undefined,
+        reader: { tenantId: ctx.tenantId, userId: ctx.userId, snapshot: ctx.snapshot },
       })
       if (page) return page
     }

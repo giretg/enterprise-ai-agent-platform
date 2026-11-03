@@ -10,8 +10,10 @@ export type WikiConsoleKbRow = {
   connectorId: string
   name: string
   config: Prisma.JsonValue
-  visibility: 'shared' | 'private_to_user'
+  visibility: 'shared' | 'private_to_user' | 'members'
   ownerUserId: string | null
+  /** #1061 F2: `members` névsora (más láthatóságnál üres). */
+  kbMemberUserIds: string[]
   ownerLabel: string | null
   lifecycleState: string
   createdAt: Date
@@ -64,6 +66,8 @@ export interface WikiConsoleRepository {
    * a tenant összes nem nyugdíjazott munkatársa (admin); különben csak a view/operate grantosak.
    */
   listAgentsForWikiAccess(tenantId: string, userId: string | null): Promise<Array<{ id: string; name: string }>>
+  /** #1061 F2: a tenant aktív tagjai (a „csak a kijelöltek” névsor-választójához). */
+  listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string }>>
 }
 
 function effectiveStatusSql(now: Date) {
@@ -79,8 +83,9 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
         id: string
         name: string
         config: Prisma.JsonValue
-        visibility: 'shared' | 'private_to_user'
+        visibility: 'shared' | 'private_to_user' | 'members'
         owner_user_id: string | null
+        kb_member_user_ids: string[] | null
         owner_label: string | null
         lifecycle_state: string
         created_at: Date
@@ -89,7 +94,7 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
         bytes: bigint | null
       }>
     >(Prisma.sql`
-      SELECT c.id, c.name, c.config, c.visibility, c.owner_user_id,
+      SELECT c.id, c.name, c.config, c.visibility, c.owner_user_id, c.kb_member_user_ids,
              COALESCE(NULLIF(u.name, ''), u.email) AS owner_label,
              c.lifecycle_state::text AS lifecycle_state, c.created_at,
              (SELECT count(*) FROM documents d WHERE d.connector_id = c.id) AS source_count,
@@ -107,6 +112,7 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
       config: row.config,
       visibility: row.visibility,
       ownerUserId: row.owner_user_id,
+      kbMemberUserIds: row.kb_member_user_ids ?? [],
       ownerLabel: row.owner_label,
       lifecycleState: row.lifecycle_state,
       createdAt: row.created_at,
@@ -216,6 +222,16 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
     if (unique.length === 0) return new Map()
     const rows = await prisma.user.findMany({ where: { id: { in: unique } }, select: { id: true, name: true, email: true } })
     return new Map(rows.map((row) => [row.id, row.name || row.email]))
+  }
+
+  async listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string }>> {
+    const rows = await prisma.tenantMembership.findMany({
+      where: { tenantId, status: 'active' },
+      select: { user: { select: { id: true, name: true, email: true } } },
+    })
+    return rows
+      .map((row) => ({ id: row.user.id, label: row.user.name || row.user.email }))
+      .sort((a, b) => a.label.localeCompare(b.label))
   }
 
   async agentNames(tenantId: string, ids: string[]): Promise<Map<string, string>> {

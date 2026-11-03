@@ -24,6 +24,7 @@ import {
 import { createPublicModelCaller } from '@/domain/public-chat/model-client'
 import { issueTestToken } from '@/domain/public-chat/service'
 import { writeAudit } from '@/lib/audit/types'
+import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { prisma } from '@/lib/db'
 import { extractJsonObject } from '@/lib/extract-json-object'
 import { readTenantLanguage } from '@/lib/tenant-language'
@@ -403,10 +404,11 @@ export async function copyDocumentToPublicKbAction(input: { agentId: string; con
     const { row } = await assertPublicKb(ctx.activeTenantId, input.agentId, input.connectorId)
     const doc = await prisma.document.findFirst({
       where: { id: input.documentId, tenantId: ctx.activeTenantId },
-      include: { connector: { select: { visibility: true, ownerUserId: true } } },
+      include: { connector: { select: { type: true, visibility: true, ownerUserId: true, kbMemberUserIds: true } } },
     })
     if (!doc || !doc.extractedText?.trim()) return fail('A dokumentum nem található, vagy nincs kinyert szövege.')
-    if (doc.connector?.visibility === 'private_to_user' && doc.connector.ownerUserId !== ctx.user.id) {
+    // Privát (más tulajdonosé) és — #1061 F2 — névsoros tudástár nem-tagnak nem létezik.
+    if (doc.connector?.type === 'knowledge_base' && !isKnowledgeBaseVisibleTo(doc.connector, ctx.user.id)) {
       return fail('A dokumentum nem található, vagy nincs kinyert szövege.')
     }
     await services.knowledgeBase.ingest({

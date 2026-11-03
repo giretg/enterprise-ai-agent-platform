@@ -14,13 +14,22 @@ import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { diffLines, type LineDiffRow } from '@/lib/text-line-diff'
 import {
   groupWikiIndex,
+  isDocumentSource,
+  isHumanNoteSource,
   readWikiSources,
   stripManagedFrontmatter,
   wikiPageContentHash,
   type WikiPageState,
   type WikiPageTypeName,
+  type WikiSourceRef,
 } from '@/lib/kb-wiki'
-import { canDecideWikiChange, isPrivateKnowledgeBase, type WikiApproverScope } from '@/lib/wiki-access'
+import {
+  canDecideWikiChange,
+  isKnowledgeBaseMember,
+  isMembersKnowledgeBase,
+  isPrivateKnowledgeBase,
+  type WikiApproverScope,
+} from '@/lib/wiki-access'
 import type {
   AuditRepository,
   ConnectorRepository,
@@ -89,12 +98,13 @@ export class WikiHistoryService {
   private async canRevert(actor: WikiConsoleActor, connector: Connector): Promise<boolean> {
     if (isPrivateKnowledgeBase(connector)) return connector.ownerUserId === actor.userId
     const scope: WikiApproverScope = await this.deps.wiki.approverScopeFor(connector)
-    return canDecideWikiChange({ userId: actor.userId, role: String(actor.role), assumed: actor.assumed }, scope)
+    return canDecideWikiChange({ userId: actor.userId, role: String(actor.role), assumed: actor.assumed }, scope, connector)
   }
 
   /** §8: címke — közösnél szerkesztő (operátor) vagy admin, privátnál a tulajdonos. */
   private canTag(actor: WikiConsoleActor, connector: Connector): boolean {
     if (isPrivateKnowledgeBase(connector)) return connector.ownerUserId === actor.userId
+    if (isMembersKnowledgeBase(connector) && !isKnowledgeBaseMember(connector, actor.userId)) return false
     return hasMinimumRole(actor.role as UserRole, 'operator')
   }
 
@@ -783,11 +793,11 @@ export class WikiHistoryService {
       const oldPaths = new Map<string, string>()
       const sourceIds = new Set<string>()
       for (const page of pages) {
-        for (const source of readWikiSources(page.sourceRefs)) sourceIds.add(source.documentId)
+        for (const source of localDocumentSources(page.sourceRefs)) sourceIds.add(source.documentId)
         const newPath = erasedPath(page.id)
         const revisions = await this.deps.history.listRevisions(connector.id, page.id)
         for (const rev of revisions) {
-          for (const source of readWikiSources(rev.sourceRefs)) sourceIds.add(source.documentId)
+          for (const source of localDocumentSources(rev.sourceRefs)) sourceIds.add(source.documentId)
           if (rev.path) oldPaths.set(rev.path, newPath)
           if (rev.erasedAt) continue
           write.tombstoneRevisionIds.push(rev.id)
@@ -993,10 +1003,20 @@ function changeRow(
   }
 }
 
+/** Az oldal saját tudástárbeli nyers forrásai (a másik wikiből vett és az emberi rögzítés nem). */
+function localDocumentSources(value: unknown) {
+  return readWikiSources(value).filter(isDocumentSource).filter((ref) => !ref.connectorId)
+}
+
+function sourceLabel(ref: WikiSourceRef): string {
+  if (isHumanNoteSource(ref)) return `human_note: ${ref.occasion}`
+  return ref.filename ?? ref.documentId
+}
+
 /** Két revízió mezőnkénti és törzs-szintű eltérése (`before` nélkül: új oldal). */
 function revisionDiff(before: WikiPageRevision | null, after: WikiPageRevision, page: WikiPage) {
   const sources = (rev: WikiPageRevision | null) =>
-    rev ? readWikiSources(rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)).map((ref) => ref.filename ?? ref.documentId).join(', ') : ''
+    rev ? readWikiSources(rev.sourceRefs ?? (rev.version === page.version ? page.sourceRefs : null)).map(sourceLabel).join(', ') : ''
   const field = (name: 'title' | 'summary' | 'path' | 'status' | 'category' | 'sources', a: string, b: string) =>
     a === b ? [] : [{ field: name, before: a, after: b }]
   return {

@@ -31,17 +31,23 @@ import {
   WIKI_SCHEMA_PATH,
   defaultWikiSchema,
   groupWikiIndex,
+  isDefaultWikiSchema,
+  extractCrossWikiLinks,
+  isDocumentSource,
+  isHumanNoteSource,
   readWikiSources,
   renderWikiIndex,
   renderWikiLog,
   renderWikiPageMarkdown,
   stripManagedFrontmatter,
+  type WikiDocumentSourceRef,
   type WikiSourceRef,
 } from '@/lib/kb-wiki'
 import { isKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import {
   categoryIndex,
   groupPagesByTree,
+  linkedWikiItems,
   normalizeCategoryPath,
   renderWikiTreeIndex,
   type WikiCategoryRow,
@@ -51,6 +57,9 @@ import {
   canManageKnowledgeBaseLink,
   effectiveWikiAccess,
   effectiveWikiWriteMode,
+  isKnowledgeBaseMember,
+  isKnowledgeBaseVisibleTo,
+  isMembersKnowledgeBase,
   isPrivateKnowledgeBase,
   ownerAgentIdForKnowledgeBase,
   type WikiDecider,
@@ -76,7 +85,22 @@ export class WikiConsoleError extends Error {
   }
 }
 
-export type WikiKbKind = 'catalog' | 'agent' | 'shared' | 'private'
+export type WikiKbKind = 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+
+/** #1061 F2: egy forrás a felületen (dokumentum, emberi rögzítés, vagy nem látható másik tudástár). */
+export type WikiSourceView =
+  | {
+      kind: 'document'
+      documentId: string
+      /** Csak másik tudástár forrásánál. */
+      connectorId?: string
+      page: number | null
+      section: string | null
+      filename: string | null
+      exists: boolean
+    }
+  | { kind: 'human_note'; recordedBy: string | null; recordedAt: string; occasion: string; participants: string | null }
+  | { kind: 'restricted' }
 
 type Access = { view: boolean; contribute: boolean; manage: boolean; metaOnly: boolean }
 
@@ -86,6 +110,7 @@ export type WikiConsoleDeps = {
   agents: Pick<AgentRepository, 'findById' | 'findConnectorsForAgent' | 'findConnectorBinding'>
   wikis: Pick<
     WikiRepository,
+    | 'findById'
     | 'findByConnectorId'
     | 'listPages'
     | 'findPage'
@@ -100,7 +125,7 @@ export type WikiConsoleDeps = {
   >
   console: WikiConsoleRepository
   wiki: Pick<WikiService, 'wikiIdForConnector' | 'previewChangeSet' | 'canDecide' | 'reject'> &
-    Partial<Pick<WikiService, 'managedCategories' | 'backlinks'>>
+    Partial<Pick<WikiService, 'managedCategories' | 'backlinks' | 'crossBacklinkRows'>>
   wikiAccess: Pick<WikiAccessService, 'createPrivateKnowledgeBase' | 'linkKnowledgeBase' | 'setWikiAccess' | 'purgePrivateKnowledgeBase'>
   knowledgeBase: Pick<KnowledgeBaseService, 'ingestIntoKnowledgeBase'>
   audit: Pick<AuditRepository, 'append'>
@@ -113,7 +138,21 @@ function role(actor: WikiConsoleActor): UserRole {
   return actor.role as UserRole
 }
 
-function accessFor(actor: WikiConsoleActor, connector: Pick<Connector, 'visibility' | 'ownerUserId'>): Access {
+function accessFor(
+  actor: WikiConsoleActor,
+  connector: Pick<Connector, 'visibility' | 'ownerUserId'> & { kbMemberUserIds?: readonly string[] | null },
+): Access {
+  if (isMembersKnowledgeBase(connector)) {
+    // #1061 F2 D9: a tartalmat csak tag látja — az admin is csak tagként; nem-tag admin metaadatot lát.
+    const member = isKnowledgeBaseMember(connector, actor.userId)
+    const admin = hasMinimumRole(role(actor), 'admin')
+    return {
+      view: member,
+      contribute: member && hasMinimumRole(role(actor), 'operator'),
+      manage: member && (connector.ownerUserId === actor.userId || admin),
+      metaOnly: !member && admin,
+    }
+  }
   if (isPrivateKnowledgeBase(connector)) {
     const owner = !!connector.ownerUserId && connector.ownerUserId === actor.userId
     return {
@@ -131,6 +170,7 @@ function accessFor(actor: WikiConsoleActor, connector: Pick<Connector, 'visibili
 
 export function wikiKbKind(connector: Pick<Connector, 'name' | 'visibility'>): WikiKbKind {
   if (isPrivateKnowledgeBase(connector)) return 'private'
+  if (isMembersKnowledgeBase(connector)) return 'members'
   if (connector.name === KB_CATALOG_CONNECTOR_NAME) return 'catalog'
   if (ownerAgentIdForKnowledgeBase(connector.name)) return 'agent'
   return 'shared'
@@ -168,6 +208,54 @@ export class WikiConsoleService {
     if (!access.view) throw new WikiConsoleError('not_found')
     if (!access[need]) throw new WikiConsoleError('forbidden')
     return { connector, access }
+  }
+
+  /** A néző által (élő hozzáféréssel, névsorral is) látott másik tudástár; különben `null`. */
+  private async viewableConnector(actor: WikiConsoleActor, connectorId: string): Promise<Connector | null> {
+    const target = await this.deps.connectors.findById(connectorId, actor.tenantId)
+    if (
+      !target || target.tenantId !== actor.tenantId || target.type !== 'knowledge_base' ||
+      target.lifecycleState !== 'active' || !accessFor(actor, target).view
+    ) return null
+    return target
+  }
+
+  /** #1061 F2: a törzs wikik közti linkjei a felületnek (a nem látott wiki azonosító nélkül). */
+  private async crossLinkViews(actor: WikiConsoleActor, connectorId: string, body: string) {
+    const out: Array<{ wikiId: string; path: string; connectorId: string | null; exists: boolean }> = []
+    for (const link of extractCrossWikiLinks(body)) {
+      const wiki = await this.deps.wikis.findById(link.wikiId)
+      const target = wiki && wiki.connectorId !== connectorId ? await this.viewableConnector(actor, wiki.connectorId) : null
+      const page = target ? await this.deps.wikis.findPage(target.id, link.path) : null
+      out.push({ wikiId: link.wikiId, path: link.path, connectorId: target?.id ?? null, exists: page?.status === 'published' })
+    }
+    return out
+  }
+
+  private async visibleCrossBacklinks(actor: WikiConsoleActor, wikiId: string, path: string) {
+    const rows = (await this.deps.wiki.crossBacklinkRows?.(actor.tenantId, wikiId, path)) ?? []
+    const visible = new Map<string, Connector | null>()
+    const out: Array<{ connectorId: string; wikiName: string; path: string; title: string }> = []
+    for (const row of rows) {
+      if (!visible.has(row.connectorId)) visible.set(row.connectorId, await this.viewableConnector(actor, row.connectorId))
+      const target = visible.get(row.connectorId)
+      if (target) out.push({ connectorId: target.id, wikiName: await this.displayName(target), path: row.path, title: row.title })
+    }
+    return out
+  }
+
+  /** #1061 F2: a kapcsolt wikik közül azok, amelyeket a néző is lát (élő hozzáférés, névsor is). */
+  private async visibleLinkedWikis(actor: WikiConsoleActor, rows: WikiCategoryRow[]) {
+    const out: Array<{ key: string; name: string; parentKey: string | null; connectorId: string }> = []
+    for (const item of linkedWikiItems(rows)) {
+      const target = await this.deps.connectors.findById(item.linkedConnectorId, actor.tenantId)
+      if (
+        !target || target.tenantId !== actor.tenantId || target.type !== 'knowledge_base' ||
+        target.lifecycleState !== 'active' || !accessFor(actor, target).view
+      ) continue
+      out.push({ key: item.key, name: item.name, parentKey: item.parentKey, connectorId: target.id })
+    }
+    return out
   }
 
   async displayName(connector: Connector): Promise<string> {
@@ -302,6 +390,7 @@ export class WikiConsoleService {
     ])
     const counts = summary.wikis[0]
     const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
+    const linkedWikis = managed ? await this.visibleLinkedWikis(actor, managed) : []
     const pageView = (page: WikiPage) => ({
       path: page.path,
       title: page.title,
@@ -322,6 +411,8 @@ export class WikiConsoleService {
       pageCount: pages.length,
       /** #1061 F1: kezelt kategóriák — a menü a fát követi (üres kategória is látszik). */
       managedCategories: !!managed,
+      /** #1061 F2: „kapcsolt wiki” menüpontok — csak az, amelyiket a néző is látja (AC9). */
+      linkedWikis,
       menu: managed
         ? groupPagesByTree(pages, managed).map((group) => ({
             key: group.path ?? '__uncategorized',
@@ -380,6 +471,59 @@ export class WikiConsoleService {
     }
   }
 
+  /**
+   * #1061 F2: az oldal forrásai a felületre. Másik tudástár forrását olvasáskor újra
+   * ellenőrizzük: akinek nincs hozzáférése, csak egy „nincs hozzáférésed” címkét kap
+   * (fájlnév és azonosító nélkül). Az emberi rögzítés a rögzítő nevével jelenik meg.
+   */
+  private async describeSources(actor: WikiConsoleActor, connectorId: string, refs: WikiSourceRef[]): Promise<WikiSourceView[]> {
+    const byConnector = new Map<string, string[]>()
+    for (const ref of refs) {
+      if (!isDocumentSource(ref) || !/^[0-9a-f-]{36}$/i.test(ref.documentId)) continue
+      const owner = ref.connectorId && ref.connectorId !== connectorId ? ref.connectorId : connectorId
+      byConnector.set(owner, [...(byConnector.get(owner) ?? []), ref.documentId])
+    }
+    const readable = new Map<string, Array<{ id: string; filename: string }> | null>()
+    for (const [owner, ids] of byConnector) {
+      if (owner !== connectorId) {
+        const other = await this.deps.connectors.findById(owner, actor.tenantId)
+        const visible =
+          !!other && other.tenantId === actor.tenantId && other.type === 'knowledge_base' &&
+          other.lifecycleState === 'active' && accessFor(actor, other).view
+        if (!visible) {
+          readable.set(owner, null)
+          continue
+        }
+      }
+      readable.set(owner, await this.deps.console.listSourceDocuments(owner, [...new Set(ids)]))
+    }
+    const users = await this.deps.console.userLabels(refs.filter(isHumanNoteSource).map((ref) => ref.recordedByUserId))
+    return refs.map((ref): WikiSourceView => {
+      if (isHumanNoteSource(ref)) {
+        return {
+          kind: 'human_note',
+          recordedBy: users.get(ref.recordedByUserId) ?? null,
+          recordedAt: ref.recordedAt,
+          occasion: ref.occasion,
+          participants: ref.participants ?? null,
+        }
+      }
+      const external = !!ref.connectorId && ref.connectorId !== connectorId
+      const documents = readable.get(external ? ref.connectorId! : connectorId)
+      if (documents === null) return { kind: 'restricted' }
+      const doc = documents?.find((row) => row.id === ref.documentId)
+      return {
+        kind: 'document',
+        documentId: ref.documentId,
+        ...(external ? { connectorId: ref.connectorId } : {}),
+        page: ref.page ?? null,
+        section: ref.section ?? null,
+        filename: doc?.filename ?? (external ? null : ref.filename ?? null),
+        exists: !!doc,
+      }
+    })
+  }
+
   async getPage(actor: WikiConsoleActor, connectorId: string, path: string) {
     const { connector } = await this.load(actor, connectorId, 'view')
     const page = await this.deps.wikis.findPage(connector.id, path.trim())
@@ -388,11 +532,7 @@ export class WikiConsoleService {
       this.deps.wikis.listRevisions(page.id),
       this.deps.wikis.listPages(connector.id, { status: 'published' }),
     ])
-    const sources = readWikiSources(page.sourceRefs)
-    const documents = await this.deps.console.listSourceDocuments(
-      connector.id,
-      [...new Set(sources.map((ref) => ref.documentId))].filter((id) => /^[0-9a-f-]{36}$/i.test(id)),
-    )
+    const sources = await this.describeSources(actor, connector.id, readWikiSources(page.sourceRefs))
     const agentNames = await this.deps.console.agentNames(
       actor.tenantId,
       [page.createdByAgentId, page.updatedByAgentId].filter((id): id is string => !!id),
@@ -401,6 +541,9 @@ export class WikiConsoleService {
     const wikiId = await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id)
     const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
     const backlinks = page.status === 'published' ? await this.deps.wiki.backlinks?.(connector.id, page.path, 2_147_483_647) : null
+    const crossLinks = await this.crossLinkViews(actor, connector.id, page.body)
+    const crossBacklinks =
+      page.status === 'published' && wikiId ? await this.visibleCrossBacklinks(actor, wikiId, page.path) : []
     return {
       path: page.path,
       title: page.title,
@@ -415,12 +558,12 @@ export class WikiConsoleService {
       createdAt: page.createdAt.toISOString(),
       author: author(page, agentNames, users),
       lastEditor: page.updatedByAgentId ? agentNames.get(page.updatedByAgentId) ?? null : null,
-      sources: sources.map((ref) => ({
-        ...ref,
-        filename: documents.find((doc) => doc.id === ref.documentId)?.filename ?? ref.filename ?? null,
-        exists: documents.some((doc) => doc.id === ref.documentId),
-      })),
+      sources,
       knownPaths: published.map((row) => row.path),
+      /** #1061 F2: `[[wiki:<wikiId>/<path>]]` linkek — `connectorId: null` = a néző nem látja azt a wikit. */
+      crossLinks,
+      /** #1061 F2: más wikik oldalai, amelyek ide mutatnak — csak a néző által látott wikikből. */
+      crossBacklinks,
       categoryName: categoryLabel(page.category, managed),
       /** #1061 F1: „Erre az oldalra hivatkozik (N)”, kategória szerint csoportosítva. */
       backlinks: backlinks
@@ -719,10 +862,11 @@ export class WikiConsoleService {
       template,
       schemaMd,
       /** A szabályfájl eltér-e a választott sablon alapszövegétől. */
-      schemaCustomized: schemaMd.trim() !== defaultWikiSchema(connector.kbLanguage, template).trim(),
-      visibility: kind === 'private' ? ('private' as const) : ('shared' as const),
-      canMakePrivate: kind === 'shared',
-      canMakeShared: kind === 'private' && hasMinimumRole(role(actor), 'admin'),
+      schemaCustomized: !isDefaultWikiSchema(schemaMd, connector.kbLanguage, template),
+      visibility: kind === 'private' ? ('private' as const) : kind === 'members' ? ('members' as const) : ('shared' as const),
+      canMakePrivate: kind === 'shared' || (kind === 'members' && connector.ownerUserId === actor.userId),
+      canMakeShared: (kind === 'private' || kind === 'members') && hasMinimumRole(role(actor), 'admin'),
+      canMakeMembers: kind === 'shared' || kind === 'private',
     }
   }
 
@@ -756,24 +900,24 @@ export class WikiConsoleService {
   }
 
   /**
-   * Láthatóság utólagos váltása (#965).
-   * - közös → privát: a kezelő (tenant admin) teheti meg, a tudásbázis az övé lesz;
-   * - privát → közös: a tulajdonos, ha admin (közöset csak admin hozhat létre).
+   * Láthatóság utólagos váltása (#965, #1061 F2).
+   * - közös → privát / névsoros: a kezelő (tenant admin) teheti meg, a tudásbázis az övé lesz;
+   * - privát → közös: a tulajdonos, ha admin (közöset csak admin hozhat létre);
+   * - privát → névsoros: a tulajdonos (ő az első tag);
+   * - névsoros → közös: admin tag; névsoros → privát: a tulajdonos (a többi tag kiesik).
    * A munkatárs saját tudásbázisa és a céges katalógus nem váltható. A függő
    * wiki-módosítások elutasítódnak, mert a jóváhagyójuk a régi kör volt.
    */
-  async changeVisibility(actor: WikiConsoleActor, connectorId: string, to: 'private' | 'shared') {
+  async changeVisibility(actor: WikiConsoleActor, connectorId: string, to: 'private' | 'shared' | 'members') {
     const { connector } = await this.load(actor, connectorId, 'manage')
-    const kind = wikiKbKind(connector)
-    if (to === 'private' && kind !== 'shared') throw new WikiConsoleError('forbidden')
-    if (to === 'shared' && (kind !== 'private' || !hasMinimumRole(role(actor), 'admin'))) {
-      throw new WikiConsoleError('forbidden')
-    }
+    const plan = visibilityTransition(actor, connector, to)
+    if (!plan) throw new WikiConsoleError('forbidden')
     const updated = await this.deps.connectors.updateKnowledgeBase(connector.id, {
       // A connector-név tartalommentes marad; csak az előtag követi a fajtát.
-      name: `${to === 'private' ? 'kb:private:' : 'kb:shared:'}${connector.id}`,
-      visibility: to === 'private' ? 'private_to_user' : 'shared',
-      ownerUserId: to === 'private' ? actor.userId : null,
+      name: `${KB_NAME_PREFIX[to]}${connector.id}`,
+      visibility: plan.visibility,
+      ownerUserId: plan.ownerUserId,
+      kbMemberUserIds: plan.memberUserIds,
     })
     const pending = await this.deps.wikis.listPendingChangeSetIds(connector.id)
     let rejected = 0
@@ -788,9 +932,106 @@ export class WikiConsoleService {
     await this.audit(updated, actor, 'kb.visibility.changed', connector.id, 'connector', {
       visibility: updated.visibility,
       ownerUserId: updated.ownerUserId,
+      memberCount: plan.memberUserIds.length,
       rejectedChangeSets: rejected,
     })
     return { visibility: to, rejectedChangeSets: rejected }
+  }
+
+  /**
+   * #1061 NFR-1: előnézet a váltás előtt — ki veszti el a hozzáférést, mely
+   * munkatársak látják ezentúl csak tagokkal beszélve, hány függő módosítás esik ki.
+   */
+  async previewVisibilityChange(actor: WikiConsoleActor, connectorId: string, to: 'private' | 'shared' | 'members') {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    const plan = visibilityTransition(actor, connector, to)
+    if (!plan) throw new WikiConsoleError('forbidden')
+    const [users, bindings, pending] = await Promise.all([
+      this.deps.console.listTenantUsers(actor.tenantId),
+      this.deps.console.listBindingsForConnector(connector.id),
+      this.deps.wikis.listPendingChangeSetIds(connector.id),
+    ])
+    const after = { visibility: plan.visibility, ownerUserId: plan.ownerUserId, kbMemberUserIds: plan.memberUserIds }
+    const losing = users.filter((user) => isKnowledgeBaseVisibleTo(connector, user.id) && !isKnowledgeBaseVisibleTo(after, user.id))
+    return {
+      to,
+      losingAccess: { count: losing.length, sample: losing.slice(0, 12).map((user) => user.label) },
+      /** Ezek a munkatársak a wikit ezentúl csak azzal beszélve látják, aki hozzáfér. */
+      restrictedAgents: plan.visibility === 'shared'
+        ? []
+        : bindings.filter((binding) => effectiveWikiAccess(binding) !== 'none').map((binding) => binding.agentName),
+      rejectedChangeSets: pending.length,
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // #1061 F2: „csak a kijelöltek” névsor
+
+  /**
+   * A névsor: tag látja; a nem-tag admin is (metaadat), hogy felvehesse magát (D9).
+   * Szerkesztheti a tulajdonos és az admin — az admin tag nélkül is.
+   */
+  async getMembers(actor: WikiConsoleActor, connectorId: string) {
+    const connector = await this.membersConnector(actor, connectorId)
+    const canEdit = canEditKnowledgeBaseMembers(actor, connector)
+    const [labels, candidates] = await Promise.all([
+      this.deps.console.userLabels(connector.kbMemberUserIds),
+      canEdit ? this.deps.console.listTenantUsers(actor.tenantId) : Promise.resolve([]),
+    ])
+    return {
+      canEdit,
+      isMember: isKnowledgeBaseMember(connector, actor.userId),
+      members: connector.kbMemberUserIds
+        .map((userId) => ({ userId, label: labels.get(userId) ?? null, owner: userId === connector.ownerUserId }))
+        .sort((a, b) => Number(b.owner) - Number(a.owner) || (a.label ?? '').localeCompare(b.label ?? '')),
+      candidates: candidates.filter((user) => !connector.kbMemberUserIds.includes(user.id)),
+    }
+  }
+
+  async addMember(actor: WikiConsoleActor, connectorId: string, userId: string) {
+    const connector = await this.membersConnector(actor, connectorId)
+    if (!canEditKnowledgeBaseMembers(actor, connector)) throw new WikiConsoleError('forbidden')
+    if (connector.kbMemberUserIds.includes(userId)) return { added: false }
+    const users = await this.deps.console.listTenantUsers(actor.tenantId)
+    if (!users.some((user) => user.id === userId)) throw new WikiConsoleError('invalid_args')
+    const updated = await this.deps.connectors.updateKnowledgeBase(connector.id, {
+      kbMemberUserIds: [...connector.kbMemberUserIds, userId],
+    })
+    // D9: ha az admin önmagát veszi fel, az külön kiemelt esemény.
+    const selfAdded = userId === actor.userId
+    await this.audit(updated, actor, selfAdded ? 'kb.members.self_added' : 'kb.members.added', connector.id, 'connector', {
+      memberUserId: userId,
+      memberCount: updated.kbMemberUserIds.length,
+    })
+    return { added: true }
+  }
+
+  async removeMember(actor: WikiConsoleActor, connectorId: string, userId: string) {
+    const connector = await this.membersConnector(actor, connectorId)
+    if (!canEditKnowledgeBaseMembers(actor, connector)) throw new WikiConsoleError('forbidden')
+    // A tulajdonos nem eshet ki: ő a jóváhagyó és a névsor gazdája.
+    if (userId === connector.ownerUserId) throw new WikiConsoleError('invalid_args')
+    if (!connector.kbMemberUserIds.includes(userId)) return { removed: false }
+    const updated = await this.deps.connectors.updateKnowledgeBase(connector.id, {
+      kbMemberUserIds: connector.kbMemberUserIds.filter((id) => id !== userId),
+    })
+    await this.audit(updated, actor, 'kb.members.removed', connector.id, 'connector', {
+      memberUserId: userId,
+      memberCount: updated.kbMemberUserIds.length,
+    })
+    return { removed: true }
+  }
+
+  /** Csak névsoros tudástár; tagnak és adminnak „létezik” (a privát mintájára más `not_found`). */
+  private async membersConnector(actor: WikiConsoleActor, connectorId: string) {
+    const connector = await this.deps.connectors.findById(connectorId, actor.tenantId)
+    if (!connector || connector.tenantId !== actor.tenantId || connector.type !== 'knowledge_base') {
+      throw new WikiConsoleError('not_found')
+    }
+    const access = accessFor(actor, connector)
+    if (!access.view && !access.metaOnly) throw new WikiConsoleError('not_found')
+    if (!isMembersKnowledgeBase(connector)) throw new WikiConsoleError('invalid_args')
+    return connector
   }
 
   // -------------------------------------------------------------------------
@@ -813,7 +1054,13 @@ export class WikiConsoleService {
     )
     return rows
       .filter((row) => row.lifecycleState === 'active')
-      .filter((row) => (isPrivateKnowledgeBase(row) ? row.ownerUserId === actor.userId : row.visibility === 'shared'))
+      .filter((row) =>
+        isPrivateKnowledgeBase(row)
+          ? row.ownerUserId === actor.userId
+          : isMembersKnowledgeBase(row)
+            ? isKnowledgeBaseMember(row, actor.userId)
+            : row.visibility === 'shared',
+      )
       .filter((row) => {
         // Más agent saját tudásbázisa csak akkor jelenik meg, ha már kötve van.
         const owner = ownerAgentIdForKnowledgeBase(row.name)
@@ -896,10 +1143,15 @@ export class WikiConsoleService {
     const sourceIds = [
       ...new Set([
         ...preview.changeSet.sourceDocumentIds,
-        ...preview.pages.flatMap((page) => page.after.sources.map((ref: WikiSourceRef) => ref.documentId)),
+        ...preview.pages.flatMap((page) =>
+          page.after.sources.filter((ref) => isDocumentSource(ref) && !ref.connectorId).map((ref) => (ref as WikiDocumentSourceRef).documentId),
+        ),
       ]),
     ].filter((id) => /^[0-9a-f-]{36}$/i.test(id))
     const documents = await this.deps.console.listSourceDocuments(preview.connector.id, sourceIds)
+    const pageSources = await Promise.all(
+      preview.pages.map((page) => this.describeSources(actor, preview.connector.id, dedupeSources(page.after.sources))),
+    )
     const agentNames = await this.deps.console.agentNames(actor.tenantId, preview.changeSet.agentId ? [preview.changeSet.agentId] : [])
     return {
       changeSetId: preview.changeSet.id,
@@ -912,7 +1164,7 @@ export class WikiConsoleService {
       logTitle: preview.changeSet.logEntry?.title ?? null,
       logNote: preview.changeSet.logEntry?.note ?? null,
       sources: documents.map((doc) => ({ documentId: doc.id, filename: doc.filename })),
-      pages: preview.pages.map((page) => ({
+      pages: preview.pages.map((page, index) => ({
         path: page.path,
         finalPath: page.finalPath,
         kind: changeKind(page),
@@ -922,12 +1174,7 @@ export class WikiConsoleService {
         summary: page.after.summary,
         titleChanged: !!page.before && page.before.title !== page.after.title,
         diff: page.action === 'archive' ? [] : (diffLines(page.before?.body ?? '', page.after.body) as LineDiffRow[]),
-        sources: dedupeSources(page.after.sources).map((ref: WikiSourceRef) => ({
-          documentId: ref.documentId,
-          page: ref.page ?? null,
-          section: ref.section ?? null,
-          filename: documents.find((doc) => doc.id === ref.documentId)?.filename ?? ref.filename ?? null,
-        })),
+        sources: pageSources[index],
       })),
       issues: preview.issues.map((issue) => ({
         severity: issue.severity,
@@ -1011,11 +1258,13 @@ function configDisplayName(config: unknown): string | null {
 
 /** Ugyanannak a dokumentumnak az oldal nélküli hivatkozása elhagyható, ha van oldalszámos is. */
 function dedupeSources(refs: WikiSourceRef[]): WikiSourceRef[] {
-  const withPage = new Set(refs.filter((ref) => ref.page || ref.section).map((ref) => ref.documentId))
+  const docKey = (ref: WikiDocumentSourceRef) => `${ref.connectorId ?? ''}|${ref.documentId}`
+  const withPage = new Set(refs.filter(isDocumentSource).filter((ref) => ref.page || ref.section).map(docKey))
   const seen = new Set<string>()
   return refs.filter((ref) => {
-    if (!ref.page && !ref.section && withPage.has(ref.documentId)) return false
-    const key = `${ref.documentId}|${ref.page ?? ''}|${ref.section ?? ''}`
+    if (isHumanNoteSource(ref)) return true
+    if (!ref.page && !ref.section && withPage.has(docKey(ref))) return false
+    const key = `${docKey(ref)}|${ref.page ?? ''}|${ref.section ?? ''}`
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -1023,7 +1272,39 @@ function dedupeSources(refs: WikiSourceRef[]): WikiSourceRef[] {
 }
 
 function kindOrder(kind: WikiKbKind): number {
-  return { agent: 0, private: 1, catalog: 2, shared: 3 }[kind]
+  return { agent: 0, private: 1, members: 2, catalog: 3, shared: 4 }[kind]
+}
+
+const KB_NAME_PREFIX = { private: 'kb:private:', shared: 'kb:shared:', members: 'kb:members:' } as const
+
+/** #1061 F2 D9: a névsort a tulajdonos és az admin szerkeszti — az admin tagság nélkül is (önmagát felveheti). */
+function canEditKnowledgeBaseMembers(actor: WikiConsoleActor, connector: Pick<Connector, 'ownerUserId'>): boolean {
+  return connector.ownerUserId === actor.userId || hasMinimumRole(role(actor), 'admin')
+}
+
+/** Az engedett láthatóság-váltások (lásd `changeVisibility`); `null` = tilos. */
+function visibilityTransition(
+  actor: WikiConsoleActor,
+  connector: Connector,
+  to: 'private' | 'shared' | 'members',
+): { visibility: Connector['visibility']; ownerUserId: string | null; memberUserIds: string[] } | null {
+  const kind = wikiKbKind(connector)
+  const admin = hasMinimumRole(role(actor), 'admin')
+  const owner = !!connector.ownerUserId && connector.ownerUserId === actor.userId
+  if (to === 'private') {
+    if (kind === 'shared' || (kind === 'members' && owner)) {
+      return { visibility: 'private_to_user', ownerUserId: actor.userId, memberUserIds: [] }
+    }
+    return null
+  }
+  if (to === 'shared') {
+    if ((kind === 'private' || kind === 'members') && admin) return { visibility: 'shared', ownerUserId: null, memberUserIds: [] }
+    return null
+  }
+  if (kind === 'shared' || (kind === 'private' && owner)) {
+    return { visibility: 'members', ownerUserId: actor.userId, memberUserIds: [actor.userId] }
+  }
+  return null
 }
 
 function changeKind(page: { action: string; before: unknown; status: string }): 'new' | 'modified' | 'archived' | 'moved' {

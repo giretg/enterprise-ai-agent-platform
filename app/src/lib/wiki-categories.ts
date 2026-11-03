@@ -28,6 +28,11 @@ export type WikiCategoryRow = {
   description: string | null
   sortOrder: number
   approval: WikiCategoryApprovalRule
+  /**
+   * #1061 F2: „kapcsolt wiki” menüpont — egy másik tudástárra mutat. Nem tartalmi
+   * kategória: oldal nem kerülhet bele, az `index.md`-be, a briefingbe és a fába sem kerül.
+   */
+  linkedConnectorId?: string | null
 }
 
 export type WikiCategoryNode = WikiCategoryRow & {
@@ -67,8 +72,12 @@ function byOrder(a: WikiCategoryRow, b: WikiCategoryRow) {
   return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name) || a.key.localeCompare(b.key)
 }
 
-/** Fa a sorokból. Árva (nem létező szülőjű) sor felső szintre kerül, hogy semmi ne tűnjön el. */
-export function buildCategoryTree(rows: WikiCategoryRow[]): WikiCategoryNode[] {
+/**
+ * Fa a sorokból. Árva (nem létező szülőjű) sor felső szintre kerül, hogy semmi ne tűnjön el.
+ * A „kapcsolt wiki” menüpontok nem részei (lásd `linkedWikiItems`).
+ */
+export function buildCategoryTree(allRows: WikiCategoryRow[]): WikiCategoryNode[] {
+  const rows = allRows.filter((row) => !row.linkedConnectorId)
   const ids = new Set(rows.map((row) => row.id))
   const roots = rows.filter((row) => !row.parentId || !ids.has(row.parentId)).sort(byOrder)
   return roots.map((root) => {
@@ -89,6 +98,32 @@ export function buildCategoryTree(rows: WikiCategoryRow[]): WikiCategoryNode[] {
         })),
     }
   })
+}
+
+export type WikiLinkedItem = {
+  id: string
+  key: string
+  name: string
+  sortOrder: number
+  linkedConnectorId: string
+  /** A felső szintű kategória kulcsa, ha alatta van; `null` = felső szintű menüpont. */
+  parentKey: string | null
+}
+
+/** #1061 F2: a „kapcsolt wiki” menüpontok (a láthatóságot a hívó szűri). */
+export function linkedWikiItems(rows: WikiCategoryRow[]): WikiLinkedItem[] {
+  const roots = new Map(rows.filter((row) => !row.linkedConnectorId && !row.parentId).map((row) => [row.id, row.key]))
+  return rows
+    .filter((row): row is WikiCategoryRow & { linkedConnectorId: string } => !!row.linkedConnectorId)
+    .sort(byOrder)
+    .map((row) => ({
+      id: row.id,
+      key: row.key,
+      name: row.name,
+      sortOrder: row.sortOrder,
+      linkedConnectorId: row.linkedConnectorId,
+      parentKey: row.parentId ? roots.get(row.parentId) ?? null : null,
+    }))
 }
 
 export function flattenCategoryTree(tree: WikiCategoryNode[]): WikiCategoryNode[] {

@@ -18,14 +18,19 @@ type MenuGroup = {
  * #1061 F1: a wiki bal oldali menüje — kétszintű, összecsukható, oldalszámmal.
  * Az aktuális oldal csoportja nyitva marad; kevés csoportnál minden nyitva.
  */
+type LinkedWiki = { key: string; name: string; parentKey: string | null; connectorId: string }
+
 export async function WikiMenu({
   connectorId,
   groups,
   currentPath,
+  linkedWikis = [],
 }: {
   connectorId: string
   groups: MenuGroup[]
   currentPath?: string
+  /** #1061 F2: „kapcsolt wiki” menüpontok — a szerver már csak a néző által látottakat adja (AC9). */
+  linkedWikis?: LinkedWiki[]
 }) {
   const t = await getTranslations('ControlPlane.wiki.toc')
   const openAll = groups.length <= 6
@@ -51,6 +56,21 @@ export async function WikiMenu({
         ))}
       </ul>
     ) : null
+
+  const linkedItem = (item: LinkedWiki) => (
+    <Link
+      key={item.key}
+      href={wikiHref(item.connectorId)}
+      data-testid="wiki-toc-linked"
+      className="flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-ink-soft hover:bg-ink/5 hover:text-coral-deep"
+      title={t('linkedWiki')}
+    >
+      <span aria-hidden className="inline-block w-3 text-ink-faint">↗</span>
+      <span className="min-w-0 truncate">{item.name}</span>
+      <span className="ml-auto text-[10px] font-normal text-ink-faint">{t('linkedWikiShort')}</span>
+    </Link>
+  )
+  const childLinks = (key: string) => linkedWikis.filter((item) => item.parentKey === key)
 
   const heading = (group: Omit<MenuGroup, 'children'>, level: 1 | 2) => (
     <summary
@@ -96,12 +116,14 @@ export async function WikiMenu({
                 </div>
               </details>
             ))}
-            {group.pages.length === 0 && group.children.length === 0 ? (
+            {childLinks(group.key).map(linkedItem)}
+            {group.pages.length === 0 && group.children.length === 0 && childLinks(group.key).length === 0 ? (
               <p className="px-1.5 py-0.5 text-xs text-ink-faint">{t('emptyCategory')}</p>
             ) : null}
           </div>
         </details>
       ))}
+      {linkedWikis.filter((item) => !item.parentKey || !groups.some((group) => group.key === item.parentKey)).map(linkedItem)}
     </div>
   )
 }

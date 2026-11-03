@@ -7,8 +7,25 @@ export const WIKI_TEMPLATES = [
 ] as const
 export type WikiTemplateId = typeof WIKI_TEMPLATES[number]['id']
 
-export function renderWikiTemplate(template: WikiTemplateId, language: KbLanguage): string {
+/** A mostani sablonverzió; a korábbi alapszöveg (pl. 1) sem számít „módosítottnak”. */
+export const WIKI_TEMPLATE_VERSION = 2
+
+export function renderWikiTemplate(template: WikiTemplateId, language: KbLanguage, version: number = WIKI_TEMPLATE_VERSION): string {
   const en = language === 'en'
+  // #1061 F2 (2. verzió): forrás dokumentum nélkül (emberi rögzítés) és másik wikiből.
+  const beyond = version >= 2
+    ? en
+      ? `
+## Sources beyond this wiki
+Human note: when the person you are talking to states a fact live (e.g. a decision made at a meeting) and there is no document, cite {kind: "human_note", occasion: "<date> <meeting>", participants?}. The server records who and when; this only works in a live conversation, never in scheduled or background runs. Whenever a document exists (minutes, email, contract), upload it with kb_ingest and cite that instead.
+Another wiki: cite a raw source of another knowledge base you can read as {documentId, connectorId}, and link its pages with [[wiki:<wikiId>/<path>]]. Only cite a wiki that is at least as widely visible as this one; a members-only or private wiki cannot be cited from a wider one.
+`
+      : `
+## Forrás dokumentum nélkül és másik wikiből
+Emberi rögzítés: ha a beszélgetőtársad élőben közöl egy tényt (pl. egy megbeszélésen született döntést), és nincs róla dokumentum, a forrás {kind: "human_note", occasion: "<dátum> <alkalom>", participants?}. Hogy ki és mikor rögzítette, azt a szerver tölti ki; csak élő beszélgetésben működik, ütemezett vagy háttérfutásban nem. Ha van dokumentum (emlékeztető, e-mail, szerződés), inkább azt töltsd fel (kb_ingest), és arra hivatkozz.
+Másik wiki: egy másik, általad olvasható tudástár nyers forrására {documentId, connectorId} formában hivatkozz, az ottani oldalakra [[wiki:<wikiId>/<path>]] linkkel. Csak olyan wikit idézz, amelyet legalább annyian látnak, mint ezt; csak a kijelölteknek szóló vagy privát wikiből szélesebbe nem idézhetsz.
+`
+    : ''
   const health = template === 'health-journal'
   const paths = health
     ? `- sources/<date>-<provider>-<kind>.md (type: source)
@@ -25,7 +42,7 @@ export function renderWikiTemplate(template: WikiTemplateId, language: KbLanguag
 - overview.md (type: overview)`
   return en ? `# Wiki rules — ${health ? 'Health journal' : 'General knowledge'}
 
-Template version: 1
+Template version: ${version}
 Language: en
 
 ingest_review: silent
@@ -40,7 +57,7 @@ Each page supplies type, title, summary (one line), category, and frontmatter.so
 
 ## Workflow
 Read WIKI.md and index.md, read the full source, find existing pages, write the source summary and update related pages. Patch small additions; upsert new pages. Cite original document IDs and page numbers. Write each source immediately before reading the next; finalize its inbox item only after all updates. Keep both dated claims when sources contradict, mark ⚠️ contradiction, and use the newer source_date for current state when it supersedes the old claim. Preserve historical facts.
-${health ? `
+${beyond}${health ? `
 ## Health journal
 A source is one report: include provider, clinician and kind (lab / visit / discharge / imaging). Labs pages record unit, reference range and a chronological table:
 | date | value | unit | reference range | flag (H/L) | source |
@@ -49,7 +66,7 @@ Conditions record first appearance, treatments, linked reports and current state
 Copy values exactly with units, reference ranges and original page citations. Keep ## Facts separate from ## Interpretation. Mark uncertain scans ⚠️ and obtain a clearer source. Keep measurements sorted by source date; appendToSection alone does not sort a table, so replaceSection when inserting an older measurement. Interpretations cite reports and remain distinct from diagnoses; concerning findings should be discussed with a clinician.
 ` : ''}` : `# Wiki-szabályok — ${health ? 'Egészség-napló' : 'Általános tudástár'}
 
-Sablonverzió: 1
+Sablonverzió: ${version}
 Nyelv: hu
 
 ingest_review: silent
@@ -64,7 +81,7 @@ Minden oldal mezői: type, title, summary (egy sor), category, frontmatter.sourc
 
 ## Munkafolyamat
 Olvasd a WIKI.md-t és index.md-t, a teljes forrást és a kapcsolódó meglévő oldalakat. Írd meg a forrás összefoglalóját és frissítsd az érintett oldalakat. Kis bővítéshez patch, új oldalhoz upsert. Hivatkozz az eredeti dokumentumra és oldalszámra. Forrásonként azonnal írj, mielőtt a következőt olvasod; a tálcatételt csak az összes frissítés után zárd le. Ellentmondásnál őrizd meg mindkét dátumozott állítást, jelöld: ⚠️ ellentmondás; az aktuális állapotnál az újabb source_date irányadó, ha felváltja a régit. A történeti tényeket őrizd meg.
-${health ? `
+${beyond}${health ? `
 ## Egészség-napló
 Egy forrás egy lelet: intézmény, orvos, típus (labor / vizit / zárójelentés / képalkotó). A sources/<dátum>-<intézmény>-<típus>.md nevet ékezet nélkül használd. A labs/<paraméter>.md oldalon mértékegység, referenciatartomány és időrendi táblázat szerepel:
 | dátum | érték | egység | ref. tartomány | jelzés (H/L) | forrás |

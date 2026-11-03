@@ -1,4 +1,4 @@
-import { renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
+import { WIKI_TEMPLATE_VERSION, renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
 import { resolveKbLanguage } from './kb-language'
 /**
  * #943 LLM Wiki 2/6 — a wiki-oldalak determinisztikus, DB-mentes része (#941 §1, D8, D9).
@@ -28,12 +28,49 @@ export type WikiPageTypeName = (typeof WIKI_PAGE_TYPES)[number]
 /** A frontmatter mezői, amelyeket külön oszlop hordoz — a `frontmatter` JSON-ból kimaradnak. */
 const MANAGED_FRONTMATTER_KEYS = new Set(['type', 'title', 'summary', 'category', 'sources'])
 
-export type WikiSourceRef = {
+/**
+ * Feltöltött nyers forrás. `connectorId` nélkül ugyanebben a tudástárban él; #1061 F2:
+ * `connectorId`-val egy másik tudástár dokumentuma (a közönség-szabály szerint).
+ */
+export type WikiDocumentSourceRef = {
+  kind?: undefined
   documentId: string
+  connectorId?: string
   filename?: string
   page?: number
   section?: string
   cell?: string
+}
+
+/**
+ * #1061 F2: emberi rögzítés — forrás feltöltött dokumentum nélkül. A `recordedByUserId`
+ * és a `recordedAt` mindig a szerverről jön (a munkamenet embere), soha nem argumentumból.
+ */
+export type WikiHumanNoteSourceRef = {
+  kind: 'human_note'
+  recordedByUserId: string
+  recordedAt: string
+  /** Az alkalom, pl. „2026-11-03-i sales-megbeszélés”. */
+  occasion: string
+  participants?: string
+}
+
+export type WikiSourceRef = WikiDocumentSourceRef | WikiHumanNoteSourceRef
+
+export const WIKI_HUMAN_NOTE_MAX_OCCASION = 200
+export const WIKI_HUMAN_NOTE_MAX_PARTICIPANTS = 500
+
+export function isHumanNoteSource(ref: WikiSourceRef): ref is WikiHumanNoteSourceRef {
+  return ref.kind === 'human_note'
+}
+
+export function isDocumentSource(ref: WikiSourceRef): ref is WikiDocumentSourceRef {
+  return ref.kind !== 'human_note'
+}
+
+/** Egy emberi rögzítés azonossága (változatlan átvételnél nem kell új munkamenet). */
+export function humanNoteKey(ref: WikiHumanNoteSourceRef): string {
+  return JSON.stringify([ref.recordedByUserId, ref.recordedAt, ref.occasion, ref.participants ?? null])
 }
 
 /** Egy oldal teljes, írás utáni állapota (a `WikiPage` oszlopai). */
@@ -95,7 +132,13 @@ export function stripManagedFrontmatter(frontmatter: unknown): Record<string, un
   )
 }
 
-/** `frontmatter.sources` → normalizált forráslista (documentId szerint egyedi, sorrendtartó). */
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * `frontmatter.sources` → normalizált forráslista (documentId szerint egyedi, sorrendtartó).
+ * #1061 F2: `{ kind: "human_note", occasion, participants? }` is forrás; a szerző- és
+ * időmezőt itt csak beolvassuk — az írás a munkamenetből bélyegzi felül.
+ */
 export function readWikiSources(value: unknown): WikiSourceRef[] {
   if (!Array.isArray(value)) return []
   const out: WikiSourceRef[] = []
@@ -103,9 +146,22 @@ export function readWikiSources(value: unknown): WikiSourceRef[] {
     const raw = typeof item === 'string' ? { documentId: item } : item
     if (!raw || typeof raw !== 'object') continue
     const row = raw as Record<string, unknown>
+    if (row.kind === 'human_note') {
+      const participants = typeof row.participants === 'string' ? row.participants.trim() : ''
+      out.push({
+        kind: 'human_note',
+        recordedByUserId: typeof row.recordedByUserId === 'string' ? row.recordedByUserId : '',
+        recordedAt: typeof row.recordedAt === 'string' ? row.recordedAt : '',
+        occasion: typeof row.occasion === 'string' ? row.occasion.trim() : '',
+        ...(participants ? { participants } : {}),
+      })
+      continue
+    }
     if (typeof row.documentId !== 'string' || !row.documentId.trim()) continue
+    const connectorId = typeof row.connectorId === 'string' ? row.connectorId.trim().toLowerCase() : ''
     out.push({
       documentId: row.documentId.trim(),
+      ...(connectorId ? { connectorId } : {}),
       ...(typeof row.filename === 'string' && row.filename ? { filename: row.filename } : {}),
       ...(typeof row.page === 'number' ? { page: row.page } : {}),
       ...(typeof row.section === 'string' && row.section ? { section: row.section } : {}),
@@ -119,7 +175,9 @@ export function mergeWikiSources(base: WikiSourceRef[], extra: WikiSourceRef[]):
   const seen = new Set<string>()
   const out: WikiSourceRef[] = []
   for (const ref of [...base, ...extra]) {
-    const key = JSON.stringify([ref.documentId, ref.page ?? null, ref.section ?? null, ref.cell ?? null])
+    const key = isHumanNoteSource(ref)
+      ? `human_note:${humanNoteKey(ref)}`
+      : JSON.stringify([ref.documentId, ref.page ?? null, ref.section ?? null, ref.cell ?? null, ref.connectorId ?? null])
     if (seen.has(key)) continue
     seen.add(key)
     out.push(ref)
@@ -151,13 +209,14 @@ function resolveRelative(fromPath: string, target: string): string {
 
 /**
  * Az oldal kimenő wiki-linkjei normalizált path-ként (`entities/teya.md`).
- * `[[path]]`, `[[path|címke]]` és relatív `.md` markdown-link; külső URL nem.
+ * `[[path]]`, `[[path|címke]]` és relatív `.md` markdown-link; külső URL és a
+ * wikik közti `[[wiki:…]]` link nem (azt az `extractCrossWikiLinks` adja).
  */
 export function extractWikiLinks(body: string, fromPath: string): string[] {
   const out = new Set<string>()
   for (const match of body.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
     const target = match[1].trim().replace(/^\/+/, '')
-    if (!target) continue
+    if (!target || CROSS_WIKI_PREFIX.test(target)) continue
     out.add(target.endsWith('.md') ? target : `${target}.md`)
   }
   for (const match of body.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
@@ -166,6 +225,39 @@ export function extractWikiLinks(body: string, fromPath: string): string[] {
     out.add(resolveRelative(fromPath, target))
   }
   return [...out].sort()
+}
+
+const CROSS_WIKI_PREFIX = /^wiki:/i
+
+export type CrossWikiLink = { wikiId: string; path: string }
+
+/**
+ * #1061 F2: wikik közti link — `[[wiki:<wikiId>/<path>]]` (címkével és horgonnyal is).
+ * A cél-wikit az azonosítója jelöli (a `kb_list_index` / briefing `wikiId`-je).
+ */
+export function extractCrossWikiLinks(body: string): CrossWikiLink[] {
+  const out = new Map<string, CrossWikiLink>()
+  for (const match of body.matchAll(/\[\[\s*wiki:([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/gi)) {
+    const raw = match[1].trim()
+    const slash = raw.indexOf('/')
+    if (slash <= 0) continue
+    const wikiId = raw.slice(0, slash).trim().toLowerCase()
+    const rest = raw.slice(slash + 1).trim().replace(/^\/+/, '')
+    if (!UUID_LIKE.test(wikiId) || !rest) continue
+    const path = rest.endsWith('.md') ? rest : `${rest}.md`
+    out.set(`${wikiId}/${path}`, { wikiId, path })
+  }
+  return [...out.values()].sort((a, b) => `${a.wikiId}/${a.path}`.localeCompare(`${b.wikiId}/${b.path}`))
+}
+
+/** Az `outLinks`-ben a wikik közti link így tárolódik (a cél-wiki visszahivatkozásához). */
+export function crossWikiOutLink(link: CrossWikiLink): string {
+  return `wiki:${link.wikiId}/${link.path}`
+}
+
+/** Az oldal teljes `outLinks` listája: helyi path-ok + `wiki:<wikiId>/<path>` bejegyzések. */
+export function wikiOutLinks(body: string, fromPath: string): string[] {
+  return [...extractWikiLinks(body, fromPath), ...extractCrossWikiLinks(body).map(crossWikiOutLink)]
 }
 
 // ---------------------------------------------------------------------------
@@ -322,4 +414,14 @@ export function renderWikiPageMarkdown(state: Omit<WikiPageState, 'path'>): stri
 /** Új wiki alap-sémája (§2). Ember szerkeszti a Control Plane-en (D15). */
 export function defaultWikiSchema(kbLanguage: string, template: WikiTemplateId = 'general'): string {
   return renderWikiTemplate(template, resolveKbLanguage(kbLanguage))
+}
+
+/** A WIKI.md valamelyik (mostani vagy korábbi) sablon-alapszöveg-e — ilyenkor nem „módosított”. */
+export function isDefaultWikiSchema(schemaMd: string, kbLanguage: string, template: WikiTemplateId = 'general'): boolean {
+  const text = schemaMd.trim()
+  const language = resolveKbLanguage(kbLanguage)
+  for (let version = 1; version <= WIKI_TEMPLATE_VERSION; version++) {
+    if (renderWikiTemplate(template, language, version).trim() === text) return true
+  }
+  return false
 }

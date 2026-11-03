@@ -198,6 +198,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.category.updated',
   'kb.wiki.category.deleted',
   'kb.wiki.category.rule_changed',
+  // #1061 F2: „csak a kijelöltek” névsor (D9: az admin önfelvétele külön esemény).
+  'kb.members.added',
+  'kb.members.removed',
+  'kb.members.self_added',
   'kb.private.created',
   'kb.private.deleted',
   // #946 Control Plane: közös KB létrehozása, wiki-export (ZIP).
