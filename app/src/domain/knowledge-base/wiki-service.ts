@@ -289,7 +289,7 @@ export type WikiChangeSetPreview = {
     protectedCategory: boolean
     /** #1061 F3: dokumentum-állapot váltása (pl. tervezet → jóváhagyott), ha van. */
     docStatusChange: { from: WikiDocStatusName | null; to: WikiDocStatusName | null } | null
-    status: 'published' | 'archived'
+    status: WikiPage['status']
     before: { title: string; summary: string; body: string; status: string } | null
     after: { title: string; summary: string; body: string; sources: WikiSourceRef[] }
   }>
@@ -304,7 +304,7 @@ type PlannedPage = {
   input: WikiPageInput
   existing: WikiPage | null
   state: WikiPageState
-  status: 'published' | 'archived'
+  status: WikiPage['status']
   /** D5: más agent / ember oldalának archiválása vagy áthelyezése. */
   othersPage: boolean
 }
@@ -2261,7 +2261,7 @@ export class WikiService {
             // #1075: mező-opció átnevezésekor a frontmatter is ugyanebben a lépésben változik.
             ...(page.frontmatter ? { frontmatter: stripManagedFrontmatter(page.frontmatter) } : {}),
           },
-          status: existing.status === 'archived' ? 'archived' : 'published',
+          status: existing.status,
           othersPage: false,
         })
         continue
@@ -2598,7 +2598,7 @@ export class WikiService {
     const agentId = caller.human ? null : caller.agentId
     const ops: WikiApplyPageOp[] = input.planned.map((page) => {
       const write = toPageWrite(page)
-      const chunks = page.status === 'archived' ? [] : pageChunks(page.state)
+      const chunks = page.status === 'published' ? pageChunks(page.state) : []
       if (!page.existing) {
         return {
           kind: 'create',

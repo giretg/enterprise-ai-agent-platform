@@ -3,6 +3,8 @@
  * Futtatás: npm run test:wiki-config
  */
 import assert from 'node:assert/strict'
+import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js'
+import { kbWikiConfigGetObject, kbWikiConfigProposeObject, kbWikiConfigWithdrawInputSchema } from '../src/domain/enterprise-tools/tool-definitions'
 import {
   configVersionOf,
   diffConfig,
@@ -35,7 +37,7 @@ const empty: WikiConfigState = {
 const run = (operations: unknown[], state = empty, pages: WikiConfigPage[] = [], nameEditable = true) =>
   simulateConfigOperations({ state, pages, operations, nameEditable })
 const codes = (result: ReturnType<typeof run>) => result.issues.map((issue) => issue.code)
-const page = (path: string, category: string | null, frontmatter: Record<string, unknown> = {}, status: WikiConfigPage['status'] = 'published'): WikiConfigPage => ({ path, category, status, frontmatter })
+const page = (path: string, category: string | null, frontmatter: Record<string, unknown> = {}, status: WikiConfigPage['status'] = 'published'): WikiConfigPage => ({ id: path, version: 1, path, category, status, frontmatter })
 
 const base = run([
   { op: 'upsertMetadataField', key: 'direction', label: 'Irány', type: 'single_select', options: ['in', 'out'] },
@@ -142,6 +144,12 @@ check('upsertMetadataField: típus nem változik, használt opció így nem vehe
   assert.deepEqual(codes(run([{ op: 'upsertMetadataField', key: 'direction', label: 'x', type: 'select', options: ['out'] }], state, pages)), ['option_in_use'])
 })
 
+check('opcióhasználat és átképzés kis-nagybetűtől független, többértékűnél is', () => {
+  const pages = [page('a.md', null, { tags: ['A', 'B'] })]
+  const result = run([{ op: 'removeFieldOption', field: 'tags', option: 'a', remapTo: 'b' }], state, pages)
+  assert.deepEqual(result.pageChanges[0].frontmatter, { tags: ['b'] })
+})
+
 check('upsertTemplate frissíti a rá hivatkozó kategóriákat; removeTemplate csak hivatkozás nélkül', () => {
   const updated = run([{ op: 'upsertTemplate', id: 'partner', requiredFields: ['owner'], requiredSections: ['Új'] }], state)
   assert.deepEqual(updated.next.categories.find((row) => row.key === 'acceptance')!.requiredSections, ['Új'])
@@ -170,6 +178,7 @@ check('kapcsolt wiki menüpontja nem módosítható', () => {
   assert.deepEqual(codes(run([{ op: 'upsertGroup', key: 'link', label: 'x' }], withLink)), ['linked_wiki_item'])
   assert.deepEqual(codes(run([{ op: 'upsertCategory', key: 'link/y', label: 'x' }], withLink)), ['linked_wiki_item'])
   assert.deepEqual(codes(run([{ op: 'mergeCategory', from: 'link', to: 'partners/other' }], withLink)), ['linked_wiki_item'])
+  assert.deepEqual(codes(run([{ op: 'removeCategory', key: 'link' }], withLink)), ['linked_wiki_item'])
 })
 
 check('név: munkatárs saját KB-jánál és a katalógusnál nem írható', () => {
@@ -202,6 +211,13 @@ check('figyelmeztet, ha a kezelt kategóriák vagy mezők ki vannak kapcsolva', 
   const off = { ...empty, managedCategories: false, managedFields: false }
   const result = run([{ op: 'upsertGroup', key: 'g', label: 'G' }, { op: 'upsertMetadataField', key: 'f', label: 'F', type: 'text' }], off)
   assert.deepEqual(result.warnings, ['managed_categories_off', 'managed_fields_off'])
+})
+
+check('az MCP-nek kiadott konfiguráció-sémák nem tartalmaznak tömböt', () => {
+  for (const schema of [kbWikiConfigGetObject, kbWikiConfigProposeObject, kbWikiConfigWithdrawInputSchema]) {
+    const json = toJsonSchemaCompat(schema, { strictUnions: true, pipeStrategy: 'input' })
+    assert.ok(!JSON.stringify(json).includes('"type":"array"'))
+  }
 })
 
 check('bejövő levél feldolgozásakor nem küldhető és nem vonható vissza javaslat, olvasni lehet', () => {

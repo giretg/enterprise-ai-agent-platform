@@ -84,7 +84,9 @@ export type WikiConfigState = {
 export type WikiConfigPage = {
   path: string
   category: string | null
-  status: 'published' | 'archived'
+  status: 'published' | 'archived' | 'pending_approval'
+  id: string
+  version: number
   frontmatter: Record<string, unknown>
 }
 
@@ -126,6 +128,12 @@ export function configVersionOf(state: WikiConfigState): string {
     fields: [...state.fields].sort((a, b) => a.key.localeCompare(b.key)),
   }
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16)
+}
+
+/** Az oldalak változása a szimulációt is elavulttá teszi (új oldal is). */
+export function configPagesVersionOf(pages: readonly Pick<WikiConfigPage, 'id' | 'version'>[]): string {
+  const versions = pages.map(({ id, version }) => ({ id, version })).sort((a, b) => a.id.localeCompare(b.id))
+  return createHash('sha256').update(JSON.stringify(versions)).digest('hex')
 }
 
 export function normalizeWikiMd(text: string): string {
@@ -333,7 +341,8 @@ export function simulateConfigOperations(input: {
       case 'removeCategory': {
         const row = findCategory(op.key)
         if (!row) return fail('unknown_category', `No category at ${op.key}.`)
-        if (!row.linkedConnectorId && pagesIn(op.key).length > 0) return fail('category_not_empty', `${op.key} has ${pagesIn(op.key).length} pages; move them with mergeCategory first.`)
+        if (row.linkedConnectorId) return fail('linked_wiki_item', `${op.key} is a link to another wiki and cannot be removed here.`)
+        if (pagesIn(op.key).length > 0) return fail('category_not_empty', `${op.key} has ${pagesIn(op.key).length} pages; move them with mergeCategory first.`)
         if (next.categories.some((candidate) => candidate.parentKey === row.key)) return fail('category_not_empty', `${op.key} still has subcategories.`)
         next.categories = next.categories.filter((candidate) => candidate !== row)
         return
@@ -534,7 +543,13 @@ function fieldHasValue(value: unknown, option: string): boolean {
 function replaceFieldValue(value: unknown, option: string, to: string | null): unknown {
   if (!Array.isArray(value)) return to
   const mapped = value.flatMap((item) => (sameOption(item, option) ? (to ? [to] : []) : [item]))
-  return [...new Set(mapped)]
+  const seen = new Set<string>()
+  return mapped.filter((item) => {
+    const key = typeof item === 'string' ? item.trim().toLowerCase() : JSON.stringify(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 // ---------------------------------------------------------------------------

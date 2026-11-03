@@ -9,11 +9,13 @@
 import type { Connector, Prisma } from '@prisma/client'
 import type { AuditRepository, WikiConfigProposalRow, WikiConfigRepository, WikiRepository } from '@/repositories/interfaces'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
+import { fieldValueMatches } from '@/lib/wiki-metadata'
 import { normalizeCategoryPath } from '@/lib/wiki-categories'
 import {
   WIKI_COLLECT_MAX_CHARS,
   categoryPathOf,
   configVersionOf,
+  configPagesVersionOf,
   diffConfig,
   simulateConfigOperations,
   summarizeSimulation,
@@ -63,11 +65,13 @@ export class WikiConfigService {
 
   /** Minden oldal, archivált is: a kategória-üresség és a mezőhasználat ezeket is nézi. */
   private async pagesOf(connectorId: string): Promise<WikiConfigPage[]> {
-    const pages = await this.deps.wikis.listPages(connectorId, { status: ['published', 'archived'] })
+    const pages = await this.deps.wikis.listPages(connectorId, { status: ['published', 'archived', 'pending_approval'] })
     return pages.map((page) => ({
+      id: page.id,
+      version: page.version,
       path: page.path,
       category: page.category,
-      status: page.status === 'archived' ? 'archived' : 'published',
+      status: page.status,
       frontmatter: page.frontmatter && typeof page.frontmatter === 'object' && !Array.isArray(page.frontmatter)
         ? (page.frontmatter as Record<string, unknown>)
         : {},
@@ -122,8 +126,8 @@ export class WikiConfigService {
         managedCategories: state.managedCategories,
         managedFields: state.managedFields,
         agentConfigChanges: setting ? 'propose' : 'off',
-        groups: state.categories.filter((row) => !row.parentKey).map(categoryView),
-        categories: state.categories.filter((row) => !!row.parentKey).map((row) => ({
+        groups: state.categories.filter((row) => !row.parentKey && !row.linkedConnectorId).map(categoryView),
+        categories: state.categories.filter((row) => !!row.parentKey && !row.linkedConnectorId).map((row) => ({
           ...categoryView(row),
           pageSort: row.pageSort,
           template: row.templateKey,
@@ -142,10 +146,7 @@ export class WikiConfigService {
           help: field.help,
           usedBy: Object.fromEntries(field.options.map((option) => [
             option,
-            pages.filter((page) => {
-              const value = page.frontmatter[field.key]
-              return Array.isArray(value) ? value.includes(option) : value === option
-            }).length,
+            pages.filter((page) => fieldValueMatches(page.frontmatter[field.key], [option])).length,
           ])),
         })),
         templates: [...templatesOf(state.categories)].map(([id, template]) => ({
@@ -348,7 +349,7 @@ export class WikiConfigService {
       connector,
       wikiId,
       pages: simulation.pageChanges,
-      configPlan: { proposalId: proposal.id, expectedVersion: proposal.baseConfigVersion, decidedByUserId: actor.userId, next: simulation.next },
+      configPlan: { proposalId: proposal.id, expectedVersion: proposal.baseConfigVersion, expectedPagesVersion: configPagesVersionOf(pages), decidedByUserId: actor.userId, next: simulation.next },
       title: 'Config: agent proposal approved',
       note: proposal.note.slice(0, 500),
     })

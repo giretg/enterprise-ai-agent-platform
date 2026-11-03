@@ -676,6 +676,7 @@ async function main() {
       }
       await notFound('kb_get_page', { wikiId, path: 'labs/ldl-koleszterin.md' })
       await notFound('kb_get_page', { wikiId, path: 'index.md' })
+      await notFound('kb_wiki_config_get', { wikiId })
       await notFound('kb_list_index', { wikiId, inbox: true })
       await notFound('kb_get_document', { documentId: documentIds[0] })
       await notFound('kb_get_document', { documentId: documentIds[0], pageImages: true })
@@ -691,6 +692,7 @@ async function main() {
       const denied = async (label: string, fn: () => Promise<unknown>) => {
         await assert.rejects(fn, (error: unknown) => error instanceof WikiConsoleError && error.code === 'not_found', label)
       }
+      await denied('wikiConfig.overview', () => services.wikiConfig.overview(actor(admin), connectorId))
       await denied('getOverview', () => services.wikiConsole.getOverview(actor(admin), connectorId))
       await denied('getPage', () => services.wikiConsole.getPage(actor(admin), connectorId, 'labs/ldl-koleszterin.md'))
       await denied('getSource', () => services.wikiConsole.getSource(actor(admin), connectorId, documentIds[0]))
@@ -830,6 +832,7 @@ async function main() {
       const pending = await mcp.ok('kb_wiki_config_get', { definitionId, wikiId })
       assert.equal(pending.pendingProposals[0].proposalId, proposed.proposalId)
       assert.ok(pending.pendingProposals[0].approvalUrl)
+      await assert.rejects(() => services.wikiConfig.approve(actor(admin), connectorId, proposed.proposalId), (e: unknown) => e instanceof WikiConsoleError && e.code === 'not_found')
       await services.wikiConfig.approve(actor(owner), connectorId, proposed.proposalId)
       const index = await mcp.ok('kb_list_index', { definitionId, wikiId })
       assert.ok(String(index.wiki.collect).startsWith('Laboreredmények időrendben'), JSON.stringify(index.wiki.collect))

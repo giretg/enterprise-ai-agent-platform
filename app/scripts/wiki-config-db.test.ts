@@ -14,7 +14,7 @@ import { PostgresConnectorRepository } from '../src/repositories/postgres/connec
 import { PostgresAgentRepository } from '../src/repositories/postgres/agent-repository'
 import { PostgresDocumentRepository } from '../src/repositories/postgres/knowledge-repository'
 import { WikiService, type WikiCaller } from '../src/domain/knowledge-base/wiki-service'
-import { WikiConsoleError, type WikiConsoleActor } from '../src/domain/knowledge-base/wiki-console-service'
+import { WikiConsoleError, WikiConsoleService, type WikiConsoleActor } from '../src/domain/knowledge-base/wiki-console-service'
 import { WikiConfigError, WikiConfigService } from '../src/domain/knowledge-base/wiki-config-service'
 import { WikiCategoryService } from '../src/domain/knowledge-base/wiki-category-service'
 import { extractWikiLinks } from '../src/lib/kb-wiki'
@@ -76,15 +76,11 @@ async function main() {
   })
   const actor: WikiConsoleActor = { userId: user.id, tenantId: tenant.id, role: 'admin' }
   const operatorActor: WikiConsoleActor = { ...actor, role: 'operator' }
+  const consoleAuth = new WikiConsoleService({ connectors } as never)
   const service = new WikiConfigService({
     wiki: wikiService,
     wikiConsole: {
-      authorize: (async (who: WikiConsoleActor, id: string) => {
-        if (who.role !== 'admin') throw new WikiConsoleError('forbidden')
-        const row = await connectors.findById(id, who.tenantId)
-        if (!row) throw new WikiConsoleError('not_found')
-        return { connector: row as Connector, access: { view: true, contribute: true, manage: true, metaOnly: false } }
-      }) as never,
+      authorize: consoleAuth.authorize.bind(consoleAuth),
       displayName: async () => 'Céges wiki',
     },
     wikis,
@@ -243,7 +239,7 @@ async function main() {
       connector,
       wikiId: wiki.id,
       pages: [],
-      configPlan: { proposalId: id, expectedVersion: 'régi-lenyomat', decidedByUserId: user.id, next: { ...state, name: 'Versengő' } },
+      configPlan: { proposalId: id, expectedVersion: 'régi-lenyomat', expectedPagesVersion: '', decidedByUserId: user.id, next: { ...state, name: 'Versengő' } },
       title: 'x',
       note: null,
     })
@@ -330,6 +326,123 @@ async function main() {
     assert.equal((await structure.listCategories(wiki.id)).find((item) => item.key === 'cat-2')!.templateKey, 'tpl-2')
     await categories.update(actor, connector.id, row.id, { requiredSections: ['Más'] })
     assert.equal((await structure.listCategories(wiki.id)).find((item) => item.key === 'cat-2')!.templateKey, null)
+  })
+
+  await check('új oldal a szimuláció után: a kategória és a teljes javaslat változatlan marad', async () => {
+    const id = String(okResult(await propose([{ op: 'removeCategory', key: 'group-5/cat-5' }])).proposalId)
+    const original = wikiService.applyConfigChange.bind(wikiService)
+    wikiService.applyConfigChange = async (input) => {
+      await seed('late.md', 'group-5/cat-5')
+      return original(input)
+    }
+    try {
+      await assert.rejects(() => service.approve(actor, connector.id, id), (e: unknown) => e instanceof WikiConfigError && e.code === 'conflict')
+      assert.equal((await repo.findProposal(id))!.status, 'pending')
+      assert.ok((await structure.listCategories(wiki.id)).some((row) => row.key === 'cat-5'))
+      assert.equal((await wikis.findPage(connector.id, 'late.md'))!.category, 'group-5/cat-5')
+    } finally {
+      wikiService.applyConfigChange = original
+      okResult(await service.withdraw(caller, { wikiId: wiki.id, proposalId: id }))
+    }
+  })
+
+  await check('szerkesztés a szimuláció után: a régi frontmatter nem írhatja felül', async () => {
+    const id = String(okResult(await propose([{ op: 'renameFieldOption', field: 'direction', from: 'alfa', to: 'új' }])).proposalId)
+    const original = wikiService.applyConfigChange.bind(wikiService)
+    wikiService.applyConfigChange = async (input) => {
+      await prisma.wikiPage.update({ where: { connectorId_path: { connectorId: connector.id, path: 'a.md' } }, data: { frontmatter: { direction: 'alfa', other: 'új szerkesztés' }, version: { increment: 1 } } })
+      return original(input)
+    }
+    try {
+      await assert.rejects(() => service.approve(actor, connector.id, id), (e: unknown) => e instanceof WikiConfigError && e.code === 'conflict')
+      assert.equal(((await wikis.findPage(connector.id, 'a.md'))!.frontmatter as Row).other, 'új szerkesztés')
+      assert.equal((await repo.findProposal(id))!.status, 'pending')
+      assert.deepEqual((await repo.readState(wiki.id))!.fields.find((row) => row.key === 'direction')!.options, ['alfa'])
+    } finally {
+      wikiService.applyConfigChange = original
+      okResult(await service.withdraw(caller, { wikiId: wiki.id, proposalId: id }))
+    }
+  })
+
+  await check('két párhuzamos jóváhagyásból pontosan egy change-set születik', async () => {
+    const id = String(okResult(await propose([{ op: 'setCollectFocus', collect: 'Párhuzamos jóváhagyás' }])).proposalId)
+    const before = await prisma.wikiChangeSet.count({ where: { wikiId: wiki.id } })
+    const results = await Promise.allSettled([service.approve(actor, connector.id, id), service.approve(actor, connector.id, id)])
+    assert.equal(results.filter((row) => row.status === 'fulfilled').length, 1)
+    const rejected = results.find((row) => row.status === 'rejected') as PromiseRejectedResult
+    assert.equal(rejected.reason.code, 'proposal_not_pending')
+    assert.equal(await prisma.wikiChangeSet.count({ where: { wikiId: wiki.id } }), before + 1)
+  })
+
+  await check('másik wiki proposalId-ja nem olvasható, nem dönthető el és nem vonható vissza', async () => {
+    const other = await prisma.connector.create({ data: { tenantId: tenant.id, type: 'knowledge_base', name: `kb:shared:${randomUUID()}`, authMode: 'agent_owned', scope: 'single' } })
+    const otherWiki = await wikis.ensureForConnector({ connectorId: other.id, schemaMd: '# WIKI' })
+    const proposal = (await repo.createProposal({ wikiId: otherWiki.id, connectorId: other.id, agentId: agent.id, userId: user.id, baseConfigVersion: 'x', operations: [], note: 'Másik wiki' }))!
+    for (const fn of [() => service.review(actor, connector.id, proposal.id), () => service.approve(actor, connector.id, proposal.id), () => service.reject(actor, connector.id, proposal.id, null)]) {
+      await assert.rejects(fn, (e: unknown) => e instanceof WikiConsoleError && e.code === 'not_found')
+    }
+    failCode(await service.withdraw(caller, { wikiId: wiki.id, proposalId: proposal.id }), 'not_found')
+  })
+
+  await check('privát, névsoros és más tenant wiki-je nem olvasható a konfiguráció-eszközzel sem', async () => {
+    for (const visibility of ['private_to_user', 'members'] as const) {
+      const c = await prisma.connector.create({ data: { tenantId: tenant.id, type: 'knowledge_base', name: `kb:${visibility}:${randomUUID()}`, visibility, ownerUserId: user.id, kbMemberUserIds: visibility === 'members' ? [user.id] : [], authMode: 'agent_owned', scope: 'single' } })
+      const w = await wikis.ensureForConnector({ connectorId: c.id, schemaMd: '# Titkos' })
+      const outsider = { ...caller, userId: randomUUID(), snapshot: { connectors: [{ ...binding, connectorId: c.id, visibility, ownerUserId: user.id }] } }
+      failCode(await service.get(outsider, { wikiId: w.id }), 'not_found')
+      await assert.rejects(() => service.overview({ ...actor, userId: outsider.userId }, c.id), (e: unknown) => e instanceof WikiConsoleError && e.code === 'not_found')
+    }
+    failCode(await service.get({ ...caller, tenantId: randomUUID() }, { wikiId: wiki.id }), 'not_found')
+  })
+
+  await check('a kapcsolt privát wiki neve nem kerül az agent konfiguráció-válaszába', async () => {
+    const privateConnector = await prisma.connector.create({ data: { tenantId: tenant.id, type: 'knowledge_base', name: `kb:private:${randomUUID()}`, visibility: 'private_to_user', ownerUserId: user.id, authMode: 'agent_owned', scope: 'single' } })
+    await prisma.wikiCategory.create({ data: { wikiId: wiki.id, key: 'private-link', name: 'Titkos wiki neve', linkedConnectorId: privateConnector.id } })
+    const result = okResult(await service.get(caller, { wikiId: wiki.id }))
+    assert.ok(!JSON.stringify(result).includes('Titkos wiki neve'))
+  })
+
+  await check('törlés és újralétrehozás: a megmaradó gyerek új csoportba költözhet', async () => {
+    const ops = [
+      { op: 'removeCategory', key: 'group-2/cat-2' },
+      { op: 'removeCategory', key: 'group-2/cat-20' },
+      { op: 'removeCategory', key: 'group-2' },
+      { op: 'upsertCategory', key: 'group-3/cat-2', label: 'Áthelyezett' },
+    ]
+    const id = String(okResult(await propose(ops)).proposalId)
+    await service.approve(actor, connector.id, id)
+    const rows = await structure.listCategories(wiki.id)
+    assert.equal(rows.some((row) => row.key === 'group-2'), false)
+    assert.equal(rows.find((row) => row.key === 'cat-2')!.parentId, rows.find((row) => row.key === 'group-3')!.id)
+  })
+
+  await check('függő oldal is védi a kategóriát és a használt opciót', async () => {
+    await seed('pending.md', 'group-3/cat-3', { country: 'a' })
+    await prisma.wikiPage.update({ where: { connectorId_path: { connectorId: connector.id, path: 'pending.md' } }, data: { status: 'pending_approval' } })
+    failCode(await propose([{ op: 'removeCategory', key: 'group-3/cat-3' }], { validateOnly: true }), 'invalid_config_change')
+    failCode(await propose([{ op: 'removeFieldOption', field: 'country', option: 'a' }]), 'invalid_config_change')
+    const id = String(okResult(await propose([
+      { op: 'mergeCategory', from: 'group-3/cat-3', to: 'group-4/cat-4' },
+      { op: 'renameFieldOption', field: 'country', from: 'a', to: 'alfa' },
+    ])).proposalId)
+    await service.approve(actor, connector.id, id)
+    const row = (await wikis.findPage(connector.id, 'pending.md'))!
+    assert.deepEqual([row.status, row.category, (row.frontmatter as Row).country], ['pending_approval', 'group-4/cat-4', 'alfa'])
+    assert.equal(await prisma.knowledgeChunk.count({ where: { connectorId: connector.id, path: 'pending.md' } }), 0)
+  })
+
+  await check('archivált oldal: kis-nagybetűs használat, revízió és a kezelt frontmatter leválasztása', async () => {
+    await seed('archived.md', 'group-4/cat-4', { country: 'B', custom: 'marad', title: 'régi fejléc', sources: ['régi forrás'] })
+    await prisma.wikiPage.update({ where: { connectorId_path: { connectorId: connector.id, path: 'archived.md' } }, data: { status: 'archived' } })
+    const current = okResult(await service.get(caller, { wikiId: wiki.id })) as { metadataFields: Array<{ key: string; usedBy: Record<string, number> }> }
+    assert.equal(current.metadataFields.find((row) => row.key === 'country')!.usedBy.b, 1)
+    const id = String(okResult(await propose([{ op: 'renameFieldOption', field: 'country', from: 'b', to: 'béta' }])).proposalId)
+    await service.approve(actor, connector.id, id)
+    const row = (await wikis.findPage(connector.id, 'archived.md'))!
+    assert.deepEqual([row.status, row.version, row.title], ['archived', 2, 'archived.md'])
+    assert.deepEqual(row.frontmatter, { country: 'béta', custom: 'marad' })
+    assert.deepEqual(row.sourceRefs, [])
+    assert.equal(await prisma.knowledgeChunk.count({ where: { connectorId: connector.id, path: 'archived.md' } }), 0)
   })
 
   await prisma.$disconnect()

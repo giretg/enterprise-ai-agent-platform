@@ -1001,6 +1001,7 @@ export type WikiApplyChangeSetResult =
 export type WikiConfigApplyPlan = {
   proposalId: string
   expectedVersion: string
+  expectedPagesVersion: string
   decidedByUserId: string
   next: WikiConfigState
 }

@@ -18,7 +18,7 @@ import type {
   WikiStructureRepository,
 } from '../interfaces'
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
-import { configVersionOf, type WikiConfigState } from '@/lib/wiki-config'
+import { configVersionOf, configPagesVersionOf, type WikiConfigState } from '@/lib/wiki-config'
 import { metaFromColumns, type WikiFieldDef } from '@/lib/wiki-metadata'
 import type { WikiPageMetaQuery, WikiPageMetaRow } from '../interfaces'
 
@@ -794,14 +794,13 @@ async function applyConfigPlan(tx: Prisma.TransactionClient, wikiId: string, con
   if (claimed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'proposal_not_pending' })
   const current = await loadConfigState(tx, wikiId)
   if (!current || configVersionOf(current) !== plan.expectedVersion) throw new ApplyAborted({ ok: false, reason: 'config_conflict' })
+  const pages = await tx.wikiPage.findMany({ where: { wikiId, connectorId }, select: { id: true, version: true } })
+  if (configPagesVersionOf(pages) !== plan.expectedPagesVersion) throw new ApplyAborted({ ok: false, reason: 'conflict', path: null })
   const { next } = plan
 
   // A fa kulcsokkal jön; előbb a felső szint, hogy a gyerek megtalálja a szülőjét.
   const wanted = new Set(next.categories.map((row) => row.key))
   const removed = current.categories.filter((row) => !wanted.has(row.key))
-  for (const row of [...removed].sort((a, b) => Number(!!b.parentKey) - Number(!!a.parentKey))) {
-    await tx.wikiCategory.deleteMany({ where: { wikiId, key: row.key } })
-  }
   const before = new Map(current.categories.map((row) => [row.key, JSON.stringify(row)]))
   for (const row of [...next.categories].sort((a, b) => Number(!!a.parentKey) - Number(!!b.parentKey))) {
     if (before.get(row.key) === JSON.stringify(row)) continue
@@ -830,6 +829,10 @@ async function applyConfigPlan(tx: Prisma.TransactionClient, wikiId: string, con
       create: { ...data, key: row.key, wikiId },
       update: data,
     })
+  }
+  // Előbb a megmaradó gyerekek kapják meg az új szülőt, csak utána törölhető a régi.
+  for (const row of [...removed].sort((a, b) => Number(!!b.parentKey) - Number(!!a.parentKey))) {
+    await tx.wikiCategory.deleteMany({ where: { wikiId, key: row.key } })
   }
   for (const row of next.fields) {
     const { key, ...data } = row
