@@ -520,7 +520,23 @@ async function startAuthorization(input: {
   }
 }
 
+const documentExportStore = new PostgresDocumentExportRepository()
+const documentExportDeps: Pick<EnterpriseToolDeps, 'saveDocumentExport' | 'documentExportUrl'> = {
+  // #1024: letölthető fájlok ideiglenes tárolója.
+  saveDocumentExport: ({ document, ...input }) =>
+    documentExportStore.create({
+      ...input,
+      fileName: document.fileName,
+      format: document.format,
+      mimeType: document.mimeType,
+      byteSize: document.bytes.length,
+      data: document.bytes,
+    }),
+  documentExportUrl: (id) => `${resolvePublicAppOrigin()}${documentExportPath(id)}`,
+}
+
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
+  ...documentExportDeps,
   ...sharedToolLookups,
   ...mcpGateDeps,
   resolveEgressAllowlist,
@@ -680,7 +696,6 @@ async function listGatewayOperationHistoryRows(input: {
 }
 
 const clientPolicyStore = new PostgresClientPolicyRepository()
-const documentExportStore = new PostgresDocumentExportRepository()
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
@@ -742,18 +757,8 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   },
   executeSandboxRun,
   resolveClientPolicy: (input) => getPolicySnapshot(clientPolicyStore, input),
-  // #1024: letölthető fájlok ideiglenes tárolója.
-  saveDocumentExport: ({ document, ...input }) =>
-    documentExportStore.create({
-      ...input,
-      fileName: document.fileName,
-      format: document.format,
-      mimeType: document.mimeType,
-      byteSize: document.bytes.length,
-      data: document.bytes,
-    }),
+  ...documentExportDeps,
   loadOwnDocumentExport: (input) => loadOwnExport(documentExportStore, { ...input, now: new Date() }),
-  documentExportUrl: (id) => `${resolvePublicAppOrigin()}${documentExportPath(id)}`,
   countWebToolCalls: ({ tenantId, toolName, agentId, since }) =>
     prisma.auditLog.count({
       where: { tenantId, action: 'enterprise.tool.ok', inputRef: toolName, ...(agentId ? { targetId: agentId } : {}), createdAt: { gte: since } },
