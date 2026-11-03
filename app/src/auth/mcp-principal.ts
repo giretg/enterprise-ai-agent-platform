@@ -68,6 +68,8 @@ export type McpPrincipal = {
   turnId?: string
   /** #1061 F2: platform által indított háttérfutás (pl. bejövő levél) — nincs interaktív ember. */
   background?: true
+  /** Bejövő levél feldolgozása: minden írás jóváhagyásra vár (kivéve, ha a szabály engedi). */
+  forceWriteApproval?: true
 }
 
 export type McpPrincipalFailureCode =
@@ -104,6 +106,8 @@ export type McpPrincipalDeps = {
   audit?: AuditSink
   /** #1004: a platform-chat tokenje; null = nem ilyen token (a Clerk-út dönt). */
   verifyChatToken?: (bearerToken: string) => ChatTokenClaims | null
+  /** A bejövőlevél-szabály engedi-e a jóváhagyás nélküli írást; hiánya / hiba = nem (fail-closed). */
+  inboundMailAllowsDirectWrites?: (input: { tenantId: string; agentId: string }) => Promise<boolean>
 }
 
 const GENERIC_MESSAGE: Record<McpPrincipalFailureCode, string> = {
@@ -279,6 +283,12 @@ async function resolveChatPrincipal(
   }
   const resolved = await resolvePrincipalForUser(await deps.users.findById(chat.sub), tenantSlug, deps)
   if (!resolved.ok) return resolved
+  const background = Boolean(chat.origin || chat.bg)
+  // A háttérfutás ma csak bejövő levélből indul: írás alapból jóváhagyással, hacsak a szabály nem engedi.
+  const forceWriteApproval =
+    background &&
+    !(chat.agentId &&
+      (await deps.inboundMailAllowsDirectWrites?.({ tenantId: resolved.principal.tenantId, agentId: chat.agentId }).catch(() => false)))
   return {
     ok: true,
     principal: {
@@ -286,7 +296,8 @@ async function resolveChatPrincipal(
       client: 'platform_chat',
       ...(chat.agentId ? { boundAgentId: chat.agentId } : {}),
       ...(chat.turnId ? { turnId: chat.turnId } : {}),
-      ...(chat.origin || chat.bg ? { background: true as const } : {}),
+      ...(background ? { background: true as const } : {}),
+      ...(forceWriteApproval ? { forceWriteApproval: true as const } : {}),
     },
   }
 }

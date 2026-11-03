@@ -292,11 +292,9 @@ export type SavedReadPage =
       offset: number
       returnedRows: number
       rows: unknown[]
-      /** Egyetlen, a plafonnál nagyobb sor eleje (ritka) — a `rows` ilyenkor üres. */
-      oversizedRow?: string
       nextOffset: number | null
     }
-  | { totalChars: number; offset: number; text: string; nextOffset: number | null }
+  | { asText: true; totalChars: number; offset: number; text: string; nextOffset: number | null }
 
 /**
  * Lapozott olvasás: sorlistánál `offset`/`limit` sor (a válasz `maxChars` alatt marad — ha nem fér, kevesebb
@@ -304,7 +302,7 @@ export type SavedReadPage =
  */
 export function readSavedResult(
   data: Buffer,
-  options: { offset?: number; limit?: number; arrayPath?: string; maxChars: number },
+  options: { offset?: number; limit?: number; arrayPath?: string; asText?: boolean; maxChars: number },
 ): SavedReadPage {
   const text = data.toString('utf8')
   const offset = Math.max(0, Math.floor(options.offset ?? 0))
@@ -316,28 +314,23 @@ export function readSavedResult(
   }
   const table = parsed === undefined ? null : locateRecordTable(parsed, options.arrayPath)
   if (options.arrayPath && !table) throw new SavedResultError(`arrayPath: a(z) "${options.arrayPath}" nem sorlista`)
-  if (!table) {
-    const slice = text.slice(offset, offset + options.maxChars)
-    const end = offset + slice.length
-    return { totalChars: text.length, offset, text: slice, nextOffset: end < text.length ? end : null }
+  const textPage = (start: number): SavedReadPage => {
+    let slice = text.slice(start, start + Math.max(1, options.maxChars - 300))
+    const page = () => ({ asText: true as const, totalChars: text.length, offset: start, text: slice, nextOffset: start + slice.length < text.length ? start + slice.length : null })
+    while (slice.length > 1 && JSON.stringify(page()).length > options.maxChars) slice = slice.slice(0, Math.ceil(slice.length / 2))
+    return page()
   }
+  if (!table || options.asText) return textPage(offset)
   const limit = Math.min(SAVED_READ_MAX_ROWS, Math.max(1, Math.floor(options.limit ?? SAVED_READ_DEFAULT_ROWS)))
   let rows = table.rows.slice(offset, offset + limit)
-  // A boríték (~200 karakter) is a plafon alatt maradjon.
-  const budget = Math.max(1, options.maxChars - 300)
-  while (rows.length > 1 && JSON.stringify(rows).length > budget) rows = rows.slice(0, Math.ceil(rows.length / 2))
-  const single = rows.length === 1 ? JSON.stringify(rows[0]) : ''
-  const oversizedRow = single.length > budget ? single.slice(0, budget) : undefined
-  const end = offset + rows.length
-  return {
-    arrayPath: table.arrayPath,
-    totalRows: table.rows.length,
-    offset,
-    returnedRows: oversizedRow ? 0 : rows.length,
-    rows: oversizedRow ? [] : rows,
-    ...(oversizedRow ? { oversizedRow } : {}),
-    nextOffset: end < table.rows.length ? end : null,
-  }
+  const page = (): SavedReadPage => ({
+    arrayPath: table.arrayPath, totalRows: table.rows.length, offset,
+    returnedRows: rows.length, rows,
+    nextOffset: offset + rows.length < table.rows.length ? offset + rows.length : null,
+  })
+  while (rows.length > 1 && JSON.stringify(page()).length > options.maxChars) rows = rows.slice(0, Math.ceil(rows.length / 2))
+  // A hosszú sor is hiánytalanul olvasható: a teljes JSON karakterlapozására váltunk.
+  return JSON.stringify(page()).length > options.maxChars ? textPage(0) : page()
 }
 
 /**

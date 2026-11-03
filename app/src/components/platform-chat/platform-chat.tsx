@@ -156,10 +156,22 @@ function AttachmentList({ attachments }: { attachments: ChatAttachment[] }) {
 
 const FILE_BADGES: Record<string, string> = {
   xlsx: 'bg-emerald-600',
+  xls: 'bg-emerald-600',
   csv: 'bg-emerald-700',
   docx: 'bg-sky-700',
+  doc: 'bg-sky-700',
   pdf: 'bg-rose-600',
   md: 'bg-ink-soft',
+}
+
+/** #1070: a letöltés gombja a fájl fajtáját mondja („Excel letöltése”). */
+const DOWNLOAD_LABELS: Record<string, string> = {
+  xlsx: 'Excel letöltése',
+  xls: 'Excel letöltése',
+  csv: 'CSV letöltése',
+  docx: 'Word letöltése',
+  doc: 'Word letöltése',
+  pdf: 'PDF letöltése',
 }
 
 function fileSize(bytes: number | null): string | null {
@@ -218,7 +230,7 @@ function FileCards({ files, onSaveToDrive }: { files: ChatFile[]; onSaveToDrive?
                   download={file.name}
                   className="flex items-center gap-1.5 rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-white transition hover:bg-ink/85"
                 >
-                  <Icon name="download" className="h-3.5 w-3.5" /> Letöltés
+                  <Icon name="download" className="h-3.5 w-3.5" /> {DOWNLOAD_LABELS[ext] ?? 'Letöltés'}
                 </a>
               </div>
             ) : null}

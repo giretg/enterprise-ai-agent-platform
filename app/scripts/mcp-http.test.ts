@@ -26,6 +26,7 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   GOOGLE_DRIVE_READ_FILE_TOOL,
   GOOGLE_DRIVE_SEARCH_TOOL,
+  GOOGLE_DRIVE_UPLOAD_FILE_TOOL,
   KB_LIST_INDEX_TOOL,
   ENTERPRISE_TOOLS,
   WEB_SEARCH_TOOL,
@@ -55,7 +56,9 @@ import {
   MCP_SKILL_READ_TOOL,
   MCP_SKILL_SUBMIT_TOOL,
   MCP_WHOAMI_TOOL,
+  MCP_ALLOWED_TOOLS,
 } from '../src/auth/mcp-principal'
+import { inboundMailAllowedTools, inboundMailBlocksTool } from '../src/auth/inbound-mail-tool-guard'
 import { CUSTOMER_PROMISE_TOOLS, invokeCustomerPromise } from '../src/domain/customer-promise/mcp'
 import { SCHEDULED_TASK_TOOLS } from '../src/domain/scheduled-task/mcp'
 import { CustomerPromiseService, type CustomerPromiseStore } from '../src/domain/customer-promise/customer-promise-service'
@@ -1007,6 +1010,49 @@ async function main() {
     assert.deepEqual(seen.at(-1), { client: 'platform_chat', attested: [hash] })
     await run(TOKEN)
     assert.deepEqual(seen.at(-1)?.attested, [], 'külső kliens fejléce nem számít')
+  })
+
+  await check('bejövő levél feldolgozása: belső írás tiltva, céges írás jóváhagyásra kényszerítve; a szabály feloldja', async () => {
+    const chatKey = 'p'.repeat(40)
+    const bg = signChatToken(
+      { aud: CHAT_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false, agentId: AGENT_ID, bg: true },
+      chatKey,
+      new Date(),
+    ).token
+    const seen: Array<boolean | undefined> = []
+    const run = async (tool: string, args: Record<string, unknown>, allow: boolean) => {
+      const { deps: base } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+      const deps: McpRuntimeDeps = {
+        ...base,
+        verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+        inboundMailAllowsDirectWrites: async () => allow,
+        users: { ...base.users, findById: async () => user() },
+        invokeEnterpriseTool: async (input) => {
+          seen.push(input.principal.forceWriteApproval)
+          return { content: [{ type: 'text', text: '{"status":"awaiting_approval"}' }] }
+        },
+      }
+      const res = await post('acme', { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: tool, arguments: args } }, { authorization: `Bearer ${bg}`, 'x-excellence-agent-id': AGENT_ID }, deps)
+      return JSON.stringify(await readJson(res))
+    }
+    for (const tool of ['platform.scheduled_task.create', 'platform.mini_app.share', 'platform.work_file.write', 'kb_ingest', 'platform.agent.publish', 'platform.handoff', 'web_fetch']) {
+      const out = await run(tool, { definitionId: DEFINITION_ID }, false)
+      assert.ok(out.includes('inbound_mail_blocked'), `${tool}: ${out.slice(0, 300)}`)
+    }
+    await run(GOOGLE_DRIVE_UPLOAD_FILE_TOOL, { definitionId: DEFINITION_ID, name: 'a.txt', content: 'x' }, false)
+    assert.equal(seen.at(-1), true)
+    assert.ok(!(await run('platform.scheduled_task.create', { definitionId: DEFINITION_ID }, true)).includes('inbound_mail_blocked'))
+    await run(GOOGLE_DRIVE_UPLOAD_FILE_TOOL, { definitionId: DEFINITION_ID, name: 'a.txt', content: 'x' }, true)
+    assert.equal(seen.at(-1), undefined)
+  })
+
+  await check('bejövő levél engedélylistája csak létező eszközneveket tartalmaz', () => {
+    const known = new Set<string>(MCP_ALLOWED_TOOLS)
+    for (const tool of inboundMailAllowedTools()) assert.ok(known.has(tool), tool)
+    assert.equal(inboundMailBlocksTool({}, 'platform.scheduled_task.create'), false)
+    assert.equal(inboundMailBlocksTool({ forceWriteApproval: true }, 'platform.scheduled_task.create'), true)
+    assert.equal(inboundMailBlocksTool({ forceWriteApproval: true }, 'uj_jovobeli_eszkoz'), true)
+    assert.equal(inboundMailBlocksTool({ forceWriteApproval: true }, 'http_api_request'), false)
   })
 
   await check('#1024 document_export: listing follows local_files level × client kind × tenant switch', async () => {

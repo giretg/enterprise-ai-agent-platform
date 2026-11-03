@@ -53,6 +53,11 @@ export type ToolCallPrincipal = {
   tenantId: string
   role: string
   assumed: boolean
+  /**
+   * Bejövő levél feldolgozása: minden írás jóváhagyásra vár, az agent írási módjától
+   * függetlenül (a feladó hamisítható). Csak a platform állítja (`McpPrincipal`).
+   */
+  forceWriteApproval?: true
 }
 
 export type AuthorizeToolCallInput = {

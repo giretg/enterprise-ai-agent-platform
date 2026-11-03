@@ -126,6 +126,7 @@ async function callCrm(payload: unknown, save?: SaveOversizedHttpResult) {
       { id: AGENT_ID },
       'hu',
       undefined,
+      undefined,
       save ? { saveOversized: save } : undefined,
     )) as Record<string, unknown> & { savedResult?: SavedHttpResultInfo; preview?: string; hint?: string }
   } finally {
@@ -339,7 +340,38 @@ async function main() {
     const result = await callCrm({ report: 'x'.repeat(60_000) }, saverFor(store))
     assert.equal(result.savedResult?.rowCount, null)
     const page = readSavedResult(store.rows.get(result.savedResult!.savedResultId)!.data, { maxChars: 20_000 })
-    assert.ok('text' in page && page.text.length === 20_000 && page.nextOffset === 20_000)
+    assert.ok('text' in page && page.text.length > 0 && page.nextOffset === page.text.length)
+    assert.ok(JSON.stringify(page).length <= 20_000)
+  })
+
+  await check('hosszú, escape-elt sor és szöveg hiánytalanul lapozható 20k alatt', async () => {
+    for (const payload of [{ report: '\\"'.repeat(30_000) }, { rows: [{ report: '\\"'.repeat(30_000) }] }]) {
+      const store = new MemoryStore()
+      const saved = await callCrm(payload, saverFor(store))
+      const id = saved.savedResult!.savedResultId
+      let offset = 0
+      let restored = ''
+      do {
+        const page = payloadOf(await invoke(deps(store), HTTP_API_SAVED_READ_TOOL, { savedResultId: id, offset, asText: offset > 0 }))
+        assert.ok(JSON.stringify(page).length <= 20_000)
+        assert.equal(page.asText, true)
+        restored += page.text
+        if (page.nextOffset === null) break
+        assert.ok(Number(page.nextOffset) > offset)
+        offset = Number(page.nextOffset)
+      } while (true)
+      assert.equal(restored, store.rows.get(id)!.data.toString('utf8'))
+    }
+  })
+
+  await check('a belső mentett JSON Drive exportId-ként sem olvasható', async () => {
+    const store = new MemoryStore()
+    const saved = await callCrm(bibReport(900), saverFor(store))
+    const wired = deps(store)
+    wired.enqueueWrite = async () => { throw new Error('restricted JSON must not reach Drive') }
+    wired.loadOwnDocumentExport = async () => ({ fileName: 'raw.json', mimeType: 'application/json', format: 'json', data: Buffer.from('secret') })
+    const out = await invoke(wired, 'google_drive_upload_file', { exportId: saved.savedResult!.savedResultId })
+    assert.equal(payloadOf(out).code, 'document_export_not_found')
   })
 
   await check('mentés nélkül (nincs tároló / hibás válasz): régi előnézet; riport-végponton nem az „aggregált végpont” tanács', async () => {

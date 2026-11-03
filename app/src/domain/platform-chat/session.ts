@@ -130,7 +130,9 @@ export async function issueContinuationToken(
       adminInsight: false,
       turnId: b.turnId,
       agentId: b.agentId,
-      ...(chat.origin || chat.bg ? { bg: true as const } : {}),
+      // A worker jelöli a levélből indult forduló folytatását (a böngésző tokenjében nincs ilyen jelölés).
+      // Csak szigorít: háttérfutásban nincs interaktív megerősítés, az írás jóváhagyásra vár.
+      ...(chat.origin || chat.bg || b.background === true ? { bg: true as const } : {}),
     },
     key,
     now,

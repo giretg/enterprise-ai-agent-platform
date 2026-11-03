@@ -52,6 +52,7 @@ export function toRule(row: Prisma.AgentInboundMailRuleGetPayload<object>): Inbo
     handoffToAgentId: row.handoffToAgentId,
     senderAllowlist: row.senderAllowlist ?? [],
     dailyRunLimit: row.dailyRunLimit,
+    allowDirectWrites: row.allowDirectWrites === true,
   }
 }
 

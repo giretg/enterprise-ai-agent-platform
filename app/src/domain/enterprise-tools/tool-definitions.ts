@@ -1281,6 +1281,7 @@ export const httpApiSavedReadInputSchema = z
     definitionId,
     agentId: optionalAgentId,
     savedResultId: z.string().uuid().describe('savedResult.savedResultId from a large http_api_* response.'),
+    asText: z.boolean().optional().describe('Read the full JSON as character pages. When the reply has asText=true, pass asText=true and nextOffset to continue.'),
     offset: z
       .number()
       .int()

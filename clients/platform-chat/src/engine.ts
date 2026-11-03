@@ -179,6 +179,16 @@ async function pauseTurn(deps: EngineDeps, turn: Turn, reason: TurnPause['reason
   await deps.store.touchConversation(turn.conversationId)
 }
 
+/**
+ * Félbehagyott forduló folytatási tokenje a felhasználó böngésző-tokenjéből. A levélből indult forduló
+ * háttérfutás marad (az írás jóváhagyásra vár); ismeretlen beszélgetésnél is (fail-closed).
+ */
+async function resumeToken(deps: EngineDeps, turn: Turn, chatToken: string): Promise<string> {
+  const conversation = await deps.store.getConversation(turn.conversationId)
+  const background = conversation?.origin !== 'user'
+  return deps.platform.continuationToken({ chatToken, turnId: turn.id, agentId: turn.agentId, ...(background ? { background: true as const } : {}) })
+}
+
 /** Kizárólag a tulajdonos kifejezett folytatása nyit új keretet; a számlálók nem nullázódnak. */
 export async function resumeTurn(
   deps: EngineDeps,
@@ -194,7 +204,7 @@ export async function resumeTurn(
       if (!turn.pause) return 'not_waiting'
       let continuation: string
       try {
-        continuation = await deps.platform.continuationToken({ chatToken: input.chatToken, turnId: turn.id, agentId: turn.agentId })
+        continuation = await resumeToken(deps, turn, input.chatToken)
       } catch {
         return 'no_access'
       }
@@ -377,7 +387,7 @@ export async function answerQuestion(
   if (turn.status !== 'awaiting_input') return 'not_waiting'
   let continuation: string
   try {
-    continuation = await deps.platform.continuationToken({ chatToken: input.chatToken, turnId: turn.id, agentId: turn.agentId })
+    continuation = await resumeToken(deps, turn, input.chatToken)
   } catch {
     return 'no_access'
   }

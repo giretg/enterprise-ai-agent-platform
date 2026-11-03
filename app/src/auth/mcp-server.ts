@@ -20,6 +20,8 @@ import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
+import { prisma } from '@/lib/db'
+import { inboundMailBlocksTool, INBOUND_MAIL_TOOL_BLOCKED_MESSAGE } from '@/auth/inbound-mail-tool-guard'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
@@ -466,6 +468,9 @@ export function productionMcpDeps(): McpRuntimeDeps {
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
     verifyChatToken: productionChatTokenVerifier,
+    inboundMailAllowsDirectWrites: async ({ tenantId, agentId }) =>
+      (await prisma.agentInboundMailRule.findFirst({ where: { agentId, tenantId }, select: { allowDirectWrites: true } }))
+        ?.allowDirectWrites === true,
     users: repositories.users,
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
@@ -2081,7 +2086,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition (agentId optional). Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. For totals, averages or per-partner/per-product breakdowns over many rows, prefer an aggregating report endpoint from connectors[].endpoints (with its filters) over fetching raw rows. The result includes the response etag when the API sends one. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email). Unlisted paths return endpoint_not_allowed with the allowed list.',
+            'One GET against a bound company HTTP API connector. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition (agentId optional). Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. For totals, averages or per-partner/per-product breakdowns over many rows, prefer an aggregating report endpoint from connectors[].endpoints (with its filters) over fetching raw rows. The result includes the response etag when the API sends one. A file download (Excel, PDF, CSV attachment) returns no content, only fileName, sizeBytes, exportId and a downloadUrl for the user. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email). Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -2354,6 +2359,11 @@ async function createMcpResourceHandler(
             { code: 'tool_not_allowed', message: 'Tool is not allowed on this MCP endpoint' },
             true,
           )
+        }
+        // Bejövő levél feldolgozása: csak olvasás és jóváhagyásra váró írás (engedélylista).
+        if (inboundMailBlocksTool(principal, toolName)) {
+          await auditMcpToolDenied(deps, principal, toolName, 'inbound_mail_blocked')
+          return textResult({ code: 'inbound_mail_blocked', message: INBOUND_MAIL_TOOL_BLOCKED_MESSAGE }, true)
         }
         const rawArgs = request.params.arguments
         let args =

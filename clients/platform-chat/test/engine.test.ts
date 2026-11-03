@@ -694,6 +694,23 @@ async function main() {
     options: [{ label: 'Kovács Péter', description: 'kovacs.peter@acme.hu' }, { label: 'Nagy Péter', description: 'nagy.peter@acme.hu' }],
   }
 
+  await check('levélből indult forduló: a Folytatás is háttérfutásként kér tokent (írás jóváhagyásra vár)', async () => {
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{"id":"export"}')] }, { maxSteps: 2 })
+    const minted: Array<{ background?: true }> = []
+    h.deps.platform.continuationToken = async (input) => (minted.push(input), 'fresh-token')
+    const mail = await h.store.createConversation({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, agentName: 'Drive', origin: 'inbound_mail' })
+    const r = await startTurn(h.deps, { conversation: mail, chatToken: 'chat', content: 'levél', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    assert.equal(await resumeTurn(h.deps, { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }), 'ok')
+    assert.equal(minted.at(-1)?.background, true)
+    const own = await h.conversation()
+    const r2 = await startTurn(h.deps, { conversation: own, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r2.ok)
+    assert.equal(minted.at(-1)?.background, undefined)
+  })
+
   await check('#1025 kérdés-kártya: awaiting_input, nincs futó feladat; 1 óra múlva kattintás → folytatódik, jóváhagyás-kártyáig', async () => {
     let clock = new Date('2026-11-01T10:00:00Z')
     const h = harness({

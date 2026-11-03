@@ -22,7 +22,7 @@ import {
   type ExecuteMcpToolInput,
   type McpGateDeps,
 } from '@/domain/enterprise-tools/handlers/mcp'
-import { auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
+import { httpResultSaver, savedResultAuditMeta, httpApiFileSaver, httpApiFileAuditMeta, type EnterpriseToolDeps, auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
 import type { McpCallResult } from '@/domain/connector/mcp-client'
 import { mcpResultForModel } from '@/domain/connector/mcp-tools'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
@@ -81,7 +81,7 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
+export type GatewayOperationServiceDeps = Pick<EnterpriseToolDeps, 'saveHttpResult' | 'saveDocumentExport' | 'documentExportUrl' | 'now'> & MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -126,17 +126,7 @@ export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCall
     accessToken: string,
   ) => Promise<unknown>
   executeMailTool?: typeof executeMailTool
-  executeHttpApiTool?: (
-    toolName: string,
-    args: Record<string, unknown>,
-    connector: LiveConnectorRow,
-    accessToken?: string,
-    actingUser?: { id: string; email: string; tenantId: string | null } | null,
-    agent?: { id: string; version?: number },
-    /** #717: a modellnek szóló http_api hintek nyelve. */
-    language?: TenantLanguage,
-    allowedEgressHosts?: string[],
-  ) => Promise<unknown>
+  executeHttpApiTool?: typeof executeHttpApiTool
   /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
   resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
   resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
@@ -1180,6 +1170,16 @@ async function executeApprovedOperation(
           deps.resolveEgressAllowlist
             ? await deps.resolveEgressAllowlist(authorized.connector.tenantId)
             : undefined,
+          httpApiFileSaver(deps, {
+            principal: { userId: operation.principalUserId, tenantId: operation.tenantId },
+            definitionId: operation.agentDefinitionVersionId,
+            agentId: definition.agentId,
+            client: 'unknown',
+          }),
+          { saveOversized: httpResultSaver(deps, {
+            principal: { userId: operation.principalUserId, tenantId: operation.tenantId },
+            definition, definitionId: operation.agentDefinitionVersionId, client: 'unknown',
+          }) },
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
@@ -1221,6 +1221,8 @@ async function executeApprovedOperation(
       connectorId: authorized.connectorId,
       tenantId: operation.tenantId,
       ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
+      ...httpApiFileAuditMeta(result),
+      ...savedResultAuditMeta(result),
       ...(mailbox ? { mailbox: grant?.accountLabel ?? mailbox.address ?? null, requestedBy: operation.principalUserId } : {}),
     }
     console.info('gateway.operation.succeeded', payload)
