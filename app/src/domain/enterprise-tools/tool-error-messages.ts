@@ -73,6 +73,11 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'The file would be too large (max 10 MB or 100 000 rows). Tell the user plainly, and offer to split it into smaller files or to summarise the data',
   document_export_not_found:
     'This file is no longer available (it expired after 7 days, or it belongs to someone else). Offer to make it again with document_export',
+  // #1071: mentett nagy http_api válasz
+  saved_result_not_found:
+    'This saved response is no longer available (it expired after 7 days, or it was saved for another user or agent). Call the same http_api tool again to get fresh data',
+  saved_result_invalid:
+    'The saved response could not be used this way (see detail) — fix arrayPath/columns and try again',
   skill_not_pinned: 'This skill version is not pinned on the published agent definition',
   // #967 mini appok
   // #984 AI-adattárház
