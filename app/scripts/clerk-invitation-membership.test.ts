@@ -55,9 +55,16 @@ const user = {
   updatedAt: now,
 } as unknown as User
 
-function fixture(initialInvitation = invitation(), initialUser: User = user) {
+function fixture(
+  initialInvitation = invitation(),
+  initialUser: User = user,
+  existingMembership: { status: string; role: string } | null = null,
+) {
   let currentInvitation = initialInvitation as { status: string; redeemedAt: Date | null }
   let currentUser: User = { ...initialUser }
+  let membership = existingMembership
+    ? { id: 'membership-a', tenantId: 'tenant-a', userId: 'user-a', ...existingMembership }
+    : null
   const userUpdates: Record<string, unknown>[] = []
   const membershipCalls: unknown[] = []
   const auditEvents: unknown[] = []
@@ -86,9 +93,19 @@ function fixture(initialInvitation = invitation(), initialUser: User = user) {
     {} as never,
     undefined,
     {
-      async upsert(input: unknown) {
+      async findByTenantAndUser() {
+        return membership as never
+      },
+      async upsert(input: { role: string; status: string }) {
         membershipCalls.push(input)
-        return { id: 'membership-a' } as never
+        membership = {
+          id: 'membership-a',
+          tenantId: 'tenant-a',
+          userId: 'user-a',
+          role: input.role,
+          status: input.status,
+        }
+        return membership as never
       },
     } as never,
     {
@@ -105,6 +122,7 @@ function fixture(initialInvitation = invitation(), initialUser: User = user) {
     userUpdates,
     getInvitation: () => currentInvitation,
     getUser: () => currentUser,
+    getMembership: () => membership,
   }
 }
 
@@ -207,6 +225,57 @@ async function main() {
     await service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator })
     assert.equal(getUser().role, 'admin')
     assert.equal(getUser().invitedById, 'self')
+  })
+
+  await check('active operator cannot redeem stale admin invite to escalate membership', async () => {
+    const operator = {
+      ...user,
+      role: 'operator' as const,
+      status: 'active' as const,
+      invitedById: 'self',
+      activatedAt: now,
+    }
+    const { service, membershipCalls, userUpdates, getInvitation, getMembership, getUser } = fixture(
+      invitation({ role: 'admin' }),
+      operator,
+      { status: 'active', role: 'operator' },
+    )
+    await assert.rejects(
+      () => service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator }),
+      /already_a_member/,
+    )
+    assert.equal(getInvitation().status, 'pending')
+    assert.equal(membershipCalls.length, 0)
+    assert.equal(userUpdates.length, 0)
+    assert.equal(getMembership()?.role, 'operator')
+    assert.equal(getUser().role, 'operator')
+  })
+
+  await check('suspended membership can still be reactivated by invite redeem', async () => {
+    const operator = {
+      ...user,
+      role: 'operator' as const,
+      status: 'active' as const,
+      invitedById: 'self',
+      activatedAt: now,
+    }
+    const { service, membershipCalls, getMembership } = fixture(
+      invitation({ role: 'admin' }),
+      operator,
+      { status: 'suspended', role: 'operator' },
+    )
+    await service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator })
+    assert.deepEqual(membershipCalls, [
+      {
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        role: 'admin',
+        status: 'active',
+        invitedById: 'admin-a',
+      },
+    ])
+    assert.equal(getMembership()?.role, 'admin')
+    assert.equal(getMembership()?.status, 'active')
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)
