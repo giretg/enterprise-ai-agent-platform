@@ -1,9 +1,11 @@
 # Hermes Enterprise Managed Client – magas szintű specifikáció
 
-**Verzió:** v0.3 · **Dátum:** 2026-09-30 · **Státusz:** döntések lezárva, v1 szelet fejlesztésre kész (§17)
+**Verzió:** v0.4 · **Dátum:** 2026-10-13 · **Státusz:** v1 szelet kész; eszköz-katalógus (§5.6) fejlesztésre kész (#871–#873)
 **Előzmény:** `docs/hermes-integration-foundation-2026-09-26.html` (H3 Guard, H4 managed distribution, H5 restricted mode), #682 Bot-szinkron (PR #683 / #734)
 **Hermes alapvonal:** v0.21.5, upstream `d0288be5` (2026-09-26), helyi forrás: `~/.hermes/hermes-agent`
 
+> **v0.4 változás:** új §5.6 Eszköz-katalógus: a Hermes eszközei három fajtára oszlanak (platform, helyi, híd/beszélgetés), minden helyi eszköz pontosan egy képesség-tengelyre tartozik, a besorolást a policy-snapshot hozza. Új választható szintek: `local_files: attachments_only` és `external_services` tengely. Döntések: D17–D19. Kiváltó eset: 2026-10-13, a Guard a policy által engedett fájlolvasást blokkolta (§5.6, „Miért”).
+>
 > **v0.3 változás:** a nyitott döntések lezárva (§15, D1–D16), a kódalappal való összevetés leletei (G1–G3) beépítve, új §17: az első fejlesztési szelet (hatókör, feladatok, elfogadás).
 >
 > **v0.2 változás:** a cél a **paraméterezhetőség**, nem a korlátozás. Új fejezetek: §1 (a tényleges cél), §2 (miért nem harness a szerveren), §5 (policy-modell), §7 (kimenő tartalomszűrés, a legacy AI Privacy Gateway átvételével). A korábbi „mindent tiltunk” példák a „Kötött pálya” preset részei lettek.
@@ -134,7 +136,7 @@ Tool-szintű felülírás (explicit allow / deny)
 | Képesség | Szintek (szigorútól a szabadig) | Hermes-mechanizmus |
 |---|---|---|
 | **Helyi kódfuttatás** (`terminal`, `execute_code`) | tiltott · csak céges sandboxban · helyben, jóváhagyással · helyben, szabadon | toolset, Guard, terminál-backend plugin, `approvals` |
-| **Helyi fájlok** | nincs · csak olvasás · írás a projektkönyvtárban · szabad | `file` toolset, Guard útvonal-policy, `HERMES_WRITE_SAFE_ROOT` |
+| **Helyi fájlok** | nincs · csak csatolmány · csak olvasás · írás a projektkönyvtárban · szabad | `file` toolset, Guard útvonal-policy, `HERMES_WRITE_SAFE_ROOT` |
 | **Böngésző / computer-use** | tiltott · céges felhős böngésző · domain-allowlist · szabad | toolset, Guard (`browser_navigate` URL), böngésző-provider plugin |
 | **Web-keresés** | tiltott · csak céges web-egress (MCP) · beépített | toolset, MCP |
 | **MCP-szerverek** | csak céges · + jóváhagyott külsők · szabad | Guard tool-név allowlist (`mcp__<szerver>__*`) |
@@ -144,6 +146,7 @@ Tool-szintű felülírás (explicit allow / deny)
 | **Audit-mélység** | metaadat · + teljes prompt és válasz · + tool-eredmények | Model Gateway, Guard |
 | **Lokális memória** | tiltott · Excellence-memória · lokális | `memory` toolset, memory provider plugin |
 | **Autonóm futás** (subagent, cron) | tiltott · engedett, auditálva | `delegation`, `cronjob` toolset, Guard |
+| **Külső szolgáltatások** (a Hermes saját felhője: kép-, videó-, hanggenerálás, Hermes-connectorok) | tiltott · engedett | Guard (§5.6 katalógus), gép-padló toolset (`image_gen`, `video_gen`, `tts`, `connections`) |
 | **Emberi jóváhagyás** | toolonként: nincs · kockázatos műveletnél · mindig | Guard `pre_tool_call` → `approve` |
 
 ### 5.3 Presetek (kiindulópontok, nem kötelezők)
@@ -155,6 +158,8 @@ Tool-szintű felülírás (explicit allow / deny)
 | **Szabad (fejlesztő)** | Fejlesztés, kutatás | Helyi terminál és fájlírás a projektben, szabad böngésző, saját skillek; tartalomszűrés csak titkokra (kulcsok, jelszavak); audit metaadat + prompt |
 
 A cég a presetből indul, és bármely képességet felülírhat szerepre, felhasználóra, agentre vagy toolra.
+
+A „csak csatolmány” szint (D18) egyik presetben sem alapértelmezés: választható felülírás. A „Külső szolgáltatások” Kötött pályán és Standardban tiltott, Szabad presetben engedett (D19).
 
 ### 5.4 Nem paraméterezhető alapréteg (floor)
 
@@ -175,6 +180,48 @@ A Hermes rendszergazdai konfigurációja (`/etc/hermes`) **gépenként egy**, é
 | **Dinamikus, user × agent** | Excellence Guard (policy-snapshot a Control Plane-ből, session-indításkor + TTL) | Toolonkénti engedélyezés, jóváhagyás-kérés, útvonal- és domain-policy, a terminál-backend ellenőrzése. Fail-closed. |
 | **UX (nem kontroll)** | Agent Sync a Bot-profil `config.yaml`-jába | A nem engedett toolok elrejtése, `terminal.backend` beállítása. Kényelmi funkció: a user átírhatja, ezért az érvényesítés a Guardé. |
 | **Szerveroldali, kemény** | Model Gateway, MCP Gateway, Sandbox | Modell-lista, tartalomszűrés, audit-mélység, vállalati toolok, credentialök. |
+
+### 5.6 Eszköz-katalógus (snapshot-vezérelt)
+
+**Miért.** 2026-10-13-án egy Bot (`local_files: project_write`, tehát olvasás engedett) nem tudta beolvasni a chatbe csatolt CSV-t. A modell egy `tool_call`-ban két helyi eszközt kért (`read_file` + parancs). Ezt a Hermes nem csomagolja ki, a Guard így a `tool_call` nevet látta, ezt nem ismerte, és „a céges szabály ezt nem engedi” üzenettel blokkolta. A modell ebből arra jutott, hogy a cég tiltja a fájlolvasást. A Guard beégetett listája a Hermes kb. 55 alapeszközéből kb. 25-öt sorolt tengelyre, a többi (`tool_search`, `tool_describe`, `clarify`, `todo_list`, `session_search`, `kanban_*` stb.) csendben tiltott volt. Ez nem paraméter, hanem véletlen.
+
+**Három eszközfajta:**
+
+| Fajta | Példák | Hol fut | Ki dönt |
+|---|---|---|---|
+| **Platform (céges)** | Gmail, Drive, KB, `sandbox_run`, `http_api` (`mcp__excellence__*`) | a platform szerverén | a platform: agent-eszközengedély + MCP Gateway (§5.4). A Guard csak a szervert nézi (`mcp_servers`). |
+| **Helyi** | `read_file`, `terminal`, böngésző, memória, skillek, `delegate_task` | a user gépén, a platform nem látja | a Guard, a snapshot képesség-tengelyei szerint |
+| **Híd és beszélgetés** | `tool_search`, `tool_describe`, `tool_call`; `clarify`, `todo_list` | a Hermesben | **nem döntési pont** (D17) |
+
+A **híd-eszközök** a Hermes halasztott tool-betöltése: sok eszköz esetén a modell csak egy rövid listát kap, és keresés (`tool_search`) → séma (`tool_describe`) → hívás (`tool_call`) úton ér el egy eszközt. Önmagukban semmit nem tesznek; a kockázat a hívott eszközé. Egyetlen hívásnál a Hermes kicsomagolja a `tool_call`-t (`agent/tool_executor.py` `_unwrap_tool_search_call`), így a Guard a valódi eszközt látja **[forrás]**. Ha nem csomagolja ki (helyi batch, hibás argumentum), a Hermes saját hibával utasítja el; a Guard ezt nem előzi meg.
+
+**Szabályok:**
+
+1. Minden helyi eszköz **pontosan egy** tengelyre (vagy a `passthrough` / `always` osztályba) tartozik. „Egyéb” nincs.
+2. A katalógus a Control Plane-ben él, a snapshot hozza (`toolCatalog`, `catalogVersion`). A Guard beépített listája csak offline tartalék (D4). Új Hermes-eszköz besorolásához nem kell Guard-kiadás.
+3. Ismeretlen eszköz: blokk (fail-closed), de őszinte üzenettel („a céges lista még nem ismeri”), `tool.unclassified` audit-eseménnyel és az admin „Besorolatlan eszközök” listáján.
+4. A képesség-blokk üzenete megmondja, mi engedett ugyanazon a tengelyen, hogy a modell ne jelentsen tévesen tiltást.
+5. Eszközönkénti kivétel: a meglévő `toolRules` (§5.1 tool-felülírás), a katalógusból választható felületen.
+
+**Kiinduló besorolás** (Hermes v0.21.x):
+
+| Osztály | Eszközök |
+|---|---|
+| `passthrough` (híd) | `tool_search`, `tool_describe`, `tool_call` (a belső eszköz dönt) |
+| `always` (beszélgetés) | `clarify`, `todo_list` |
+| `code_execution` | `terminal`, `process_manage`, `execute_code`, `read_terminal`, `close_terminal` |
+| `local_files` olvasás | `read_file`, `search_files`, `vision_analyze` |
+| `local_files` írás | `write_file`, `patch` |
+| `browser` | `browser_*`, `computer_use`; a desktop preview-panel: `desktop_preview` (webet vagy helyi fájlt nyit és olvas; helyi útvonalnál a `local_files` is dönt, a szigorúbb nyer), `drive_preview` (a panelben lévő oldalt vezérli: belépés, űrlap), `annotate_preview`, `read_window_below` (a user mögötti ablak azonosítása) |
+| `web_search` | `web_search`, `web_extract`, `x_search` |
+| `local_memory` | `memory`, `session_search` |
+| `skills` | `skills_list`, `skill_view` (olvasás), `skill_manage` (írás) |
+| `autonomous_run` | `delegate_task`, `cronjob_manage`, `kanban_*`, `start_chat` |
+| `external_services` | `image_generate`, `video_generate`, `text_to_speech`, `manage_connections` (`video_analyze`: mérendő, gateway-en megy-e) |
+| `mcp_servers` | `mcp__<szerver>__*` |
+| `always` (desktop-felület, csak megjelenítés) | `gui_tour`, `show_tip`, `apply_layout`, `focus_pane`, `desktop_project` |
+
+**„Csak csatolmány” (D18):** a `read_file` / `search_files` / `vision_analyze` csak a Bot-profil `attachments/` mappáján belüli, feloldott (`realpath`) útvonalra engedett; írás tiltott. Ez az első útvonal-alapú Guard-döntés. A gép-padló ilyenkor a `file` toolsetet nem tilthatja le.
 
 ---
 
@@ -202,6 +249,7 @@ Jelölés: **[forrás]** = kódban/doksiban ellenőrizve · **[élő]** = ezen a
 | H-13 | Memory provider plugin | A lokális memória Excellence-memóriára cserélhető. | **[forrás]** | — |
 | H-14 | Böngésző-provider plugin | A böngésző felhős (céges) backendre irányítható. | **[forrás, doksi]** | **[POC]** |
 | H-15 | `approvals` (manual/smart), hardline blocklist, `approvals.deny` | Lokális guardrail helyi terminálhoz, ha a policy engedi. A doksi szerint „nem sandbox”. | Gyenge. | Csak kiegészítés. |
+| H-16 | **Halasztott tool-betöltés** (`tools/tool_search.py`): sok eszköznél a modell csak a híd-eszközöket (`tool_search`, `tool_describe`, `tool_call`) és egy listát kap | Kontextus-takarékosság. Egyetlen `tool_call`-t a Hermes kicsomagol, a `pre_tool_call` a belső eszközt látja; helyi batch-et nem (`resolve_underlying_call` → `local_batch_error`). | **[forrás][élő]** (2026-10-13: „6 core/visible tools kept, 51 deferred”) | A Guard nem tilthatja a hidat (D17), különben az engedett eszközök is elérhetetlenek. |
 
 ---
 
@@ -309,7 +357,7 @@ A policy-modell (§5) a Control Plane-ben él. A Guard session-indításkor lek�
 - **Rekord:** `tenant, user, agentId, hermesProfile, sessionId, turnId, userPrompt(ref), modelCalls[], toolCalls[] (local|mcp), finalAnswer(ref), policyVersion, policyDecisions[]`. A mélységet a policy adja. Ha a Model Gateway-ben van hívás, de a Guardtól nem jött turn-rekord, az eltérés-jel (R8).
 
 ### R2 – Toolok
-A Guard `pre_tool_call` (plugin, plusz fail-closed shell-hook tartalék) az effektív policy szerint enged, jóváhagyást kér (`approve`) vagy blokkol, hétköznapi nyelvű üzenettel. Az ismeretlen MCP-szerver toolja itt bukik el, ha a policy nem engedi (ez fedi az U1 hiányt). A gép-padló csak azt tiltja le toolset-szinten, ami a usernél sehol sem engedett. Az MCP Gateway változatlanul a végső döntő.
+A Guard `pre_tool_call` (plugin, plusz fail-closed shell-hook tartalék) az effektív policy szerint enged, jóváhagyást kér (`approve`) vagy blokkol, hétköznapi nyelvű üzenettel. Az ismeretlen MCP-szerver toolja itt bukik el, ha a policy nem engedi (ez fedi az U1 hiányt). Az eszköz → tengely besorolást a snapshot-katalógus adja (§5.6); a híd- és beszélgetés-eszközök nem döntési pontok (D17), az ismeretlen eszköz blokkolva és az adminnak jelezve. A gép-padló csak azt tiltja le toolset-szinten, ami a usernél sehol sem engedett. Az MCP Gateway változatlanul a végső döntő.
 
 ### R3 – Skillek
 „Csak jóváhagyott” szinten az Agent Sync (#682) csak jóváhagyott skilleket materializál (`name → sha256` manifest), a Guard a `skill_view`/`skill_manage` hívást manifest szerint kapuzza, új skill pedig `platform.skills.submit`-tal megy jóváhagyásra. A „+ saját” szinten a saját skill engedett, de a Guard naplózza. A `/skill` slash-injekció tool-hívás nélkül történik: a Guard session-indításkor összeveti a skill-könyvtárat a manifesttel, a Model Gateway pedig észleli (U5-ig maradék kockázat).
@@ -473,6 +521,9 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 | D13 | Guard kódhelye és csomagolása | Monorepo: `clients/hermes-guard/` Python plugin + `exc-guard` shell-hook + `exc-token` helper. A telepítő (D9) teríti. Pinelt Hermes-verzió, kompatibilitási teszttel. |
 | D14 | Snapshot és heartbeat szállítása | REST: `GET /api/client-policy/snapshot`, `POST /api/client-policy/heartbeat`, ugyanazzal a gateway-JWT-vel, mint a modellhívás. Nem MCP-tool, mert a Guard nem LLM. |
 | D15 | A blokkolás jelzése a Hermesnek | HTTP 200, szintetikus asszisztens-üzenet hétköznapi nyelven (a legacy `formatSensitivityBlockMessage` alapján). 4xx nem, mert újrapróbálkozást vagy fallbacket vált ki (§7.2/1). |
+| D17 | Híd-eszközök a policyban (2026-10-13) | **Nem paraméterek.** `tool_search` és `tool_describe` mindig engedett, a `tool_call`-ról a belső eszköz dönt; `clarify` és `todo_list` mindig engedett. A tiltásuk nem véd semmit, csak az engedett eszközöket teszi elérhetetlenné (§5.6). #871 |
+| D18 | „Csak csatolmány” szint (2026-10-13) | **Választható, nem kötelező:** új `local_files` szint a `none` és a `read_only` között; egyik preset sem kapja alapértelmezésként. #873 |
+| D19 | Eszköz-katalógus helye és a Hermes felhős szolgáltatásai (2026-10-13) | A katalógus **a snapshotban** él (#872), a Guard beépített listája csak offline tartalék. Új tengely: `external_services: denied · allowed` (Kötött/Standard tiltott, Szabad engedett), mert ezek a Model Gateway-t megkerülik. #873 |
 
 **Nem fejlesztési, de éles bekapcsolás előfeltétele:** DPIA + munkavállalói tájékoztatás (§14). A staging POC belső, tájékoztatott userekkel ezek nélkül is futhat. A műszaki DPIA, a Guard-tájékoztatás, a 90 napos retenciós sweep élő hívója és a négy-szemes tartalomolvasás: #759.
 
@@ -541,6 +592,9 @@ A promptok naplózása munkavállalói adatkezelés. Kell hozzá: jogalap és el
 | #757 | Upstream PR-ok U1–U5 (D7) |
 | #758 | Eszközkötött gateway-token (D1) |
 | #759 | DPIA, munkavállalói tájékoztatás, retenció — éles bekapcsolás előfeltétele (§14, D5) |
+| #871 | Guard: híd- és beszélgetés-eszközök átlátszó kezelése + őszinte blokk-üzenet (§5.6, D17) |
+| #872 | Snapshot-vezérelt eszköz-katalógus + „Besorolatlan eszközök” admin-lista + eszközönkénti kivétel UI (§5.6, D19) |
+| #873 | Új választható szintek: „csak csatolmány” és „külső szolgáltatások” (§5.2, D18, D19) |
 
 ### 17.3 Kész, ha
 
