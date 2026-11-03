@@ -5,6 +5,7 @@
  */
 import assert from 'node:assert/strict'
 import { Readable } from 'node:stream'
+import { gzipSync } from 'node:zlib'
 import type { AgentDefinition } from '../src/domain/agent-definition'
 import { PRESETS, type PresetId } from '../src/domain/client-policy/capabilities'
 import {
@@ -18,7 +19,7 @@ import {
 } from '../src/domain/enterprise-tools'
 import { harnessSubstituteFor, isSubstituteVisible } from '../src/domain/enterprise-tools/harness-substitutes'
 import type { WebFetchPage } from '../src/domain/enterprise-tools/handlers/web-fetch'
-import { assertPublicAddresses, fetchWebPage, type HttpGet } from '../src/domain/web-fetch/fetch-page'
+import { assertPublicAddresses, decodeResponseBody, fetchWebPage, type HttpGet } from '../src/domain/web-fetch/fetch-page'
 import {
   hostAllowedByWebRules,
   htmlToReadable,
@@ -254,6 +255,27 @@ async function main() {
       fetchWebPage(normalizeWebUrl(MNB)!, { checkRedirect: (t) => (t.host === 'internal.local' ? 'web_fetch_domain_not_allowed' : null), httpGet: http2 }),
       (e: unknown) => e instanceof WebFetchError && e.code === 'web_fetch_domain_not_allowed',
     )
+  })
+
+  await check('letöltő: a kitömörített válasz lezárása a forrás-socketet is elengedi (nincs orphan socket)', async () => {
+    // Soha véget nem érő gzip-forrás = a socket folyamatosan ad bájtot. A kitömörítő `destroy()`-ja
+    // (méret-/HTTP-hiba/átirányítás) a mögöttes forrást is zárja, különben a letöltés a korlát után is folyna.
+    const frame = gzipSync(Buffer.alloc(4096, 0x61))
+    let closed = false
+    const res = new Readable({ read() { this.push(frame) } })
+    res.on('close', () => { closed = true })
+    const body = decodeResponseBody(res, 'gzip')
+    res.on('error', (e) => body.destroy(e))
+    assert.notEqual(body, res, 'kitömörített válasznál külön olvasó')
+    await new Promise<void>((resolve) => body.once('data', () => resolve()))
+    body.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(res.destroyed, true, 'a forrás-socket lezárult')
+    assert.equal(closed, true)
+    // Tömörítetlen válasz: a forrás maga az olvasó (a lezárása triviálisan zár).
+    const plain = new Readable({ read() { this.push(null) } })
+    assert.equal(decodeResponseBody(plain, undefined), plain)
+    plain.destroy()
   })
 
   await check('letöltés: átirányítás követése, méret- és ugráskorlát, HTTP-hiba', async () => {

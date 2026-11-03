@@ -69,6 +69,19 @@ function decoded(body: Readable, encoding: string | undefined): Readable {
   }
 }
 
+/**
+ * A dekódolt olvasó úgy, hogy a megsemmisítése a mögöttes forrást (a socketet) is lezárja.
+ * `.pipe()` a cél megsemmisítésekor NEM zárja le a forrást, ezért kitömörített válasznál a
+ * méret-/HTTP-hiba/átirányítás miatti `destroy()` a kitömörítőt bontja le, a válasz pedig a
+ * háttérben tovább folyna (orphan socket) a kapcsolat-lezárásig vagy a time-outig. A letöltő ezt
+ * a köteget kapja, így minden lezárási út a socketet is elengedi.
+ */
+export function decodeResponseBody(res: Readable, encoding: string | undefined): Readable {
+  const body = decoded(res, encoding)
+  if (body !== res) body.once('close', () => void (res.destroyed || res.destroy()))
+  return body
+}
+
 export const defaultHttpGet: HttpGet = (url, signal) =>
   new Promise((resolve, reject) => {
     const req = httpsRequest(
@@ -85,7 +98,7 @@ export const defaultHttpGet: HttpGet = (url, signal) =>
         },
       },
       (res) => {
-        const body = decoded(res, res.headers['content-encoding'] as string | undefined)
+        const body = decodeResponseBody(res, res.headers['content-encoding'] as string | undefined)
         res.on('error', (error) => body.destroy(error))
         resolve({ status: res.statusCode ?? 0, headers: res.headers, body })
       },
