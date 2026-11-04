@@ -406,7 +406,7 @@ function maskDigits(value: string): string {
  * Az átfedő ablakok is számítanak: egy véletlenül érvényes előtag nem hagyhat szabadon valódi kártyaszámot.
  */
 function maskLuhnWindows(run: string): string {
-  const tokens = run.split(/([ -])/)
+  const tokens = run.split(/([\p{Zs}\t\u2010-\u2015-]+)/u)
   const marked = new Set<number>()
   for (let start = 0; start < tokens.length; start += 2) {
     let digits = ''
@@ -432,11 +432,9 @@ function maskLuhnWindows(run: string): string {
   return out
 }
 
-const KB_MASK_LABELLED_CARD = /((?<!\p{L})(?:card(?:[ -]?(?:no|number|num))?|k[aá]rtya\p{L}*|PAN)\.?[ \t]*[:=|#-]?[ \t]*)(\d(?:[ -]?\d){7,22})(?!\d)/giu
-const KB_MASK_LABELLED_PIN = /((?<!\p{L})PIN(?:[ -]?(?:k[oó]d\p{L}*|code|number|sz[aá]m\p{L}*))?[ \t]*[:=|]?[ \t]*)\d{4,12}(?!\d)/giu
-const KB_MASK_LABELLED_KEY = /((?<!\p{L})(?:mifare(?:[ -]\p{L}+)?|key(?:[ -]?[ab])?|kulcs\p{L}*)[ \t]*[:=|]?[ \t]*)([0-9a-f](?:[ :-]?[0-9a-f]){11,63})(?![0-9a-f])/giu
-const KB_MASK_EDGE_START = /^(\s*)(\d(?:[ -]?\d){7,})/
-const KB_MASK_EDGE_END = /(\d(?:[ -]?\d){7,})(\s*)$/
+const KB_MASK_LABELLED_CARD = /((?<!\p{L})(?:card(?:[ -]?(?:no|number|num))?|k[aá]rtya\p{L}*|PAN)\.?[\p{Zs}\t]*[:=|#-]?[\p{Zs}\t]*)(\d(?:[\p{Zs}\t\u2010-\u2015-]*\d){7,22})(?!\d)/giu
+const KB_MASK_LABELLED_PIN = /((?<!\p{L})PIN(?:[ -]?(?:k[oó]d\p{L}*|code|number|sz[aá]m\p{L}*))?[\p{Zs}\t]*[:=|]?[\p{Zs}\t]*)\d(?:[\p{Zs}\t-]*\d){3,11}(?!\d)/giu
+const KB_MASK_LABELLED_KEY = /((?<!\p{L})(?:mifare(?:[ -]\p{L}+)?|key(?:[ -]?[ab])?|kulcs\p{L}*)[\p{Zs}\t]*[:=|]?[\p{Zs}\t]*)([0-9a-f](?:[ :-]?[0-9a-f]){11,63})(?![0-9a-f])/giu
 const KB_ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 /**
@@ -445,14 +443,18 @@ const KB_ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
  * (a csonkolt szám már nem ellenőrizhető). A dátum ettől nem számít számsornak.
  */
 export function maskKbSensitiveText(text: string): string {
+  const firstContentOffset = text.search(/\S/)
   const edge = (value: string) => (KB_ISO_DATE.test(value) ? value : value.replace(/\d/g, '•'))
   return text
     .replace(KB_MASK_LABELLED_KEY, (_all, label: string, key: string) => `${label}${key.replace(/[0-9a-f]/gi, '•')}`)
     .replace(KB_MASK_LABELLED_PIN, (_all, label: string) => `${label}••••`)
     .replace(KB_MASK_LABELLED_CARD, (_all, label: string, digits: string) => `${label}${maskDigits(digits)}`)
-    .replace(/\d+(?:[ -]\d+)*/g, maskLuhnWindows)
-    .replace(KB_MASK_EDGE_START, (_all, space: string, digits: string) => `${space}${edge(digits)}`)
-    .replace(KB_MASK_EDGE_END, (_all, digits: string, space: string) => `${edge(digits)}${space}`)
+    .replace(/\d+(?:[\p{Zs}\t\u2010-\u2015-]+\d+)*/gu, maskLuhnWindows)
+    // Scan runs once: an unanchored numeric suffix regex retries quadratically on long input.
+    .replace(/\d+(?:[\p{Zs}\t\u2010-\u2015-]+\d+)*/gu, (run: string, offset: number, whole: string) => {
+      const atEdge = offset === firstContentOffset || /^[\s.…]*$/.test(whole.slice(offset + run.length))
+      return atEdge && run.replace(/\D/g, '').length >= 8 ? edge(run) : run
+    })
 }
 
 type OutlineSection = { title: string; body: string }

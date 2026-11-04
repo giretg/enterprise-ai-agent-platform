@@ -1525,7 +1525,7 @@ async function main() {
     const original = documentRepo.searchRaw
     const raw = 'Teszt kártya 4111 1111 1111 1111, PIN: 1234.'
     documentRepo.searchRaw = (async () => [
-      { id: sourceDoc, filename: 'teszt.md', snippet: raw, section: 'PIN: 9876', score: 1, matched: ['teszt'] },
+      { id: sourceDoc, filename: 'PIN: 9876.md', snippet: raw, section: 'PIN: 9876', score: 1, matched: ['teszt'] },
     ]) as never
     try {
       const hits = await kbService.search({ connectorId: KB_A, query: 'teszt' })
@@ -1534,9 +1534,25 @@ async function main() {
       assert.match(hit.snippet, /1111, PIN: ••••\./)
       assert.equal(hit.title, 'PIN: ••••')
       assert.equal(hit.source?.section, 'PIN: ••••')
+      assert.equal(hit.source?.filename, 'PIN: ••••.md')
+      assert.equal(hit.sourceRef, `doc:${sourceDoc}:PIN: ••••.md`)
     } finally {
       documentRepo.searchRaw = original
     }
+  })
+
+  await check('#1077 wiki search masks before snippet truncation and masks duplicate title labels', async () => {
+    const written = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+      pages: [page1077('concepts/masked-search.md', { title: 'PIN: 1234', body: 'searchmask ' + 'x'.repeat(1978) + ' PIN: 1234 end' })],
+    })
+    assert.equal(written.status, 'applied', JSON.stringify(written))
+    const hits = await kbService.search({ connectorId: KB_A, query: 'searchmask' })
+    const hit = hits.find((row) => row.path === 'concepts/masked-search.md')!
+    assert.equal(hit.kind, 'wiki_page')
+    assert.equal(hit.title, 'PIN: ••••')
+    assert.doesNotMatch(hit.snippet, /PIN: \d/)
+    assert.doesNotMatch(hit.sourceRef, /PIN: 1234/)
   })
 
   if (failures > 0) {

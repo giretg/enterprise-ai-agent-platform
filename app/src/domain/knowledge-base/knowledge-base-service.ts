@@ -617,7 +617,7 @@ export class KnowledgeBaseService {
       memoryContent: '',
       memoryId: null,
       memoryVersion: null,
-      okfChunkHits,
+      okfChunkHits: okfChunkHits.map((hit) => ({ ...hit, text: maskKbSensitiveText(hit.text) })),
       docs: [],
       supersededDocIds: new Set(),
     })
@@ -647,8 +647,13 @@ export class KnowledgeBaseService {
     return ranked.map((hit) => ({
       ...hit,
       snippet: maskKbSensitiveText(hit.snippet),
+      sourceRef: hit.sourceRef.replace(/^(doc|okf):([^:]*):([\s\S]*)$/, (_all, kind: string, id: string, label: string) => `${kind}:${id}:${maskKbSensitiveText(label)}`),
       ...(hit.title ? { title: maskKbSensitiveText(hit.title) } : {}),
-      ...(hit.source?.section ? { source: { ...hit.source, section: maskKbSensitiveText(hit.source.section) } } : {}),
+      ...(hit.source ? { source: {
+        ...hit.source,
+        ...(hit.source.section ? { section: maskKbSensitiveText(hit.source.section) } : {}),
+        ...(hit.source.filename ? { filename: maskKbSensitiveText(hit.source.filename) } : {}),
+      } } : {}),
     }))
   }
 

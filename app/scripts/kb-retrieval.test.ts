@@ -441,6 +441,18 @@ async function run() {
     assert.equal(assembleKbDocument({ ...base, offset: 1, limit: 2 }).text, '😀')
   })
 
+  await check('#1077 masking handles separators, truncated edges and long numeric runs', () => {
+    assert.equal(maskKbSensitiveText('PIN: 12 34 x'), 'PIN: •••• x')
+    assert.equal(maskKbSensitiveText('PIN:\u00a01234 x'), 'PIN:\u00a0•••• x')
+    assert.equal(maskKbSensitiveText('a 4111  1111  1111  1111 x'), 'a ••••  ••••  ••••  1111 x')
+    assert.equal(maskKbSensitiveText('a 4111\u00a01111\u00a01111\u00a01111 x'), 'a ••••\u00a0••••\u00a0••••\u00a01111 x')
+    assert.equal(maskKbSensitiveText('tail 12345678...'), 'tail ••••••••...')
+    const long = '9'.repeat(100_000) + 'x'
+    const start = performance.now()
+    maskKbSensitiveText(long)
+    assert.ok(performance.now() - start < 1_000, 'long non-matching input must stay linear')
+  })
+
   await check('#1077 maskKbSensitiveText: kártyaszám, PIN és kulcs maszkolva, a hétköznapi szám marad', () => {
     assert.equal(maskKbSensitiveText('szám: 4111111111111111 itt'), 'szám: ••••••••••••1111 itt')
     assert.equal(maskKbSensitiveText('a 4111 1111 1111 1111 kártya'), 'a •••• •••• •••• 1111 kártya')
