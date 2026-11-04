@@ -51,7 +51,7 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   const { app, version, payload } = resolved
   const access = await checkLiveAccess(miniAppLiveDeps, app, payload.u)
   if (!access.ok) {
-    await audit(app, version.version, payload.u, { allowed: false, reason: access.code })
+    await audit(app, version.version, payload.u, { allowed: false, deniedCode: access.code })
     return miniAppNotFoundResponse()
   }
   const live = await loadLiveData(miniAppLiveDeps, { app, userId: payload.u!, role: access.role, bindings: version.dataBindings, purpose: 'content' })
@@ -65,7 +65,7 @@ function audit(
   app: { id: string; tenantId: string },
   version: number,
   linkIssuedToUserId: string | undefined,
-  input: { allowed: boolean; reason?: string; rows?: number; bindings?: Array<{ alias: string; status: string }> },
+  input: { allowed: boolean; deniedCode?: string; rows?: number; bindings?: Array<{ alias: string; status: string }> },
 ) {
   return writeAudit(repositories.audit, {
     actorType: 'system',
@@ -78,7 +78,7 @@ function audit(
       phase: 'live_data',
       version,
       linkIssuedToUserId: linkIssuedToUserId ?? null,
-      ...(input.reason ? { reason: input.reason } : {}),
+      ...(input.deniedCode ? { deniedCode: input.deniedCode } : {}),
       ...(input.rows !== undefined ? { rows: input.rows } : {}),
       ...(input.bindings ? { bindings: input.bindings } : {}),
     },

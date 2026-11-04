@@ -3,6 +3,7 @@
  * ember-hozzáférés + szervezeti beállítás, memóriabeli store-ral.
  * Futtatás: npm run test:mini-app
  */
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -821,7 +822,12 @@ async function main() {
     stub(repositories.miniApps, 'findById', async () => app)
     stub(repositories.miniApps, 'findVersion', async () => version)
     stub(repositories.agents, 'findById', async () => ({ retiredAt: null }))
-    stub(repositories.audit, 'append', async () => undefined)
+    // A valódi repository őre: a tiltott metaadat-kulcs itt is hibát dob, nem csak élesben.
+    const audits: Array<{ policyDecision?: string | null; metadata?: unknown }> = []
+    stub(repositories.audit, 'append', async (data: { policyDecision?: string | null; metadata?: unknown }) => {
+      assertAuditMetadataSafe(data.metadata)
+      audits.push(data)
+    })
     stub(repositories.tenantMemberships, 'findByTenantAndUser', async () => ({ role: 'viewer', status: 'active' }))
     stub(repositories.tenants, 'findById', async () => ({ settings: {} }))
     let cell = 'első import'
@@ -850,6 +856,9 @@ async function main() {
       const removed = await get(token)
       assert.equal(removed.status, 404)
       assert.equal((await removed.text()).includes('második import'), false)
+      const deniedAudit = audits.at(-1)!
+      assert.equal(deniedAudit.policyDecision, 'denied')
+      assert.equal((deniedAudit.metadata as { deniedCode?: string }).deniedCode, 'member_removed')
     } finally {
       miniAppLiveDeps.runBoundQuery = saved
     }

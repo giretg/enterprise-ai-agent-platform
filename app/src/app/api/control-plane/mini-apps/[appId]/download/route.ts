@@ -53,7 +53,7 @@ export async function GET(request: Request, context: { params: Promise<{ appId: 
           targetType: 'mini_app',
           targetId: app.id,
           policyDecision: 'denied',
-          metadata: { source: 'mini_app_download', version: version.version, reason: access.code },
+          metadata: { source: 'mini_app_download', version: version.version, deniedCode: access.code },
           tenantId: app.tenantId,
         })
         return new Response(liveDeniedMessage(access.code), { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
