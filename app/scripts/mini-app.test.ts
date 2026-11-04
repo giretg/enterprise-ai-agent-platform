@@ -13,14 +13,20 @@ import { signMiniAppLink, verifyMiniAppLink } from '../src/domain/mini-app/link-
 import { MiniAppService } from '../src/domain/mini-app/mini-app-service'
 import { invokeMiniAppTool, MCP_MINI_APP_SHARE_TOOL, type MiniAppMcpDeps } from '../src/domain/mini-app/mcp'
 import { miniAppHumanAccess } from '../src/domain/mini-app/human-access'
+import { miniAppLintLabel } from '../src/domain/mini-app/lint-labels'
 import {
+  MINI_APP_CONTENT_HEADERS,
   miniAppBarParts,
   miniAppContentCsp,
+  miniAppContentFetchDecision,
   miniAppFrameCsp,
   renderMiniAppExpiredPage,
   renderMiniAppFrame,
+  withMiniAppHardening,
   withStaticMiniAppBar,
 } from '../src/domain/mini-app/frame'
+import { GET } from '../src/app/api/mini-apps/content/[token]/route'
+import { repositories } from '../src/repositories/postgres'
 import { parseHandoffLinks } from '../src/domain/handoff/handoff-service'
 import { DEFAULT_MINI_APP_LINK_TTL, readMiniAppSettings, withMiniAppSettings } from '../src/lib/mini-app-settings'
 import type {
@@ -471,6 +477,101 @@ async function main() {
     assert.equal(expired.includes('értékesítés'), false)
     const csp = miniAppContentCsp()
     for (const directive of ["connect-src 'none'", 'sandbox allow-scripts', "form-action 'none'", "default-src 'none'", 'frame-ancestors *']) assert.ok(csp.includes(directive), directive)
+  })
+
+  await check('tartalom-válasz: indítószkript az agent kódja előtt, a doctype megmarad', () => {
+    const script = '<script>(function(w,d){'
+    const first = (html: string) => withMiniAppHardening(html)
+    // Doctype-pal: a szkript közvetlenül utána, a megjelenítési mód nem változik.
+    const standard = first('<!doctype html><html lang="hu"><head></head><body><script>agent()</script></body></html>')
+    assert.ok(standard.startsWith(`<!doctype html>${script}`))
+    assert.ok(standard.indexOf(script) < standard.indexOf('agent()'))
+    assert.ok(standard.includes('<html lang="hu">'))
+    // Doctype nélkül nem teszünk bele sajátot (a régi app ugyanúgy jelenik meg).
+    assert.ok(first('<p>szia</p>').startsWith(script))
+    // Megjegyzés mögötti doctype-ot előreveszünk; BOM nem kerül a szkript mögé szövegként.
+    assert.ok(first('  <!-- x --><!DOCTYPE html><p>').startsWith(`<!DOCTYPE html>${script}`))
+    assert.ok(first('\uFEFF<!doctype html><p>').startsWith(`<!doctype html>${script}`))
+    // Agent-kód semmilyen elejével sem kerülhet a szkript elé.
+    for (const hostile of [
+      '<script>agent()</script><!doctype html>',
+      '<!--><script>agent()</script>--><!doctype html>',
+      '<!doctype html x<script>agent()</script>',
+      '<!-- <!doctype html><script>agent()</script>',
+    ]) {
+      const out = first(hostile)
+      const parts = /^(<!doctype[^>]*>)?<script>\(function\(w,d\)\{/i.exec(out)
+      assert.ok(parts, hostile)
+    }
+    // Sok megjegyzésre is lineáris marad.
+    const many = '<!---->'.repeat(100_000) + '<!doctype html>'
+    const started = Date.now()
+    assert.ok(first(many).includes(script))
+    assert.ok(Date.now() - started < 1000)
+  })
+
+  await check('tartalom-válasz: hálózati korlát fejlécben és CSP-ben; a meglévő direktívák megmaradnak', () => {
+    assert.equal(MINI_APP_CONTENT_HEADERS['Connection-Allowlist'], '()')
+    const csp = miniAppContentCsp()
+    assert.ok(csp.includes("require-trusted-types-for 'script'"))
+    assert.ok(csp.includes("script-src 'unsafe-inline'"))
+    assert.equal(csp.includes('unsafe-eval'), false)
+  })
+
+  await check('tartalom-lekérés: beágyazva szolgáljuk, közvetlen megnyitás a keretre, más lekérés nem', () => {
+    assert.equal(miniAppContentFetchDecision('iframe'), 'serve')
+    assert.equal(miniAppContentFetchDecision('frame'), 'serve')
+    assert.equal(miniAppContentFetchDecision(null), 'serve')
+    assert.equal(miniAppContentFetchDecision('document'), 'open_frame')
+    for (const dest of ['empty', 'embed', 'object', 'script', 'fencedframe', 'image']) assert.equal(miniAppContentFetchDecision(dest), 'reject', dest)
+  })
+
+  await check('tartalom-route: beágyazva keményített választ ad, közvetlen megnyitásnál a keretre visz', async () => {
+    const html = '<!doctype html><h1>Riport</h1>'
+    const app = { id: 'app-1', tenantId: TENANT, status: 'active', ownerAgentId: 'agent-1', name: 'Riport', createdAt: new Date(), currentVersion: 1 }
+    const version = { version: 1, html, contentHash: miniAppContentHash(html), createdAt: new Date() }
+    const stub = (target: object, key: string, value: unknown) => Object.defineProperty(target, key, { value, configurable: true, writable: true })
+    stub(repositories.miniApps, 'findById', async () => app)
+    stub(repositories.miniApps, 'findVersion', async () => version)
+    stub(repositories.agents, 'findById', async () => null)
+    const token = signMiniAppLink({ tenantId: TENANT, appId: app.id, version: 1, contentHash: version.contentHash, requesterUserId: 'u', expiresAt: Date.now() + 60_000 })
+    const get = (dest: string | null) =>
+      GET(new Request(`https://apps.test/api/mini-apps/content/${token}`, { headers: dest ? { 'sec-fetch-dest': dest } : {} }), {
+        params: Promise.resolve({ token }),
+      })
+
+    const framed = await get('iframe')
+    assert.equal(framed.status, 200)
+    assert.equal(framed.headers.get('Connection-Allowlist'), '()')
+    assert.ok(framed.headers.get('Content-Security-Policy')?.includes('sandbox allow-scripts'))
+    const body = await framed.text()
+    assert.ok(body.startsWith('<!doctype html><script>(function(w,d){'))
+    assert.ok(body.endsWith('<h1>Riport</h1>'))
+
+    const direct = await get('document')
+    assert.equal(direct.status, 302)
+    assert.ok(direct.headers.get('Location')?.endsWith(`/api/mini-apps/open/${token}`))
+    assert.equal(await direct.text(), '')
+
+    assert.equal((await get('empty')).status, 404)
+    assert.equal((await get(null)).status, 200)
+  })
+
+  await check('lint: a `/` is lezárja a tilos taget; új figyelmeztetések emberi szöveggel', () => {
+    for (const [html, code] of [
+      ['<iframe/src=x>', 'iframe_tag'],
+      ['<OBJECT/data=x>', 'object_tag'],
+      ['<embed/src=x>', 'embed_tag'],
+      ['<form/action=x>', 'form_tag'],
+    ] as const) assert.deepEqual(lintMiniAppHtml(html).errors, [code], html)
+    assert.deepEqual(lintMiniAppHtml('<iframes><objective><formula>').errors, [])
+    assert.ok(lintMiniAppHtml('<script>new RTCPeerConnection()</script>').warnings.includes('peer_connection'))
+    assert.ok(lintMiniAppHtml('<script>new webkitRTCPeerConnection()</script>').warnings.includes('peer_connection'))
+    assert.ok(lintMiniAppHtml("<script>f.srcdoc='x'</script>").warnings.includes('embedded_document'))
+    assert.ok(lintMiniAppHtml('<link rel="preconnect" href="https://x">').warnings.includes('resource_hint'))
+    assert.ok(lintMiniAppHtml('<link href="https://x" rel=dns-prefetch>').warnings.includes('resource_hint'))
+    assert.deepEqual(lintMiniAppHtml('<h1>Havi riport</h1><link rel="icon" href="data:,">').warnings, [])
+    for (const code of ['peer_connection', 'embedded_document', 'resource_hint']) assert.notEqual(miniAppLintLabel(code), code)
   })
 
   await check('keret CSP: frame-src a mini-app origin, nem self', () => {
