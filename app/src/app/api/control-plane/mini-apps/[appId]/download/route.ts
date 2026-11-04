@@ -45,7 +45,19 @@ export async function GET(request: Request, context: { params: Promise<{ appId: 
     if (version.dataBindings.length > 0) {
       // #1083 §4.4: a letöltés pillanatának adata kerül a fájlba, a saját CSP-jével, és auditot ír.
       const access = await checkLiveAccess(miniAppLiveDeps, app, ctx.user.id)
-      if (!access.ok) return new Response(liveDeniedMessage(access.code), { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
+      if (!access.ok) {
+        await writeAudit(repositories.audit, {
+          actorType: 'human',
+          actorId: ctx.user.id,
+          action: 'warehouse.export',
+          targetType: 'mini_app',
+          targetId: app.id,
+          policyDecision: 'denied',
+          metadata: { source: 'mini_app_download', version: version.version, reason: access.code },
+          tenantId: app.tenantId,
+        })
+        return new Response(liveDeniedMessage(access.code), { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
+      }
       const live = await loadLiveData(miniAppLiveDeps, { app, userId: ctx.user.id, role: access.role, bindings: version.dataBindings, purpose: 'download' })
       const withBar = withStaticMiniAppBar(version.html, { ...bar, live: { ...live.bar, dataTakenAt: new Date() } })
       html = buildMiniAppLiveDocument(withBar, { dataJson: serializeLiveData(live.data), meta: true }).html

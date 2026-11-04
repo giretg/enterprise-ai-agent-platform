@@ -133,7 +133,7 @@ test('AC13 + AC19: élő adat a sávval; új import után új app-verzió nélk�
   await expect(bar).toContainText('Élő adat')
   await expect(bar).toContainText('Utolsó betöltés')
   await expect(bar).toContainText('AI-javaslat, még nem megerősített mezők')
-  await expect(bar).toContainText('rendelesek: csak az első 2 sor látszik')
+  await expect(bar).toContainText('Az egyik lekérdezésből csak az első 2 sor látszik')
   await expect(frame.locator('#o li')).toHaveCount(2)
   await page.screenshot({ path: testInfo.outputPath('mini-app-live.png') })
 
@@ -155,6 +155,21 @@ test('AC20: a letöltött fájl rögzített adatot tartalmaz, kiírja, hogy nem 
   expect(body).toContain('http-equiv="Content-Security-Policy"')
   const audit = await prisma.auditLog.findFirst({ where: { tenantId, action: 'warehouse.export', targetId: appId } })
   expect(audit).not.toBeNull()
+})
+
+test('AC16: archivált app letöltése nem ad adatot, az elutasítás auditált', async ({ page }) => {
+  await prisma.miniApp.update({ where: { id: appId }, data: { status: 'archived', archivedAt: new Date() } })
+  try {
+    const response = await page.request.get(`/api/control-plane/mini-apps/${appId}/download`)
+    expect(response.status()).toBe(403)
+    const body = await response.text()
+    expect(body).toContain('archiválták')
+    expect(body).not.toContain('R-00')
+    const audit = await prisma.auditLog.findFirst({ where: { tenantId, action: 'warehouse.export', targetId: appId, policyDecision: 'denied' } })
+    expect(audit).not.toBeNull()
+  } finally {
+    await prisma.miniApp.update({ where: { id: appId }, data: { status: 'active', archivedAt: null } })
+  }
 })
 
 test('AC16: off szintű munkatárs appja adat nélkül nyílik, a sáv megmondja az okot', async ({ page }, testInfo) => {

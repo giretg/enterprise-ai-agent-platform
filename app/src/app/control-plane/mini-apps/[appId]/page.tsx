@@ -42,7 +42,7 @@ function LiveDataBlock({ queries }: { queries: LiveQuery[] }) {
         <ul className="space-y-1">
           {queries.map((query) => (
             <li key={query.alias}>
-              <code>{query.name ?? query.alias}</code>
+              <span className="font-medium text-ink">{query.name ?? 'Ismeretlen lekérdezés'}</span>
               {query.name ? ` · ${query.version}. verzió` : ' · a lekérdezés nem elérhető'}
               {query.currentVersion !== null && query.currentVersion > query.version ? ` · van újabb (${query.currentVersion}.), az app még a régivel dolgozik` : ''}
               {query.lastLoadAt ? ` · Utolsó betöltés: ${formatMiniAppTime(new Date(query.lastLoadAt))}` : ''}

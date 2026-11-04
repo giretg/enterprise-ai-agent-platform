@@ -731,10 +731,12 @@ async function main() {
     errorCode: (error) => (error instanceof Error ? error.message : 'live_data_unavailable'),
     ...overrides,
   })
-  const liveApp = { tenantId: TENANT, ownerAgentId: REKA }
+  const liveApp = { tenantId: TENANT, ownerAgentId: REKA, status: 'active' as const }
 
   await check('AC16: tag eltávolítása, jog hiánya, off szint, inaktív agent → adat nem megy ki, érthető ok', async () => {
     assert.deepEqual(await checkLiveAccess(liveDeps(), liveApp, ANNA), { ok: true, role: 'viewer' })
+    assert.deepEqual(await checkLiveAccess(liveDeps(), { ...liveApp, status: 'archived' }, ANNA), { ok: false, code: 'app_archived' })
+    assert.notEqual(liveDeniedMessage('app_archived'), 'Az élő adat most nem jeleníthető meg.')
     const denied: Array<[string, MiniAppLiveDataDeps, string | undefined]> = [
       ['link_without_user', liveDeps(), undefined],
       ['member_removed', liveDeps({ findMembership: async () => null }), ANNA],
@@ -781,7 +783,7 @@ async function main() {
     assert.equal(load.data.egy!.status, 'ok')
     assert.equal(load.bar.lastLoadAt!.toISOString(), '2026-11-03T13:20:00.000Z')
     const text = load.bar.warnings.join(' | ')
-    for (const part of ['3 megoldatlan adategyezés', 'AI-javaslat, még nem megerősített mezők', 'jelentése megváltozott', 'ketto: nem futtatható', 'egy: csak az első 2 sor látszik', 'újabb lekérdezés-verzió']) assert.ok(text.includes(part), part)
+    for (const part of ['3 megoldatlan adategyezés', 'AI-javaslat, még nem megerősített mezők', 'jelentése megváltozott', 'Az egyik lekérdezés nem futtatható', 'Az egyik lekérdezésből csak az első 2 sor látszik', 'újabb lekérdezés-verzió']) assert.ok(text.includes(part), part)
     assert.equal(text.includes('1000'), false)
 
     const frame = renderMiniAppFrame({ name: 'R', createdAt: new Date(), versionCreatedAt: new Date(), ownerAgentName: 'Réka', version: 1, currentVersion: 1, contentUrl: '/c', live: load.bar })

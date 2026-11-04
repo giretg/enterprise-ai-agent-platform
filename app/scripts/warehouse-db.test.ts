@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
 import { PgSchemaProvisioner, WAREHOUSE_INTERNAL_VERSION } from '../src/domain/warehouse/provisioner'
-import { prismaWarehouseDatabase, warehouseSchemaName, type WarehouseDatabase } from '../src/domain/warehouse/sql'
+import { datasetTableName, prismaWarehouseDatabase, warehouseSchemaName, type WarehouseDatabase } from '../src/domain/warehouse/sql'
 import { WarehouseError, WarehouseService, type WarehouseActor } from '../src/domain/warehouse/warehouse-service'
 import { PostgresWarehouseRegistry } from '../src/repositories/postgres/warehouse-registry'
 import { loadLiveData, prepareBindings, type MiniAppLiveDataDeps } from '../src/domain/mini-app/live-data'
@@ -447,6 +447,14 @@ async function main() {
     const partial = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: firstSize, audit: false })
     assert.equal(partial.rows.length, 1)
     assert.equal(partial.truncated, firstBlock.rows.length > 1)
+    // A keret a beágyazott méretet méri: az escape-elendő jelek hatszorosan számítanak.
+    const firstOrder = `(SELECT min(szam) FROM "${schema}"."${datasetTableName('rendelesek')}")`
+    const [originalCell] = await prisma.$queryRawUnsafe<Array<{ ugyfel_nev: string | null }>>(`SELECT ugyfel_nev FROM "${schema}"."${datasetTableName('rendelesek')}" WHERE szam = ${firstOrder}`)
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"."${datasetTableName('rendelesek')}" SET ugyfel_nev = repeat('<', 1000) WHERE szam = ${firstOrder}`)
+    const escaped = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: 3_000, audit: false })
+    assert.deepEqual(escaped.rows, [], 'nyersen 3000 bájt alatt, beágyazva 6000 felett')
+    assert.equal(escaped.truncated, true)
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"."${datasetTableName('rendelesek')}" SET ugyfel_nev = $1 WHERE szam = ${firstOrder}`, originalCell!.ugyfel_nev)
 
     // D7: a kötés a rögzített verziót futtatja; a sáv jelzi, hogy van újabb.
     const liveV2 = await service.saveQuery(ai, { queryId: liveQuery.query.queryId, description: 'Csak a számok.', query: { dataset: 'rendelesek', fields: 'szam', orderBy: 'szam' } })

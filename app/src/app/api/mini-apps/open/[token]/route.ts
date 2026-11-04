@@ -33,12 +33,16 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
   const { app, version, payload } = resolved
 
   let live: MiniAppLiveBar | undefined
+  let deniedReason: string | undefined
   if (version.dataBindings.length > 0) {
     if (!liveOpenAllowed(payload)) return miniAppBusyResponse()
     const access = await checkLiveAccess(miniAppLiveDeps, app, payload.u)
-    live = access.ok
-      ? (await loadLiveData(miniAppLiveDeps, { app, userId: payload.u!, role: access.role, bindings: version.dataBindings, purpose: 'status' })).bar
-      : { mode: 'denied', lastLoadAt: null, warnings: [liveDeniedMessage(access.code)] }
+    if (access.ok) {
+      live = (await loadLiveData(miniAppLiveDeps, { app, userId: payload.u!, role: access.role, bindings: version.dataBindings, purpose: 'status' })).bar
+    } else {
+      deniedReason = access.code
+      live = { mode: 'denied', lastLoadAt: null, warnings: [liveDeniedMessage(access.code)] }
+    }
   }
 
   await writeAudit(repositories.audit, {
@@ -48,13 +52,14 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
     action: 'mini_app.opened',
     targetType: 'mini_app',
     targetId: app.id,
-    policyDecision: 'allowed',
+    policyDecision: deniedReason ? 'denied' : 'allowed',
     metadata: {
       phase: 'opened',
       linkIssuedToUserId: payload.u ?? null,
       version: version.version,
       contentHash: version.contentHash,
       ...(live ? { live: live.mode } : {}),
+      ...(deniedReason ? { reason: deniedReason } : {}),
     },
     tenantId: app.tenantId,
   })

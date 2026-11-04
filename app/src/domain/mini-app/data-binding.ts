@@ -59,7 +59,7 @@ export type MiniAppLiveBlock =
     }
   | { status: 'error'; code: string }
 
-/** JSON-szöveg → bemeneti kötések; az alias egyedi. Hibánál `null` + ok. */
+/** JSON-szöveg → bemeneti kötések; az alias egyedi. Hibánál `ok: false` + ok. */
 export function parseDataBindingsInput(raw: string): { ok: true; bindings: MiniAppDataBindingInput[] } | { ok: false; detail: string } {
   let value: unknown
   try {
@@ -77,7 +77,7 @@ export function parseDataBindingsInput(raw: string): { ok: true; bindings: MiniA
   return { ok: true, bindings: parsed.data }
 }
 
-/** Kötés-lista az adatbázisból: a hibás sor nem futhat, ezért az egész listát eldobjuk. */
+/** Kötés-lista az adatbázisból: a hibás sor nem futhat, ezért az a sor kimarad. */
 export function readStoredBindings(value: unknown): MiniAppDataBinding[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((item): MiniAppDataBinding[] => {

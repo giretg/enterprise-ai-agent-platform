@@ -12,6 +12,8 @@ import type { AddressInfo } from 'node:net'
 import { chromium, firefox, webkit, type BrowserType } from '@playwright/test'
 import { GET as openRoute } from '../src/app/api/mini-apps/open/[token]/route'
 import { GET as contentRoute } from '../src/app/api/mini-apps/content/[token]/route'
+import { serializeLiveData } from '../src/domain/mini-app/data-binding'
+import { buildMiniAppLiveDocument } from '../src/domain/mini-app/frame'
 import { miniAppContentHash } from '../src/domain/mini-app/html-lint'
 import { signMiniAppLink } from '../src/domain/mini-app/link-token'
 import { miniAppLiveDeps } from '../src/lib/mini-app-live'
@@ -75,8 +77,19 @@ async function main() {
     currentVersion: 1,
   })
 
+  // A letöltött fájlt nem védi válaszfejléc: csak a saját meta-CSP-je.
+  const downloaded = buildMiniAppLiveDocument(HTML, {
+    dataJson: serializeLiveData({ bevetel: { status: 'ok', columns: ['nev'], columnLabels: ['Név'], rows: CELLS.map((cell) => [cell]), truncated: true, dataAsOf: null, warnings: [] } }),
+    meta: true,
+  }).html
+  let egressHits = 0
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url!, 'http://127.0.0.1')
+    if (url.pathname === '/downloaded.html') return void res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(downloaded)
+    if (url.pathname === '/egress') {
+      egressHits += 1
+      return void res.writeHead(204).end()
+    }
     const [, , , kind, token] = url.pathname.split('/')
     const handler = kind === 'open' ? openRoute : kind === 'content' ? contentRoute : null
     if (!handler || !token) return void res.writeHead(404).end()
@@ -106,7 +119,7 @@ async function main() {
     const opened = await page.goto(`http://127.0.0.1:${port}/api/mini-apps/open/${token}`)
     assert.equal(opened?.status(), 200, label)
     const bar = (await page.locator('[data-mini-app-bar]').innerText()).replace(/\s+/g, ' ')
-    for (const part of ['Élő adat', 'Utolsó betöltés', '3 megoldatlan adategyezés', 'bevetel: csak az első 5 sor látszik']) assert.ok(bar.includes(part), `${label}: sáv: ${part} (${bar})`)
+    for (const part of ['Élő adat', 'Utolsó betöltés', '3 megoldatlan adategyezés', 'Az egyik lekérdezésből csak az első 5 sor látszik']) assert.ok(bar.includes(part), `${label}: sáv: ${part} (${bar})`)
     const frame = page.frames().find((candidate) => candidate.url().includes('/content/'))
     assert.ok(frame, `${label}: a tartalom-iframe betölt`)
     await frame.waitForSelector('body[data-agent-script="ran"]', { state: 'attached', timeout: 5_000 })
@@ -121,9 +134,20 @@ async function main() {
     assert.deepEqual(state.cells, CELLS, `${label}: a cellaérték szövegként, változatlanul látszik`)
     assert.ok(state.storedInner, `${label}: az innerHTML lefutott, tehát a mérés a CSP-t méri`)
     for (const attribute of ['data-breakout', 'data-handler', 'data-inner-script', 'data-injected-script']) assert.equal(state.attrs[attribute], undefined, `${label}: ${attribute}`)
+
+    // A letöltött fájl: az agent-szkript fut, cellaérték nem, a hálózat zárva.
+    const file = await browser.newPage()
+    await file.goto(`http://127.0.0.1:${port}/downloaded.html`)
+    await file.waitForSelector('body[data-agent-script="ran"]', { state: 'attached', timeout: 5_000 })
+    await file.waitForTimeout(300)
+    const fileAttrs = await file.evaluate(() => Object.fromEntries([...document.body.attributes].map((attribute) => [attribute.name, attribute.value])))
+    for (const attribute of ['data-breakout', 'data-handler', 'data-inner-script', 'data-injected-script']) assert.equal(fileAttrs[attribute], undefined, `${label}: letöltött fájl: ${attribute}`)
+    const fetched = await file.evaluate(() => fetch('/egress').then(() => 'open', () => 'blocked'))
+    assert.equal(fetched, 'blocked', `${label}: letöltött fájl: fetch`)
+    assert.equal(egressHits, 0, `${label}: letöltött fájl: kimenő kérés`)
     await browser.close()
     measured += 1
-    console.log(`  OK  ${label}: AC15 cellaérték nem tör ki és nem fut; agent-szkript fut; sáv kiírja az állapotot`)
+    console.log(`  OK  ${label}: AC15 cellaérték nem tör ki és nem fut; agent-szkript fut; sáv kiírja az állapotot; a letöltött fájl meta-CSP-je ugyanígy véd`)
   }
   server.close()
   assert.ok(measured > 0, 'legalább egy böngésző kell')

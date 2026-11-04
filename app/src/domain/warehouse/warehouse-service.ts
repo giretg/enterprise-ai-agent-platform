@@ -1278,10 +1278,11 @@ export class WarehouseService {
         const spec: QuerySpec = { ...withQueryErrors(() => resolveSavedQuery(record.spec, record.params, input.params, new Date())), limit: input.maxRows, offset: 0 }
         const compiled = withQueryErrors(() => compileQuery(schema, spec, catalog))
         const budget = compiled.params.length + 1
+        // A keret a HTML-be ágyazott méretre vonatkozik: a `<`, `>`, `&` ott hatbájtos escape lesz.
         const raw = await sql.query<{ r: Record<string, unknown> | null; size: number; total: number }>(
           `SELECT CASE WHEN w.size <= $${budget}::bigint THEN w.r END AS r, w.size, w.total
            FROM (
-             SELECT s.r, sum(octet_length(s.r::text)) OVER (ROWS UNBOUNDED PRECEDING) AS size, count(*) OVER () AS total, row_number() OVER () AS rn
+             SELECT s.r, sum(octet_length(s.r::text) + 5 * (length(s.r::text) - length(translate(s.r::text, '<>&', '')))) OVER (ROWS UNBOUNDED PRECEDING) AS size, count(*) OVER () AS total, row_number() OVER () AS rn
              FROM (${compiled.sql}) s
            ) w
            WHERE w.size <= $${budget}::bigint OR w.rn = 1

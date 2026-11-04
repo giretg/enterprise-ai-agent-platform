@@ -64,6 +64,7 @@ export async function prepareBindings(
 export type LiveAccess = { ok: true; role: string } | { ok: false; code: string }
 
 const DENIED_MESSAGES: Record<string, string> = {
+  app_archived: 'Ezt a mini appot archiválták.',
   link_without_user: 'Ez a link nem tartozik személyhez. Kérj új linket a platformon.',
   member_removed: 'A linket kérő felhasználó már nem tagja a szervezetnek.',
   no_read_permission: 'A linket kérő felhasználónak nincs joga az adattárház olvasásához.',
@@ -77,7 +78,8 @@ export function liveDeniedMessage(code: string): string {
 }
 
 /** §4.3: ha bármelyik nem teljesül, adat nem megy ki. */
-export async function checkLiveAccess(deps: MiniAppLiveDataDeps, app: Pick<MiniAppRecord, 'tenantId' | 'ownerAgentId'>, requesterUserId: string | null | undefined): Promise<LiveAccess> {
+export async function checkLiveAccess(deps: MiniAppLiveDataDeps, app: Pick<MiniAppRecord, 'tenantId' | 'ownerAgentId' | 'status'>, requesterUserId: string | null | undefined): Promise<LiveAccess> {
+  if (app.status !== 'active') return { ok: false, code: 'app_archived' }
   if (!requesterUserId) return { ok: false, code: 'link_without_user' }
   const membership = await deps.findMembership(app.tenantId, requesterUserId)
   if (!membership || membership.status !== 'active') return { ok: false, code: 'member_removed' }
@@ -95,11 +97,11 @@ export type LiveDataLoad = {
 }
 
 const BLOCK_ERROR_MESSAGES: Record<string, string> = {
-  saved_query_broken: 'nem futtatható, javítani kell',
-  saved_query_not_found: 'a lekérdezést archiválták vagy törölték',
-  query_timeout: 'túl sokáig futott, ezért leállt',
-  warehouse_not_ready: 'az adattárház most nem elérhető',
-  warehouse_upgrade_failed: 'az adattárház frissítés alatt áll, próbáld újra egy perc múlva',
+  saved_query_broken: 'Az egyik lekérdezés nem futtatható, javítani kell',
+  saved_query_not_found: 'Az egyik lekérdezést archiválták vagy törölték',
+  query_timeout: 'Az egyik lekérdezés túl sokáig futott, ezért leállt',
+  warehouse_not_ready: 'Az adattárház most nem elérhető',
+  warehouse_upgrade_failed: 'Az adattárház frissítés alatt áll, próbáld újra egy perc múlva',
 }
 
 function latest(values: Array<string | null>): Date | null {
@@ -109,7 +111,6 @@ function latest(values: Array<string | null>): Date | null {
 
 /** A chatben az agent mondaná el; itt nincs, aki elmondja, ezért a sávon kötelező (§4.4). */
 export function liveBarWarnings(input: {
-  bindings: MiniAppDataBinding[]
   results: Array<{ alias: string; block: MiniAppLiveBlock; schemaStatus?: string; currentVersion?: number; queryVersion: number }>
 }): string[] {
   const out: string[] = []
@@ -132,13 +133,13 @@ export function liveBarWarnings(input: {
   if (codes.has('stale_source')) out.push(warehouseMessage('stale_source'))
   if (input.results.some((result) => result.schemaStatus === 'meaning_changed')) out.push('Egy használt mező jelentése megváltozott, ellenőrizd az eredményt')
   for (const result of input.results) {
-    if (result.block.status === 'error') out.push(`${result.alias}: ${BLOCK_ERROR_MESSAGES[result.block.code] ?? 'az adat most nem érhető el'}`)
-    else if (result.block.truncated) out.push(`${result.alias}: csak az első ${result.block.rows.length} sor látszik`)
+    if (result.block.status === 'error') out.push(BLOCK_ERROR_MESSAGES[result.block.code] ?? 'Az egyik lekérdezés adata most nem érhető el')
+    else if (result.block.truncated) out.push(`Az egyik lekérdezésből csak az első ${result.block.rows.length} sor látszik`)
   }
   if (input.results.some((result) => result.currentVersion !== undefined && result.currentVersion > result.queryVersion)) {
     out.push('Van újabb lekérdezés-verzió, ez az app még a régivel dolgozik')
   }
-  return out
+  return [...new Set(out)]
 }
 
 /** Sorban futtat közös kerettel; a `status` mód csak a sávhoz számol, naplót és futásszámot nem ír. */
@@ -183,7 +184,7 @@ export async function loadLiveData(
     }
   }
   const mode = input.purpose === 'download' ? 'download' : 'live'
-  return { data, rows, bar: { mode, lastLoadAt: latest(loadTimes), warnings: liveBarWarnings({ bindings: input.bindings, results }) } }
+  return { data, rows, bar: { mode, lastLoadAt: latest(loadTimes), warnings: liveBarWarnings({ results }) } }
 }
 
 /** D6: a kötött app linkje legfeljebb 1 óráig él. A régebben kiadott, hosszabb token nem fogadható el. */
