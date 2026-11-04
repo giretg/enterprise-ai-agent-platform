@@ -379,10 +379,10 @@ async function main() {
 
     const summary = await wikis.inboxSummary([kb.id], { now: later })
     assert.deepEqual(summary.wikis, [
-      { connectorId: kb.id, pending: 0, inProgress: 1, processed: 1, skipped: 1 },
+      { connectorId: kb.id, pending: 0, reprocess: 0, inProgress: 1, processed: 1, skipped: 1 },
     ])
     assert.deepEqual(summary.batches, [
-      { connectorId: kb.id, batchId, pending: 0, inProgress: 1, processed: 1, skipped: 1 },
+      { connectorId: kb.id, batchId, pending: 0, reprocess: 0, inProgress: 1, processed: 1, skipped: 1 },
     ])
 
     assert.equal(

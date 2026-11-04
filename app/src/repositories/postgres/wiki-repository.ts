@@ -1,3 +1,4 @@
+import { parseWikiReprocess } from '@/lib/wiki-access'
 import { Prisma, type AgentWiki, type WikiChangeSet, type WikiPage } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { readKbPurpose } from '@/lib/kb-retrieval'
@@ -7,6 +8,7 @@ import type {
   PrivateKnowledgeBaseStore,
   WikiInboxCounts,
   WikiInboxItem,
+  WikiReprocessRequestResult,
   WikiApplyChangeSetInput,
   WikiApplyChangeSetResult,
   WikiApplyPageOp,
@@ -105,21 +107,22 @@ export function revisionData(
  * #942: a lejárt foglalás olvasáskor `pending` (D6, háttérjob nélkül). A SQL-ág
  * ugyanazt számolja, mint a `wiki-access` `effectiveInboxStatus`.
  */
-function effectiveStatusSql(now: Date): Prisma.Sql {
+export function effectiveStatusSql(now: Date): Prisma.Sql {
   return Prisma.sql`CASE
-    WHEN d.wiki_status = 'in_progress'
-      AND (d.wiki_claim_expires_at IS NULL OR d.wiki_claim_expires_at <= ${now})
-    THEN 'pending'
+    WHEN d.wiki_status = 'pending'
+      OR (d.wiki_status = 'in_progress' AND (d.wiki_claim_expires_at IS NULL OR d.wiki_claim_expires_at <= ${now}))
+    THEN CASE WHEN d.wiki_reprocess IS NULL THEN 'pending' ELSE 'reprocess' END
     ELSE d.wiki_status::text
   END`
 }
 
 function emptyCounts(): WikiInboxCounts {
-  return { pending: 0, inProgress: 0, processed: 0, skipped: 0 }
+  return { pending: 0, reprocess: 0, inProgress: 0, processed: 0, skipped: 0 }
 }
 
 function addCount(counts: WikiInboxCounts, status: string, n: number) {
   if (status === 'pending') counts.pending += n
+  else if (status === 'reprocess') counts.reprocess += n
   else if (status === 'in_progress') counts.inProgress += n
   else if (status === 'processed') counts.processed += n
   else if (status === 'skipped') counts.skipped += n
@@ -331,7 +334,7 @@ export class PostgresWikiRepository implements WikiRepository {
 
   async listInbox(
     connectorIds: string[],
-    input: { now: Date; batchId?: string; limit?: number },
+    input: { now: Date; batchId?: string; limit?: number; includeDone?: boolean },
   ): Promise<WikiInboxItem[]> {
     if (connectorIds.length === 0) return []
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 500)
@@ -349,17 +352,19 @@ export class PostgresWikiRepository implements WikiRepository {
         wiki_claim_expires_at: Date | null
         wiki_batch_id: string | null
         wiki_batch_seq: number | null
+        wiki_reprocess: Prisma.JsonValue
         created_at: Date
       }>
     >(Prisma.sql`
       SELECT d.id, d.connector_id, d.filename, d.metadata, ${status} AS status, d.uploaded_by,
              d.wiki_submitted_by_agent_id, d.wiki_claimed_by_agent_id, d.wiki_claim_expires_at,
-             d.wiki_batch_id, d.wiki_batch_seq, d.created_at
+             d.wiki_batch_id, d.wiki_batch_seq, d.wiki_reprocess, d.created_at
       FROM documents d
       WHERE d.connector_id = ANY(${connectorIds}::uuid[])
-        AND d.wiki_status IN ('pending', 'in_progress')
+        AND ${input.includeDone ? Prisma.sql`d.wiki_status IS NOT NULL` : Prisma.sql`d.wiki_status IN ('pending', 'in_progress')`}
         ${input.batchId ? Prisma.sql`AND d.wiki_batch_id = ${input.batchId}::uuid` : Prisma.empty}
-      ORDER BY min(d.created_at) OVER (PARTITION BY COALESCE(d.wiki_batch_id, d.id)),
+      ORDER BY CASE WHEN d.wiki_status IN ('pending', 'in_progress') THEN 0 ELSE 1 END,
+               min(d.created_at) OVER (PARTITION BY COALESCE(d.wiki_batch_id, d.id)),
                COALESCE(d.wiki_batch_id, d.id),
                d.wiki_batch_seq NULLS LAST,
                d.created_at
@@ -372,7 +377,8 @@ export class PostgresWikiRepository implements WikiRepository {
         connectorId: row.connector_id,
         filename: row.filename,
         purpose: readKbPurpose(row.metadata),
-        status: active ? 'in_progress' : 'pending',
+        status: row.status as WikiInboxItem['status'],
+        reprocess: parseWikiReprocess(row.wiki_reprocess),
         uploadedById: row.uploaded_by,
         submittedByAgentId: row.wiki_submitted_by_agent_id,
         claimedByAgentId: active ? row.wiki_claimed_by_agent_id : null,
@@ -505,6 +511,93 @@ export class PostgresWikiRepository implements WikiRepository {
       data: { wikiStatus: 'skipped', wikiClaimedByAgentId: null, wikiClaimExpiresAt: null },
     })
     return result.count > 0
+  }
+
+  async requestReprocess(input: Parameters<WikiRepository['requestReprocess']>[0]): Promise<WikiReprocessRequestResult> {
+    const scope =
+      'documentId' in input.target
+        ? Prisma.sql`d.id = ${input.target.documentId}::uuid`
+        : Prisma.sql`d.wiki_batch_id = ${input.target.batchId}::uuid`
+    // A kérő `previousStatus`-a és a váró jóváhagyás ugyanebben az utasításban dől el.
+    const hasPendingChange = Prisma.sql`EXISTS (
+      SELECT 1 FROM wiki_change_sets c
+      WHERE c.connector_id = d.connector_id
+        AND c.status = CAST('pending' AS "WikiChangeSetStatus")
+        AND (c.inbox_item_id = d.id OR d.id::text = ANY(c.source_document_ids)
+          OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(c.pages) AS p
+            LEFT JOIN wiki_pages wp ON wp.wiki_id = c.wiki_id AND wp.path = p->>'path'
+            WHERE p->'frontmatter'->'sources' @> jsonb_build_array(jsonb_build_object('documentId', d.id::text))
+              OR wp.source_refs @> jsonb_build_array(jsonb_build_object('documentId', d.id::text))
+          ))
+    )`
+    const marked = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      UPDATE documents d
+      SET wiki_status = 'pending',
+          wiki_processed_by_change_set_id = NULL,
+          wiki_claimed_by_agent_id = NULL,
+          wiki_claim_expires_at = NULL,
+          wiki_reprocess = jsonb_build_object(
+            'reason', ${input.reason}::text,
+            'requestedAt', ${input.now.toISOString()}::text,
+            'requestedBy', ${JSON.stringify(input.requestedBy)}::jsonb,
+            'previousStatus', d.wiki_status::text,
+            'previousChangeSetId', d.wiki_processed_by_change_set_id
+          )
+      WHERE d.connector_id = ${input.connectorId}::uuid
+        AND ${scope}
+        AND d.wiki_status IN ('processed', 'skipped')
+        AND NOT ${hasPendingChange}
+      RETURNING d.id
+    `)
+    const markedIds = marked.map((row) => row.id)
+    const rest = await prisma.$queryRaw<Array<{ id: string; status: string }>>(Prisma.sql`
+      SELECT d.id, d.wiki_status::text AS status
+      FROM documents d
+      WHERE d.connector_id = ${input.connectorId}::uuid
+        AND ${scope}
+        AND d.wiki_status IS NOT NULL
+        AND NOT (d.id = ANY(${markedIds}::uuid[]))
+    `)
+    return {
+      marked: markedIds,
+      waitingForApproval: rest.filter((row) => row.status === 'processed' || row.status === 'skipped').map((row) => row.id),
+      alreadyInInbox: rest.filter((row) => row.status === 'pending' || row.status === 'in_progress').map((row) => row.id),
+    }
+  }
+
+  async cancelReprocess(input: { documentId: string; connectorId: string }): Promise<boolean> {
+    const count = await prisma.$executeRaw(Prisma.sql`
+      UPDATE documents d
+      SET wiki_status = (d.wiki_reprocess->>'previousStatus')::"WikiInboxStatus",
+          wiki_processed_by_change_set_id = (d.wiki_reprocess->>'previousChangeSetId')::uuid,
+          wiki_claimed_by_agent_id = NULL,
+          wiki_claim_expires_at = NULL,
+          wiki_reprocess = NULL
+      WHERE d.id = ${input.documentId}::uuid
+        AND d.connector_id = ${input.connectorId}::uuid
+        AND d.wiki_status IN ('pending', 'in_progress')
+        AND d.wiki_reprocess IS NOT NULL
+    `)
+    return count > 0
+  }
+
+  async finishReprocessUnchanged(input: { documentId: string; connectorId: string; agentId: string; now: Date }): Promise<boolean> {
+    const count = await prisma.$executeRaw(Prisma.sql`
+      UPDATE documents d
+      SET wiki_status = (d.wiki_reprocess->>'previousStatus')::"WikiInboxStatus",
+          wiki_processed_by_change_set_id = (d.wiki_reprocess->>'previousChangeSetId')::uuid,
+          wiki_claimed_by_agent_id = NULL,
+          wiki_claim_expires_at = NULL,
+          wiki_reprocess = d.wiki_reprocess || jsonb_build_object('outcome', 'unchanged', 'finishedAt', ${input.now.toISOString()}::text)
+      WHERE d.id = ${input.documentId}::uuid
+        AND d.connector_id = ${input.connectorId}::uuid
+        AND d.wiki_status = 'in_progress'
+        AND d.wiki_claimed_by_agent_id = ${input.agentId}::uuid
+        AND d.wiki_claim_expires_at > ${input.now}
+        AND d.wiki_reprocess IS NOT NULL
+    `)
+    return count > 0
   }
 
   async applyChangeSet(input: WikiApplyChangeSetInput): Promise<WikiApplyChangeSetResult> {

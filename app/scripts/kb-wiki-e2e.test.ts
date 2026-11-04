@@ -477,7 +477,7 @@ async function main() {
       assert.deepEqual(results[dupIndex], { status: 'duplicate', existingDocumentId: (results[original] as { documentId: string }).documentId })
       assert.equal(documentIds.length, 29)
       const inbox = await services.wikiConsole.listInbox(actor(owner), connectorId)
-      assert.deepEqual(inbox.totals, { pending: 29, inProgress: 0, processed: 0, skipped: 0 })
+      assert.deepEqual(inbox.totals, { pending: 29, reprocess: 0, inProgress: 0, processed: 0, skipped: 0 })
       assert.equal(inbox.batches[0].total, 29)
     })
 
@@ -653,7 +653,7 @@ async function main() {
       const original = await mcp.ok('kb_get_document', { definitionId, documentId: cited })
       assert.equal(original.documentId, cited)
       const overview = await services.wikiConsole.getOverview(actor(owner), connectorId)
-      assert.deepEqual(overview.inbox, { pending: 0, inProgress: 0, processed: 29, skipped: 0 })
+      assert.deepEqual(overview.inbox, { pending: 0, reprocess: 0, inProgress: 0, processed: 29, skipped: 0 })
     })
 
     await check('5. privát izoláció: másik felhasználó ugyanazzal az agenttel semmit nem lát', async () => {
@@ -726,6 +726,52 @@ async function main() {
         'labs/', 'sources/', 'timeline.md', 'LDL-koleszterin',
       ]
       for (const leak of leaks) assert.ok(!json.includes(leak), `audit-szivárgás: ${leak}`)
+    })
+
+    await check('8b. #1085 újrafeldolgozás a valódi MCP-n: jelölés → reprocess → foglalás → javítás → lezárás, kihagyás nélkül', async () => {
+      const mcp = session('reprocess', owner)
+      const doc = await prisma.document.findFirstOrThrow({ where: { connectorId, wikiStatus: 'processed' }, orderBy: { createdAt: 'asc' } })
+      const previous = doc.wikiProcessedByChangeSetId
+      const hashesBefore = await prisma.wikiPage.findMany({ where: { connectorId }, select: { path: true, contentHash: true }, orderBy: { path: 'asc' } })
+
+      const marked = await mcp.ok('kb_wiki_reprocess', { definitionId, wikiId, documentId: doc.id, reason: 'A táblázatok kimaradtak' })
+      assert.equal(marked.marked, 1)
+      assert.deepEqual(
+        await prisma.wikiPage.findMany({ where: { connectorId }, select: { path: true, contentHash: true }, orderBy: { path: 'asc' } }),
+        hashesBefore,
+        'a jelölés oldalt nem változtat',
+      )
+
+      const listed = await mcp.ok('kb_list_index', { definitionId, wikiId, inbox: true })
+      const item = listed.items.find((row: any) => row.documentId === doc.id)
+      assert.equal(item.status, 'reprocess')
+      assert.equal(item.reprocess.reason, 'A táblázatok kimaradtak')
+      assert.equal(item.reprocess.previousChangeSetId, previous)
+      assert.equal(item.reprocess.requestedBy.kind, 'agent')
+      assert.equal(item.partlyWritten, undefined)
+      assert.equal(listed.summary.wikis[0].reprocess, 1)
+
+      const again = await mcp.call('kb_wiki_reprocess', { definitionId, wikiId, documentId: doc.id, reason: 'még egyszer' })
+      assert.equal(again.isError, true)
+      assert.equal(again.json.code, 'already_in_inbox', JSON.stringify(again.json))
+
+      const claimed = await mcp.ok('kb_get_document', { definitionId, documentId: doc.id, claimForWiki: true })
+      assert.equal(claimed.status, 'in_progress')
+      assert.equal(claimed.reprocess.reason, 'A táblázatok kimaradtak')
+      assert.match(claimed.nextStep, /finish_unchanged/)
+
+      const unchanged = await mcp.ok('kb_wiki_reprocess', { definitionId, wikiId, documentId: doc.id, action: 'finish_unchanged', reason: 'Átnéztem, minden oldal helyes' })
+      assert.equal(unchanged.outcome, 'unchanged')
+      const state = await mcp.ok('kb_get_document', { definitionId, documentId: doc.id, offset: 0, limit: 10 })
+      assert.equal(state.inbox.status, 'processed')
+      assert.equal(state.inbox.reprocess.outcome, 'unchanged')
+      const row = await prisma.document.findUniqueOrThrow({ where: { id: doc.id } })
+      assert.equal(row.wikiStatus, 'processed')
+      assert.equal(row.wikiProcessedByChangeSetId, previous)
+      const done = await mcp.ok('kb_list_index', { definitionId, wikiId, inbox: true, includeDone: true, limit: 200 })
+      assert.equal(done.items.find((entry: any) => entry.documentId === doc.id).reprocess.outcome, 'unchanged')
+      const log = await mcp.ok('kb_get_page', { definitionId, wikiId, path: 'log.md' })
+      assert.match(log.text, /no change needed/)
     })
 
     await check('9. #978 előzmények az MCP-n: változáslista, asOf, visszaállítás mindig jóváhagyással, címke, megőrzés, kitakarás', async () => {

@@ -6,8 +6,8 @@ export type AgentWikiBriefing = {
   access: 'read' | 'submit' | 'write'
   writeMode?: string
   collect?: string
-  inbox: { pending: number; inProgress: number }
-  batches?: Array<{ batchId: string; pending: number; inProgress: number; processed: number; skipped: number }>
+  inbox: { pending: number; inProgress: number; reprocess?: number }
+  batches?: Array<{ batchId: string; pending: number; inProgress: number; processed: number; skipped: number; reprocess?: number }>
   /** #978 §5.4: alkalmazott módosítások az agent legutóbbi átnézése óta. */
   changes?: { latestSeq: number; unseen: number }
   /** #1061 F1: kezelt kategóriák — az agent csak ezek kulcsútját írhatja az oldal `category` mezőjébe. */
@@ -33,8 +33,8 @@ export function renderAgentWikiBriefing(wikis: AgentWikiBriefing[], language: Te
     const access = wiki.access === 'write'
       ? `${en ? 'write mode' : 'írási mód'}: ${wiki.writeMode}; ${en ? 'Collect' : 'Mit gyűjtsön'}: ${wiki.collect || (en ? 'follow WIKI.md' : 'a WIKI.md szerint')}`
       : wiki.access === 'submit' ? (en ? 'may only submit' : 'csak beküldhet') : (en ? 'may only read' : 'csak olvashat')
-    const inbox = wiki.access === 'read' ? '' : `; ${en ? 'inbox pending / in progress' : 'tálca várakozó / folyamatban'}: ${wiki.inbox.pending} / ${wiki.inbox.inProgress}`
-    const batches = (wiki.access === 'read' ? [] : wiki.batches ?? []).map(batch => `${batch.batchId}: ${batch.processed}/${batch.pending + batch.inProgress + batch.processed + batch.skipped} ${en ? 'done' : 'kész'} (${batch.skipped} ${en ? 'skipped' : 'kihagyva'})`).join('; ')
+    const inbox = wiki.access === 'read' ? '' : `; ${en ? 'inbox pending / in progress' : 'tálca várakozó / folyamatban'}: ${wiki.inbox.pending} / ${wiki.inbox.inProgress}${wiki.inbox.reprocess ? `; ${en ? 'sent back for reprocessing' : 'újrafeldolgozásra visszatéve'}: ${wiki.inbox.reprocess}` : ''}`
+    const batches = (wiki.access === 'read' ? [] : wiki.batches ?? []).map(batch => `${batch.batchId}: ${batch.processed}/${batch.pending + (batch.reprocess ?? 0) + batch.inProgress + batch.processed + batch.skipped} ${en ? 'done' : 'kész'} (${batch.skipped} ${en ? 'skipped' : 'kihagyva'})`).join('; ')
     const changes = wiki.changes?.unseen
       ? `; ${en
           ? `${wiki.changes.unseen} new change${wiki.changes.unseen === 1 ? '' : 's'} since you last looked — call kb_wiki_changes once before working on this wiki`

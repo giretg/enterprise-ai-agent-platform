@@ -51,6 +51,7 @@ import {
   readWikiSources,
   renderWikiIndex,
   partlyWrittenByDocument,
+  type WikiPartlyWritten,
   renderWikiLog,
   renderWikiPageMarkdown,
   replaceSection,
@@ -70,6 +71,8 @@ import {
   audienceCovers,
   canDecideWikiChange,
   effectiveInboxStatus,
+  parseWikiReprocess,
+  type WikiReprocessMarker,
   ownerAgentIdForKnowledgeBase,
   resolveWikiApprover,
   resolveWikiScopes,
@@ -164,6 +167,32 @@ export type WikiRevertTarget =
   | { kind: 'page'; path: string; version: number }
 
 export type WikiFailure = { ok: false; code: string; details?: Record<string, unknown> }
+
+/** #1085: nyitott = még várja a feldolgozást; lezárt tételnél a blokk csak előzmény. */
+function isOpenReprocess(item: { status: string; reprocess: WikiReprocessMarker | null }): boolean {
+  return !!item.reprocess && (item.status === 'reprocess' || item.status === 'in_progress')
+}
+
+function emptyPagesIfMissing(pages: WikiPartlyWritten | undefined): WikiPartlyWritten {
+  return pages ?? { pageCount: 0, pages: [] }
+}
+
+/** #1085: a `reprocess` blokk az MCP-válaszokban. */
+function reprocessView(marker: WikiReprocessMarker, agentNames: Map<string, string>, existingPages?: WikiPartlyWritten) {
+  return {
+    reason: marker.reason,
+    requestedAt: marker.requestedAt,
+    requestedBy:
+      marker.requestedBy.kind === 'agent'
+        ? { kind: 'agent', agentId: marker.requestedBy.agentId, name: agentNames.get(marker.requestedBy.agentId) ?? null }
+        : { kind: 'human', userId: marker.requestedBy.userId },
+    previousStatus: marker.previousStatus,
+    previousChangeSetId: marker.previousChangeSetId,
+    ...(marker.outcome ? { outcome: marker.outcome } : {}),
+    ...(marker.finishedAt ? { finishedAt: marker.finishedAt } : {}),
+    ...(existingPages ? { existingPages } : {}),
+  }
+}
 export type WikiOutcome<T = unknown> = { ok: true; result: T } | WikiFailure
 
 /** Jóváhagyásra váró change-set: az MCP-réteg teszi a gateway-sorba (`enqueueWrite`). */
@@ -452,10 +481,10 @@ export class WikiService {
         ...(scope.visibility === 'private_to_user' ? { private: true } : {}),
         // #1061 F2: „csak a kijelöltek” — a tartalmát csak a névsoron lévőkkel szabad megosztani.
         ...(scope.visibility === 'members' ? { membersOnly: true } : {}),
-        inbox: { pending: counts?.pending ?? 0, inProgress: counts?.inProgress ?? 0 },
+        inbox: { pending: counts?.pending ?? 0, inProgress: counts?.inProgress ?? 0, ...(counts?.reprocess ? { reprocess: counts.reprocess } : {}) },
         batches: summary.batches
           .filter(batch => batch.connectorId === scope.connectorId)
-          .map(batch => ({ batchId: batch.batchId, pending: batch.pending, inProgress: batch.inProgress, processed: batch.processed, skipped: batch.skipped })),
+          .map(batch => ({ batchId: batch.batchId, pending: batch.pending, inProgress: batch.inProgress, processed: batch.processed, skipped: batch.skipped, ...(batch.reprocess ? { reprocess: batch.reprocess } : {}) })),
         // #978 §5.4: csak ha van új módosítás az agent legutóbbi átnézése óta.
         ...(changes ? { changes } : {}),
         // #1061 F1: kezelt kategóriáknál az agent csak ezekből választhat.
@@ -538,7 +567,17 @@ export class WikiService {
     })
 
     if (stored.duplicateOf) {
-      return { ok: true, result: { ...stored, wikiId: target.wikiId, status: 'duplicate' } }
+      return {
+        ok: true,
+        result: {
+          ...stored,
+          wikiId: target.wikiId,
+          status: 'duplicate',
+          ...(target.scope.access === 'write'
+            ? { nextStep: `This content is already in the wiki. To process it again, call kb_wiki_reprocess with documentId "${stored.documentId}" and a reason.` }
+            : {}),
+        },
+      }
     }
 
     // D6: írási jognál azonnali feldolgozás a hívó nevére foglalva; különben tálca.
@@ -596,7 +635,7 @@ export class WikiService {
 
   async listInbox(
     caller: WikiCaller,
-    input: { wikiId?: string; batchId?: string; limit?: number },
+    input: { wikiId?: string; batchId?: string; limit?: number; includeDone?: boolean },
   ): Promise<WikiOutcome> {
     let connectorIds: string[]
     let wikiFilter: string | null = null
@@ -610,11 +649,12 @@ export class WikiService {
     }
     const now = this.now()
     const [items, summary] = await Promise.all([
-      this.deps.wikis.listInbox(connectorIds, { now, batchId: input.batchId, limit: input.limit }),
+      this.deps.wikis.listInbox(connectorIds, { now, batchId: input.batchId, limit: input.limit, includeDone: input.includeDone }),
       this.deps.wikis.inboxSummary(connectorIds, { now, batchId: input.batchId }),
     ])
+    const activeItems = items.filter((item) => item.status === 'pending' || item.status === 'reprocess' || item.status === 'in_progress')
     const partlyWritten = partlyWrittenByDocument(
-      await this.deps.wikis.listPagesCitingDocuments(connectorIds, items.map((item) => item.documentId)),
+      await this.deps.wikis.listPagesCitingDocuments(connectorIds, activeItems.map((item) => item.documentId)),
     )
     const wikiIds = new Map<string, string | null>()
     for (const connectorId of connectorIds) {
@@ -622,7 +662,11 @@ export class WikiService {
     }
     const agentNames = await this.agentNames(
       caller.tenantId,
-      items.flatMap((item) => [item.claimedByAgentId, item.submittedByAgentId]),
+      items.flatMap((item) => [
+        item.claimedByAgentId,
+        item.submittedByAgentId,
+        item.reprocess?.requestedBy.kind === 'agent' ? item.reprocess.requestedBy.agentId : null,
+      ]),
     )
     return {
       ok: true,
@@ -648,22 +692,29 @@ export class WikiService {
               }
             : {}),
           ...(item.batchId ? { batchId: item.batchId, batchSeq: item.batchSeq } : {}),
-          ...(partlyWritten.has(item.documentId) ? { partlyWritten: partlyWritten.get(item.documentId) } : {}),
+          // #1085: újrafeldolgozásnál a már megírt oldalakat javítani kell, nem csak bővíteni.
+          ...(!isOpenReprocess(item) && partlyWritten.has(item.documentId) ? { partlyWritten: partlyWritten.get(item.documentId) } : {}),
+          ...(item.reprocess
+            ? { reprocess: reprocessView(item.reprocess, agentNames, isOpenReprocess(item) ? emptyPagesIfMissing(partlyWritten.get(item.documentId)) : undefined) }
+            : {}),
         })),
         summary: {
           wikis: summary.wikis.map(({ connectorId, ...counts }) => ({ wikiId: wikiIds.get(connectorId) ?? null, ...counts })),
           batches: summary.batches.map(({ connectorId, ...counts }) => ({ wikiId: wikiIds.get(connectorId) ?? null, ...counts })),
         },
         nextStep:
-          items.length > 0
-            ? 'Process one item at a time: kb_get_document documentId claimForWiki:true → write the pages → kb_wiki_write inboxItemId. An item with partlyWritten already has those pages: read and extend them, do not rewrite them. Stop cleanly and report progress when your session budget runs low.'
+          activeItems.length > 0
+            ? 'Process one item at a time: kb_get_document documentId claimForWiki:true → write the pages → kb_wiki_write inboxItemId. An item with partlyWritten already has those pages: read and extend them, do not rewrite them. An item with status reprocess was sent back: fix its reprocess.existingPages in place, or close it with kb_wiki_reprocess action:"finish_unchanged" if they are correct. Stop cleanly and report progress when your session budget runs low.'
             : 'The inbox is empty.',
       },
     }
   }
 
   /** `kb_get_document claimForWiki: true` — a hívó agentre foglal (2 óra). */
-  async claim(caller: WikiCaller, input: { connectorId: string; documentId: string }): Promise<WikiOutcome<{ claimExpiresAt: string; wikiId: string }>> {
+  async claim(
+    caller: WikiCaller,
+    input: { connectorId: string; documentId: string },
+  ): Promise<WikiOutcome<{ claimExpiresAt: string; wikiId: string; reprocess?: Record<string, unknown> }>> {
     const writable = this.scopes(caller).writable.some((scope) => scope.connectorId === input.connectorId)
     if (!writable) return { ok: false, code: 'wiki_write_not_allowed' }
     if ((await this.liveVisible(caller, [input.connectorId])).length === 0) return { ok: false, code: 'not_found' }
@@ -678,7 +729,120 @@ export class WikiService {
         documentId: input.documentId,
       })
     }
-    return { ok: true, result: { claimExpiresAt: claimed.expiresAt.toISOString(), wikiId } }
+    const marker = await this.openReprocessMarker(input.documentId)
+    return {
+      ok: true,
+      result: {
+        claimExpiresAt: claimed.expiresAt.toISOString(),
+        wikiId,
+        ...(marker ? { reprocess: await this.reprocessDetails(caller.tenantId, input.connectorId, input.documentId, marker) } : {}),
+      },
+    }
+  }
+
+  /** A foglalás után a tétel `in_progress`, ezért a tárolt állapotból nézzük, nyitott-e a kérés. */
+  private async openReprocessMarker(documentId: string): Promise<WikiReprocessMarker | null> {
+    const document = await this.deps.documents.findById(documentId)
+    return document && document.wikiStatus === 'in_progress' ? parseWikiReprocess(document.wikiReprocess) : null
+  }
+
+  private async reprocessDetails(tenantId: string, connectorId: string, documentId: string, marker: WikiReprocessMarker) {
+    const pages = partlyWrittenByDocument(await this.deps.wikis.listPagesCitingDocuments([connectorId], [documentId]))
+    const names = await this.agentNames(tenantId, [marker.requestedBy.kind === 'agent' ? marker.requestedBy.agentId : null])
+    return reprocessView(marker, names, emptyPagesIfMissing(pages.get(documentId)))
+  }
+
+  /** #1085 `kb_get_document`: a forrás tálca-állapota; nem wiki-forrásnál `null`. */
+  async inboxStateFor(tenantId: string, connectorId: string, documentId: string): Promise<Record<string, unknown> | null> {
+    const document = await this.deps.documents.findById(documentId)
+    if (!document || document.connectorId !== connectorId) return null
+    const status = effectiveInboxStatus(document, this.now())
+    if (!status) return null
+    const marker = parseWikiReprocess(document.wikiReprocess)
+    if (!marker) return { status }
+    const open = status === 'reprocess' || status === 'in_progress'
+    return {
+      status,
+      reprocess: open
+        ? await this.reprocessDetails(tenantId, connectorId, documentId, marker)
+        : reprocessView(marker, await this.agentNames(tenantId, [marker.requestedBy.kind === 'agent' ? marker.requestedBy.agentId : null])),
+    }
+  }
+
+  /** #1085: lezárt forrás(ok) vissza a tálcára. A meglévő oldalak nem változnak (D2). */
+  async requestReprocess(
+    caller: WikiCaller,
+    input: { wikiId?: string; target: { documentId: string } | { batchId: string }; reason: string },
+  ): Promise<WikiOutcome> {
+    const target = await this.resolve(caller, input.wikiId, 'write')
+    if ('ok' in target) return target
+    const result = await this.deps.wikis.requestReprocess({
+      connectorId: target.connector.id,
+      target: input.target,
+      reason: input.reason,
+      requestedBy: { kind: 'agent', agentId: caller.agentId },
+      now: this.now(),
+    })
+    if ('documentId' in input.target && result.marked.length === 0) {
+      if (result.waitingForApproval.length > 0) return { ok: false, code: 'reprocess_pending_approval' }
+      if (result.alreadyInInbox.length > 0) return { ok: false, code: 'already_in_inbox' }
+      return { ok: false, code: 'not_in_inbox' }
+    }
+    for (const documentId of result.marked) {
+      await this.audit(target.connector, caller, 'kb.wiki.inbox.reprocess_requested', documentId, {
+        wikiId: target.wikiId,
+        documentId,
+        ...('batchId' in input.target ? { batchId: input.target.batchId } : {}),
+      })
+    }
+    return {
+      ok: true,
+      result: {
+        status: 'reprocess',
+        wikiId: target.wikiId,
+        marked: result.marked.length,
+        documentIds: result.marked,
+        waitingForApproval: result.waitingForApproval.length,
+        alreadyInInbox: result.alreadyInInbox.length,
+        nextStep:
+          result.marked.length > 0
+            ? 'Back in the inbox as status "reprocess"; the existing pages stay live. Process it with kb_get_document claimForWiki:true, or tell the user it is queued.'
+            : 'Nothing was put back. Items with waitingForApproval need a decision from the wiki approver first.',
+      },
+    }
+  }
+
+  /** #1085 D6: ellenőrizte, nem kellett változtatni. A korábbi állapot visszaáll, naplóbejegyzés készül. */
+  async finishReprocessUnchanged(
+    caller: WikiCaller,
+    input: { wikiId?: string; documentId: string; reason: string },
+  ): Promise<WikiOutcome> {
+    const target = await this.resolve(caller, input.wikiId, 'write')
+    if ('ok' in target) return target
+    const finished = await this.deps.wikis.finishReprocessUnchanged({
+      documentId: input.documentId,
+      connectorId: target.connector.id,
+      agentId: caller.agentId,
+      now: this.now(),
+    })
+    const document = await this.deps.documents.findById(input.documentId)
+    if (!document || document.connectorId !== target.connector.id) return { ok: false, code: 'not_in_inbox' }
+    if (!finished) return { ok: false, code: 'reprocess_not_claimed', details: { status: effectiveInboxStatus(document, this.now()) } }
+    await this.deps.wikis.appendLog({
+      wikiId: target.wikiId,
+      op: 'lint',
+      title: `Re-checked ${document.filename}: no change needed`,
+      note: input.reason,
+      actorAgentId: caller.agentId,
+    })
+    await this.audit(target.connector, caller, 'kb.wiki.inbox.reprocess_unchanged', input.documentId, {
+      wikiId: target.wikiId,
+      documentId: input.documentId,
+    })
+    return {
+      ok: true,
+      result: { status: document.wikiStatus, wikiId: target.wikiId, documentId: input.documentId, outcome: 'unchanged' },
+    }
   }
 
   private async claimFor(

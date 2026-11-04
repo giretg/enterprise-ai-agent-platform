@@ -1,3 +1,4 @@
+import type { WikiEffectiveInboxStatus, WikiReprocessMarker } from '@/lib/wiki-access'
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
 import type { WikiConfigState } from '@/lib/wiki-config'
 import type { WikiFieldDef } from '@/lib/wiki-metadata'
@@ -877,7 +878,9 @@ export type WikiInboxItem = {
   connectorId: string
   filename: string
   purpose: string | null
-  status: 'pending' | 'in_progress'
+  status: WikiEffectiveInboxStatus
+  /** #1085: a legutóbbi újrafeldolgozási kérés (lezárt tételen előzményként). */
+  reprocess: WikiReprocessMarker | null
   uploadedById: string
   submittedByAgentId: string | null
   claimedByAgentId: string | null
@@ -887,7 +890,16 @@ export type WikiInboxItem = {
   createdAt: Date
 }
 
-export type WikiInboxCounts = { pending: number; inProgress: number; processed: number; skipped: number }
+/** Diszjunkt számlálók: a `reprocess` tétel nem számít bele a `pending`-be. */
+export type WikiInboxCounts = { pending: number; reprocess: number; inProgress: number; processed: number; skipped: number }
+
+/** #1085: mi lett a megcélzott tételekkel; a köteg-jelölés részben is sikerülhet. */
+export type WikiReprocessRequestResult = {
+  marked: string[]
+  /** Még jóváhagyásra vár belőle változás: egy későbbi jóváhagyás a régi tartalmat írná vissza. */
+  waitingForApproval: string[]
+  alreadyInInbox: string[]
+}
 
 export type WikiInboxSummary = {
   wikis: Array<{ connectorId: string } & WikiInboxCounts>
@@ -1118,10 +1130,13 @@ export interface WikiRepository {
   }): Promise<WikiLogEntry>
   listLog(wikiId: string, limit?: number): Promise<WikiLogEntry[]>
 
-  /** Tálca: `pending` + `in_progress` (lejárt foglalás = `pending`), köteg, majd sorszám szerint. */
+  /**
+   * Tálca: `pending` + `in_progress` (lejárt foglalás = `pending`), köteg, majd sorszám szerint.
+   * #1085 `includeDone`: a lezárt tételek is, a várakozók után.
+   */
   listInbox(
     connectorIds: string[],
-    input: { now: Date; batchId?: string; limit?: number },
+    input: { now: Date; batchId?: string; limit?: number; includeDone?: boolean },
   ): Promise<WikiInboxItem[]>
   inboxSummary(connectorIds: string[], input: { now: Date; batchId?: string }): Promise<WikiInboxSummary>
   /** Beküldés: a dokumentum tálca-tétellé válik (`pending`, vagy azonnali feldolgozásnál `in_progress`). */
@@ -1150,6 +1165,18 @@ export interface WikiRepository {
   releaseClaimsForAgent(input: { agentId: string; connectorIds?: string[] }): Promise<number>
   markInboxProcessed(input: { documentId: string; changeSetId: string }): Promise<boolean>
   skipInboxItem(input: { documentId: string; connectorId: string }): Promise<boolean>
+  /** #1085: lezárt tétel(ek) vissza a tálcára, egy utasításban, a korábbi állapot rögzítésével. */
+  requestReprocess(input: {
+    connectorId: string
+    target: { documentId: string } | { batchId: string }
+    reason: string
+    requestedBy: WikiReprocessMarker['requestedBy']
+    now: Date
+  }): Promise<WikiReprocessRequestResult>
+  /** #1085 „Mégse”: a várakozó vagy foglalt kérés törlődik, a korábbi állapot visszaáll. */
+  cancelReprocess(input: { documentId: string; connectorId: string }): Promise<boolean>
+  /** #1085: ellenőrzés után nem kellett változtatni. Csak a saját foglalású kérésre. */
+  finishReprocessUnchanged(input: { documentId: string; connectorId: string; agentId: string; now: Date }): Promise<boolean>
   findDocumentByContentHash(connectorId: string, contentHash: string): Promise<{ id: string } | null>
   /**
    * #943: a teljes change-set egy tranzakcióban — oldalak + revíziók, az érintett
