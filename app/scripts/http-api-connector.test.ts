@@ -19,7 +19,7 @@ import {
   type HttpApiConfig,
   type HttpApiCredentials,
 } from '../src/domain/connector/http-api-client'
-import { HTTP_API_MAX_RESPONSE_BYTES } from '../src/domain/connector/http-api-file'
+import { HTTP_API_RESPONSE_MAX_BYTES } from '../src/domain/connector/http-api-file'
 
 class HttpApiClient extends RuntimeHttpApiClient {
   constructor(config: HttpApiConfig, credentials: HttpApiCredentials) {
@@ -1417,7 +1417,7 @@ async function main() {
   // Regresszió (audit 2026-11-04): a nem-fájl törzs mérete korlátos. Korábban `res.text()` az egész
   // választ plafon nélkül memóriába húzta → egy rosszindulatú/hibás kapcsolt rendszer tetszőlegesen
   // nagy JSON-nal kiüthette a közös workert (OOM). A content-length-előszűrés és a folyam közbeni
-  // futó-összeg is a HTTP_API_MAX_RESPONSE_BYTES-nál áll meg, strukturált `response_too_large`-dzsel.
+  // futó-összeg is a HTTP_API_RESPONSE_MAX_BYTES-nál áll meg, strukturált `response_too_large`-dzsel.
   await test('valódi fetch: a content-length-ben bevallott túl nagy törzs response_too_large (a plafon fölött nem parse-olunk)', async () => {
     // A tényleges törzs pici, de a content-length a plafon fölött van: az előszűrésnek a beolvasás ELŐTT
     // kell blokkolnia. Ha mégis parse-olna, a „{over}” érvénytelen JSON-ként más hibát adna — a pontos
@@ -1427,7 +1427,7 @@ async function main() {
         status: 200,
         headers: {
           'content-type': 'application/json',
-          'content-length': String(HTTP_API_MAX_RESPONSE_BYTES + 1),
+          'content-length': String(HTTP_API_RESPONSE_MAX_BYTES + 1),
         },
       })
     const originalFetch = globalThis.fetch
@@ -1449,7 +1449,7 @@ async function main() {
     const body = new ReadableStream<Uint8Array>({
       pull(controller) {
         // Addig adagol, amíg a futó összeg át nem lépi a plafont; a readBodyBytes ekkor megszakítja.
-        if (emitted > HTTP_API_MAX_RESPONSE_BYTES + chunk.byteLength) {
+        if (emitted > HTTP_API_RESPONSE_MAX_BYTES + chunk.byteLength) {
           controller.close()
           return
         }
@@ -1471,7 +1471,7 @@ async function main() {
       globalThis.fetch = originalFetch
     }
     // A megszakítás a plafon közelében történt — nem az egész (elvileg végtelen) folyamot olvastuk be.
-    assert.ok(emitted <= HTTP_API_MAX_RESPONSE_BYTES + 2 * chunk.byteLength, `emitted=${emitted}`)
+    assert.ok(emitted <= HTTP_API_RESPONSE_MAX_BYTES + 2 * chunk.byteLength, `emitted=${emitted}`)
   })
 
   if (failures > 0) {

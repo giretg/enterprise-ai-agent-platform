@@ -44,7 +44,7 @@ import { buildProtocolRequest, parseProtocolResponse } from './xml-protocols'
 import {
   detectHttpApiFile,
   HTTP_API_FILE_MAX_BYTES,
-  HTTP_API_MAX_RESPONSE_BYTES,
+  HTTP_API_RESPONSE_MAX_BYTES,
   readBodyBytes,
   sha256Hex,
   type HttpApiFile,
@@ -1060,17 +1060,17 @@ export class HttpApiClient {
     }
     // A fájl-úttal szemben a szöveges/JSON törzs eddig plafon nélkül, egészben memóriába került
     // (`res.text()`). A `readBodyBytes` ugyanazzal a határvédelemmel olvas, mint a fájl-út (előbb a
-    // content-length, majd folyam közbeni futó összeg) — a `HTTP_API_MAX_RESPONSE_BYTES` fölötti
+    // content-length, majd folyam közbeni futó összeg) — a `HTTP_API_RESPONSE_MAX_BYTES` fölötti
     // törzs strukturált `response_too_large` hibát ad, nem OOM-ot a közös workeren.
-    const bodyBytes = await readBodyBytes(res, HTTP_API_MAX_RESPONSE_BYTES)
+    const bodyBytes = await readBodyBytes(res, HTTP_API_RESPONSE_MAX_BYTES)
     if (!bodyBytes) {
       throw new HttpApiError(
         'response body exceeds the size limit',
         'response_too_large',
         undefined,
         this.language === 'en'
-          ? `The service returned a response that is too large to process (limit: ${HTTP_API_MAX_RESPONSE_BYTES / 1024 / 1024} MB). Narrow the request (shorter period, fewer fields, or paginate with http_api_get_all).`
-          : `A rendszer túl nagy választ adott vissza a feldolgozáshoz (legfeljebb ${HTTP_API_MAX_RESPONSE_BYTES / 1024 / 1024} MB). Szűkítsd a kérést (rövidebb időszak, kevesebb mező, vagy lapozz a http_api_get_all-lal).`,
+          ? `The service returned a response that is too large to process (limit: ${HTTP_API_RESPONSE_MAX_BYTES / 1024 / 1024} MB). Narrow the request (shorter period, fewer fields, or paginate with http_api_get_all).`
+          : `A rendszer túl nagy választ adott vissza a feldolgozáshoz (legfeljebb ${HTTP_API_RESPONSE_MAX_BYTES / 1024 / 1024} MB). Szűkítsd a kérést (rövidebb időszak, kevesebb mező, vagy lapozz a http_api_get_all-lal).`,
       )
     }
     const text = bodyBytes.toString('utf8')

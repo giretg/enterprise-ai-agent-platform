@@ -16,7 +16,7 @@ export const HTTP_API_FILE_MAX_BYTES = 25 * 1024 * 1024
  * plafon bőven a letölthetőre (10 MB mentett válasz) és a fájl-átadásra (25 MB) hozott határok fölött
  * van, így semmilyen jelenleg is kézbesíthető válasz nem regresszálódik; az ennél nagyobb törzs
  * strukturált `response_too_large` hibát ad, nem OOM-ot. */
-export const HTTP_API_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+export const HTTP_API_RESPONSE_MAX_BYTES = 32 * 1024 * 1024
 
 export type HttpApiFile = {
   bytes: Buffer
