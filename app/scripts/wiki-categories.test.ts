@@ -3,6 +3,19 @@
  * Futtatás: npm run test:wiki-categories
  */
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+
+// The menu imports this module in the browser: no runtime Node dependencies.
+const require = createRequire(import.meta.url)
+const Module = require('node:module')
+const load = Module._load
+Module._load = function (id: string, ...args: unknown[]) {
+  assert.ok(!id.startsWith('node:') && id !== './kb-wiki', 'wiki-categories must be browser safe')
+  return load.call(this, id, ...args)
+}
+delete require.cache[require.resolve('../src/lib/wiki-categories')]
+require('../src/lib/wiki-categories')
+Module._load = load
 import {
   allowedCategoryPaths,
   buildCategoryTree,

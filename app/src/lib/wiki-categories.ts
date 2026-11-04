@@ -8,7 +8,23 @@
  * - menüsorrend: explicit `sortOrder` (nincs → név szerint, a sorrendezettek után),
  *   kategóriánként oldalrendezés (`pageSort`) és kiemelt oldalak (`pinnedPages`).
  */
-import { isUnknownSourceDate, wikiIndexLine, type WikiIndexPage } from './kb-wiki'
+import type { WikiIndexPage } from './kb-wiki'
+
+/** #1077: a dokumentum dátuma nem állapítható meg (`source_date: "unknown"`). */
+export function isUnknownSourceDate(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === 'unknown'
+}
+
+/** Nincs használható dátum: a `date` mező elsőbbséget élvez az ismeretlen `source_date`-tel szemben. */
+export function wikiPageDateUnknown(page: { frontmatter?: unknown }): boolean {
+  const fm = page.frontmatter && typeof page.frontmatter === 'object' ? (page.frontmatter as Record<string, unknown>) : {}
+  return isUnknownSourceDate(fm.source_date) && time(fm.date) === null
+}
+
+export function wikiIndexLine(page: WikiIndexPage): string {
+  const date = wikiPageDateUnknown(page) ? ' (date unknown)' : ''
+  return `- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}${date}: ${page.summary}`
+}
 
 /** = `kb-wiki` `WIKI_UNCATEGORIZED`; itt nem importáljuk, mert a felület is használja ezt a modult (node:crypto). */
 const WIKI_UNCATEGORIZED = 'Uncategorized'

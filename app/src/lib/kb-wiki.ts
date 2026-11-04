@@ -1,3 +1,5 @@
+import { wikiIndexLine } from './wiki-categories'
+export { isUnknownSourceDate, wikiPageDateUnknown, wikiIndexLine } from './wiki-categories'
 import { WIKI_TEMPLATE_VERSION, renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
 import { resolveKbLanguage } from './kb-language'
 import type { WikiPageMeta } from './wiki-metadata'
@@ -348,22 +350,6 @@ export function replaceSection(body: string, section: string, text: string): str
 
 // ---------------------------------------------------------------------------
 // index.md / log.md / WIKI.md (D8)
-
-/** #1077: a dokumentum dátuma nem állapítható meg (`source_date: "unknown"`). */
-export function isUnknownSourceDate(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === 'unknown'
-}
-
-/** Nincs használható dátum: a `date` mező elsőbbséget élvez az ismeretlen `source_date`-tel szemben. */
-export function wikiPageDateUnknown(page: { frontmatter?: unknown }): boolean {
-  const fm = page.frontmatter && typeof page.frontmatter === 'object' ? (page.frontmatter as Record<string, unknown>) : {}
-  return isUnknownSourceDate(fm.source_date) && !fm.date
-}
-
-export function wikiIndexLine(page: WikiIndexPage): string {
-  const date = wikiPageDateUnknown(page) ? ' (date unknown)' : ''
-  return `- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}${date}: ${page.summary}`
-}
 
 export type WikiIndexPage = {
   path: string
