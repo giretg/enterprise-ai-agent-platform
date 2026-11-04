@@ -29,6 +29,7 @@ import {
   GoogleDriveApiError,
 } from '../src/domain/connector-grant/google-drive-api-client'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
+import { auditSafeDenialDetails } from '../src/domain/enterprise-tools/definition-pin'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -593,6 +594,14 @@ async function main() {
     )
     assert.equal(result.isError, true)
     assert.equal(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
+  })
+
+  await check('denial audit drops client-only HTTP error text', () => {
+    const details = { httpCode: 'egress_blocked', reason: 'policy', message: 'client explanation', issues: [{ path: 'fileId', message: 'required' }] }
+    const safe = auditSafeDenialDetails(details)
+    assertAuditMetadataSafe(safe)
+    assert.deepEqual(safe, { httpCode: 'egress_blocked', issues: [{ path: 'fileId' }] })
+    assert.equal(details.message, 'client explanation')
   })
 
   await check('invalid_args names the bad fields for the client and the audit', async () => {

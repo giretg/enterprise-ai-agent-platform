@@ -54,8 +54,12 @@ export function withDefinitionUpdatedNotice<T extends TextToolResult>(
  * a `message` kulcsot a payload-guard tiltja, és a kivétel elfedné a valódi hibát.
  */
 export function auditSafeDenialDetails(details?: Record<string, unknown>): Record<string, unknown> | undefined {
-  if (!details || !Array.isArray(details.issues)) return details
-  return { ...details, issues: (details.issues as Array<{ path: string }>).map(({ path }) => ({ path })) }
+  if (!details) return details
+  // HTTP errors may carry client-only message/reason fields too.
+  const safe = Object.fromEntries(Object.entries(details).filter(([key]) => key !== 'message' && key !== 'reason'))
+  return Array.isArray(safe.issues)
+    ? { ...safe, issues: (safe.issues as Array<{ path: string }>).map(({ path }) => ({ path })) }
+    : safe
 }
 
 /** Zod-hiba → a kliensnek olvasható mezőlista (rövidítve). */
