@@ -35,8 +35,21 @@ import {
   WAREHOUSE_UPLOAD_NEED_ROLE,
 } from '../src/lib/warehouse-labels'
 import { hermesWarehouseTools } from '../src/lib/agent-checkout'
-import { invokeWarehouseTool, toCsv, WAREHOUSE_READ_ONLY_TOOLS, WAREHOUSE_TOOLS, warehouseInputSchemas, type WarehouseMcpDeps } from '../src/domain/warehouse/mcp'
-import { WarehouseService, type WarehouseRegistry } from '../src/domain/warehouse/warehouse-service'
+import { invokeWarehouseTool, toCsv, WAREHOUSE_READ_LEVEL_WRITE_TOOLS, WAREHOUSE_READ_ONLY_TOOLS, WAREHOUSE_TOOLS, warehouseInputSchemas, type WarehouseMcpDeps } from '../src/domain/warehouse/mcp'
+import { WarehouseError, WarehouseService, type WarehouseActor, type WarehouseRegistry } from '../src/domain/warehouse/warehouse-service'
+import { WAREHOUSE_INTERNAL_VERSION } from '../src/domain/warehouse/provisioner'
+import {
+  buildSnapshots,
+  checkSavedQueryParams,
+  describeSavedQuery,
+  pinFields,
+  resolveRelativeDate,
+  resolveSavedQuery,
+  savedQueryColumnLabel,
+  savedQueryHash,
+  savedQueryParamsSchema,
+  savedQueryStatus,
+} from '../src/domain/warehouse/saved-query'
 import type { WarehouseDatabase } from '../src/domain/warehouse/sql'
 import { z } from 'zod'
 
@@ -440,9 +453,10 @@ async function main() {
     }
     const seenTenants: string[] = []
     const registry: WarehouseRegistry = {
+      listReadyTenantIds: async () => [],
       find: async (tenantId) => {
         seenTenants.push(tenantId)
-        return { tenantId, status: 'ready', provisioner: 'pg_schema', schemaName: warehouseSchemaName(tenantId), internalVersion: 1, lastError: null, attempts: 1, readyAt: null }
+        return { tenantId, status: 'ready', provisioner: 'pg_schema', schemaName: warehouseSchemaName(tenantId), internalVersion: WAREHOUSE_INTERNAL_VERSION, lastError: null, attempts: 1, readyAt: null }
       },
       ensure: async () => {
         throw new Error('not used')
@@ -479,7 +493,7 @@ async function main() {
     }
     const listed = await call('viewer', 'warehouse.list_datasets', { definitionId: DEF, tenantId: OTHER, schema: 'wh_99999999999949999999999999999999' })
     assert.equal(listed.ok, true)
-    assert.deepEqual(seenTenants, [TENANT])
+    assert.ok(seenTenants.length > 0 && seenTenants.every((tenantId) => tenantId === TENANT))
     assert.ok(queried.every((q) => q.includes(warehouseSchemaName(TENANT)) && !q.includes('9999999999')))
     const denied = await call('viewer', 'warehouse.prepare_import', { definitionId: DEF, fileName: 'a.xlsx', fileBase64: 'AA==' })
     assert.equal(denied.code, 'warehouse_permission_denied')
@@ -516,8 +530,309 @@ async function main() {
   await check('Hermes Bot eszközlistája a munkatárs adattárház-szintjét követi', () => {
     assert.deepEqual(hermesWarehouseTools('off'), [])
     assert.ok(hermesWarehouseTools('read').includes('warehouse.query_dataset'))
-    assert.ok(!hermesWarehouseTools('read').some((tool) => !WAREHOUSE_READ_ONLY_TOOLS.has(tool)))
+    assert.ok(!hermesWarehouseTools('read').some((tool) => !WAREHOUSE_READ_ONLY_TOOLS.has(tool) && !WAREHOUSE_READ_LEVEL_WRITE_TOOLS.has(tool)))
+    for (const tool of ['warehouse.save_query', 'warehouse.list_saved_queries', 'warehouse.run_saved_query', 'warehouse.archive_saved_query']) {
+      assert.ok(hermesWarehouseTools('read').includes(tool), tool)
+    }
     assert.deepEqual([...hermesWarehouseTools('import')].sort(), [...WAREHOUSE_TOOLS].sort())
+  })
+
+  const qSchema = warehouseSchemaName(TENANT)
+  const qField = (name: string, extra: Partial<CatalogDataset['fields'][number]> = {}): CatalogDataset['fields'][number] => ({
+    name,
+    type: 'text',
+    label: name,
+    meaning: null,
+    unit: null,
+    currency: null,
+    amountBasis: null,
+    role: 'data',
+    linkDataset: null,
+    linkBy: null,
+    linkField: null,
+    status: 'proposed',
+    sourceHeader: null,
+    ...extra,
+  })
+  const qCustomers: CatalogDataset = {
+    key: 'ugyfelek',
+    tableName: 'ds_ugyfelek',
+    title: 'Ügyfelek',
+    purpose: null,
+    rowMeaning: null,
+    temporal: null,
+    status: 'proposed',
+    structureVersion: 1,
+    businessKey: ['nev'],
+    mode: 'upsert',
+    publishedAt: null,
+    lastImportId: null,
+    rowCount: 1,
+    fields: [qField('nev', { label: 'Ügyfél neve' })],
+  }
+  const qOrders: CatalogDataset = {
+    ...qCustomers,
+    key: 'rendelesek',
+    tableName: 'ds_rendelesek',
+    title: 'Rendelések',
+    businessKey: ['szam'],
+    fields: [
+      qField('szam'),
+      qField('datum', { type: 'date', label: 'Dátum' }),
+      qField('netto', { type: 'decimal', label: 'Nettó összeg', currency: 'HUF' }),
+      qField('ugyfel_ref', { type: 'link', role: 'link', linkDataset: 'ugyfelek', linkField: 'nev', linkBy: 'name' }),
+    ],
+  }
+  const qCatalog = () => new Map([['ugyfelek', qCustomers], ['rendelesek', qOrders]])
+  const monthly = () =>
+    buildQuerySpec({
+      dataset: 'rendelesek',
+      groupBy: 'datum:month,ugyfel_ref.nev',
+      aggregates: 'sum:netto',
+      orderBy: 'datum:month',
+      filters: '[{"field":"datum","op":"between","value":[{"param":"tol"},{"param":"ig"}]}]',
+    })
+  const monthlyParams = savedQueryParamsSchema.parse([
+    { name: 'tol', type: 'date', default: { relative: 'year_start' } },
+    { name: 'ig', type: 'date', default: { relative: 'today' } },
+  ])
+
+  await check('#1083 időbontás: havi csoportosítás, csak dátum mezőn, a név nem szivárog SQL-be', () => {
+    const compiled = compileQuery(qSchema, buildQuerySpec({ dataset: 'rendelesek', groupBy: 'datum:month', aggregates: 'sum:netto', orderBy: 'datum:month' }), qCatalog())
+    assert.deepEqual(compiled.columns, ['datum:month', 'sum:netto'])
+    assert.ok(compiled.sql.includes(`date_trunc('month', t."datum")::date AS "c0"`))
+    assert.ok(compiled.sql.includes(`GROUP BY date_trunc('month', t."datum")::date`))
+    assert.ok(compiled.sql.includes('ORDER BY "c0" ASC'))
+    const bad = (groupBy: string) => assert.throws(() => compileQuery(qSchema, buildQuerySpec({ dataset: 'rendelesek', groupBy, aggregates: 'count:*' }), qCatalog()), (e: unknown) => e instanceof QueryError && e.code === 'invalid_group_bucket')
+    bad('netto:month')
+    bad("datum:month'); DROP TABLE x;--")
+  })
+
+  await check('AC3 relatív dátumok Budapest szerint, hónap- és évhatáron is', () => {
+    // UTC szerint még december 31., Budapesten már január 1.
+    const newYear = new Date('2026-12-31T23:30:00Z')
+    assert.equal(resolveRelativeDate('today', newYear), '2027-01-01')
+    assert.equal(resolveRelativeDate('year_start', newYear), '2027-01-01')
+    assert.equal(resolveRelativeDate('month_start', newYear), '2027-01-01')
+    assert.equal(resolveRelativeDate('prev_month_start', newYear), '2026-12-01')
+    assert.equal(resolveRelativeDate('prev_month_end', newYear), '2026-12-31')
+    assert.equal(resolveRelativeDate('days_ago:1', newYear), '2026-12-31')
+    assert.equal(resolveRelativeDate('prev_month_end', new Date('2028-03-15T10:00:00Z')), '2028-02-29')
+    assert.throws(() => resolveRelativeDate('tomorrow', newYear), QueryError)
+  })
+
+  await check('AC4 paraméter: az érték $n paraméter marad, a típus és a kötelezőség ellenőrzött', () => {
+    const now = new Date('2026-11-04T10:00:00Z')
+    const resolved = resolveSavedQuery(monthly(), monthlyParams, {}, now)
+    assert.deepEqual(resolved.filters[0]!.value, ['2026-01-01', '2026-11-04'])
+    const injected = resolveSavedQuery(
+      buildQuerySpec({ dataset: 'rendelesek', filters: '[{"field":"szam","op":"eq","value":{"param":"szam"}}]' }),
+      savedQueryParamsSchema.parse([{ name: 'szam', type: 'text' }]),
+      { szam: "x'; DROP TABLE ds_rendelesek;--" },
+      now,
+    )
+    const compiled = compileQuery(qSchema, injected, qCatalog())
+    assert.ok(!compiled.sql.includes('DROP TABLE'))
+    assert.ok(compiled.params.includes("x'; DROP TABLE ds_rendelesek;--"))
+    const code = (fn: () => unknown, expected: string) => assert.throws(fn, (e: unknown) => e instanceof QueryError && e.code === expected)
+    code(() => resolveSavedQuery(monthly(), monthlyParams, { tol: 'tegnap' }, now), 'invalid_param')
+    code(() => resolveSavedQuery(monthly(), monthlyParams, { tol: '2026-02-30' }, now), 'invalid_param')
+    code(() => resolveSavedQuery(monthly(), monthlyParams, { masik: 1 }, now), 'unknown_param')
+    code(() => resolveSavedQuery(monthly(), savedQueryParamsSchema.parse([{ name: 'tol', type: 'date' }, { name: 'ig', type: 'date' }]), {}, now), 'missing_param')
+    // Az objektum örökölt mezője nem érték; az igen/nem űrlapról szövegként is jöhet, de a szöveges paraméter szöveg marad.
+    const named = (name: string, type: 'text' | 'boolean') => ({
+      spec: buildQuerySpec({ dataset: 'rendelesek', filters: `[{"field":"szam","op":"eq","value":{"param":"${name}"}}]` }),
+      params: savedQueryParamsSchema.parse([{ name, type, default: type === 'text' ? 'alap' : false }]),
+    })
+    const inherited = named('constructor', 'text')
+    assert.equal(resolveSavedQuery(inherited.spec, inherited.params, {}, now).filters[0]!.value, 'alap')
+    const flag = named('aktiv', 'boolean')
+    assert.equal(resolveSavedQuery(flag.spec, flag.params, { aktiv: 'true' }, now).filters[0]!.value, true)
+    const text = named('szoveg', 'text')
+    assert.equal(resolveSavedQuery(text.spec, text.params, { szoveg: 'true' }, now).filters[0]!.value, 'true')
+    // Paraméter-hivatkozás feloldás nélkül nem jut a fordítóhoz értékként.
+    code(() => compileQuery(qSchema, monthly(), qCatalog()), 'invalid_filter_value')
+  })
+
+  await check('mentés előtti paraméter-ellenőrzés: nem deklarált, nem használt, rossz típus', () => {
+    const code = (fn: () => unknown, expected: string) => assert.throws(fn, (e: unknown) => e instanceof QueryError && e.code === expected)
+    checkSavedQueryParams(monthly(), monthlyParams, qCatalog())
+    code(() => checkSavedQueryParams(monthly(), monthlyParams.slice(0, 1), qCatalog()), 'unknown_param')
+    code(() => checkSavedQueryParams(monthly(), [...monthlyParams, { name: 'felesleges', type: 'text' }], qCatalog()), 'invalid_params')
+    code(() => checkSavedQueryParams(monthly(), monthlyParams.map((p) => ({ ...p, type: 'text' as const, default: undefined })), qCatalog()), 'invalid_params')
+  })
+
+  await check('AC8–AC10 elavulás: import nem riaszt, új mező bővülés, pénznem-váltás verzió nélkül is észlelve', () => {
+    const now = new Date('2026-11-04T10:00:00Z')
+    const spec = monthly()
+    const snapshots = buildSnapshots(spec, qCatalog())
+    assert.deepEqual(Object.keys(snapshots).sort(), ['rendelesek', 'ugyfelek'])
+    const status = (catalog: Map<string, CatalogDataset>, stored = snapshots) => savedQueryStatus({ schema: qSchema, spec, params: monthlyParams, snapshots: stored, catalog, now })
+    assert.equal(status(qCatalog()).status, 'current')
+    // AC8: újabb import csak a darabszámot és a dátumot mozgatja; megerősítés sem változás.
+    const imported = new Map(qCatalog())
+    imported.set('rendelesek', { ...qOrders, rowCount: 999, publishedAt: '2027-01-01T00:00:00.000Z', status: 'confirmed', fields: qOrders.fields.map((f) => ({ ...f, status: 'confirmed' as const, label: `${f.label} új` })) })
+    assert.equal(status(imported).status, 'current')
+    // AC9: új oszlop → bővült, a válasz megnevezi.
+    const extended = new Map(qCatalog())
+    extended.set('rendelesek', { ...qOrders, structureVersion: 2, structureChangedAt: '2026-11-04T00:00:00.000Z', fields: [...qOrders.fields, qField('brutto')] })
+    const ext = status(extended)
+    assert.equal(ext.status, 'dataset_extended')
+    assert.deepEqual(ext.newFields, [{ dataset: 'rendelesek', field: 'brutto', label: 'brutto' }])
+    assert.equal(ext.datasets.find((d) => d.key === 'rendelesek')?.structureChangedAt, '2026-11-04T00:00:00.000Z')
+    // AC10: nem megerősített mező pénzneme átíródik, a structure_version NEM nő.
+    const currency = new Map(qCatalog())
+    currency.set('rendelesek', { ...qOrders, fields: qOrders.fields.map((f) => (f.name === 'netto' ? { ...f, currency: 'EUR' } : f)) })
+    const changed = status(currency)
+    assert.equal(changed.status, 'meaning_changed')
+    // A felület a feliratot mutatja, nem a technikai mezőnevet (AC22).
+    assert.deepEqual(changed.changedFields, [{ dataset: 'rendelesek', field: 'netto', label: 'Nettó összeg' }])
+    // Nem használt mező jelentése nem számít.
+    const unused = new Map(qCatalog())
+    unused.set('rendelesek', { ...qOrders, fields: qOrders.fields.map((f) => (f.name === 'szam' ? { ...f, meaning: 'más' } : f)) })
+    assert.equal(status(unused).status, 'current')
+    // Hiányzó mező → nem futtatható; a kapcsolt adatkészlet változása is látszik.
+    const missing = new Map(qCatalog())
+    missing.set('rendelesek', { ...qOrders, fields: qOrders.fields.filter((f) => f.name !== 'netto') })
+    const broken = status(missing)
+    assert.equal(broken.status, 'broken')
+    assert.deepEqual(broken.error, { code: 'field_not_found', detail: 'netto' })
+    const linked = new Map(qCatalog())
+    linked.set('ugyfelek', { ...qCustomers, fields: [qField('nev', { meaning: 'más jelentés' })] })
+    assert.deepEqual(status(linked).changedFields, [{ dataset: 'ugyfelek', field: 'nev', label: 'nev' }])
+    // AC11: a lenyomat újraszámolása után megint naprakész.
+    assert.equal(status(currency, buildSnapshots(spec, currency)).status, 'current')
+  })
+
+  await check('„összes mező” rögzül: új oszlop nem változtatja csendben az eredményt; a hash kulcs-sorrendtől független', () => {
+    const pinned = pinFields(buildQuerySpec({ dataset: 'rendelesek' }), qCatalog())
+    assert.deepEqual(pinned.fields, ['_id', 'szam', 'datum', 'netto', 'ugyfel_ref'])
+    assert.deepEqual(pinFields(buildQuerySpec({ dataset: 'rendelesek', aggregates: 'count:*' }), qCatalog()).fields, [])
+    const spec = monthly()
+    assert.equal(
+      savedQueryHash({ description: 'x', spec, params: monthlyParams }),
+      savedQueryHash({ params: monthlyParams, spec: JSON.parse(JSON.stringify(spec)), description: 'x' }),
+    )
+    assert.notEqual(savedQueryHash({ description: 'y', spec, params: monthlyParams }), savedQueryHash({ description: 'x', spec, params: monthlyParams }))
+  })
+
+  await check('§6 hétköznapi mondat: mezőfelirat, szakszó és SQL nélkül', () => {
+    const sentence = describeSavedQuery(monthly(), qCatalog())
+    assert.equal(sentence, 'Havi bontásban összegzi a(z) „Nettó összeg” mezőt „Ügyfél neve” szerint a(z) „Rendelések” adatkészletből a(z) „Dátum” mező szerint szűrve.')
+    assert.ok(!/SELECT|group|sum:/i.test(sentence))
+    const label = (column: string) => savedQueryColumnLabel(monthly(), qCatalog(), column)
+    assert.equal(label('datum:month'), 'Dátum (hónap)')
+    assert.equal(label('sum:netto'), 'Nettó összeg (összeg)')
+    assert.equal(label('ugyfel_ref.nev'), 'Ügyfél neve')
+    assert.equal(savedQueryColumnLabel(buildQuerySpec({ dataset: 'rendelesek', aggregates: 'count:*' }), qCatalog(), 'count'), 'Darabszám')
+    // Egy `count` nevű mező nem keveredik az összesítéssel.
+    const countField = new Map(qCatalog())
+    countField.set('rendelesek', { ...qOrders, fields: [...qOrders.fields, qField('count', { label: 'Készlet' })] })
+    assert.equal(savedQueryColumnLabel(buildQuerySpec({ dataset: 'rendelesek', fields: 'count' }), countField, 'count'), 'Készlet')
+  })
+
+  await check('lusta frissítés: régi belső verziójú aktív cég kézi újraaktiválás nélkül frissül; hibánál érthető kód', async () => {
+    let record = { tenantId: TENANT, status: 'ready' as const, provisioner: 'pg_schema', schemaName: warehouseSchemaName(TENANT), internalVersion: 1 as number | null, lastError: null, attempts: 1, readyAt: null }
+    const provisioned: string[] = []
+    let failProvision = false
+    const service = new WarehouseService({
+      db: { run: async (fn) => fn({ query: async () => [], exec: async () => 0 }) },
+      registry: {
+        listReadyTenantIds: async () => [],
+        find: async () => record,
+        ensure: async () => record,
+        update: async (_tenantId, patch) => {
+          record = { ...record, internalVersion: patch.internalVersion ?? record.internalVersion }
+          return record
+        },
+      },
+      provisioner: {
+        kind: 'pg_schema',
+        provision: async (schema) => {
+          if (failProvision) throw new Error('db down')
+          provisioned.push(schema)
+          return { provisioner: 'pg_schema', schemaName: schema, internalVersion: WAREHOUSE_INTERNAL_VERSION }
+        },
+        verify: async () => ({ ok: true }),
+      },
+      reviewUrl: () => '/x',
+    })
+    const actor: WarehouseActor = { tenantId: TENANT, userId: '33333333-3333-4333-8333-333333333333', role: 'viewer', agentId: null, channel: 'ui' }
+    failProvision = true
+    await assert.rejects(service.listDatasets(actor), (e: unknown) => e instanceof WarehouseError && e.code === 'warehouse_upgrade_failed')
+    assert.equal(record.internalVersion, 1)
+    failProvision = false
+    // Egy oldalbetöltés párhuzamos hívásai egyetlen frissítést indítanak.
+    await Promise.all([service.listDatasets(actor), service.listDatasets(actor), service.listDatasets(actor)])
+    await service.listDatasets(actor)
+    assert.deepEqual(provisioned, [warehouseSchemaName(TENANT)])
+    assert.equal(record.internalVersion, WAREHOUSE_INTERNAL_VERSION)
+  })
+
+  await check('AC7 MCP: off szinten egyik sem, read szinten mind a négy mentett-lekérdezés eszköz átjut a kapun; nincs tömb a sémában', async () => {
+    const AGENT = '22222222-2222-4222-8222-222222222222'
+    const DEF = '55555555-5555-4555-8555-555555555555'
+    const QUERY = '66666666-6666-4666-8666-666666666666'
+    const definition: AgentDefinition = {
+      definitionId: DEF,
+      agentId: AGENT,
+      version: 1,
+      tenantId: TENANT,
+      status: 'active',
+      publishedAt: '2026-10-27T00:00:00.000Z',
+      snapshot: { name: 'Réka', roleInstruction: 'x', skills: [], connectors: [], capabilities: [] },
+    }
+    let agentAccess: WarehouseAgentAccess = 'read'
+    const ownerFilters: unknown[][] = []
+    const deps: WarehouseMcpDeps = {
+      loadDefinition: async () => definition,
+      findCurrentDefinitionId: async () => DEF,
+      findAgentGrant: async () => ({ accessLevel: 'operate' }),
+      audit: { append: async () => undefined },
+      warehouse: new WarehouseService({
+        db: {
+          run: async (fn) =>
+            fn({
+              query: async (sql: string, params?: unknown[]) => {
+                if (sql.includes('_saved_queries')) ownerFilters.push(params ?? [])
+                return []
+              },
+              exec: async () => 0,
+            }),
+        },
+        registry: {
+          listReadyTenantIds: async () => [],
+          find: async (tenantId) => ({ tenantId, status: 'ready', provisioner: 'pg_schema', schemaName: warehouseSchemaName(tenantId), internalVersion: WAREHOUSE_INTERNAL_VERSION, lastError: null, attempts: 1, readyAt: null }),
+          ensure: async () => {
+            throw new Error('not used')
+          },
+          update: async () => {
+            throw new Error('not used')
+          },
+        },
+        provisioner: { kind: 'pg_schema', provision: async () => { throw new Error('x') }, verify: async () => ({ ok: true }) },
+        reviewUrl: () => '/x',
+      }),
+      pageUrl: (path) => `https://app.example${path}`,
+      agentAccess: async () => agentAccess,
+    }
+    const call = async (tool: string, args: Record<string, unknown>) => {
+      const res = await invokeWarehouseTool(deps, { principal: { userId: AGENT, tenantId: TENANT, role: 'viewer', assumed: false }, toolName: tool, args })
+      return JSON.parse(res.content[0]!.text) as Record<string, unknown>
+    }
+    const tools: Array<[string, Record<string, unknown>]> = [
+      ['warehouse.list_saved_queries', { definitionId: DEF }],
+      ['warehouse.run_saved_query', { definitionId: DEF, queryId: QUERY }],
+      ['warehouse.archive_saved_query', { definitionId: DEF, queryId: QUERY }],
+      ['warehouse.save_query', { definitionId: DEF, queryId: QUERY, description: 'x', dataset: 'rendelesek' }],
+    ]
+    for (const [tool, args] of tools) {
+      assert.notEqual((await call(tool, args)).code, 'warehouse_agent_read_only', tool)
+    }
+    assert.ok(ownerFilters.length > 0 && ownerFilters.every((params) => params.includes(AGENT)), 'minden lekérdezés a saját agentre szűr')
+    assert.equal((await call('warehouse.run_saved_query', { definitionId: DEF, queryId: QUERY })).code, 'saved_query_not_found')
+    agentAccess = 'off'
+    for (const [tool, args] of tools) assert.equal((await call(tool, args)).code, 'warehouse_agent_disabled', tool)
   })
 
   if (failures > 0) {

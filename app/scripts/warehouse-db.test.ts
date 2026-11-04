@@ -8,10 +8,12 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../src/lib/db'
-import { PgSchemaProvisioner } from '../src/domain/warehouse/provisioner'
-import { prismaWarehouseDatabase, warehouseSchemaName, type WarehouseDatabase } from '../src/domain/warehouse/sql'
+import { PgSchemaProvisioner, WAREHOUSE_INTERNAL_VERSION } from '../src/domain/warehouse/provisioner'
+import { datasetTableName, prismaWarehouseDatabase, warehouseSchemaName, type WarehouseDatabase } from '../src/domain/warehouse/sql'
 import { WarehouseError, WarehouseService, type WarehouseActor } from '../src/domain/warehouse/warehouse-service'
 import { PostgresWarehouseRegistry } from '../src/repositories/postgres/warehouse-registry'
+import { loadLiveData, prepareBindings, type MiniAppLiveDataDeps } from '../src/domain/mini-app/live-data'
+import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type { AuditAppendInput } from '../src/lib/audit/types'
 import { customersXlsx, ordersXlsx } from './warehouse-fixtures'
 
@@ -76,12 +78,16 @@ async function main() {
         options,
       ),
   }
+  const usedBy = new Map<string, Array<{ appId: string; name: string }>>()
   const service = new WarehouseService({
+    savedQueryUsage: async (_tenantId, queryId) => usedBy.get(queryId) ?? [],
     db,
     registry: new PostgresWarehouseRegistry(prisma),
     provisioner: new PgSchemaProvisioner(baseDb),
     audit: { append: async (entry) => {
       if (failPublishAudit && entry.action === 'warehouse.import.published') throw new Error('injected audit outage')
+      // Az éles tároló a nem regisztrált eseményt elutasítja: a teszt se engedje át.
+      assertAuditActionRegistered(entry.action)
       audits.push(entry)
     } },
     reviewUrl: (id) => `/control-plane/warehouse${id ? `?import=${id}` : ''}`,
@@ -310,6 +316,261 @@ async function main() {
     )
     assert.equal(stillThere[0]?.n, 1)
     console.log('  OK  Clobberolt published import nem törölhető (published_at őr)')
+
+    // ── #1083 AC12: már aktív cég kézi újraaktiválás nélkül megkapja az új táblákat ──
+    const otherAgent: WarehouseActor = { ...ai, agentId: randomUUID() }
+    await prisma.$executeRawUnsafe(`DROP TABLE "${schema}"._saved_query_versions`)
+    await prisma.$executeRawUnsafe(`DROP TABLE "${schema}"._saved_queries`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "${schema}"._datasets DROP COLUMN structure_changed_at`)
+    await prisma.tenantWarehouse.update({ where: { tenantId: tenant.id }, data: { internalVersion: 1 } })
+    assert.deepEqual(await service.listSavedQueries(ai), [])
+    assert.equal((await prisma.tenantWarehouse.findUnique({ where: { tenantId: tenant.id } }))?.internalVersion, WAREHOUSE_INTERNAL_VERSION)
+    assert.ok((await service.listDatasets(viewer)).some((d) => d.key === 'rendelesek'), 'a meglévő adat a frissítés után is megvan')
+    console.log('  OK  AC12 belső táblák frissítése kézi újraaktiválás nélkül')
+
+    // ── #1083 AC1/AC2/AC4: mentés próbafuttatással, azonos eredmény ───────────
+    const monthlyQuery = {
+      dataset: 'rendelesek',
+      groupBy: 'datum:month,ugyfel_ref.nev',
+      aggregates: 'sum:netto',
+      orderBy: 'datum:month,sum:netto desc',
+      filters: '[{"field":"datum","op":"between","value":[{"param":"tol"},{"param":"ig"}]}]',
+    }
+    const monthlyParams = JSON.stringify([
+      { name: 'tol', type: 'date', description: 'Időszak eleje', default: '2026-01-01' },
+      { name: 'ig', type: 'date', description: 'Időszak vége', default: '2026-12-31' },
+    ])
+    const saved = await service.saveQuery(ai, { name: 'havi_bevetel', description: 'Havi nettó bevétel ügyfelenként.', query: monthlyQuery, params: monthlyParams })
+    assert.equal(saved.change, 'created')
+    assert.equal(saved.query.schemaStatus, 'current')
+    assert.ok(saved.sample.columns.includes('datum:month') && saved.sample.rows.length > 0)
+    const direct = await service.query(ai, { ...monthlyQuery, filters: '[{"field":"datum","op":"between","value":["2026-01-01","2026-12-31"]}]' })
+    const ran = await service.runSavedQuery(ai, { name: 'havi_bevetel' })
+    assert.deepEqual(ran.rows, direct.rows)
+    assert.deepEqual(ran.columns, direct.columns)
+    assert.ok(ran.provenance.sources.length > 0)
+    assert.ok(String(ran.rows[0]![0]).startsWith('2026-10'), 'havi bontás a hónap első napjára kerekít')
+    const narrow = await service.runSavedQuery(ai, { queryId: saved.query.queryId, params: JSON.stringify({ tol: '2030-01-01' }) })
+    assert.deepEqual(narrow.rows, [])
+    await expectCode(service.runSavedQuery(ai, { queryId: saved.query.queryId, params: '{"tol":"nem datum"}' }), 'invalid_param')
+    await expectCode(service.runSavedQuery(ai, { queryId: saved.query.queryId, params: '{"masik":"x"}' }), 'unknown_param')
+    await expectCode(service.saveQuery(ai, { name: 'rossz_mezo', description: 'x', query: { dataset: 'rendelesek', fields: 'nincs_ilyen' } }), 'field_not_found')
+    await expectCode(
+      service.saveQuery(ai, { name: 'rossz_ertek', description: 'x', query: { dataset: 'rendelesek', filters: '[{"field":"datum","op":"eq","value":"nem-datum"}]' } }),
+      'invalid_param_value',
+    )
+    await expectCode(
+      service.saveQuery(ai, {
+        name: 'kotelezo',
+        description: 'x',
+        query: { dataset: 'rendelesek', filters: '[{"field":"szam","op":"eq","value":{"param":"szam"}}]' },
+        params: '[{"name":"szam","type":"text"}]',
+      }),
+      'test_params_required',
+    )
+    assert.equal((await service.listSavedQueries(ai)).length, 1, 'ami nem futott le, nem mentődött el')
+    console.log('  OK  AC1/AC2/AC4 mentés próbafuttatással; az eredmény azonos a közvetlen lekérdezéssel')
+
+    // ── #1083 AC6: más agent és más cég nem látja ──────────────────────────────
+    assert.deepEqual(await service.listSavedQueries(otherAgent), [])
+    await expectCode(service.runSavedQuery(otherAgent, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    await expectCode(service.runSavedQuery(otherAgent, { name: 'havi_bevetel' }), 'saved_query_not_found')
+    await expectCode(service.archiveSavedQuery(otherAgent, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    await expectCode(service.saveQuery(otherAgent, { queryId: saved.query.queryId, description: 'x', query: monthlyQuery, params: monthlyParams }), 'saved_query_not_found')
+    await expectCode(service.getSavedQuery(otherAgent, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    await expectCode(service.getSavedQuery(outsider, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    await expectCode(service.runSavedQuery(outsider, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    await expectCode(service.saveQuery(admin, { name: 'emberi', description: 'x', query: monthlyQuery, params: monthlyParams }), 'warehouse_permission_denied')
+    assert.equal((await service.listSavedQueries(admin)).length, 1, 'az ember a Control Plane-en a cég összeset látja')
+    console.log('  OK  AC6 más agent és más cég lekérdezése nem látható és nem futtatható')
+
+    // ── #1083 AC5/AC11: verziók, ismételt mentés ───────────────────────────────
+    assert.equal((await service.saveQuery(ai, { name: 'havi_bevetel', description: 'Havi nettó bevétel ügyfelenként.', query: monthlyQuery, params: monthlyParams })).change, 'reviewed')
+    await expectCode(service.saveQuery(ai, { name: 'havi_bevetel', description: 'Más tartalom.', query: monthlyQuery, params: monthlyParams }), 'saved_query_name_taken')
+    await expectCode(service.saveQuery(ai, { queryId: saved.query.queryId, name: 'uj_nev', description: 'x', query: monthlyQuery, params: monthlyParams }), 'saved_query_name_immutable')
+    const v2 = await service.saveQuery(ai, {
+      queryId: saved.query.queryId,
+      description: 'Havi nettó bevétel és darabszám ügyfelenként.',
+      query: { ...monthlyQuery, aggregates: 'sum:netto,count:*' },
+      params: monthlyParams,
+      changeNote: 'darabszám is',
+    })
+    assert.equal(v2.change, 'new_version')
+    assert.equal(v2.query.version, 2)
+    assert.equal((await service.runSavedQuery(ai, { queryId: saved.query.queryId })).columns.length, 4)
+    const v1 = await service.getSavedQuery(ai, { queryId: saved.query.queryId, version: 1 })
+    assert.equal(v1.query.version, 1)
+    assert.equal(v1.currentVersion, 2)
+    assert.deepEqual(v1.spec.aggregates, [{ fn: 'sum', field: 'netto' }])
+    assert.deepEqual(v1.versions.map((version) => version.version), [2, 1])
+    console.log('  OK  AC5 új verzió után a régi lekérhető; azonos tartalom újramentése nem új verzió')
+
+    // ── #1083 AC8–AC11: elavulás valódi importokkal ────────────────────────────
+    const statusOf = async () => (await service.getSavedQuery(ai, { queryId: saved.query.queryId })).query
+    assert.equal((await statusOf()).schemaStatus, 'current')
+
+    // ── #1083 élő mini app: kötés futtatása valódi adattárházon ────────────────
+    const liveQuery = await service.saveQuery(ai, { name: 'elo_rendelesek', description: 'A rendelések listája.', query: { dataset: 'rendelesek', fields: 'szam,ugyfel_nev', orderBy: 'szam' } })
+    const liveDeps: MiniAppLiveDataDeps = {
+      findMembership: async () => ({ role: 'viewer', status: 'active' }),
+      canReadWarehouse: () => true,
+      agentAccess: async () => 'read',
+      findOwnerAgent: async () => ({ retiredAt: null }),
+      runBoundQuery: (actor, input) => service.runBoundQuery({ ...actor, channel: 'mini_app' }, input),
+      errorCode: (error) => (error instanceof WarehouseError ? error.code : 'live_data_unavailable'),
+    }
+    const liveBinding = { alias: 'rendelesek', queryId: liveQuery.query.queryId, queryVersion: 1, params: {}, maxRows: 1000 }
+    const liveLoad = (purpose: 'status' | 'content', binding: typeof liveBinding = liveBinding) =>
+      loadLiveData(liveDeps, { app: { tenantId: tenant.id, ownerAgentId: ai.agentId! }, userId: user.id, role: 'viewer', bindings: [binding], purpose })
+    const auditCount = () => audits.filter((a) => a.action === 'warehouse.saved_query.run').length
+    const auditsBefore = auditCount()
+    await liveLoad('status')
+    assert.equal(auditCount(), auditsBefore, 'a sáv állapota nem számít futásnak')
+    const beforeImport = await liveLoad('content')
+    assert.equal(auditCount(), auditsBefore + 1)
+    const firstBlock = beforeImport.data.rendelesek!
+    assert.ok(firstBlock.status === 'ok' && firstBlock.rows.length > 0 && firstBlock.truncated === false)
+    assert.deepEqual(firstBlock.columnLabels, ['Rendelésszám', 'Ügyfél (forrásnév)'])
+    const linkAudit = audits.filter((a) => a.action === 'warehouse.saved_query.run').at(-1)!
+    assert.equal(linkAudit.actorType, 'system')
+    assert.equal(linkAudit.actorId, null)
+    assert.equal((linkAudit.metadata as { linkIssuedToUserId?: string }).linkIssuedToUserId, user.id)
+    assert.equal(JSON.stringify(linkAudit.metadata).includes(String(firstBlock.rows[0]![0])), false, 'cellaérték nem kerül auditba')
+
+    // AC19: sorkeret és bájtkeret; a bájtkeretet az adatbázis tartja.
+    const oneRow = (await liveLoad('status', { ...liveBinding, maxRows: 1 })).data.rendelesek!
+    assert.ok(oneRow.status === 'ok' && oneRow.rows.length === 1 && oneRow.truncated === true)
+    const byBytes = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: 1, audit: false })
+    assert.deepEqual(byBytes.rows, [])
+    assert.equal(byBytes.truncated, true)
+    const firstSize = (await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1, maxBytes: 1_000_000, audit: false })).bytes
+    const partial = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: firstSize, audit: false })
+    assert.equal(partial.rows.length, 1)
+    assert.equal(partial.truncated, firstBlock.rows.length > 1)
+    // A keret a beágyazott méretet méri: az escape-elendő jelek hatszorosan számítanak.
+    const firstOrder = `(SELECT min(szam) FROM "${schema}"."${datasetTableName('rendelesek')}")`
+    const [originalCell] = await prisma.$queryRawUnsafe<Array<{ ugyfel_nev: string | null }>>(`SELECT ugyfel_nev FROM "${schema}"."${datasetTableName('rendelesek')}" WHERE szam = ${firstOrder}`)
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"."${datasetTableName('rendelesek')}" SET ugyfel_nev = repeat('<', 1000) WHERE szam = ${firstOrder}`)
+    const escaped = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: 3_000, audit: false })
+    assert.deepEqual(escaped.rows, [], 'nyersen 3000 bájt alatt, beágyazva 6000 felett')
+    assert.equal(escaped.truncated, true)
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"."${datasetTableName('rendelesek')}" SET ugyfel_nev = $1 WHERE szam = ${firstOrder}`, originalCell!.ugyfel_nev)
+
+    // D7: a kötés a rögzített verziót futtatja; a sáv jelzi, hogy van újabb.
+    const liveV2 = await service.saveQuery(ai, { queryId: liveQuery.query.queryId, description: 'Csak a számok.', query: { dataset: 'rendelesek', fields: 'szam', orderBy: 'szam' } })
+    assert.equal(liveV2.query.version, 2)
+    const pinned = await liveLoad('status')
+    const pinnedBlock = pinned.data.rendelesek!
+    assert.ok(pinnedBlock.status === 'ok')
+    assert.deepEqual(pinnedBlock.columns, ['szam', 'ugyfel_nev'])
+    assert.ok(pinned.bar.warnings.some((warning) => warning.includes('újabb lekérdezés-verzió')))
+
+    // AC6: más agent lekérdezése kötésen át sem fut, és nem derül ki, hogy létezik.
+    await expectCode(service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: randomUUID(), channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1, maxBytes: 1_000, audit: false }), 'saved_query_not_found')
+
+    // AC18: használatban lévő lekérdezés nem archiválható; a válasz felsorolja az appokat.
+    usedBy.set(liveQuery.query.queryId, [{ appId: 'app-1', name: 'Havi riport' }])
+    await assert.rejects(service.archiveSavedQuery(ai, { queryId: liveQuery.query.queryId }), (e: unknown) => e instanceof WarehouseError && e.code === 'saved_query_in_use' && JSON.stringify(e.extra).includes('Havi riport'))
+    usedBy.delete(liveQuery.query.queryId)
+
+    // Kötéskor próbafuttat, a verzió az aktuális lesz.
+    const prepared = await prepareBindings(liveDeps, { tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId! }, [{ alias: 'a', queryId: liveQuery.query.queryId }])
+    assert.ok(prepared.ok && prepared.bindings[0]!.queryVersion === 2)
+    const missing = await prepareBindings(liveDeps, { tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId! }, [{ alias: 'a', queryId: randomUUID() }])
+    assert.ok(!missing.ok && missing.code === 'saved_query_not_found')
+    console.log('  OK  élő adat: rögzített verzió, sor- és bájtkeret, tulajdonos-határ, archiválás-védelem, audit adat nélkül')
+
+    const plainImport = await service.prepareImport(ai, { fileName: 'ujabb-adat.xlsx', content: await ordersXlsx({ extraRow: true, injection: true }) })
+    const plainPreview = await service.preview(ai, plainImport.import.id)
+    assert.equal((await service.commit(ai, { importId: plainImport.import.id, previewHash: plainPreview.import.previewHash! })).status, 'published')
+    assert.equal((await statusOf()).schemaStatus, 'current', 'szerkezeti változás nélküli import nem riaszt')
+    // AC13: új import után ugyanaz a kötés, új app-verzió nélkül, az új adatot adja.
+    const afterImport = await liveLoad('content')
+    const newBlock = afterImport.data.rendelesek!
+    assert.ok(newBlock.status === 'ok')
+    assert.notEqual(JSON.stringify(newBlock.rows), JSON.stringify(firstBlock.status === 'ok' ? firstBlock.rows : []))
+    assert.ok(afterImport.bar.lastLoadAt!.getTime() >= beforeImport.bar.lastLoadAt!.getTime())
+    await service.archiveSavedQuery(ai, { queryId: liveQuery.query.queryId })
+    console.log('  OK  AC13 új import után újranyitáskor az új adat látszik')
+    const before = (await statusOf()).datasets.find((d) => d.key === 'rendelesek')!
+    const allFields = await service.saveQuery(ai, { name: 'minden_rendeles', description: 'Minden rendelés minden mezője.', query: { dataset: 'rendelesek' } })
+    const widened = await service.prepareImport(ai, { fileName: 'uj-oszlop.xlsx', content: await ordersXlsx({ extraRow: true }) })
+    await service.submitPlan(ai, widened.import.id, { ...ordersPlan, fields: [...ordersPlan.fields, { source: 'Összeg / Bruttó', target: 'brutto_1083', type: 'decimal', label: 'Bruttó' }] }, 'ai')
+    const widenedPreview = await service.preview(ai, widened.import.id)
+    assert.equal((await service.commit(admin, { importId: widened.import.id, previewHash: widenedPreview.import.previewHash!, approve: true })).status, 'published')
+    const extended = await statusOf()
+    assert.equal(extended.schemaStatus, 'dataset_extended')
+    assert.deepEqual(extended.newFields, [{ dataset: 'rendelesek', field: 'brutto_1083', label: 'Bruttó' }])
+    const afterWiden = extended.datasets.find((d) => d.key === 'rendelesek')!
+    assert.ok(afterWiden.structureVersionNow! > before.structureVersionNow!)
+    assert.ok(afterWiden.structureChangedAt, 'a szerkezet változási ideje rögzült')
+    // „Összes mező”: az új oszlop után az azonos kérés megerősítés, nem új verzió, és a mezőlista marad (AC11).
+    const pinnedAgain = await service.saveQuery(ai, { queryId: allFields.query.queryId, description: 'Minden rendelés minden mezője.', query: { dataset: 'rendelesek' } })
+    assert.equal(pinnedAgain.change, 'reviewed')
+    assert.equal(pinnedAgain.query.version, 1)
+    assert.equal(pinnedAgain.query.schemaStatus, 'current')
+    assert.ok(!(await service.getSavedQuery(ai, { queryId: allFields.query.queryId })).spec.fields.includes('brutto_1083'))
+    await service.archiveSavedQuery(ai, { queryId: allFields.query.queryId })
+    const stillRuns = await service.runSavedQuery(ai, { queryId: saved.query.queryId })
+    assert.ok(stillRuns.warnings.some((w) => w.code === 'saved_query_dataset_extended'))
+    assert.equal((await service.listSavedQueries(ai))[0]?.lastRunAt !== null, true)
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"._fields SET currency = 'EUR' WHERE dataset_key = 'rendelesek' AND name = 'netto'`)
+    const changed = await statusOf()
+    assert.equal(changed.schemaStatus, 'meaning_changed')
+    assert.deepEqual(changed.changedFields, [{ dataset: 'rendelesek', field: 'netto', label: 'Nettó összeg' }])
+    assert.ok((await service.runSavedQuery(ai, { queryId: saved.query.queryId })).warnings.some((w) => w.code === 'saved_query_meaning_changed'))
+    const reviewed = await service.saveQuery(ai, {
+      queryId: saved.query.queryId,
+      description: 'Havi nettó bevétel és darabszám ügyfelenként.',
+      query: { ...monthlyQuery, aggregates: 'sum:netto,count:*' },
+      params: monthlyParams,
+    })
+    assert.equal(reviewed.change, 'reviewed')
+    assert.equal(reviewed.query.version, 2)
+    assert.equal(reviewed.query.schemaStatus, 'current')
+    assert.ok(reviewed.query.reviewedAt)
+    console.log('  OK  AC8–AC11 import nem riaszt; új mező és jelentésváltozás látszik; átnézés után naprakész')
+
+    // Párhuzamos új verziók: a várakozó mentés nem kaphat téves „nem található” hibát.
+    const racing = await service.saveQuery(ai, { name: 'versenyzo', description: 'Alap.', query: { dataset: 'rendelesek', aggregates: 'count:*' } })
+    const raced = await Promise.all(
+      ['Első.', 'Második.', 'Harmadik.'].map((text) => service.saveQuery(ai, { queryId: racing.query.queryId, description: text, query: { dataset: 'rendelesek', aggregates: 'count:*' } })),
+    )
+    assert.deepEqual(raced.map((res) => res.query.version).sort(), [2, 3, 4])
+    await Promise.all([service.archiveSavedQuery(ai, { queryId: racing.query.queryId }), service.archiveSavedQuery(ai, { queryId: racing.query.queryId })])
+    console.log('  OK  Párhuzamos mentés és archiválás nem ad téves hibát')
+
+    // ── #1083 broken + archiválás + audit ──────────────────────────────────────
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"._saved_query_versions SET spec = jsonb_set(spec, '{aggregates,0,field}', '"eltunt_mezo"') WHERE query_id = $1::uuid AND version = 2`, saved.query.queryId)
+    assert.equal((await statusOf()).schemaStatus, 'broken')
+    await expectCode(service.runSavedQuery(ai, { queryId: saved.query.queryId }), 'saved_query_broken')
+    await expectCode(service.archiveSavedQuery(viewer, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    const uiOperator: WarehouseActor = { tenantId: tenant.id, userId: user.id, role: 'viewer', channel: 'ui' }
+    await expectCode(service.archiveSavedQuery(uiOperator, { queryId: saved.query.queryId }), 'warehouse_permission_denied')
+    await service.archiveSavedQuery(ai, { queryId: saved.query.queryId })
+    await service.archiveSavedQuery(ai, { queryId: saved.query.queryId })
+    await expectCode(service.runSavedQuery(ai, { queryId: saved.query.queryId }), 'saved_query_not_found')
+    assert.deepEqual(await service.listSavedQueries(ai), [])
+    assert.equal((await service.saveQuery(ai, { name: 'havi_bevetel', description: 'Újra.', query: monthlyQuery, params: monthlyParams })).change, 'created')
+    const savedAudits = audits.filter((a) => a.action.startsWith('warehouse.saved_query.'))
+    assert.ok(['saved', 'reviewed', 'run', 'archived'].every((kind) => savedAudits.some((a) => a.action === `warehouse.saved_query.${kind}`)))
+    assert.ok(savedAudits.every((a) => !/2030-01-01|Kovács|netto/.test(JSON.stringify(a.metadata))), 'audit: nincs szűrőérték és üzleti adat')
+    // §5: 90 nap után törlődik, a frissen archivált és az aktív marad.
+    const stale = await service.saveQuery(ai, { name: 'regi_archivalt', description: 'Régi.', query: { dataset: 'rendelesek', aggregates: 'count:*' } })
+    const fresh = await service.saveQuery(ai, { name: 'friss_archivalt', description: 'Friss.', query: { dataset: 'rendelesek', aggregates: 'count:*' } })
+    await service.archiveSavedQuery(ai, { queryId: stale.query.queryId })
+    await service.archiveSavedQuery(ai, { queryId: fresh.query.queryId })
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"._saved_queries SET archived_at = now() - interval '91 days' WHERE id = $1::uuid`, stale.query.queryId)
+    const purge = await service.purgeArchivedSavedQueries()
+    assert.equal(purge.failedTenants, 0)
+    const left = await prisma.$queryRawUnsafe<Array<{ id: string }>>(`SELECT id::text AS id FROM "${schema}"._saved_queries`)
+    assert.equal(left.some((row) => row.id === stale.query.queryId), false)
+    assert.equal(left.some((row) => row.id === fresh.query.queryId), true)
+    const versionsLeft = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${schema}"._saved_query_versions WHERE query_id = $1::uuid`, stale.query.queryId)
+    assert.equal(versionsLeft[0]!.n, 0)
+    assert.ok(audits.some((a) => a.action === 'warehouse.saved_query.purged' && a.targetId === stale.query.queryId))
+    console.log('  OK  §5 archivált lekérdezés 90 nap után törlődik, verzióival együtt')
+    console.log('  OK  Nem futtatható lekérdezés nem fut; archiválás idempotens, a név újra használható; az audit csak azonosítókat tartalmaz')
 
   } finally {
     for (const t of [tenant, other]) {

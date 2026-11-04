@@ -2109,6 +2109,8 @@ model MiniAppVersion {
   idempotencyKey  String?  @map("idempotency_key")
   createdByUserId String   @map("created_by") @db.Uuid
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  /// Élő adat-kötések (#1083 §4.1): alias, rögzített lekérdezés-verzió, paraméterek. Üres lista: statikus verzió.
+  dataBindings    Json     @default("[]") @map("data_bindings")
 
   app MiniApp @relation(fields: [appId], references: [id], onDelete: Cascade)
 

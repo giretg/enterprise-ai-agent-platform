@@ -18,6 +18,13 @@ export const MINI_APP_LINT_LABELS: Record<string, string> = {
   session_storage: 'Az oldal adatot tárolna a böngészőben — ez a mini appban nem működik.',
   window_top: 'Az oldal a keretén kívülre próbálna hatni — ez le van tiltva.',
   parent_post_message: 'Az oldal üzenetet küldene a befoglaló oldalnak — ez le van tiltva.',
+  unsafe_html_sink: 'Az oldal HTML-ként írna ki szöveget (például innerHTML). Élő adatnál ez tilos, mert a cellaérték kódként futhatna: használj textContent-et.',
+  document_write: 'Az oldal document.write-tal írna a lapra. Élő adatnál ez tilos: használj textContent-et.',
+  inline_event_handler: 'Az oldal HTML-attribútumban adna meg eseménykezelőt (például onclick). Élő adatnál ez nem fut le: használj addEventListener-t.',
+  send_beacon: 'Az oldal adatot küldene egy külső címre. Élő adatnál ez tilos.',
+  meta_refresh: 'Az oldal automatikusan átirányítana. Élő adatnál ez tilos.',
+  dynamic_code: 'Az oldal szövegből futtatna kódot. Élő adatnál ez tilos.',
+  too_many_inline_scripts: 'Az oldal túl sok külön szkriptblokkot használ. Élő adatnál vond össze őket.',
   external_resource: 'Az útmutató külső fájlt (betűtípust, szkriptet, stíluslapot) említ — ezek a mini appban nem töltődnek be.',
 }
 

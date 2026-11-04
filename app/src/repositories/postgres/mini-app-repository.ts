@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { readStoredBindings } from '@/domain/mini-app/data-binding'
 import type {
+  MiniAppBoundApp,
   MiniAppListScope,
   MiniAppRecord,
   MiniAppShareRecord,
@@ -41,7 +43,12 @@ const versionMetaSelect = {
   changeNote: true,
   createdByUserId: true,
   createdAt: true,
+  dataBindings: true,
 } satisfies Prisma.MiniAppVersionSelect
+
+function toVersionMeta<T extends { dataBindings: Prisma.JsonValue }>(row: T) {
+  return { ...row, dataBindings: readStoredBindings(row.dataBindings) }
+}
 
 function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
@@ -59,6 +66,7 @@ function versionData(appId: string, tenantId: string, version: number, input: Ne
     changeNote: input.changeNote,
     idempotencyKey: input.idempotencyKey,
     createdByUserId: input.createdByUserId,
+    dataBindings: input.dataBindings as unknown as Prisma.InputJsonValue,
   }
 }
 
@@ -92,25 +100,28 @@ export class PostgresMiniAppRepository implements MiniAppStore {
   }
 
   async findVersion(appId: string, version: number): Promise<MiniAppVersionRecord | null> {
-    return prisma.miniAppVersion.findUnique({
+    const row = await prisma.miniAppVersion.findUnique({
       where: { appId_version: { appId, version } },
       select: { ...versionMetaSelect, html: true },
     })
+    return row ? toVersionMeta(row) : null
   }
 
   async findVersionByKey(appId: string, key: string): Promise<MiniAppVersionMeta | null> {
-    return prisma.miniAppVersion.findUnique({
+    const row = await prisma.miniAppVersion.findUnique({
       where: { appId_idempotencyKey: { appId, idempotencyKey: key } },
       select: versionMetaSelect,
     })
+    return row ? toVersionMeta(row) : null
   }
 
   async listVersions(appId: string): Promise<MiniAppVersionMeta[]> {
-    return prisma.miniAppVersion.findMany({
+    const rows = await prisma.miniAppVersion.findMany({
       where: { appId },
       orderBy: { version: 'desc' },
       select: versionMetaSelect,
     })
+    return rows.map(toVersionMeta)
   }
 
   async addVersion(input: Parameters<MiniAppStore['addVersion']>[0]): Promise<MiniAppVersionMeta | 'conflict'> {
@@ -123,10 +134,12 @@ export class PostgresMiniAppRepository implements MiniAppStore {
           data: { currentVersion: next },
         })
         if (bumped.count !== 1) throw new MiniAppVersionConflict()
-        return tx.miniAppVersion.create({
-          data: versionData(input.appId, input.tenantId, next, input.version),
-          select: versionMetaSelect,
-        })
+        return toVersionMeta(
+          await tx.miniAppVersion.create({
+            data: versionData(input.appId, input.tenantId, next, input.version),
+            select: versionMetaSelect,
+          }),
+        )
       })
     } catch (error) {
       if (error instanceof MiniAppVersionConflict || isUniqueViolation(error)) return 'conflict'
@@ -207,6 +220,17 @@ export class PostgresMiniAppRepository implements MiniAppStore {
 
   async setStatus(appId: string, status: MiniAppStatus, archivedAt: Date | null): Promise<void> {
     await prisma.miniApp.update({ where: { id: appId }, data: { status, archivedAt } })
+  }
+
+  async listBoundApps(tenantId: string): Promise<MiniAppBoundApp[]> {
+    const rows = await prisma.$queryRaw<Array<{ id: string; name: string; owner_agent_id: string; data_bindings: Prisma.JsonValue }>>`
+      SELECT a.id::text AS id, a.name, a.owner_agent_id::text AS owner_agent_id, v.data_bindings
+      FROM mini_apps a
+      JOIN mini_app_versions v ON v.app_id = a.id AND v.version = a.current_version
+      WHERE a.tenant_id = ${tenantId}::uuid AND a.status = 'active' AND jsonb_array_length(v.data_bindings) > 0
+      ORDER BY a.name
+      LIMIT 1000`
+    return rows.map((row) => ({ appId: row.id, name: row.name, ownerAgentId: row.owner_agent_id, bindings: readStoredBindings(row.data_bindings) }))
   }
 
   async purgeArchivedBefore(cutoff: Date): Promise<Array<{ id: string; tenantId: string }>> {

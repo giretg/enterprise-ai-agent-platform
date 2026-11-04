@@ -77,6 +77,14 @@ const agentIdList = z
   .max(2_000)
   .refine((value) => splitIds(value).every((id) => z.string().uuid().safeParse(id).success))
 
+const dataBindings = z
+  .string()
+  .max(10_000)
+  .optional()
+  .describe(
+    'Live data, as a JSON array text: [{"alias":"revenue","queryId":"…","params":{"from":{"relative":"year_start"}},"maxRows":1000}]. Your own saved queries only, at most 5, at most 5000 rows each. Each open shows the latest load without a new version. The saved query version is pinned here; to use a newer one, update with dataBindings again. "[]" removes the binding.',
+  )
+
 export const miniAppCreateInputSchema = z
   .object({
     definitionId,
@@ -93,6 +101,7 @@ export const miniAppCreateInputSchema = z
       .optional()
       .describe('Make your own copy of a mini app you can read (yours, shared with you, or organization-wide). Without html the source\'s current version becomes version 1.'),
     projectKey: z.string().max(120).optional().describe('Work project key. Omit for the built-in __general__ project.'),
+    dataBindings,
     idempotencyKey,
   })
   .passthrough()
@@ -101,8 +110,9 @@ export const miniAppUpdateInputSchema = z
   .object({
     definitionId,
     appId,
-    html: z.string().min(1).max(1_100_000).describe('The full new HTML document (replaces the content; a new version is created).'),
+    html: z.string().min(1).max(1_100_000).optional().describe('The full new HTML document (replaces the content; a new version is created). Optional only with dataBindings: the current HTML stays.'),
     changeNote: z.string().max(MINI_APP_CHANGE_NOTE_MAX).optional().describe('Short note: what changed in this version.'),
+    dataBindings,
     idempotencyKey,
   })
   .passthrough()
@@ -182,7 +192,7 @@ export function schemaForMiniAppTool(toolName: string) {
 }
 
 const STATIC_NOTE =
-  'A mini app is static: all data must be embedded in the HTML; external scripts and fetch do not run. Before creating one, call platform.mini_app.guide and follow it.'
+  'A mini app has no network: embed the data in the HTML, or bind your saved warehouse queries with dataBindings so each open shows the latest load. External scripts and fetch do not run. Before creating one, call platform.mini_app.guide and follow it.'
 
 export const MINI_APP_TOOL_DESCRIPTIONS: Record<MiniAppTool, string> = {
   [MCP_MINI_APP_CREATE_TOOL]: `Create a mini app: a single self-contained HTML page (typically a report) that a human opens in the browser. ${STATIC_NOTE} Omit definitionId when this client is bound. Returns appId, openUrl (quick link, opens without login until openUrlExpiresAt) and permanentUrl (platform link, needs login, always the latest version). Give both links to the user. Hard-fails on <iframe>, <object>, <embed>, <form> or oversize HTML; lint.warnings lists parts that will not work (fix them with platform.mini_app.update).`,
@@ -287,7 +297,7 @@ export async function invokeMiniAppTool(
   )
   if (!authorized.ok) return authorized.result
   const { definition, parsed } = authorized
-  const actor: MiniAppActor = { tenantId: principal.tenantId, agentId: definition.agentId, userId: principal.userId }
+  const actor: MiniAppActor = { tenantId: principal.tenantId, agentId: definition.agentId, userId: principal.userId, role: principal.role }
   const svc = deps.miniApps
   const str = (key: string) => (typeof parsed[key] === 'string' ? (parsed[key] as string) : undefined)
   const num = (key: string) => (typeof parsed[key] === 'number' ? (parsed[key] as number) : undefined)
@@ -312,6 +322,7 @@ export async function invokeMiniAppTool(
       html: str('html'),
       copyFromAppId: str('copyFromAppId'),
       projectKey: str('projectKey'),
+      dataBindings: str('dataBindings'),
       idempotencyKey: String(parsed.idempotencyKey),
     })
     if (!res.ok) return failed(res.code, res.extra)
@@ -336,8 +347,9 @@ export async function invokeMiniAppTool(
   if (toolName === MCP_MINI_APP_UPDATE_TOOL) {
     const res = await svc.update(actor, {
       appId: String(parsed.appId),
-      html: String(parsed.html),
+      html: str('html'),
       changeNote: str('changeNote'),
+      dataBindings: str('dataBindings'),
       idempotencyKey: String(parsed.idempotencyKey),
     })
     if (!res.ok) return failed(res.code, res.extra)
@@ -389,6 +401,7 @@ export async function invokeMiniAppTool(
       currentVersion: res.currentVersion,
       contentHash: res.contentHash,
       lintWarnings: res.lintWarnings,
+      ...(res.dataBindings ? { dataBindings: res.dataBindings } : {}),
       ...(res.links ? linkFields(res.links) : {}),
       ...(res.source
         ? {

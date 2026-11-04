@@ -182,7 +182,9 @@ async function main() {
   await check('módosított aláírás / payload / alg=none → invalid_token', async () => {
     const [h, b, s] = (await token()).split('.')
     const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(b, 'base64url').toString()), agentId: 'x' })).toString('base64url')
-    for (const bad of [`${h}.${b}.${s.slice(0, -2)}AA`, `${h}.${forged}.${s}`, `${h}.${b}.`, 'nem.jwt', 'x']) {
+    // Az aláírás kb. ezredénél már `AA` a vége: ilyenkor a „módosított” token azonos lenne az eredetivel.
+    const tampered = `${s.slice(0, -2)}${s.endsWith('AA') ? 'BA' : 'AA'}`
+    for (const bad of [`${h}.${b}.${tampered}`, `${h}.${forged}.${s}`, `${h}.${b}.`, 'nem.jwt', 'x']) {
       assert.deepEqual(await verifyGatewayToken(deps(), `Bearer ${bad}`), { ok: false, code: 'invalid_token' })
     }
     const none = Buffer.from('{"alg":"none"}').toString('base64url')

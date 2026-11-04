@@ -21,6 +21,7 @@ type DatasetRow = {
   temporal: string | null
   status: string
   structure_version: number
+  structure_changed_at: Date | null
   business_key: string[]
   mode: string
   published_at: Date | null
@@ -59,6 +60,7 @@ export async function loadCatalog(sql: SqlExecutor, schema: string): Promise<Map
       temporal: d.temporal,
       status: d.status === 'confirmed' ? 'confirmed' : 'proposed',
       structureVersion: Number(d.structure_version),
+      structureChangedAt: d.structure_changed_at ? new Date(d.structure_changed_at).toISOString() : null,
       businessKey: d.business_key ?? [],
       mode: d.mode === 'append' ? 'append' : 'upsert',
       publishedAt: d.published_at ? new Date(d.published_at).toISOString() : null,
@@ -121,14 +123,15 @@ export async function applyStructure(
   }
   const structureVersion = existing ? existing.structureVersion + (added.length ? 1 : 0) : 1
   await sql.exec(
-    `INSERT INTO ${qt(schema, '_datasets')} (key, table_name, title, purpose, row_meaning, temporal, business_key, mode, structure_version)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9)
+    `INSERT INTO ${qt(schema, '_datasets')} (key, table_name, title, purpose, row_meaning, temporal, business_key, mode, structure_version, structure_changed_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8, $9, now())
      ON CONFLICT (key) DO UPDATE SET
        title = CASE WHEN ${qt(schema, '_datasets')}.status = 'confirmed' THEN ${qt(schema, '_datasets')}.title ELSE EXCLUDED.title END,
        purpose = CASE WHEN ${qt(schema, '_datasets')}.status = 'confirmed' THEN ${qt(schema, '_datasets')}.purpose ELSE EXCLUDED.purpose END,
        row_meaning = CASE WHEN ${qt(schema, '_datasets')}.status = 'confirmed' THEN ${qt(schema, '_datasets')}.row_meaning ELSE EXCLUDED.row_meaning END,
        temporal = CASE WHEN ${qt(schema, '_datasets')}.status = 'confirmed' THEN ${qt(schema, '_datasets')}.temporal ELSE EXCLUDED.temporal END,
        structure_version = EXCLUDED.structure_version,
+       structure_changed_at = CASE WHEN $10::boolean THEN now() ELSE ${qt(schema, '_datasets')}.structure_changed_at END,
        updated_at = now()`,
     [
       plan.dataset.key,
@@ -140,6 +143,7 @@ export async function applyStructure(
       plan.businessKey,
       plan.mode,
       structureVersion,
+      added.length > 0,
     ],
   )
   let position = existing?.fields.length ?? 0

@@ -87,6 +87,8 @@ import { warehousePageUrl, warehouseService } from '@/lib/warehouse'
 import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { readMiniAppSettings } from '@/lib/mini-app-settings'
 import { miniAppPermanentUrl, mintMiniAppLinks } from '@/lib/mini-app-origin'
+import { prepareBindings } from '@/domain/mini-app/live-data'
+import { miniAppLiveDeps } from '@/lib/mini-app-live'
 import { canReadPublishedAgent } from '@/domain/agent-definition'
 import {
   invokeProjectWork,
@@ -408,6 +410,21 @@ const miniAppService = new MiniAppService({
     return readMiniAppSettings(tenant?.settings)
   },
   links: { mint: mintMiniAppLinks, permanentUrl: miniAppPermanentUrl },
+  liveData: {
+    prepare: (actor, inputs) =>
+      prepareBindings(
+        // Kötéskor a hívás az MCP-n jön, a szokásos naplózással és a munkatárs saját jogaival.
+        { ...miniAppLiveDeps, runBoundQuery: (a, input) => warehouseService().runBoundQuery({ ...a, channel: 'mcp' }, input) },
+        { tenantId: actor.tenantId, userId: actor.userId, agentId: actor.agentId, role: actor.role ?? '' },
+        inputs,
+      ),
+    async latestQueryVersion(actor, queryId) {
+      return warehouseService()
+        .getSavedQuery({ tenantId: actor.tenantId, userId: actor.userId, role: actor.role ?? '', agentId: actor.agentId, channel: 'mcp' }, { queryId })
+        .then((found) => found.currentVersion)
+        .catch(() => null)
+    },
+  },
   audit: repositories.audit,
 })
 

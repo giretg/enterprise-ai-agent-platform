@@ -51,6 +51,16 @@ function splitList(value: string | undefined): string[] {
     .filter(Boolean)
 }
 
+/** Időbontás a csoportosításban: `datum:month`. */
+export const TIME_BUCKETS = ['day', 'week', 'month', 'quarter', 'year'] as const
+export type TimeBucket = (typeof TIME_BUCKETS)[number]
+
+/** `datum:month` → mező + bontás; az érvénytelen bontást a fordító utasítja el. */
+export function parseGroupField(value: string): { path: string; bucket: string | null } {
+  const at = value.indexOf(':')
+  return at < 0 ? { path: value, bucket: null } : { path: value.slice(0, at), bucket: value.slice(at + 1) }
+}
+
 /** `sum:osszeg,count:*` → aggregátumok. */
 export function parseAggregates(value: string | undefined): QuerySpec['aggregates'] {
   return splitList(value).map((item) => {
@@ -135,6 +145,15 @@ export function compileQuery(schema: string, spec: QuerySpec, catalog: Map<strin
     return { expr: `${join.alias}.${qi(field.name)}`, type: SQL_TYPE[field.type], name: `${linkName}.${targetName}`, joinAlias: join.alias }
   }
 
+  /** Csoportosító kifejezés; `datum:month` csak dátum típusú mezőn. */
+  const resolveGroup = (value: string): Resolved => {
+    const { path, bucket } = parseGroupField(value)
+    const col = resolve(path)
+    if (bucket === null) return col
+    if (!TIME_BUCKETS.includes(bucket as TimeBucket) || col.type !== 'date') throw new QueryError('invalid_group_bucket', value)
+    return { ...col, expr: `date_trunc('${bucket}', ${col.expr})::date`, name: `${col.name}:${bucket}` }
+  }
+
   const params: unknown[] = []
   const param = (value: unknown, type: string) => {
     params.push(value)
@@ -178,7 +197,7 @@ export function compileQuery(schema: string, spec: QuerySpec, catalog: Map<strin
   const aggregated = spec.aggregates.length > 0 || spec.groupBy.length > 0
   if (aggregated) {
     for (const g of spec.groupBy) {
-      const col = resolve(g)
+      const col = resolveGroup(g)
       selects.push(`${col.expr} AS ${qi(`c${columns.length}`)}`)
       columns.push(col.name)
     }
@@ -215,7 +234,7 @@ export function compileQuery(schema: string, spec: QuerySpec, catalog: Map<strin
     `${qt(schema, base.tableName)} t`,
     ...[...joins.values()].map((j) => `LEFT JOIN ${qt(schema, j.dataset.tableName)} ${j.alias} ON ${j.alias}._id = ${j.on}`),
   ].join(' ')
-  const groupExprs = spec.groupBy.map((g) => resolve(g).expr)
+  const groupExprs = spec.groupBy.map((g) => resolveGroup(g).expr)
   const inner = [
     `SELECT ${selects.join(', ')} FROM ${from}`,
     where.length ? `WHERE ${where.join(' AND ')}` : '',

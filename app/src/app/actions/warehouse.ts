@@ -16,6 +16,8 @@ import { repositories } from '@/repositories/postgres'
 
 type Ctx = Awaited<ReturnType<typeof requireTenantRole>>
 
+const SAVED_QUERIES_PAGE_LIMIT = 1_000
+
 function actor(ctx: Ctx): WarehouseActor {
   return { tenantId: ctx.activeTenantId, userId: ctx.user.id, role: ctx.activeTenantRole, channel: 'ui' }
 }
@@ -23,6 +25,8 @@ function actor(ctx: Ctx): WarehouseActor {
 /** Üzleti nyelvű hibaüzenet (a kód a felhasználónak nem mond semmit). */
 const MESSAGES: Record<string, string> = {
   warehouse_not_ready: 'Az adattárház még nincs bekapcsolva.',
+  warehouse_upgrade_failed: 'Az adattárház frissítése most nem sikerült, az adatok nem változtak. Próbáld újra egy perc múlva.',
+  query_timeout: 'A lekérdezés túl sokáig futott, ezért leállt. Próbáld szűkebb feltételekkel.',
   warehouse_permission_denied: 'Ehhez a művelethez nincs jogosultságod — kérd egy jóváhagyó vagy admin kollégát.',
   file_too_large: 'A fájl nagyobb 10 MB-nál. Bontsd kisebb részekre.',
   unsafe_archive: 'Az Excel-fájl sérült vagy kicsomagolva túl nagy — nem tároltuk el.',
@@ -37,6 +41,12 @@ const MESSAGES: Record<string, string> = {
   exception_not_pending: 'Ezt a tételt már valaki eldöntötte.',
   link_target_not_found: 'A kiválasztott rekord már nem létezik.',
   load_failed: 'A betöltés nem sikerült, semmi sem változott. Nézd meg újra az előnézetet, majd próbáld újra.',
+  saved_query_not_found: 'Ez a lekérdezés már nem létezik (lehet, hogy valaki archiválta). Frissítsd az oldalt.',
+  saved_query_broken: 'Ez a lekérdezés már nem illik az adatokhoz, ezért nem futtatható. Kérd meg az AI munkatársat, hogy javítsa.',
+  saved_query_in_use: 'Ezt a lekérdezést egy mini app használja, ezért nem archiválható. Előbb az appot kell átállítani vagy archiválni.',
+  invalid_param: 'Az egyik megadott érték nem megfelelő formátumú. Ellenőrizd, majd próbáld újra.',
+  invalid_param_value: 'Az egyik megadott érték nem illik a mezőhöz. Ellenőrizd, majd próbáld újra.',
+  missing_param: 'Ehhez a lekérdezéshez minden kötelező értéket ki kell tölteni.',
 }
 
 async function run<T>(fn: (ctx: Ctx) => Promise<T>): Promise<ActionResult<T>> {
@@ -63,14 +73,25 @@ export async function loadWarehousePageAction(importId?: string) {
       operate: canWarehouse(a.role, 'operate'),
     }
     if (status?.status !== 'ready') return ok({ status, permissions, ready: false as const })
-    const [datasets, imports, usage, exceptions, selected] = await Promise.all([
+    const [datasets, imports, usage, exceptions, selected, savedQueries, agents] = await Promise.all([
       svc.listDatasets(a),
       svc.listImports(a, 30),
       svc.usage(a),
       svc.listExceptions(a, { status: 'pending', limit: 200 }),
       importId && z.string().uuid().safeParse(importId).success ? svc.getImport(a, importId).catch(() => null) : Promise.resolve(null),
+      svc.listSavedQueries(a, { limit: SAVED_QUERIES_PAGE_LIMIT + 1 }),
+      repositories.agents.findMany({ tenantId: ctx.activeTenantId }),
     ])
     const details = await Promise.all(datasets.map((d) => svc.describeDataset(a, d.key)))
+    const owners = new Set(savedQueries.map((query) => query.ownerAgentId))
+    const boundApps = await repositories.miniApps.listBoundApps(ctx.activeTenantId)
+    const shownQueries = new Set(savedQueries.map((query) => query.queryId))
+    const queryApps: Record<string, Array<{ appId: string; name: string }>> = {}
+    for (const app of boundApps) {
+      for (const queryId of new Set(app.bindings.map((binding) => binding.queryId))) {
+        if (shownQueries.has(queryId)) (queryApps[queryId] ??= []).push({ appId: app.appId, name: app.name })
+      }
+    }
     return ok({
       status,
       permissions,
@@ -88,6 +109,11 @@ export async function loadWarehousePageAction(importId?: string) {
       usage,
       exceptions,
       selected,
+      savedQueries: savedQueries.slice(0, SAVED_QUERIES_PAGE_LIMIT),
+      savedQueriesTruncated: savedQueries.length > SAVED_QUERIES_PAGE_LIMIT,
+      queryApps,
+      // Csak a lekérdezések tulajdonosainak neve kerül a kliensre, nem a cég összes munkatársáé.
+      agentNames: Object.fromEntries(agents.filter((agent) => owners.has(agent.id)).map((agent) => [agent.id, agent.name])),
     })
   } catch (error) {
     if (error instanceof WarehouseError) return fail(MESSAGES[error.code] ?? 'Az adattárház nem tölthető be.')
@@ -151,6 +177,45 @@ export async function resolveExceptionAction(input: { exceptionId: string; actio
 
 export async function confirmDatasetAction(input: { datasetKey: string }) {
   return run(async (ctx) => warehouseService().confirmDataset(actor(ctx), z.string().regex(/^[a-z][a-z0-9_]{1,40}$/).parse(input.datasetKey)))
+}
+
+/** #1083: régi verziók listája a Részletek megnyitásakor. */
+export async function getSavedQueryVersionsAction(input: { queryId: string }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const res = await warehouseService().getSavedQuery(actor(ctx), { queryId: z.string().uuid().parse(input.queryId) })
+    return ok(res.versions)
+  } catch (error) {
+    if (error instanceof WarehouseError) return fail(MESSAGES[error.code] ?? 'A verziók nem tölthetők be.')
+    return fail('A verziók nem tölthetők be.')
+  }
+}
+
+/** Próbafuttatás a Control Plane-ről: a futás-számlálót nem növeli, de auditált. */
+export async function trialRunSavedQueryAction(input: { queryId: string; params: Record<string, string> }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const values = z.record(z.string().regex(/^[a-z][a-z0-9_]{0,40}$/), z.string().max(1_000)).parse(input.params)
+    // Az üres mező az alapértéket jelenti.
+    const params = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== ''))
+    const res = await warehouseService().runSavedQuery(actor(ctx), { queryId: z.string().uuid().parse(input.queryId), params, limit: 20, trial: true })
+    // A belső azonosító a felhasználónak nem mond semmit.
+    const shown = res.columns.flatMap((column, index) => (column === '_id' ? [] : [index]))
+    return ok({
+      columns: shown.map((index) => res.columnLabels[index]!),
+      rows: res.rows.map((row) => shown.map((index) => row[index])),
+      hasMore: res.hasMore,
+      warnings: [...new Set(res.warnings.map((warning) => warning.code))],
+      freshness: res.provenance.freshness,
+    })
+  } catch (error) {
+    if (error instanceof WarehouseError) return fail(MESSAGES[error.code] ?? 'A próbafuttatás nem sikerült.')
+    return fail('A próbafuttatás nem sikerült.')
+  }
+}
+
+export async function archiveSavedQueryAction(input: { queryId: string }) {
+  return run(async (ctx) => warehouseService().archiveSavedQuery(actor(ctx), { queryId: z.string().uuid().parse(input.queryId) }))
 }
 
 const accessSchema = z.enum(['off', 'read', 'import'])

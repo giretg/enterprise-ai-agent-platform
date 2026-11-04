@@ -4,6 +4,7 @@ import { drainExpiredAiAuditEvents } from '@/domain/ai-audit/ai-audit-service'
 import { handleAiAuditRetentionRequest } from '@/domain/ai-audit/retention-request'
 import { WikiAccessService } from '@/domain/knowledge-base/wiki-access-service'
 import { repositories } from '@/repositories/postgres'
+import { warehouseService } from '@/lib/warehouse'
 import { writeAudit } from '@/lib/audit/types'
 import { services } from '@/domain/gateway-services'
 import { publicChatMaintenanceDeps } from '@/auth/public-chat-deps'
@@ -48,6 +49,8 @@ export async function POST(request: Request): Promise<Response> {
       }).sweepOrphanedPrivateKnowledgeBases()
       // #967 D10: archivált mini appok 90 nap után végleg törlődnek (appenként `mini_app.purged`).
       await services.miniApps.service.purgeExpiredArchives()
+      // #1083 §5: archivált mentett lekérdezések 90 nap után törlődnek (lekérdezésenként audit-sorral).
+      await warehouseService().purgeArchivedSavedQueries()
       // #978 §6: wiki-verziók napi ritkítása / törlése, régi change-setek tartalmának kiürítése.
       await services.wikiHistory.sweepRetention()
       // #1016 D17/D20: nyilvános beszélgetések 30 napos törlése + megválaszolatlan kérdések napi csoportosítása.

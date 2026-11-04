@@ -7,7 +7,7 @@
  */
 import { qs, qt, type SqlExecutor, type WarehouseDatabase } from './sql'
 
-export const WAREHOUSE_INTERNAL_VERSION = 1
+export const WAREHOUSE_INTERNAL_VERSION = 2
 
 export type ProvisionedResources = {
   provisioner: 'pg_schema'
@@ -164,6 +164,38 @@ export function internalSchemaDdl(schema: string): string[] {
       decided_by uuid,
       created_at timestamptz NOT NULL DEFAULT now()
     )`,
+    // #1083: mentett lekérdezések; a verziók megmaradnak, az archivált név újra felhasználható.
+    `ALTER TABLE ${t('_datasets')} ADD COLUMN IF NOT EXISTS structure_changed_at timestamptz`,
+    `CREATE TABLE IF NOT EXISTS ${t('_saved_queries')} (
+      id uuid PRIMARY KEY,
+      owner_agent_id uuid NOT NULL,
+      name text NOT NULL,
+      description text NOT NULL,
+      current_version int NOT NULL,
+      status text NOT NULL DEFAULT 'active',
+      created_by uuid,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      archived_at timestamptz,
+      last_run_at timestamptz,
+      run_count bigint NOT NULL DEFAULT 0
+    )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS _saved_queries_name_idx ON ${t('_saved_queries')} (owner_agent_id, name) WHERE status = 'active'`,
+    `CREATE TABLE IF NOT EXISTS ${t('_saved_query_versions')} (
+      query_id uuid NOT NULL REFERENCES ${t('_saved_queries')}(id) ON DELETE CASCADE,
+      version int NOT NULL,
+      description text NOT NULL,
+      spec jsonb NOT NULL,
+      params jsonb NOT NULL,
+      content_hash text NOT NULL,
+      snapshots jsonb NOT NULL,
+      change_note text,
+      created_by uuid,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      reviewed_at timestamptz,
+      reviewed_by uuid,
+      PRIMARY KEY (query_id, version)
+    )`,
     `INSERT INTO ${t('_meta')} (key, value) VALUES ('internal_version', '${WAREHOUSE_INTERNAL_VERSION}'::jsonb)
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
   ]
@@ -172,6 +204,8 @@ export function internalSchemaDdl(schema: string): string[] {
 export async function applyInternalSchema(sql: SqlExecutor, schema: string): Promise<void> {
   // Párhuzamos aktiválás ugyanarra a sémára: sorosítva.
   await sql.exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [schema])
+  // Egy futó import zárja mögött várakozó DDL minden olvasót feltartana: inkább bukjon, a következő hívás újrapróbálja.
+  await sql.exec(`SET LOCAL lock_timeout = '5s'`)
   for (const statement of internalSchemaDdl(schema)) await sql.exec(statement)
 }
 

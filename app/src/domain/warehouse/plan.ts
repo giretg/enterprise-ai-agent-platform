@@ -93,6 +93,8 @@ export type CatalogDataset = {
   temporal: string | null
   status: 'proposed' | 'confirmed'
   structureVersion: number
+  /** Mikor nőtt utoljára a `structureVersion` (#1083); csak megjelenítéshez. */
+  structureChangedAt?: string | null
   businessKey: string[]
   mode: 'upsert' | 'append'
   publishedAt: string | null

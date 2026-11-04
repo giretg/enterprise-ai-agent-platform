@@ -5,6 +5,8 @@
  * nem tudja eltüntetni.
  */
 
+import { inlineScriptBodies, MINI_APP_DATA_ELEMENT_ID, scriptHashSource } from './data-binding'
+
 export const MINI_APP_TIME_ZONE = 'Europe/Budapest'
 
 /**
@@ -28,6 +30,26 @@ export function miniAppContentCsp(): string {
     'sandbox allow-scripts',
     "require-trusted-types-for 'script'",
   ].join('; ')
+}
+
+/**
+ * Kötött verzió (#1083 §5): a beszúrt eseménykezelő és szkript nem fut, csak a platform
+ * és az agent mentett szkriptje, tartalmuk hash-e alapján. Azért nem nonce, mert a nonce a
+ * dinamikusan betöltött kódra is öröklődik. Minden más irányelv a statikus appéval azonos.
+ */
+export function miniAppBoundContentCsp(scriptSources: string[]): string {
+  return miniAppContentCsp().replace("script-src 'unsafe-inline'", `script-src ${scriptSources.join(' ')}`)
+}
+
+/**
+ * A letöltött fájlt nem védi válaszfejléc, ezért ugyanez `<meta>`-ban utazik vele. A `sandbox`
+ * és a `frame-ancestors` meta-ban nem érvényes, a többi igen.
+ */
+function miniAppDownloadCsp(scriptSources: string[]): string {
+  return miniAppBoundContentCsp(scriptSources)
+    .split('; ')
+    .filter((directive) => !directive.startsWith('sandbox') && !directive.startsWith('frame-ancestors'))
+    .join('; ')
 }
 
 /** A tartalom-válasz további hálózati korlátja: üres lista, a dokumentum sehova nem kapcsolódhat. */
@@ -64,6 +86,11 @@ d.currentScript.remove();
  * mindenképp a mi szkriptünk jön. (Lineáris bejárás: az agent HTML-je nem lassíthatja.)
  */
 export function withMiniAppHardening(html: string): string {
+  const { doctype, source } = splitDoctype(html)
+  return `${doctype}<script>${MINI_APP_HARDENING_JS}</script>${source}`
+}
+
+function splitDoctype(html: string): { doctype: string; source: string } {
   const source = html.charCodeAt(0) === 0xfeff ? html.slice(1) : html
   let at = 0
   for (;;) {
@@ -73,8 +100,31 @@ export function withMiniAppHardening(html: string): string {
     if (end < 0) break
     at = end + 3
   }
-  const doctype = /^<!doctype[^>]*>/i.exec(source.slice(at, at + 1024))?.[0] ?? ''
-  return `${doctype}<script>${MINI_APP_HARDENING_JS}</script>${source}`
+  return { doctype: /^<!doctype[^>]*>/i.exec(source.slice(at, at + 1024))?.[0] ?? '', source }
+}
+
+/**
+ * Kötött verzió indítószkriptje. A statikus keményítésen túl: szkript-URL nem állítható be,
+ * és HTML-szövegből nem jöhet létre szkript. A kaput a CSP adja, ez a D5 szerinti csökkentés.
+ */
+const MINI_APP_BOUND_HARDENING_JS = MINI_APP_HARDENING_JS
+  .replace('createScriptURL:same', 'createScriptURL:function(){return null}')
+  .replace("s=String(s);sink=String(sink);", "s=String(s).replace(/<script/gi,'<x-blocked');sink=String(sink);")
+  .replace("tail=s.slice(-5);if(/srcdoc/i.test(j)&&!/srcdoc/i.test(s))return null", "tail=s.slice(-6);if(/srcdoc|<script/i.test(j)&&!/srcdoc/i.test(s))return null")
+
+/**
+ * A kötött verzió dokumentuma és CSP-je: doctype, indítószkript, adatblokk, majd az agent
+ * változatlan HTML-je. A hash-ek az agent mentett HTML-jéből készülnek, így cellaérték
+ * soha nem kap engedélyt, akárhová is íródik ki.
+ */
+export function buildMiniAppLiveDocument(html: string, input: { dataJson: string; meta?: boolean }): { html: string; csp: string } {
+  const { doctype, source } = splitDoctype(html)
+  const sources = [MINI_APP_BOUND_HARDENING_JS, ...new Set(inlineScriptBodies(source))].map(scriptHashSource)
+  const meta = input.meta ? `<meta http-equiv="Content-Security-Policy" content="${escapeHtml(miniAppDownloadCsp(sources))}">` : ''
+  return {
+    html: `${doctype}${meta}<script>${MINI_APP_BOUND_HARDENING_JS}</script><script type="application/json" id="${MINI_APP_DATA_ELEMENT_ID}">${input.dataJson}</script>${source}`,
+    csp: miniAppBoundContentCsp(sources),
+  }
 }
 
 /**
@@ -85,6 +135,12 @@ export function withMiniAppHardening(html: string): string {
 export function miniAppContentFetchDecision(secFetchDest: string | null): 'serve' | 'open_frame' | 'reject' {
   if (!secFetchDest || secFetchDest === 'iframe' || secFetchDest === 'frame') return 'serve'
   return secFetchDest === 'document' ? 'open_frame' : 'reject'
+}
+
+/** Kötött appnál a tartalom csak iframe-be tölthető: a fejléc hiánya sem elég (§5). */
+export function miniAppBoundContentFetchDecision(secFetchDest: string | null): 'serve' | 'open_frame' | 'reject' {
+  if (secFetchDest === 'iframe' || secFetchDest === 'frame') return 'serve'
+  return !secFetchDest || secFetchDest === 'document' ? 'open_frame' : 'reject'
 }
 
 /**
@@ -148,6 +204,27 @@ export type MiniAppBarInput = {
   ownerAgentName: string
   version: number
   currentVersion: number
+  /** Kötött verzió: élő adat állapota (§4.4); az agent nem tudja eltüntetni. */
+  live?: MiniAppLiveBar
+}
+
+export type MiniAppLiveBar = {
+  /** `live`: böngészőben frissül; `download`: a fájl már nem frissül; `denied`: adat nem ment ki. */
+  mode: 'live' | 'download' | 'denied'
+  lastLoadAt: Date | null
+  /** Hétköznapi figyelmeztetések, cellaérték nélkül. */
+  warnings: string[]
+  dataTakenAt?: Date
+}
+
+/** A sáv élő adatról szóló része: a keretoldal és a letöltés közös forrása. */
+export function miniAppLiveBarParts(live: MiniAppLiveBar): string[] {
+  const parts: string[] = []
+  if (live.mode === 'live') parts.push('Élő adat')
+  if (live.mode === 'download') parts.push(`Adatok állapota: ${formatMiniAppTime(live.dataTakenAt ?? new Date())} · ez a fájl már nem frissül`)
+  if (live.mode === 'denied') parts.push('Az élő adat nem jelenik meg')
+  if (live.mode !== 'denied') parts.push(live.lastLoadAt ? `Utolsó betöltés: ${formatMiniAppTime(live.lastLoadAt)}` : 'Még nem volt adatbetöltés')
+  return [...parts, ...live.warnings.map((warning) => `⚠ ${warning}`)]
 }
 
 /** A sáv szöveges részei (§5.3) — a keretoldal és a letöltés közös forrása. */
@@ -165,7 +242,7 @@ const BAR_STYLE =
   'font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#1f2933;color:#f5f7fa;padding:8px 14px;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center'
 
 function barHtml(input: MiniAppBarInput): string {
-  const parts = miniAppBarParts(input)
+  const parts = [...(input.live ? miniAppLiveBarParts(input.live) : []), ...miniAppBarParts(input)]
     .map((part) => `<span style="opacity:.85">${escapeHtml(part)}</span>`)
     .join('<span aria-hidden="true" style="opacity:.4">·</span>')
   return `<div role="banner" data-mini-app-bar style="${BAR_STYLE}"><strong>${escapeHtml(input.name)}</strong><span aria-hidden="true" style="opacity:.4">·</span>${parts}</div>`
@@ -183,7 +260,7 @@ export function renderMiniAppFrame(input: MiniAppBarInput & { contentUrl: string
 </head>
 <body>
 ${barHtml(input)}
-<iframe src="${escapeHtml(input.contentUrl)}" sandbox="allow-scripts" referrerpolicy="no-referrer" title="${escapeHtml(input.name)}"></iframe>
+${input.live?.mode === 'denied' ? '<main style="font:15px/1.5 system-ui,sans-serif;padding:24px;color:#1f2933">Ez a riport élő adatból dolgozik, az adat most nem jeleníthető meg. Az okot a fenti sáv írja ki.</main>' : `<iframe src="${escapeHtml(input.contentUrl)}" sandbox="allow-scripts" referrerpolicy="no-referrer" title="${escapeHtml(input.name)}"></iframe>`}
 </body>
 </html>`
 }
