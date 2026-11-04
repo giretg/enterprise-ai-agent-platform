@@ -500,7 +500,7 @@ async function main() {
     assert.equal((await service.commit(admin, { importId: widened.import.id, previewHash: widenedPreview.import.previewHash!, approve: true })).status, 'published')
     const extended = await statusOf()
     assert.equal(extended.schemaStatus, 'dataset_extended')
-    assert.deepEqual(extended.newFields, [{ dataset: 'rendelesek', field: 'brutto_1083' }])
+    assert.deepEqual(extended.newFields, [{ dataset: 'rendelesek', field: 'brutto_1083', label: 'Bruttó' }])
     const afterWiden = extended.datasets.find((d) => d.key === 'rendelesek')!
     assert.ok(afterWiden.structureVersionNow! > before.structureVersionNow!)
     assert.ok(afterWiden.structureChangedAt, 'a szerkezet változási ideje rögzült')
@@ -517,7 +517,7 @@ async function main() {
     await prisma.$executeRawUnsafe(`UPDATE "${schema}"._fields SET currency = 'EUR' WHERE dataset_key = 'rendelesek' AND name = 'netto'`)
     const changed = await statusOf()
     assert.equal(changed.schemaStatus, 'meaning_changed')
-    assert.deepEqual(changed.changedFields, [{ dataset: 'rendelesek', field: 'netto' }])
+    assert.deepEqual(changed.changedFields, [{ dataset: 'rendelesek', field: 'netto', label: 'Nettó összeg' }])
     assert.ok((await service.runSavedQuery(ai, { queryId: saved.query.queryId })).warnings.some((w) => w.code === 'saved_query_meaning_changed'))
     const reviewed = await service.saveQuery(ai, {
       queryId: saved.query.queryId,

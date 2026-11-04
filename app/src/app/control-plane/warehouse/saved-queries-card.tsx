@@ -142,9 +142,9 @@ function SavedQueryRow({
           <button
             type="button"
             disabled={pending}
-            title="A lekérdezés kikerül a munkatárs listájából. Az adatok nem változnak."
+            title="A lekérdezés kikerül a munkatárs listájából, és 90 nap múlva végleg törlődik. Az adatok nem változnak."
             onClick={() => {
-              if (window.confirm(`Archiválod a(z) „${query.name}” lekérdezést? A munkatárs legközelebb újra összeállítja vagy újra elmenti. Az adatok nem változnak.`)) {
+              if (window.confirm(`Archiválod a(z) „${query.name}” lekérdezést? 90 nap múlva végleg törlődik, a munkatárs addig is újra összeállítja vagy újra elmenti. Az adatok nem változnak.`)) {
                 act(() => archiveSavedQueryAction({ queryId: query.queryId }), 'A lekérdezés archiválva.')
               }
             }}
@@ -211,19 +211,18 @@ function SchemaChanges({ query }: { query: SavedQueryView }) {
     return (
       <p role="alert" className="rounded-lg bg-red-50 p-2 text-red-800">
         {SAVED_QUERY_STATUS.broken!.hint}
-        {query.error?.detail ? ` Érintett mező: ${query.error.detail}.` : ''}
       </p>
     )
   }
   if (query.schemaStatus === 'meaning_changed') {
     return (
       <p className="rounded-lg bg-honey/15 p-2">
-        Megváltozott a jelentése: {query.changedFields.map((field) => field.field).join(', ')}. {warehouseMessage('saved_query_meaning_changed')}
+        Megváltozott a jelentése: {query.changedFields.map((field) => field.label).join(', ')}. {warehouseMessage('saved_query_meaning_changed')}
       </p>
     )
   }
   if (query.schemaStatus === 'dataset_extended') {
-    const fields = query.newFields.map((field) => field.field).join(', ')
+    const fields = query.newFields.map((field) => field.label).join(', ')
     return <p className="rounded-lg bg-ink/5 p-2">{warehouseMessage('saved_query_dataset_extended')}{fields ? ` Új mezők: ${fields}.` : ''}</p>
   }
   return null
