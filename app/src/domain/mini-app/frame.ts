@@ -26,7 +26,65 @@ export function miniAppContentCsp(): string {
     'frame-ancestors *',
     "base-uri 'none'",
     'sandbox allow-scripts',
+    "require-trusted-types-for 'script'",
   ].join('; ')
+}
+
+/** A tartalom-válasz további hálózati korlátja: üres lista, a dokumentum sehova nem kapcsolódhat. */
+export const MINI_APP_CONTENT_HEADERS: Record<string, string> = {
+  'Connection-Allowlist': '()',
+}
+
+/**
+ * A platform saját indítószkriptje: az agent kódja előtt fut, és szűkíti a
+ * böngésző-API-kat. ES5, hogy minden böngészőben lefusson; a végén eltávolítja
+ * magát a DOM-ból, így az agent kódja ugyanazt a dokumentumot látja.
+ */
+const MINI_APP_HARDENING_JS = `(function(w,d){
+Object.getOwnPropertyNames(w).forEach(function(n){if(/RTC/.test(n))try{delete w[n]}catch(e){}});
+try{delete w.XSLTProcessor}catch(e){}
+var t=w.trustedTypes;
+if(t){
+var tail='',P=Object.getPrototypeOf(t),same=function(s){return s};
+var clean=function(s,_,sink){
+s=String(s);sink=String(sink);
+if(/srcdoc/i.test(sink))return '';
+if(/write/.test(sink)){var j=tail+s;tail=s.slice(-5);if(/srcdoc/i.test(j)&&!/srcdoc/i.test(s))return null}
+return s.replace(/srcdoc/gi,'data-blocked')};
+t.createPolicy('default',{createHTML:clean,createScript:same,createScriptURL:same});
+P.createPolicy=function(n,r){r=r||{};var f=function(k){return function(){if(!r[k])throw new TypeError(k);return String(r[k].apply(r,arguments))}};return{name:n,createHTML:f('createHTML'),createScript:f('createScript'),createScriptURL:f('createScriptURL')}};
+}
+d.currentScript.remove();
+})(window,document)`
+
+/**
+ * Az indítószkript a válasz legelső szkriptje lesz, bármi is van az agent HTML-jében.
+ * Ha az eredeti dokumentum doctype-pal kezdődik, azt előrevesszük, hogy a megjelenítési
+ * mód ne változzon. Itt tévedni nem biztonsági hiba: a doctype az első `>`-ig tart, utána
+ * mindenképp a mi szkriptünk jön. (Lineáris bejárás: az agent HTML-je nem lassíthatja.)
+ */
+export function withMiniAppHardening(html: string): string {
+  const source = html.charCodeAt(0) === 0xfeff ? html.slice(1) : html
+  let at = 0
+  for (;;) {
+    while (at < source.length && /\s/.test(source[at]!)) at += 1
+    if (!source.startsWith('<!--', at)) break
+    const end = source.indexOf('-->', at + 4)
+    if (end < 0) break
+    at = end + 3
+  }
+  const doctype = /^<!doctype[^>]*>/i.exec(source.slice(at, at + 1024))?.[0] ?? ''
+  return `${doctype}<script>${MINI_APP_HARDENING_JS}</script>${source}`
+}
+
+/**
+ * A tartalom csak beágyazva szolgálható ki (a keretoldalon belül): a közvetlen
+ * megnyitást a keretoldalra irányítjuk, minden más lekérést elutasítunk. A fejléc
+ * hiánya (régi böngésző, nem-böngésző kliens) a mai viselkedést hagyja.
+ */
+export function miniAppContentFetchDecision(secFetchDest: string | null): 'serve' | 'open_frame' | 'reject' {
+  if (!secFetchDest || secFetchDest === 'iframe' || secFetchDest === 'frame') return 'serve'
+  return secFetchDest === 'document' ? 'open_frame' : 'reject'
 }
 
 /**

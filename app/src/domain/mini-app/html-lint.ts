@@ -11,10 +11,11 @@ export const MINI_APP_DEFAULT_MAX_BYTES = 1024 * 1024
 type Rule = { code: string; pattern: RegExp }
 
 const HARD_FAIL_RULES: Rule[] = [
-  { code: 'iframe_tag', pattern: /<iframe[\s>]/i },
-  { code: 'object_tag', pattern: /<object[\s>]/i },
-  { code: 'embed_tag', pattern: /<embed[\s>]/i },
-  { code: 'form_tag', pattern: /<form[\s>]/i },
+  // A `/` is lezárja a tag nevét a HTML-elemzőben.
+  { code: 'iframe_tag', pattern: /<iframe[\s/>]/i },
+  { code: 'object_tag', pattern: /<object[\s/>]/i },
+  { code: 'embed_tag', pattern: /<embed[\s/>]/i },
+  { code: 'form_tag', pattern: /<form[\s/>]/i },
 ]
 
 const WARNING_RULES: Rule[] = [
@@ -24,6 +25,9 @@ const WARNING_RULES: Rule[] = [
   { code: 'xhr', pattern: /\bXMLHttpRequest\b/ },
   { code: 'websocket', pattern: /\bWebSocket\b/ },
   { code: 'event_source', pattern: /\bEventSource\b/ },
+  { code: 'peer_connection', pattern: /RTC(?:PeerConnection|IceTransport)\b/ },
+  { code: 'embedded_document', pattern: /\bsrcdoc\b/i },
+  { code: 'resource_hint', pattern: /<link[^>]*\srel\s*=\s*["']?(?:preconnect|dns-prefetch|prefetch|prerender|preload|modulepreload)\b/i },
   { code: 'document_cookie', pattern: /document\s*\.\s*cookie/ },
   { code: 'local_storage', pattern: /\blocalStorage\b/ },
   { code: 'session_storage', pattern: /\bsessionStorage\b/ },
