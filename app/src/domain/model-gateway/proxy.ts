@@ -21,8 +21,12 @@ import {
 import type { GatewayTokenFailure, GatewayTokenClaims } from '@/domain/model-gateway-token/gateway-token'
 import type { McpPrincipal } from '@/auth/mcp-principal'
 import { loadGeminiTenantKey, resolveGeminiApiKey, GEMINI_OPENAI_BASE_URL } from '@/lib/gemini-tenant-key'
+import { loadOpenAiTenantKey, OPENAI_BASE_URL } from '@/lib/openai-tenant-key'
 import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrouter-tenant-key'
 import { BLOCK_REASON_HEADER, PLATFORM_CHAT_INSTALL_ID } from '@/domain/platform-chat/gateway'
+import { postChatCompletion, type ProviderEndpoint } from './provider-call'
+
+export type { ProviderEndpoint }
 
 export const SESSION_HEADER = 'x-excellence-session'
 export const TURN_HEADER = 'x-excellence-turn'
@@ -39,8 +43,7 @@ export const FORWARDED_PARAMS = [
   'repetition_penalty', 'response_format', 'reasoning', 'reasoning_effort', 'include_reasoning',
 ] as const
 
-export type ProviderEndpoint = { baseUrl: string; apiKey?: string; headers?: Record<string, string> }
-/** null = a provider ezen a hoston nincs bekötve. Tenant-titok → env fallback. */
+/** null = a provider ezen a hoston nincs bekötve. Tenant-titok → env fallback (az OpenAI-nál csak tenant-titok). */
 export type ProviderRegistry = (
   provider: string,
   tenantId: string,
@@ -51,8 +54,18 @@ export function envProviderRegistry(
   env: Record<string, string | undefined> = process.env,
   loadTenantOpenRouterKey: (tenantId: string) => Promise<string | null> = loadOpenRouterTenantKey,
   loadTenantGeminiKey: (tenantId: string) => Promise<string | null> = loadGeminiTenantKey,
+  loadTenantOpenAiKey: (tenantId: string) => Promise<string | null> = loadOpenAiTenantKey,
 ): ProviderRegistry {
   return async (provider, tenantId) => {
+    if (provider === 'openai') {
+      const apiKey = (await loadTenantOpenAiKey(tenantId))?.trim()
+      if (!apiKey) return null
+      return {
+        baseUrl: (env.OPENAI_BASE_URL || OPENAI_BASE_URL).replace(/\/+$/, ''),
+        apiKey,
+        wireApi: 'responses',
+      }
+    }
     if (provider === 'openrouter') {
       const apiKey = await resolveOpenRouterApiKey(tenantId, loadTenantOpenRouterKey, env)
       if (!apiKey) return null
@@ -534,6 +547,12 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
 
   const errorClass = classifyProviderError(lastError)
   void record({ outcome: 'error', errorClass, failedCandidates: failed, request: lastSentRequest })
+  if (lastError instanceof ProviderPayloadError && lastError.payload.code === 'insufficient_quota') {
+    return new Response(JSON.stringify({ error: lastError.payload }), {
+      status: 402,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
   if (lastError instanceof ProviderHttpError && !isFallbackEligible(errorClass)) {
     return new Response(lastError.body, {
       status: lastError.status,
@@ -571,16 +590,9 @@ async function callProvider(
   let res: Response
   try {
     onSending()
-    res = await (deps.fetchImpl ?? fetch)(`${endpoint.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
-        ...endpoint.headers,
-      },
-      body: JSON.stringify(upstream),
-      redirect: 'error',
+    res = await postChatCompletion(endpoint, upstream, {
       signal: AbortSignal.any([controller.signal, request.signal]),
+      fetchImpl: deps.fetchImpl,
     })
   } catch (error) {
     if (!request.signal.aborted && controller.signal.aborted) {

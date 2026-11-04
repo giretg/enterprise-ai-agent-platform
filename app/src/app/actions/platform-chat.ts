@@ -9,7 +9,7 @@ import { services } from '@/domain/gateway-services'
 import { isPrivilegedAgentReader } from '@/domain/agent-definition'
 import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
 import { prisma } from '@/lib/db'
-import { loadOpenRouterTenantKey } from '@/lib/openrouter-tenant-key'
+import { hasPlatformChatModelKey } from '@/lib/platform-chat-model-key'
 import {
   isValidPlatformChatBudget,
   readPlatformChatSettings,
@@ -25,10 +25,6 @@ export type PlatformChatAdminView = {
   spentTodayUsd: number
 }
 
-async function keyConfigured(tenantId: string): Promise<boolean> {
-  return Boolean((await loadOpenRouterTenantKey(tenantId))?.trim())
-}
-
 /** #1004 D2/D14: a Beállítások → Beszélgetés a platformon panel adatai. */
 export async function getPlatformChatSettingsAction() {
   try {
@@ -36,7 +32,7 @@ export async function getPlatformChatSettingsAction() {
     const tenant = await repositories.tenants.findById(ctx.activeTenantId)
     const settings = readPlatformChatSettings(tenant?.settings)
     const [hasKey, budget] = await Promise.all([
-      keyConfigured(ctx.activeTenantId),
+      hasPlatformChatModelKey(ctx.activeTenantId),
       platformChatBudgetStatus({ store: platformChatGatewayStore }, { tenantId: ctx.activeTenantId, budgetUsd: settings.dailyBudgetUsd }),
     ])
     return ok<PlatformChatAdminView>({ settings, keyConfigured: hasKey, spentTodayUsd: budget.spentUsd })
@@ -58,7 +54,7 @@ export async function setPlatformChatSettingsAction(input: z.input<typeof settin
       return fail('A napi keret 0-nál nagyobb, legfeljebb 10 000 USD lehet.')
     }
     if (parsed.enabled) {
-      if (!(await keyConfigured(ctx.activeTenantId))) {
+      if (!(await hasPlatformChatModelKey(ctx.activeTenantId))) {
         return fail('A bekapcsoláshoz előbb add meg a céges modell-kulcsot (Céges kulcsok).')
       }
       if (parsed.dailyBudgetUsd === null) return fail('A bekapcsoláshoz add meg a napi keretet.')

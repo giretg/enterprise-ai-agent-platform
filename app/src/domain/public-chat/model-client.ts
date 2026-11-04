@@ -8,6 +8,7 @@ import {
   classifyProviderError,
   isFallbackEligible,
 } from '@/domain/model-gateway/fallback-chain'
+import { postChatCompletion } from '@/domain/model-gateway/provider-call'
 import type { ProviderRegistry } from '@/domain/model-gateway/proxy'
 import { costOfUsage } from '@/domain/platform-chat/gateway'
 import { isModelAllowed, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
@@ -16,7 +17,7 @@ import type { ModelReply, PublicTurnDeps, ToolCall } from './runtime'
 
 const REQUEST_TIMEOUT_MS = 60_000
 const MAX_REPLY_TOKENS = 1024
-const CHEAP_MODEL_RE = /flash|mini|haiku|lite|small|nano/i
+const CHEAP_MODEL_RE = /flash|mini|haiku|lite|small|nano|luna/i
 
 export type PublicModelDeps = {
   getTenantPolicy: (tenantId: string) => Promise<ModelPolicy>
@@ -75,14 +76,9 @@ async function callOnce(
 ): Promise<ModelReply> {
   const endpoint = await deps.providers(candidate.provider, tenantId)
   if (!endpoint) throw new Error(`${candidate.provider} provider is not configured`)
-  const res = await (deps.fetchImpl ?? fetch)(`${endpoint.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
-      ...endpoint.headers,
-    },
-    body: JSON.stringify({
+  const res = await postChatCompletion(
+    endpoint,
+    {
       model: candidate.model,
       messages: body.messages,
       ...(body.tools.length ? { tools: body.tools, tool_choice: body.toolChoice } : {}),
@@ -90,9 +86,9 @@ async function callOnce(
       temperature: 0.3,
       stream: false,
       ...(candidate.provider === 'openrouter' ? { usage: { include: true } } : {}),
-    }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  })
+    },
+    { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), fetchImpl: deps.fetchImpl },
+  )
   const text = await res.text()
   if (!res.ok) throw new Error(`${candidate.provider} provider failed: ${res.status} ${text.slice(0, 200)}`)
   let data: {
