@@ -124,6 +124,7 @@ function MiniAppRow({ row, linkTtl }: { row: AgentMiniAppRow; linkTtl: MiniAppLi
         <SourceBadge row={row} />
         {row.visibility === 'organization' && row.relation === 'owner' ? <Badge tone="warning">az egész szervezet látja</Badge> : null}
         {row.copiedFrom ? <Badge>másolat: {row.copiedFrom}</Badge> : null}
+        {row.liveData ? <Badge tone="success" title="Minden megnyitáskor a legutóbbi betöltés adatát mutatja az adattárházból.">élő adat</Badge> : null}
         {archived ? <Badge tone="danger">archiválva</Badge> : null}
       </div>
       {row.description ? <p className="text-sm text-ink-soft">{row.description}</p> : null}

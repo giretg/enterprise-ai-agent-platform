@@ -31,6 +31,10 @@ export function warehouseService(): WarehouseService {
     provisioner: new PgSchemaProvisioner(db),
     audit: repositories.audit,
     reviewUrl: (importId) => `/control-plane/warehouse${importId ? `?import=${importId}` : ''}`,
+    savedQueryUsage: async (tenantId, queryId) =>
+      (await repositories.miniApps.listBoundApps(tenantId))
+        .filter((app) => app.bindings.some((binding) => binding.queryId === queryId))
+        .map(({ appId, name }) => ({ appId, name })),
   })
   return service
 }

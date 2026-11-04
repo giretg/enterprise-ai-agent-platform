@@ -8,7 +8,14 @@
 import { writeAudit, type AuditSink } from '@/lib/audit/types'
 import { GENERAL_WORK_PROJECT_KEY } from '@/lib/work-project'
 import { miniAppLinkTtlMs, type MiniAppTenantSettings } from '@/lib/mini-app-settings'
-import { guideConflicts, lintMiniAppHtml, miniAppByteSize, miniAppContentHash } from './html-lint'
+import {
+  MINI_APP_LIVE_LINK_TTL_MS,
+  parseDataBindingsInput,
+  sameBindings,
+  type MiniAppDataBinding,
+  type MiniAppDataBindingInput,
+} from './data-binding'
+import { guideConflicts, lintBoundMiniAppHtml, lintMiniAppHtml, miniAppByteSize, miniAppContentHash } from './html-lint'
 import type {
   MiniAppListScope,
   MiniAppRecord,
@@ -31,7 +38,10 @@ export const MINI_APP_ARCHIVE_RETENTION_DAYS = 90
 
 export const MINI_APP_PLATFORM_RULES = [
   'A mini app egyetlen önálló HTML-fájl (jellemzően riport), amit az ember böngészőben nyit meg.',
-  'Minden adatot ágyazz be a HTML-be (táblázat, JSON egy <script> blokkban, képek data: URI-ként). Utólag nem frissül magától.',
+  'Minden adatot ágyazz be a HTML-be (táblázat, JSON egy <script> blokkban, képek data: URI-ként). Beágyazott adat utólag nem frissül magától.',
+  'Élő adat: ha a riport mentett adattárház-lekérdezésből dolgozik, kösd hozzá dataBindings-szel, így minden megnyitáskor a legutóbbi betöltés adatát mutatja, új verzió nélkül. Csak a saját mentett lekérdezésed köthető, legfeljebb 5, kötésenként legfeljebb 5000 sor, összesen 2 MB.',
+  'Élő adat olvasása: const { alias } = JSON.parse(document.getElementById(\'platform-data\').textContent). Sikeres blokk: { status: "ok", columns, columnLabels, rows, truncated, dataAsOf, warnings }; hibás blokk: { status: "error", code }. Mindkettőt és a truncated értéket is kezeld.',
+  'Élő adatnál a cellaérték külső forrásból jöhet, ezért csak textContent-tel írd ki. Tilos, és a platform elutasítja: innerHTML, outerHTML, insertAdjacentHTML, document.write, on*= attribútum, külső szkript, stíluslap és hálózati hívás. Eseménykezelőt addEventListener-rel adj meg. A <script> blokkok csak a mentett tartalmukkal futnak: szkriptet futásidőben ne hozz létre.',
   'Hálózat nincs: külső szkript, stíluslap, betűtípus, fetch, XMLHttpRequest, WebSocket nem töltődik be és nem fut.',
   'Tilos: <iframe>, <object>, <embed>, <form> — az ilyen HTML-t a platform elutasítja.',
   'Sütik, localStorage, sessionStorage nem működnek; a keretoldalon kívülre (window.top, parent) nem hathat.',
@@ -57,11 +67,16 @@ export type MiniAppServiceDeps = {
     }): MiniAppLinks
     permanentUrl(appId: string): string
   }
+  /** Élő adat-kötés (#1083): a tulajdonos saját lekérdezése, próbafuttatással. */
+  liveData?: {
+    prepare(actor: MiniAppActor, inputs: MiniAppDataBindingInput[]): Promise<{ ok: true; bindings: MiniAppDataBinding[] } | Fail>
+    latestQueryVersion(actor: MiniAppActor, queryId: string): Promise<number | null>
+  }
   audit?: AuditSink
   now?: () => Date
 }
 
-export type MiniAppActor = { tenantId: string; agentId: string; userId: string }
+export type MiniAppActor = { tenantId: string; agentId: string; userId: string; role?: string }
 
 type Fail = { ok: false; code: string; extra?: Record<string, unknown> }
 type Ok<T> = { ok: true } & T
@@ -87,6 +102,11 @@ export type MiniAppListRow = {
   visibility: MiniAppVisibility
   sharedWith: string
   copiedFrom?: string
+}
+
+/** A kötésből csak azonosító kerül auditba, paraméter-érték nem. */
+function bindingAudit(bindings: MiniAppDataBinding[]) {
+  return bindings.length > 0 ? { dataBindings: bindings.map(({ alias, queryId, queryVersion }) => ({ alias, queryId, queryVersion })) } : {}
 }
 
 export class MiniAppService {
@@ -125,10 +145,13 @@ export class MiniAppService {
     actor: MiniAppActor,
     html: string,
     context: { appId?: string; name?: string },
+    dataBindings: MiniAppDataBinding[] = [],
   ): Promise<MiniAppResult<{ version: Omit<NewMiniAppVersion, 'changeNote' | 'idempotencyKey'> }>> {
     const { maxBytes } = await this.deps.settings(actor.tenantId)
     const byteSize = miniAppByteSize(html)
-    const lint = lintMiniAppHtml(html)
+    const base = lintMiniAppHtml(html)
+    // Élő adatnál külső forrású szöveg kerül a lapra: a szabályok ott szigorúbbak (§5), a statikus app nem változik.
+    const lint = dataBindings.length > 0 ? { errors: [...base.errors, ...lintBoundMiniAppHtml(html)], warnings: base.warnings } : base
     const tooLarge = byteSize > maxBytes
     if (tooLarge || lint.errors.length > 0 || !html.trim()) {
       await this.audit(actor, 'mini_app.validation_failed', context.appId ?? null, {
@@ -149,8 +172,19 @@ export class MiniAppService {
         byteSize,
         lintWarnings: lint.warnings,
         createdByUserId: actor.userId,
+        dataBindings,
       },
     }
+  }
+
+  /** JSON-szövegből kötés-lista; hiányzó bemenet `null`, az üres lista a kötés levétele. */
+  private async prepareBindings(actor: MiniAppActor, raw: string | undefined): Promise<MiniAppResult<{ bindings: MiniAppDataBinding[] | null }>> {
+    if (raw === undefined) return { ok: true, bindings: null }
+    const parsed = parseDataBindingsInput(raw)
+    if (!parsed.ok) return fail('invalid_data_bindings', { detail: parsed.detail })
+    if (parsed.bindings.length === 0) return { ok: true, bindings: [] }
+    if (!this.deps.liveData) return fail('invalid_data_bindings', { detail: 'live data is not available' })
+    return this.deps.liveData.prepare(actor, parsed.bindings)
   }
 
   async create(
@@ -161,6 +195,7 @@ export class MiniAppService {
       html?: string
       copyFromAppId?: string
       projectKey?: string
+      dataBindings?: string
       idempotencyKey: string
     },
   ): Promise<MiniAppResult<{ app: MiniAppRecord; version: number; contentHash: string; lintWarnings: string[]; links: MiniAppLinks; created: boolean }>> {
@@ -179,11 +214,15 @@ export class MiniAppService {
       if (!source.ok) return source
       const current = await this.deps.store.findVersion(source.app.id, source.app.currentVersion)
       if (!current) return fail('mini_app_not_found')
+      // §4.4: a másoló agent nem a saját lekérdezéséből dolgozna, ezért v1-ben nem másolható.
+      if (current.dataBindings.length > 0) return fail('mini_app_copy_has_data_binding')
       html ??= current.html
       copiedFrom = { appId: source.app.id, version: current.version }
     }
     if (typeof html !== 'string') return fail('invalid_args')
-    const gated = await this.gate(actor, html, { name })
+    const prepared = await this.prepareBindings(actor, input.dataBindings)
+    if (!prepared.ok) return prepared
+    const gated = await this.gate(actor, html, { name }, prepared.bindings ?? [])
     if (!gated.ok) return gated
 
     const { app, created } = await this.deps.store.createWithVersion({
@@ -204,6 +243,7 @@ export class MiniAppService {
         contentHash: gated.version.contentHash,
         byteSize: gated.version.byteSize,
         lintWarnings: gated.version.lintWarnings,
+        ...bindingAudit(gated.version.dataBindings),
         ...(copiedFrom ? { copiedFromAppId: copiedFrom.appId, copiedFromVersion: copiedFrom.version } : {}),
       })
     }
@@ -227,7 +267,7 @@ export class MiniAppService {
 
   async update(
     actor: MiniAppActor,
-    input: { appId: string; html: string; changeNote?: string; idempotencyKey: string },
+    input: { appId: string; html?: string; changeNote?: string; dataBindings?: string; idempotencyKey: string },
   ): Promise<MiniAppResult<{ appId: string; name: string; version: number; contentHash: string; lintWarnings: string[]; unchanged: boolean; links: MiniAppLinks }>> {
     const owned = await this.owned(actor, input.appId)
     if (!owned.ok) return owned
@@ -239,10 +279,15 @@ export class MiniAppService {
     const replay = await this.deps.store.findVersionByKey(app.id, input.idempotencyKey)
     if (replay) return this.versionResult(actor, app, replay, false)
 
-    const gated = await this.gate(actor, input.html, { appId: app.id })
-    if (!gated.ok) return gated
     const current = await this.deps.store.findVersion(app.id, app.currentVersion)
-    if (current && current.contentHash === gated.version.contentHash) {
+    if (input.html === undefined && (input.dataBindings === undefined || !current)) return fail('invalid_args')
+    const prepared = await this.prepareBindings(actor, input.dataBindings)
+    if (!prepared.ok) return prepared
+    // Kötés nélküli frissítésnél az eddigi kötés marad; a HTML nélküli frissítés csak a kötést cseréli.
+    const bindings = prepared.bindings ?? current?.dataBindings ?? []
+    const gated = await this.gate(actor, input.html ?? current!.html, { appId: app.id }, bindings)
+    if (!gated.ok) return gated
+    if (current && current.contentHash === gated.version.contentHash && sameBindings(current.dataBindings, bindings)) {
       return this.versionResult(actor, app, current, true)
     }
     const added = await this.deps.store.addVersion({
@@ -257,6 +302,7 @@ export class MiniAppService {
       contentHash: added.contentHash,
       byteSize: added.byteSize,
       lintWarnings: added.lintWarnings,
+      ...bindingAudit(added.dataBindings),
     })
     return this.versionResult(actor, { ...app, currentVersion: added.version }, added, false)
   }
@@ -278,16 +324,18 @@ export class MiniAppService {
   async issueLinks(
     actor: { tenantId: string; userId: string; agentId?: string | null },
     app: MiniAppRecord,
-    version: Pick<MiniAppVersionMeta, 'version' | 'contentHash'>,
+    version: Pick<MiniAppVersionMeta, 'version' | 'contentHash' | 'dataBindings'>,
   ): Promise<MiniAppLinks> {
     const { linkTtl } = await this.deps.settings(app.tenantId)
+    const ttlMs = miniAppLinkTtlMs(linkTtl)
     const links = this.deps.links.mint({
       tenantId: app.tenantId,
       appId: app.id,
       version: version.version,
       contentHash: version.contentHash,
       requesterUserId: actor.userId,
-      ttlMs: miniAppLinkTtlMs(linkTtl),
+      // D6: egy kiszivárgott link ne mutassa hetekig a friss adatot.
+      ttlMs: version.dataBindings.length > 0 ? Math.min(ttlMs, MINI_APP_LIVE_LINK_TTL_MS) : ttlMs,
     })
     await writeAudit(this.deps.audit, {
       actorType: 'human',
@@ -385,6 +433,7 @@ export class MiniAppService {
       lintWarnings: string[]
       links?: MiniAppLinks
       source?: { html: string; offset: number; totalChars: number; nextOffset: number | null }
+      dataBindings?: Array<{ alias: string; queryId: string; queryVersion: number; maxRows: number; latestQueryVersion?: number | null }>
     }>
   > {
     const found = await this.readable(actor, input.appId)
@@ -407,8 +456,19 @@ export class MiniAppService {
         nextOffset: end < version.html.length ? end : null,
       }
     }
+    // A lekérdezés a tulajdonosé: másnak csak a kötés ténye látszik, a verzió-összevetés nem.
+    const dataBindings = await Promise.all(
+      version.dataBindings.map(async ({ alias, queryId, queryVersion, maxRows }) => ({
+        alias,
+        queryId,
+        queryVersion,
+        maxRows,
+        ...(found.relation === 'owner' && this.deps.liveData ? { latestQueryVersion: await this.deps.liveData.latestQueryVersion(actor, queryId) } : {}),
+      })),
+    )
     return {
       ok: true,
+      ...(dataBindings.length > 0 ? { dataBindings } : {}),
       app: row!,
       version: version.version,
       currentVersion: app.currentVersion,

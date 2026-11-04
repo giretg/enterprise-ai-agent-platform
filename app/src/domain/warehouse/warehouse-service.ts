@@ -78,7 +78,7 @@ export interface WarehouseRegistry {
   update(tenantId: string, patch: Partial<Pick<WarehouseRegistryRecord, 'status' | 'internalVersion' | 'lastError'>> & { attempt?: boolean; ready?: boolean }): Promise<WarehouseRegistryRecord>
 }
 
-export type WarehouseActor = { tenantId: string; userId: string; role: string; agentId?: string | null; channel: 'mcp' | 'ui' }
+export type WarehouseActor = { tenantId: string; userId: string; role: string; agentId?: string | null; channel: 'mcp' | 'ui' | 'mini_app' }
 
 export class WarehouseError extends Error {
   constructor(readonly code: string, readonly extra?: Record<string, unknown>) {
@@ -94,6 +94,8 @@ export type WarehouseServiceDeps = {
   audit?: AuditSink
   /** Control Plane link (jóváhagyás, kivételek) — relatív is lehet. */
   reviewUrl: (importId?: string) => string
+  /** Mely aktív mini appok aktuális verziója használja a lekérdezést (#1083 §4.1). */
+  savedQueryUsage?: (tenantId: string, queryId: string) => Promise<Array<{ appId: string; name: string }>>
 }
 
 export type PreviewCounts = {
@@ -267,16 +269,18 @@ export class WarehouseService {
   }
 
   private async audit(actor: WarehouseActor, action: string, targetId: string | null, metadata: Record<string, unknown>, denied = false) {
+    // A mini app gyors linkje továbbadható: azt tudjuk, kinek készült, azt nem, ki nyitotta meg.
+    const viaLink = actor.channel === 'mini_app'
     await writeAudit(this.deps.audit, {
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: viaLink ? 'system' : 'human',
+      actorId: viaLink ? null : actor.userId,
       action,
       targetType: 'warehouse',
       targetId,
       inputRef: actor.channel,
       outputRef: null,
       policyDecision: denied ? 'denied' : 'allowed',
-      metadata: { tenantId: actor.tenantId, userId: actor.userId, agentId: actor.agentId ?? null, channel: actor.channel, ...metadata },
+      metadata: { tenantId: actor.tenantId, ...(viaLink ? { linkIssuedToUserId: actor.userId } : { userId: actor.userId }), agentId: actor.agentId ?? null, channel: actor.channel, ...metadata },
       tenantId: actor.tenantId,
     })
   }
@@ -1251,6 +1255,70 @@ export class WarehouseService {
     return outcome
   }
 
+  /**
+   * Mini app kötés futtatása (#1083 §4.2): a rögzített verzió, soronként a közös bájtkeretig.
+   * A keretet az adatbázis számolja, így a túl nagy eredmény a platform memóriájába sem jut.
+   * A jogosultságot a hívó ellenőrzi megnyitáskor; itt csak a tulajdonos saját lekérdezése fut.
+   */
+  async runBoundQuery(
+    actor: WarehouseActor,
+    input: { queryId: string; version: number | null; params: Record<string, unknown>; maxRows: number; maxBytes: number; audit: boolean },
+  ) {
+    this.require(actor, 'read')
+    const ownerAgentId = this.savedQueryOwner(actor)
+    if (!ownerAgentId) throw new WarehouseError('saved_query_not_found')
+    const schema = await this.schemaFor(actor)
+    const outcome = await this.deps.db.run(
+      async (sql) => {
+        const catalog = await store.loadCatalog(sql, schema)
+        const record = await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId, ...(input.version === null ? {} : { version: input.version }) })
+        if (!record || record.status !== 'active') throw new WarehouseError('saved_query_not_found')
+        const view = this.savedQueryView(record, schema, catalog)
+        if (view.schemaStatus === 'broken') throw new WarehouseError('saved_query_broken', { queryId: record.id, error: view.error })
+        const spec: QuerySpec = { ...withQueryErrors(() => resolveSavedQuery(record.spec, record.params, input.params, new Date())), limit: input.maxRows, offset: 0 }
+        const compiled = withQueryErrors(() => compileQuery(schema, spec, catalog))
+        const budget = compiled.params.length + 1
+        // A keret a HTML-be ágyazott méretre vonatkozik: a `<`, `>`, `&` ott hatbájtos escape lesz.
+        const raw = await sql.query<{ r: Record<string, unknown> | null; size: number; total: number }>(
+          `SELECT CASE WHEN w.size <= $${budget}::bigint THEN w.r END AS r, w.size, w.total
+           FROM (
+             SELECT s.r, sum(octet_length(s.r::text) + 5 * (length(s.r::text) - length(translate(s.r::text, '<>&', '')))) OVER (ROWS UNBOUNDED PRECEDING) AS size, count(*) OVER () AS total, row_number() OVER () AS rn
+             FROM (${compiled.sql}) s
+           ) w
+           WHERE w.size <= $${budget}::bigint OR w.rn = 1
+           ORDER BY w.rn`,
+          [...compiled.params, input.maxBytes],
+        )
+        const kept = raw.filter((row) => row.r !== null).slice(0, spec.limit)
+        const total = Number(raw[0]?.total ?? 0)
+        const { provenance, warnings } = await this.provenance(sql, schema, catalog, spec)
+        return {
+          columns: compiled.columns,
+          columnLabels: compiled.columns.map((column) => savedQueryColumnLabel(spec, catalog, column)),
+          rows: kept.map(({ r }) => compiled.columns.map((_, i) => r![`c${i}`] ?? null)),
+          truncated: total > kept.length,
+          bytes: Number(kept.at(-1)?.size ?? 0),
+          dataAsOf: provenance.freshness,
+          warnings: [...warnings, ...view.changedFields.map((changed) => ({ code: 'saved_query_meaning_changed', dataset: changed.dataset, detail: { field: changed.field } }))],
+          schemaStatus: view.schemaStatus,
+          version: record.version,
+          currentVersion: record.currentVersion,
+          dataset: view.dataset,
+        }
+      },
+      { readOnly: true, statementTimeoutMs: 10_000, timeoutMs: 15_000 },
+    ).catch((error: unknown) => {
+      throw translateRunError(error)
+    })
+    if (input.audit) {
+      await this.deps.db
+        .run((sql) => savedQueries.recordRun(sql, schema, input.queryId), { statementTimeoutMs: 5_000, timeoutMs: 8_000 })
+        .catch(() => undefined)
+      await this.audit(actor, 'warehouse.saved_query.run', input.queryId, { version: outcome.version, datasetKey: outcome.dataset, rows: outcome.rows.length, schemaStatus: outcome.schemaStatus, truncated: outcome.truncated })
+    }
+    return outcome
+  }
+
   async archiveSavedQuery(actor: WarehouseActor, input: { queryId: string }) {
     this.require(actor, actor.channel === 'ui' ? 'import' : 'read')
     const ownerAgentId = this.savedQueryOwner(actor)
@@ -1261,6 +1329,9 @@ export class WarehouseService {
         const record = lockedId ? await savedQueries.findSavedQuery(sql, schema, { id: lockedId, ownerAgentId }) : null
         if (!record) throw new WarehouseError('saved_query_not_found')
         if (record.status === 'archived') return false
+        // §4.1 AC18: az aktuális mini app adata ettől a lekérdezéstől függ.
+        const usedBy = (await this.deps.savedQueryUsage?.(actor.tenantId, record.id)) ?? []
+        if (usedBy.length > 0) throw new WarehouseError('saved_query_in_use', { apps: usedBy })
         await savedQueries.archiveSavedQuery(sql, schema, record.id)
         return true
       },

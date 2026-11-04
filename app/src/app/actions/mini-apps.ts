@@ -58,6 +58,7 @@ export type AgentMiniAppRow = MiniAppListRow & {
   canManage: boolean
   lintWarnings: string[]
   archivedAt: string | null
+  liveData: boolean
 }
 
 export async function listAgentMiniAppsAction(input: { agentId: string }) {
@@ -81,6 +82,7 @@ export async function listAgentMiniAppsAction(input: { agentId: string }) {
           ...row,
           canManage: access === 'manage',
           lintWarnings: current?.lintWarnings ?? [],
+          liveData: (current?.dataBindings.length ?? 0) > 0,
           archivedAt: app.archivedAt?.toISOString() ?? null,
         }
       }),
