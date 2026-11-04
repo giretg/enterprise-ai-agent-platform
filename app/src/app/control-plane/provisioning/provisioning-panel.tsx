@@ -569,7 +569,7 @@ export function ProvisioningPanel({
       type: string
       connectorMode?: 'fixed' | 'self_updating'
       templateKey?: string | null
-      tenantMailbox?: { readOnly: boolean } | null
+      tenantMailbox?: { readOnly: boolean; connected: boolean } | null
     }>
   >([])
   const [selfUpdatingRows, setSelfUpdatingRows] = useState<SelfUpdatingConnectorRow[]>([])
@@ -1346,7 +1346,7 @@ export function ProvisioningPanel({
       action: t('hubManage'),
       target: { kind: 'mcp', id: row.id } as HubView,
     })),
-    ...tenantMailboxRows.map((row) => ({
+    ...tenantMailboxRows.filter((row) => row.tenantMailbox?.connected).map((row) => ({
       key: `mailbox:${row.id}`,
       name: row.name,
       searchText: `${row.name} ${row.type}`,
@@ -1387,6 +1387,17 @@ export function ProvisioningPanel({
       tone: 'warning' as const,
       action: t('hubContinue'),
       target: { kind: 'mcp', id: row.id } as HubView,
+    })),
+    // Félbehagyott belépés vagy megszakadt postafiók: a Postafiókok oldalon köthető be újra.
+    ...tenantMailboxRows.filter((row) => !row.tenantMailbox?.connected).map((row) => ({
+      key: `mailbox:${row.id}`,
+      name: row.name,
+      searchText: `${row.name} ${row.type}`,
+      provider: row.templateKey ?? row.type,
+      subtitle: t('hubStatusNotConnected'),
+      tone: 'warning' as const,
+      action: t('hubContinue'),
+      target: { kind: 'mailbox' } as HubView,
     })),
     ...catalogGaps.map((row) => ({
       key: `gap:${row.id}`,

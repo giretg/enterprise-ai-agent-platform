@@ -495,7 +495,7 @@ export interface ConnectorDraftRepository {
       connectorMode: 'fixed' | 'self_updating'
       templateKey?: string | null
       /** #1028: közös (tenant-szintű) postafiók — nem draftból jön, a Postafiókok oldal kezeli. */
-      tenantMailbox?: { readOnly: boolean } | null
+      tenantMailbox?: { readOnly: boolean; connected: boolean } | null
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>

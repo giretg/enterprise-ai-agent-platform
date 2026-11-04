@@ -1477,7 +1477,7 @@ export class ProvisioningService {
       name: string
       connectorMode: 'fixed' | 'self_updating'
       templateKey?: string | null
-      tenantMailbox?: { readOnly: boolean } | null
+      tenantMailbox?: { readOnly: boolean; connected: boolean } | null
       iconDataUrl?: string | null
       description?: string | null
       baseUrl?: string | null

@@ -467,7 +467,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       type: ConnectorType
       name: string
       connectorMode: 'fixed' | 'self_updating'
-      tenantMailbox?: { readOnly: boolean } | null
+      tenantMailbox?: { readOnly: boolean; connected: boolean } | null
       description?: string | null
       baseUrl?: string | null
       tools?: Array<{ method: string; path: string; description?: string | null }>
@@ -484,6 +484,12 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         connectorMode: true,
         activeSpecVersion: { select: { capabilitySet: true } },
         specSource: { select: { urlApprovedAt: true, trustedAt: true } },
+        grants: {
+          where: { ownerType: 'tenant' },
+          orderBy: { grantedAt: 'desc' },
+          take: 1,
+          select: { status: true },
+        },
       },
       orderBy: { name: 'asc' },
     })
@@ -503,7 +509,9 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
           name: row.name,
           connectorMode: row.connectorMode,
           templateKey: provenanceTemplateKey(row.config),
-          tenantMailbox: mailbox ? { readOnly: mailbox.readOnly } : null,
+          tenantMailbox: mailbox
+            ? { readOnly: mailbox.readOnly, connected: row.grants[0]?.status === 'active' }
+            : null,
           ...describeConnectorCatalog(row.type, row.config, row.activeSpecVersion?.capabilitySet ?? null),
         }
       })
