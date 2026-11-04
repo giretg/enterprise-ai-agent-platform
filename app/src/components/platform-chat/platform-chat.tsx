@@ -520,7 +520,7 @@ export function PlatformChat({
               if (!prev || prev.turnId !== turnId) return prev
               const p = { ...prev, lastId: Math.max(prev.lastId, e.id) }
               if (e.type === 'delta') return { ...p, text: p.text + String(e.data.text ?? ''), status: '' }
-              if (e.type === 'status') return { ...p, ...(e.data.phase === 'resumed' ? { paused: null } : {}), status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
+              if (e.type === 'status') return { ...p, ...(e.data.phase === 'resumed' ? { paused: null } : {}), status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : e.data.phase === 'model_retry' ? 'A modell most nem válaszol, kis idő múlva újrapróbálom…' : p.status }
               if (e.type === 'pause') return { ...p, status: '', text: String(e.data.text ?? p.text), paused: { message: String(e.data.message ?? ''), completedOperations: Number(e.data.completedOperations ?? 0), files: (e.data.files as ChatFile[]) ?? [] } }
               if (e.type === 'tool') {
                 return { ...p, text: p.text && !p.text.endsWith('\n\n') ? `${p.text}\n\n` : p.text, status: e.data.phase === 'start' ? toolStatus(String(e.data.name ?? ''), e.data.detail) : 'Gondolkodom…' }

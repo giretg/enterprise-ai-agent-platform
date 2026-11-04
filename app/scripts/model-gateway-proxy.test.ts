@@ -234,8 +234,49 @@ async function main() {
     assert.equal((await res.json()).choices[0].message.content, 'tartalék')
     assert.equal(s.calls[1].body.model, 'vendor/model-b')
     await flush()
-    assert.deepEqual(s.events[0].failedCandidates, [{ model: 'openrouter/vendor/model-a', errorClass: 'provider_unavailable' }])
+    assert.deepEqual(s.events[0].failedCandidates, [{ model: 'openrouter/vendor/model-a', errorClass: 'provider_unavailable', status: 503, detail: 'boom' }])
     assert.equal(s.events[0].model, 'openrouter/vendor/model-b')
+  })
+
+  await check('provider-hiba audit: státusz, kód és háttér-szolgáltató megmarad, a titok és a nyers válasz nem', async () => {
+    const body = { error: { code: 502, message: 'Rossz kulcs: sk-or-v1-abcdef123456, Bearer abc.def, kati@ceg.hu, 1234567890', metadata: { provider_name: 'Azure', raw: 'A KÉRÉSBŐL IDÉZ' } } }
+    const s = setup({ agent: { primary: A }, scripts: [new Response(JSON.stringify(body), { status: 502 })] })
+    assert.equal((await s.call(ask)).status, 502)
+    await flush()
+    assert.deepEqual(s.events[0].failedCandidates, [{
+      model: 'openrouter/vendor/model-a',
+      errorClass: 'provider_unavailable',
+      status: 502,
+      code: '502',
+      upstream: 'Azure',
+      detail: 'Rossz kulcs: [rejtve], [rejtve], [rejtve], [rejtve]',
+    }])
+  })
+
+  await check('provider-hiba audit: a stream első adat-sorában kapott hiba háttér-szolgáltatója is megmarad', async () => {
+    const s = setup({ agent: { primary: A }, scripts: [sse('data: {"error":{"code":503,"message":"Provider returned error","metadata":{"provider_name":"Bedrock"}}}\n\n')] })
+    assert.equal((await s.call({ ...ask, stream: true })).status, 502)
+    await flush()
+    assert.deepEqual(s.events[0].failedCandidates, [{
+      model: 'openrouter/vendor/model-a',
+      errorClass: 'provider_unavailable',
+      code: '503',
+      upstream: 'Bedrock',
+      detail: 'Provider returned error',
+    }])
+  })
+
+  await check('provider-hiba audit: a tartalom-hiba szövege nem kerül az auditba, a hálózati hiba oka igen', async () => {
+    const s = setup({ agent: { primary: A }, scripts: [upstreamError(400, 'a kérésből idézett szöveg')] })
+    assert.equal((await s.call(ask)).status, 400)
+    await flush()
+    assert.deepEqual(s.events[0].failedCandidates, [{ model: 'openrouter/vendor/model-a', errorClass: 'content_error', status: 400 }])
+
+    const down = new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } })
+    const n = setup({ agent: { primary: A }, scripts: [down] })
+    assert.equal((await n.call(ask)).status, 502)
+    await flush()
+    assert.equal(n.events[0].failedCandidates[0].detail, 'fetch failed (ECONNRESET)')
   })
 
   await check('tartalék: nem bekötött provider kimarad, a következő válaszol', async () => {

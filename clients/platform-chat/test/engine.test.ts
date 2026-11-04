@@ -456,6 +456,48 @@ async function main() {
     assert.equal(h.queued.length, 0)
   })
 
+  await check('szolgáltatói kiesés: az LLM-lépés egyre később próbálkozik újra, és a kiesés után folytatódik', async () => {
+    const down = () => new PlatformError('model gateway: 502 provider_unavailable', 502)
+    const h = harness({ llm: [down(), new PlatformError('model gateway: 429 rate_limited', 429), down(), say('Rendben.')], tool: [] })
+    const delays: Array<number | undefined> = []
+    const enqueue = h.deps.queue.enqueue
+    h.deps.queue.enqueue = async (t, options) => {
+      delays.push(options?.delaySeconds)
+      await enqueue(t, options)
+    }
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.deepEqual(delays.slice(1), [15, 30, 60])
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    const events = await h.store.eventsAfter(r.turn.id, 0)
+    assert.equal(events.filter((e) => e.type === 'status' && e.payload.phase === 'model_retry').length, 3)
+  })
+
+  await check('szolgáltatói kiesés: a negyedik hiba után a forduló érthető hibával lezárul', async () => {
+    const down = () => new PlatformError('model gateway: 502 provider_unavailable', 502)
+    const h = harness({ llm: [down(), down(), down(), down()], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'failed')
+    assert.equal(turn?.error, MESSAGES.failed)
+    assert.equal(h.queued.length, 0)
+    assert.equal((await h.store.listSteps(r.turn.id))[0].attempts, 4)
+  })
+
+  await check('nem kiesés jellegű hiba (500) nem kap késleltetett újrapróbálást', async () => {
+    const h = harness({ llm: [new PlatformError('model gateway: 500', 500)], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await assert.rejects(runStep(h.deps, h.queued.shift()!))
+    assert.equal(h.queued.length, 0)
+  })
+
   await check('csatolmány: a kinyert szöveg a user-üzenet mellé kerül', async () => {
     const h = harness({ llm: [say('3 sor van.')], tool: [] })
     const c = await h.conversation()
