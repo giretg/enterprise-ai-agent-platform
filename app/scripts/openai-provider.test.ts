@@ -326,6 +326,14 @@ async function main() {
   })
 
   // --- Nem-stream válasz ---
+  await check('hibás JSON-válasz nem válhat üres sikeres válasszá', () => {
+    for (const data of [{}, { error: null }, { status: 'completed' }, { status: 'in_progress', output: [] }]) {
+      const out = responsesJsonToChat(data, SOL.model) as Json
+      assert.equal(out.error?.code, 'invalid_response')
+      assert.equal('choices' in out, false)
+    }
+  })
+
   await check('JSON-válasz: szöveg, eszközhívás, usage és költség', () => {
     const out = responsesJsonToChat(
       {
@@ -375,7 +383,7 @@ async function main() {
     ) as Json
     assert.equal(cut.choices[0].finish_reason, 'length')
     assert.equal(cut.choices[0].message.content, null)
-    const filtered = responsesJsonToChat({ status: 'incomplete', incomplete_details: { reason: 'content_filter' } }, 'm') as Json
+    const filtered = responsesJsonToChat({ status: 'incomplete', incomplete_details: { reason: 'content_filter' }, output: [] }, 'm') as Json
     assert.equal(filtered.choices[0].finish_reason, 'content_filter')
     assert.deepEqual(responsesJsonToChat({ status: 'failed', error: { code: 'server_error', message: 'x' } }, 'm'), {
       error: { code: 'server_error', message: 'x' },
@@ -509,6 +517,29 @@ async function main() {
     assert.equal(s.calls.length, 1)
     assert.equal(res.status, 402)
     assert.equal(((await res.json()) as Json).error.code, 'insufficient_quota')
+  })
+
+  await check('gateway: JSON- és stream-hibatestben elfogyott kredit is 402, tartalék nélkül', async () => {
+    const error = { code: 'insufficient_quota', message: 'You exceeded your current quota' }
+    for (const stream of [false, true]) {
+      const quota = stream
+        ? sseResponse(created, { type: 'response.failed', response: { status: 'failed', error } })
+        : new Response(JSON.stringify({ status: 'failed', error }))
+      const s = gatewaySetup({ scripts: [quota] })
+      const res = await s.call({ messages: [{ role: 'user', content: 'x' }], stream })
+      assert.equal(res.status, 402)
+      assert.equal(s.calls.length, 1)
+      assert.deepEqual(((await res.json()) as Json).error, error)
+    }
+  })
+
+  await check('gateway: hibás Responses JSON esetén tartalék modell válaszol', async () => {
+    const fallback = new Response(JSON.stringify({ choices: [{ message: { content: 'tartalék' } }] }))
+    const s = gatewaySetup({ scripts: [new Response('{}'), fallback] })
+    const res = await s.call({ messages: [{ role: 'user', content: 'x' }] })
+    assert.equal(res.status, 200)
+    assert.equal(s.calls.length, 2)
+    assert.equal(((await res.json()) as Json).choices[0].message.content, 'tartalék')
   })
 
   await check('gateway: a valódi 429 (rate limit) marad 429-es hibaosztály, és tartalékra vált', async () => {

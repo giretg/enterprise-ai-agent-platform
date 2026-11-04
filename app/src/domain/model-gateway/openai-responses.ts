@@ -209,6 +209,9 @@ function errorPayload(error: unknown): Json {
 export function responsesJsonToChat(data: unknown, requestedModel: unknown): Json {
   if (!isObj(data)) return errorPayload(null)
   if (data.status === 'failed' || isObj(data.error)) return errorPayload(data.error)
+  if (!['completed', 'incomplete'].includes(String(data.status)) || !Array.isArray(data.output)) {
+    return errorPayload({ code: 'invalid_response', message: 'The model provider returned an invalid response.' })
+  }
   let text = ''
   const toolCalls: Json[] = []
   for (const item of Array.isArray(data.output) ? data.output : []) {

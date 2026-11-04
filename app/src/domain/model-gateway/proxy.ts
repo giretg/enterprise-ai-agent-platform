@@ -547,6 +547,12 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
 
   const errorClass = classifyProviderError(lastError)
   void record({ outcome: 'error', errorClass, failedCandidates: failed, request: lastSentRequest })
+  if (lastError instanceof ProviderPayloadError && lastError.payload.code === 'insufficient_quota') {
+    return new Response(JSON.stringify({ error: lastError.payload }), {
+      status: 402,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
   if (lastError instanceof ProviderHttpError && !isFallbackEligible(errorClass)) {
     return new Response(lastError.body, {
       status: lastError.status,
