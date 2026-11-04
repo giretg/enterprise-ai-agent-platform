@@ -96,6 +96,8 @@ export const KB_WIKI_REVERT_TOOL = 'kb_wiki_revert'
 export const KB_WIKI_CONFIG_GET_TOOL = 'kb_wiki_config_get'
 export const KB_WIKI_CONFIG_PROPOSE_TOOL = 'kb_wiki_config_propose'
 export const KB_WIKI_CONFIG_WITHDRAW_TOOL = 'kb_wiki_config_withdraw'
+/** #1085: lezárt tálca-tétel újrafeldolgozásra jelölése / változtatás nélküli lezárása. */
+export const KB_WIKI_REPROCESS_TOOL = 'kb_wiki_reprocess'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
@@ -106,6 +108,7 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_REPROCESS_TOOL,
   KB_WIKI_CONFIG_GET_TOOL,
   KB_WIKI_CONFIG_PROPOSE_TOOL,
   KB_WIKI_CONFIG_WITHDRAW_TOOL,
@@ -132,6 +135,8 @@ const CAPABILITY_ALIASES: Record<string, readonly string[]> = {
   [KB_WIKI_CONFIG_GET_TOOL]: [KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
   [KB_WIKI_CONFIG_PROPOSE_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  // #1085: a tényleges jog a kötés `wikiAccess: write`-ja.
+  [KB_WIKI_REPROCESS_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
 }
 
 /** Az agent-képességek, amelyek közül bármelyik engedi az eszközt. */
@@ -872,6 +877,7 @@ export const kbListIndexInputSchema = z
     artifactId: z.string().uuid().optional(),
     /** #943: a tálca (fel nem dolgozott wiki-források) listája + köteg-összesítő. */
     inbox: z.boolean().optional(),
+    includeDone: z.boolean().optional().describe('With inbox:true: also list processed and skipped items, after the waiting ones.'),
     batchId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(200).optional(),
     /**
@@ -1178,6 +1184,31 @@ export const kbWikiConfigWithdrawInputSchema = z
   .object({ definitionId, agentId: optionalAgentId, wikiId: optionalWikiId, proposalId: z.string().uuid() })
   .passthrough()
 
+export const kbWikiReprocessObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    action: z
+      .enum(['request', 'finish_unchanged'])
+      .optional()
+      .describe('request (default): put processed or skipped sources back in the inbox. finish_unchanged: you checked a source you claimed and no page needs changing.'),
+    documentId: z.string().uuid().optional().describe('The source (inboxItemId / documentId).'),
+    batchId: z.string().uuid().optional().describe('action request only: the whole batch instead of documentId.'),
+    reason: z.string().trim().min(1).max(1000).describe('request: what is wrong or what to check. finish_unchanged: what you checked.'),
+  })
+  .passthrough()
+
+export const kbWikiReprocessInputSchema = kbWikiReprocessObject
+  .refine((value) => (value.documentId !== undefined) !== (value.batchId !== undefined), {
+    path: ['documentId'],
+    message: 'Pass either documentId or batchId.',
+  })
+  .refine((value) => value.action !== 'finish_unchanged' || value.documentId !== undefined, {
+    path: ['documentId'],
+    message: 'finish_unchanged needs documentId.',
+  })
+
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
@@ -1189,6 +1220,7 @@ export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_WIKI_CONFIG_GET_TOOL) return kbWikiConfigGetObject
   if (toolName === KB_WIKI_CONFIG_PROPOSE_TOOL) return kbWikiConfigProposeInputSchema
   if (toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL) return kbWikiConfigWithdrawInputSchema
+  if (toolName === KB_WIKI_REPROCESS_TOOL) return kbWikiReprocessInputSchema
   return kbSearchInputSchema
 }
 

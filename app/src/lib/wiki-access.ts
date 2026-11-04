@@ -420,17 +420,61 @@ export function canManageKnowledgeBaseLink(
   return actor.role === 'admin'
 }
 
-/** In-progress + lejárt foglalás olvasáskor `pending` (háttérjob nélkül, D6). */
+export type WikiEffectiveInboxStatus = 'pending' | 'reprocess' | 'in_progress' | 'processed' | 'skipped'
+
+/** #1085: a `documents.wiki_reprocess` tartalma — a legutóbbi újrafeldolgozási kérés. */
+export type WikiReprocessMarker = {
+  reason: string
+  requestedAt: string
+  requestedBy: { kind: 'human'; userId: string } | { kind: 'agent'; agentId: string }
+  /** Ide tér vissza a tétel „Mégse” vagy változtatás nélküli lezárás után. */
+  previousStatus: 'processed' | 'skipped'
+  previousChangeSetId: string | null
+  outcome?: 'unchanged'
+  finishedAt?: string
+}
+
+/** Csak a szerver írja, de hibás sort sem adunk tovább: érvénytelen alak = nincs jelölés. */
+export function parseWikiReprocess(value: unknown): WikiReprocessMarker | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const row = value as Record<string, unknown>
+  const by = row.requestedBy as Record<string, unknown> | null | undefined
+  const requestedBy =
+    by?.kind === 'human' && typeof by.userId === 'string'
+      ? ({ kind: 'human', userId: by.userId } as const)
+      : by?.kind === 'agent' && typeof by.agentId === 'string'
+        ? ({ kind: 'agent', agentId: by.agentId } as const)
+        : null
+  if (typeof row.reason !== 'string' || typeof row.requestedAt !== 'string' || !requestedBy) return null
+  if (row.previousStatus !== 'processed' && row.previousStatus !== 'skipped') return null
+  return {
+    reason: row.reason,
+    requestedAt: row.requestedAt,
+    requestedBy,
+    previousStatus: row.previousStatus,
+    previousChangeSetId: typeof row.previousChangeSetId === 'string' ? row.previousChangeSetId : null,
+    ...(row.outcome === 'unchanged' ? { outcome: 'unchanged' as const } : {}),
+    ...(typeof row.finishedAt === 'string' ? { finishedAt: row.finishedAt } : {}),
+  }
+}
+
+/**
+ * In-progress + lejárt foglalás olvasáskor `pending` (háttérjob nélkül, D6).
+ * #1085: várakozó tétel újrafeldolgozási jelöléssel `reprocess`; a tárolt státusz `pending` marad,
+ * így a foglalás, az elengedés és a lejárat a jelölést nem veszíti el.
+ */
 export function effectiveInboxStatus(
-  row: { wikiStatus: string | null; wikiClaimExpiresAt: Date | null },
+  row: { wikiStatus: string | null; wikiClaimExpiresAt: Date | null; wikiReprocess?: unknown },
   now: Date,
-): 'pending' | 'in_progress' | 'processed' | 'skipped' | null {
+): WikiEffectiveInboxStatus | null {
   const status = row.wikiStatus
   if (status === null) return null
+  const waiting = parseWikiReprocess(row.wikiReprocess) ? 'reprocess' : 'pending'
   if (status === 'in_progress') {
-    return row.wikiClaimExpiresAt && row.wikiClaimExpiresAt.getTime() > now.getTime() ? 'in_progress' : 'pending'
+    return row.wikiClaimExpiresAt && row.wikiClaimExpiresAt.getTime() > now.getTime() ? 'in_progress' : waiting
   }
-  if (status === 'pending' || status === 'processed' || status === 'skipped') return status
+  if (status === 'pending') return waiting
+  if (status === 'processed' || status === 'skipped') return status
   return null
 }
 

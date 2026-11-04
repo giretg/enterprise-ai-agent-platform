@@ -155,6 +155,34 @@ export async function skipWikiInboxItemAction(input: { connectorId: string; docu
   }
 }
 
+/** #1085: feldolgozott vagy kihagyott fájl (vagy a teljes köteg) vissza a tálcára, indoklással. */
+export async function requestWikiReprocessAction(input: { connectorId: string; documentId?: string; batchId?: string; reason: string }) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        documentId: uuid.optional(),
+        batchId: uuid.optional(),
+        reason: z.string().trim().min(1).max(1000),
+      })
+      .refine((value) => (value.documentId !== undefined) !== (value.batchId !== undefined))
+      .parse(input)
+    const target = parsed.documentId ? { documentId: parsed.documentId } : { batchId: parsed.batchId! }
+    return ok(await services.wikiConsole.requestReprocess(await actor(), parsed.connectorId, { target, reason: parsed.reason }))
+  } catch (e) {
+    return failFrom(e, 'Failed to request reprocessing')
+  }
+}
+
+export async function cancelWikiReprocessAction(input: { connectorId: string; documentId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, documentId: uuid }).parse(input)
+    return ok(await services.wikiConsole.cancelReprocess(await actor(), parsed.connectorId, parsed.documentId))
+  } catch (e) {
+    return failFrom(e, 'Failed to cancel reprocessing')
+  }
+}
+
 export async function purgePrivateKnowledgeBaseAction(input: { connectorId: string }) {
   try {
     const counts = await services.wikiConsole.purgePrivate(await actor(), uuid.parse(input.connectorId))

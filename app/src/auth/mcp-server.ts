@@ -100,10 +100,12 @@ import {
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_REPROCESS_TOOL,
   KB_WIKI_CONFIG_GET_TOOL,
   KB_WIKI_CONFIG_PROPOSE_TOOL,
   KB_WIKI_CONFIG_WITHDRAW_TOOL,
   kbWikiConfigGetObject,
+  kbWikiReprocessObject,
   kbWikiConfigProposeObject,
   kbWikiConfigWithdrawInputSchema,
   SANDBOX_RUN_TOOL,
@@ -2146,7 +2148,7 @@ async function createMcpResourceHandler(
         {
           title: 'List knowledge base index',
           description:
-            'Call this first. Returns the agent wiki index by category (if any) and one row per raw source (filename, purpose, size). With several knowledge bases and no wikiId it lists the wikis. Pass pathPrefix or artifactId to list OKF pages. inbox:true lists sources waiting to be processed into the wiki, with pending/inProgress/processed/skipped counts per wiki and batch. On a wiki with metadata fields, views: docStatus (draft|approved|none), owner (me|e-mail), reviewOverdue:true (oldest first), orphans:true, category, field.<key> or fields "country=HU,SK" — values comma-separated.',
+            'Call this first. Returns the agent wiki index by category (if any) and one row per raw source (filename, purpose, size). With several knowledge bases and no wikiId it lists the wikis. Pass pathPrefix or artifactId to list OKF pages. inbox:true lists sources waiting to be processed into the wiki, with pending/reprocess/inProgress/processed/skipped counts per wiki and batch; includeDone:true also lists the processed and skipped ones. Status reprocess means someone asked for the source to be processed again: see the reprocess block for why. On a wiki with metadata fields, views: docStatus (draft|approved|none), owner (me|e-mail), reviewOverdue:true (oldest first), orphans:true, category, field.<key> or fields "country=HU,SK" — values comma-separated.',
           inputSchema: kbListIndexInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_LIST_INDEX_TOOL, args, deps),
@@ -2211,6 +2213,16 @@ async function createMcpResourceHandler(
           inputSchema: kbWikiRevertObject,
         },
         async (args) => enterpriseToolResult(principal, KB_WIKI_REVERT_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_REPROCESS_TOOL,
+        {
+          title: 'Reprocess agent wiki source',
+          description:
+            'Put processed or skipped wiki sources back in the inbox (documentId, or batchId for a whole batch) with a required reason; they then list as status "reprocess". Nothing on the wiki changes: existing pages stay live until the reprocessing fixes them. Use it when the user asks, or when you found a concrete error in how a source was processed; do not repeat it without new information. reprocess_pending_approval = a change from this source still waits for approval, so ask for that decision first. action "finish_unchanged": you claimed a reprocess item, checked it, and no page needs changing.',
+          inputSchema: kbWikiReprocessObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_REPROCESS_TOOL, args, deps),
       )
       server.registerTool(
         KB_WIKI_CONFIG_GET_TOOL,

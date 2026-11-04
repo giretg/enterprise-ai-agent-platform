@@ -174,6 +174,129 @@ async function main() {
     assert.deepEqual(await wikis.listPagesCitingDocuments([randomUUID()], [cited]), [])
   })
 
+  await check('#1085 újrafeldolgozás SQL: korábbi állapot, státusz, összesítő, jóváhagyás-kapu, Mégse, lezárás', async () => {
+    const now = new Date()
+    const batchId = randomUUID()
+    const changeSet = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'applied', pages: [], approverScope: {} })
+    const create = (filename: string, data: Record<string, unknown>) =>
+      prisma.document.create({
+        data: { tenantId: tenant.id, filename, connectorId: connector.id, uploadedById: user.id, status: 'processed', wikiBatchId: batchId, ...data } as never,
+      })
+    const processed = await create('rp-processed.md', { wikiStatus: 'processed', wikiProcessedByChangeSetId: changeSet.id })
+    const skipped = await create('rp-skipped.md', { wikiStatus: 'skipped' })
+    const waiting = await create('rp-waiting.md', { wikiStatus: 'pending' })
+    const blocked = await create('rp-blocked.md', { wikiStatus: 'processed' })
+    const blockedBySource = await create('rp-blocked-source.md', { wikiStatus: 'processed' })
+    const raw = await prisma.document.create({
+      data: { tenantId: tenant.id, filename: 'rp-raw.md', connectorId: connector.id, uploadedById: user.id, status: 'processed' },
+    })
+    const pending = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [], inboxItemId: blocked.id, approverScope: {} })
+    const pendingBySource = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [], sourceDocumentIds: [blockedBySource.id], approverScope: {} })
+    // Régebbi change-setnél is csak az oldal hivatkozásában lehet meg a forrás.
+    const cited = await create('rp-cited.md', { wikiStatus: 'processed', wikiBatchId: null })
+    const citedPage = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [{ path: 'sources/cited.md', frontmatter: { sources: [{ documentId: cited.id }] } }], approverScope: {} })
+    const citedRequest = () => wikis.requestReprocess({ connectorId: connector.id, target: { documentId: cited.id }, reason: 'Újra', requestedBy: { kind: 'human', userId: user.id }, now })
+    assert.deepEqual((await citedRequest()).waitingForApproval, [cited.id])
+    await wikis.transitionChangeSet(citedPage.id, 'pending', 'rejected')
+    await wikis.createPage({ wikiId: wiki.id, connectorId: connector.id, ...page('sources/cited.md', 'Cited', 'cited-hash'), sourceRefs: [{ documentId: cited.id }], createdByAgentId: agent.id })
+    const patch = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [{ path: 'sources/cited.md', action: 'patch' }], approverScope: {} })
+    assert.deepEqual((await citedRequest()).waitingForApproval, [cited.id], 'a meglévő oldal megtartott forrása is blokkol')
+    await wikis.transitionChangeSet(patch.id, 'pending', 'rejected')
+    assert.deepEqual((await citedRequest()).marked, [cited.id])
+
+    const requestedBy = { kind: 'human' as const, userId: user.id }
+    const request = (target: { documentId: string } | { batchId: string }, reason = 'Hibás') =>
+      wikis.requestReprocess({ connectorId: connector.id, target, reason, requestedBy, now })
+
+    // Nem wiki-forrás és idegen tudástár: semmi.
+    assert.deepEqual(await request({ documentId: raw.id }), { marked: [], waitingForApproval: [], alreadyInInbox: [] })
+    assert.deepEqual(
+      await wikis.requestReprocess({ connectorId: randomUUID(), target: { documentId: processed.id }, reason: 'x', requestedBy, now }),
+      { marked: [], waitingForApproval: [], alreadyInInbox: [] },
+    )
+
+    const single = await request({ documentId: processed.id }, 'Idézőjel " és \\ jel')
+    assert.deepEqual(single, { marked: [processed.id], waitingForApproval: [], alreadyInInbox: [] })
+    const after = await prisma.document.findUniqueOrThrow({ where: { id: processed.id } })
+    assert.equal(after.wikiStatus, 'pending')
+    assert.equal(after.wikiProcessedByChangeSetId, null)
+    assert.deepEqual(after.wikiReprocess, {
+      reason: 'Idézőjel " és \\ jel',
+      requestedAt: now.toISOString(),
+      requestedBy,
+      previousStatus: 'processed',
+      previousChangeSetId: changeSet.id,
+    })
+
+    const bulk = await request({ batchId })
+    assert.deepEqual(bulk.marked, [skipped.id])
+    assert.deepEqual(new Set(bulk.waitingForApproval), new Set([blocked.id, blockedBySource.id]))
+    assert.deepEqual(new Set(bulk.alreadyInInbox), new Set([processed.id, waiting.id]))
+
+    const items = await wikis.listInbox([connector.id], { now, batchId })
+    assert.deepEqual(
+      Object.fromEntries(items.map((item) => [item.filename, item.status])),
+      { 'rp-processed.md': 'reprocess', 'rp-skipped.md': 'reprocess', 'rp-waiting.md': 'pending' },
+    )
+    assert.equal(items.find((item) => item.documentId === processed.id)!.reprocess!.previousChangeSetId, changeSet.id)
+    const withDone = await wikis.listInbox([connector.id], { now, batchId, includeDone: true })
+    assert.equal(withDone.length, 5)
+    assert.deepEqual(withDone.slice(-2).map((item) => item.status), ['processed', 'processed'], 'a lezártak a várakozók után')
+    const summary = await wikis.inboxSummary([connector.id], { now, batchId })
+    const { connectorId: _c, batchId: _b, ...counts } = summary.batches[0]
+    assert.deepEqual(counts, { pending: 1, reprocess: 2, inProgress: 0, processed: 2, skipped: 0 })
+
+    // A foglalás nem veszti el a jelölést; lejárat után újra reprocess.
+    const hour = 3_600_000
+    assert.equal(await wikis.claimInboxItem({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now, expiresAt: new Date(now.getTime() + hour) }), true)
+    assert.equal((await wikis.listInbox([connector.id], { now, batchId })).find((item) => item.documentId === processed.id)!.status, 'in_progress')
+    const later = new Date(now.getTime() + 2 * hour)
+    assert.equal((await wikis.listInbox([connector.id], { now: later, batchId })).find((item) => item.documentId === processed.id)!.status, 'reprocess')
+
+    // Lejárt, hiányzó vagy más agent foglalásával nem zárható le.
+    const finish = (at: Date) => wikis.finishReprocessUnchanged({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now: at })
+    assert.equal(await finish(new Date(now.getTime() + hour)), false, 'a lejárat pillanatától nincs élő foglalás')
+    assert.equal(await finish(later), false, 'lejárt foglalással nem zárható le')
+    assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: processed.id } })).wikiStatus, 'in_progress')
+    await prisma.document.update({ where: { id: processed.id }, data: { wikiClaimExpiresAt: null } })
+    assert.equal(await finish(now), false, 'lejárati idő nélkül nincs élő foglalás')
+    await wikis.claimInboxItem({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now, expiresAt: new Date(now.getTime() + hour) })
+
+    // Más agent nem zárhatja le; a saját igen, és visszaáll az előző változás.
+    assert.equal(await wikis.finishReprocessUnchanged({ documentId: processed.id, connectorId: connector.id, agentId: randomUUID(), now }), false)
+    assert.equal(await wikis.finishReprocessUnchanged({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now }), true)
+    const finished = await prisma.document.findUniqueOrThrow({ where: { id: processed.id } })
+    assert.equal(finished.wikiStatus, 'processed')
+    assert.equal(finished.wikiProcessedByChangeSetId, changeSet.id)
+    assert.equal(finished.wikiClaimedByAgentId, null)
+    assert.equal((finished.wikiReprocess as { outcome?: string }).outcome, 'unchanged')
+    assert.equal(await wikis.finishReprocessUnchanged({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now }), false)
+
+    // Lezárt tétel újra jelölhető: a jelölés felülíródik, az előző változás megmarad.
+    assert.deepEqual((await request({ documentId: processed.id }, 'Még egyszer')).marked, [processed.id])
+    assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: processed.id } })).wikiReprocess!['previousChangeSetId' as never], changeSet.id as never)
+
+    // Mégse: visszaáll a korábbi állapot, a jelölés törlődik.
+    assert.equal(await wikis.cancelReprocess({ documentId: processed.id, connectorId: connector.id }), true)
+    const cancelled = await prisma.document.findUniqueOrThrow({ where: { id: processed.id } })
+    assert.equal(cancelled.wikiStatus, 'processed')
+    assert.equal(cancelled.wikiProcessedByChangeSetId, changeSet.id)
+    assert.equal(cancelled.wikiReprocess, null)
+    assert.equal(await wikis.cancelReprocess({ documentId: skipped.id, connectorId: randomUUID() }), false)
+    assert.equal(await wikis.cancelReprocess({ documentId: skipped.id, connectorId: connector.id }), true)
+    assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: skipped.id } })).wikiStatus, 'skipped')
+    assert.equal(await wikis.cancelReprocess({ documentId: waiting.id, connectorId: connector.id }), false, 'jelölés nélkül nincs mit visszavonni')
+
+    // Elutasításkor újra reprocess: a kérés nincs teljesítve.
+    assert.deepEqual((await request({ documentId: processed.id }, 'Újra')).marked, [processed.id])
+    const attempt = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [], inboxItemId: processed.id, approverScope: {} })
+    assert.equal(await wikis.markInboxProcessed({ documentId: processed.id, changeSetId: attempt.id }), true)
+    assert.equal(await wikis.reopenInboxItem({ documentId: processed.id, changeSetId: attempt.id }), true)
+    assert.equal((await wikis.listInbox([connector.id], { now, batchId })).find((item) => item.documentId === processed.id)!.status, 'reprocess')
+
+    await prisma.wikiChangeSet.deleteMany({ where: { id: { in: [pending.id, pendingBySource.id, attempt.id] } } })
+  })
+
   await prisma.$disconnect()
   if (failures > 0) {
     console.log(`\n${failures} FAIL`)

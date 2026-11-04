@@ -22,9 +22,10 @@ import {
   type GatewayOperationServiceDeps,
 } from '../src/domain/gateway-operation'
 import { KnowledgeBaseService } from '../src/domain/knowledge-base/knowledge-base-service'
-import { WikiService } from '../src/domain/knowledge-base/wiki-service'
-import { appendToSection, extractWikiLinks, renderWikiIndex, replaceSection } from '../src/lib/kb-wiki'
-import { effectiveInboxStatus, scopeSnapshotConnectorsToUser } from '../src/lib/wiki-access'
+import { WikiService, type WikiPageInput } from '../src/domain/knowledge-base/wiki-service'
+import { appendToSection, extractWikiLinks, readWikiSources, renderWikiIndex, replaceSection } from '../src/lib/kb-wiki'
+import { effectiveInboxStatus, parseWikiReprocess, scopeSnapshotConnectorsToUser } from '../src/lib/wiki-access'
+import { inboundMailBlocksTool } from '../src/auth/inbound-mail-tool-guard'
 import type {
   WikiApplyChangeSetInput,
   WikiApplyChangeSetResult,
@@ -261,20 +262,26 @@ class MemoryWikiRepository implements Partial<WikiRepository> {
     this.changeSets.set(id, next)
     return next
   }
+  async appendLog(input: Parameters<WikiRepository['appendLog']>[0]) {
+    const row = { id: randomUUID(), changeSetId: null, createdAt: now(), note: null, pagePaths: [], ...input } as unknown as WikiLogEntry
+    this.log.push(row)
+    return row
+  }
   async listLog(wikiId: string) {
     return this.log.filter((l) => l.wikiId === wikiId)
   }
-  async listInbox(connectorIds: string[], input: { now: Date; batchId?: string }): Promise<WikiInboxItem[]> {
+  async listInbox(connectorIds: string[], input: { now: Date; batchId?: string; includeDone?: boolean }): Promise<WikiInboxItem[]> {
     return [...documents.values()]
       .filter((d) => d.connectorId && connectorIds.includes(d.connectorId) && (!input.batchId || d.wikiBatchId === input.batchId))
       .map((d) => ({ d, status: effectiveInboxStatus(d, input.now) }))
-      .filter((row) => row.status === 'pending' || row.status === 'in_progress')
+      .filter((row) => row.status && (input.includeDone || row.status === 'pending' || row.status === 'reprocess' || row.status === 'in_progress'))
       .map(({ d, status }) => ({
         documentId: d.id,
         connectorId: d.connectorId!,
         filename: d.filename,
         purpose: null,
-        status: status as 'pending' | 'in_progress',
+        status: status!,
+        reprocess: parseWikiReprocess(d.wikiReprocess),
         uploadedById: d.uploadedById,
         submittedByAgentId: d.wikiSubmittedByAgentId,
         claimedByAgentId: status === 'in_progress' ? d.wikiClaimedByAgentId : null,
@@ -289,6 +296,7 @@ class MemoryWikiRepository implements Partial<WikiRepository> {
     const batches = new Map<string, { connectorId: string; batchId: string } & WikiInboxCounts>()
     const add = (c: WikiInboxCounts, s: string) => {
       if (s === 'pending') c.pending++
+      else if (s === 'reprocess') c.reprocess++
       else if (s === 'in_progress') c.inProgress++
       else if (s === 'processed') c.processed++
       else if (s === 'skipped') c.skipped++
@@ -297,11 +305,11 @@ class MemoryWikiRepository implements Partial<WikiRepository> {
       if (!d.connectorId || !connectorIds.includes(d.connectorId) || !d.wikiStatus) continue
       if (input.batchId && d.wikiBatchId !== input.batchId) continue
       const status = effectiveInboxStatus(d, input.now)!
-      const w = wikis.get(d.connectorId) ?? { connectorId: d.connectorId, pending: 0, inProgress: 0, processed: 0, skipped: 0 }
+      const w = wikis.get(d.connectorId) ?? { connectorId: d.connectorId, pending: 0, reprocess: 0, inProgress: 0, processed: 0, skipped: 0 }
       add(w, status)
       wikis.set(d.connectorId, w)
       if (d.wikiBatchId) {
-        const b = batches.get(d.wikiBatchId) ?? { connectorId: d.connectorId, batchId: d.wikiBatchId, pending: 0, inProgress: 0, processed: 0, skipped: 0 }
+        const b = batches.get(d.wikiBatchId) ?? { connectorId: d.connectorId, batchId: d.wikiBatchId, pending: 0, reprocess: 0, inProgress: 0, processed: 0, skipped: 0 }
         add(b, status)
         batches.set(d.wikiBatchId, b)
       }
@@ -340,6 +348,64 @@ class MemoryWikiRepository implements Partial<WikiRepository> {
     const d = documents.get(input.documentId)
     if (!d || d.wikiStatus !== 'processed' || d.wikiProcessedByChangeSetId !== input.changeSetId) return false
     documents.set(d.id, { ...d, wikiStatus: 'pending', wikiProcessedByChangeSetId: null })
+    return true
+  }
+  async requestReprocess(input: Parameters<WikiRepository['requestReprocess']>[0]) {
+    const result = { marked: [] as string[], waitingForApproval: [] as string[], alreadyInInbox: [] as string[] }
+    for (const d of [...documents.values()]) {
+      if (d.connectorId !== input.connectorId || !d.wikiStatus) continue
+      if ('documentId' in input.target ? d.id !== input.target.documentId : d.wikiBatchId !== input.target.batchId) continue
+      if (d.wikiStatus === 'pending' || d.wikiStatus === 'in_progress') {
+        result.alreadyInInbox.push(d.id)
+        continue
+      }
+      const pendingChange = [...this.changeSets.values()].some(
+        (cs) => cs.connectorId === d.connectorId && cs.status === 'pending' && (cs.inboxItemId === d.id || cs.sourceDocumentIds.includes(d.id) || (cs.pages as unknown as WikiPageInput[]).some((p) => {
+          const existing = [...this.pages.values()].find((page) => page.wikiId === cs.wikiId && page.path === p.path)
+          return [...readWikiSources(p.frontmatter?.sources), ...readWikiSources(existing?.sourceRefs)].some((ref) => 'documentId' in ref && ref.documentId === d.id)
+        })),
+      )
+      if (pendingChange) {
+        result.waitingForApproval.push(d.id)
+        continue
+      }
+      documents.set(d.id, {
+        ...d,
+        wikiStatus: 'pending',
+        wikiProcessedByChangeSetId: null,
+        wikiClaimedByAgentId: null,
+        wikiClaimExpiresAt: null,
+        wikiReprocess: {
+          reason: input.reason,
+          requestedAt: input.now.toISOString(),
+          requestedBy: input.requestedBy,
+          previousStatus: d.wikiStatus,
+          previousChangeSetId: d.wikiProcessedByChangeSetId,
+        },
+      })
+      result.marked.push(d.id)
+    }
+    return result
+  }
+  async cancelReprocess(input: { documentId: string; connectorId: string }) {
+    const d = documents.get(input.documentId)
+    const marker = parseWikiReprocess(d?.wikiReprocess)
+    if (!d || d.connectorId !== input.connectorId || !marker || (d.wikiStatus !== 'pending' && d.wikiStatus !== 'in_progress')) return false
+    documents.set(d.id, { ...d, wikiStatus: marker.previousStatus, wikiProcessedByChangeSetId: marker.previousChangeSetId, wikiClaimedByAgentId: null, wikiClaimExpiresAt: null, wikiReprocess: null })
+    return true
+  }
+  async finishReprocessUnchanged(input: { documentId: string; connectorId: string; agentId: string; now: Date }) {
+    const d = documents.get(input.documentId)
+    const marker = parseWikiReprocess(d?.wikiReprocess)
+    if (!d || d.connectorId !== input.connectorId || !marker || d.wikiStatus !== 'in_progress' || d.wikiClaimedByAgentId !== input.agentId || !d.wikiClaimExpiresAt || d.wikiClaimExpiresAt <= input.now) return false
+    documents.set(d.id, {
+      ...d,
+      wikiStatus: marker.previousStatus,
+      wikiProcessedByChangeSetId: marker.previousChangeSetId,
+      wikiClaimedByAgentId: null,
+      wikiClaimExpiresAt: null,
+      wikiReprocess: { ...marker, outcome: 'unchanged', finishedAt: input.now.toISOString() },
+    })
     return true
   }
   async findContainerArtifactId(connectorId: string) {
@@ -1001,6 +1067,171 @@ async function main() {
     assert.deepEqual(batch, { batchId, pending: 1, inProgress: 1, processed: 3, skipped: 0 })
     const otherBriefing = await wikiService.listWikis({ tenantId: TENANT, userId: OTHER_USER, agentId: AGENT_A, snapshot: definitions.get(DEF_A)!.snapshot })
     assert.ok(!otherBriefing.some(row => row.connectorId === KB_PRIV))
+  })
+
+  await check('#1085 újrafeldolgozás: jelölés, állapot az MCP-n, foglalás-lejárat, lezárás, jogok', async () => {
+    const ingest = await call(OWNER, DEF_A, 'kb_ingest', { processingMode: 'wiki', wikiId: WIKI_A, ...md('# Újra\n\nújrafeldolgozandó forrás') })
+    assert.equal(ingest.isError, false, JSON.stringify(ingest))
+    const documentId = ingest.documentId as string
+    const write = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      inboxItemId: documentId,
+      sourceDocumentIds: [documentId],
+      pages: [{ path: 'sources/ujra.md', action: 'upsert', type: 'source', title: 'Újra', summary: 'u', body: 'régi tartalom', frontmatter: { sources: [{ documentId }], source_date: '2026-11-01' } }],
+    })
+    assert.equal(write.status, 'applied', JSON.stringify(write))
+    const processedBy = documents.get(documentId)!.wikiProcessedByChangeSetId
+    assert.ok(processedBy)
+    const stateBefore = await call(OWNER, DEF_A, 'kb_get_document', { documentId })
+    assert.deepEqual(stateBefore.inbox, { status: 'processed' })
+
+    // Ugyanaz a tartalom újra: duplikátum, és megmondja, mit kell tenni.
+    const duplicate = await call(OWNER, DEF_A, 'kb_ingest', { processingMode: 'wiki', wikiId: WIKI_A, ...md('# Újra\n\nújrafeldolgozandó forrás') })
+    assert.equal(duplicate.status, 'duplicate')
+    assert.match(duplicate.nextStep, /kb_wiki_reprocess/)
+
+    const invalid = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, reason: '   ' })
+    assert.equal(invalid.isError, true)
+
+    const pageBefore = await wikis.findPage(KB_A, 'sources/ujra.md')
+    const marked = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, reason: 'A táblázatok kimaradtak' })
+    assert.equal(marked.isError, false, JSON.stringify(marked))
+    assert.equal(marked.marked, 1)
+    assert.deepEqual(await wikis.findPage(KB_A, 'sources/ujra.md'), pageBefore, 'a jelölés oldalt nem változtat (D2)')
+    assert.ok(auditLog.some((row) => row.action === 'kb.wiki.inbox.reprocess_requested' && (row.metadata as { documentId?: string }).documentId === documentId))
+    assert.ok(!JSON.stringify(auditLog).includes('A táblázatok kimaradtak'), 'az indoklás nem kerül az auditba')
+
+    const listed = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A, inbox: true })
+    const item = listed.items.find((row: any) => row.documentId === documentId)
+    assert.equal(item.status, 'reprocess')
+    assert.equal(item.reprocess.reason, 'A táblázatok kimaradtak')
+    assert.equal(item.reprocess.previousStatus, 'processed')
+    assert.equal(item.reprocess.previousChangeSetId, processedBy)
+    assert.deepEqual(item.reprocess.existingPages.pages.map((page: any) => page.path), ['sources/ujra.md'])
+    assert.equal(item.partlyWritten, undefined, 'a „ne írd újra” jelzés itt nem jár')
+    assert.ok(listed.summary.wikis[0].reprocess >= 1)
+    const briefing = await wikiService.listWikis({ tenantId: TENANT, userId: OWNER, agentId: AGENT_A, snapshot: definitions.get(DEF_A)!.snapshot })
+    assert.ok(briefing.find((row) => row.wikiId === WIKI_A)!.inbox.reprocess! >= 1)
+
+    const repeat = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, reason: 'még egyszer' })
+    assert.equal(repeat.isError, true)
+    assert.equal(repeat.code, 'already_in_inbox')
+
+    // Foglalás nélkül nem zárható le változtatás nélkül.
+    const notClaimed = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, action: 'finish_unchanged', reason: 'jó' })
+    assert.equal(notClaimed.code, 'reprocess_not_claimed')
+
+    const claimed = await call(OWNER, DEF_A, 'kb_get_document', { documentId, claimForWiki: true })
+    assert.equal(claimed.reprocess.reason, 'A táblázatok kimaradtak')
+    assert.match(claimed.nextStep, /finish_unchanged/)
+    const during = await call(OWNER, DEF_A, 'kb_get_document', { documentId })
+    assert.equal(during.inbox.status, 'in_progress')
+    assert.equal(during.inbox.reprocess.reason, 'A táblázatok kimaradtak')
+
+    // Lejárt foglalás után újra reprocess, a jelölés nem veszik el.
+    documents.set(documentId, { ...documents.get(documentId)!, wikiClaimExpiresAt: new Date(now().getTime() - 1000) })
+    const expired = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A, inbox: true })
+    assert.equal(expired.items.find((row: any) => row.documentId === documentId).status, 'reprocess')
+
+    const expiredClose = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, action: 'finish_unchanged', reason: 'jó' })
+    assert.equal(expiredClose.code, 'reprocess_not_claimed', 'lejárt foglalással nem zárható le')
+
+    // Javítás után lezárul, a jelölés előzményként megmarad.
+    await call(OWNER, DEF_A, 'kb_get_document', { documentId, claimForWiki: true })
+    const fixed = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      inboxItemId: documentId,
+      sourceDocumentIds: [documentId],
+      pages: [{ path: 'sources/ujra.md', action: 'upsert', type: 'source', title: 'Újra', summary: 'u', body: 'javított tartalom', baseVersion: pageBefore!.contentHash, frontmatter: { sources: [{ documentId }], source_date: '2026-11-01' } }],
+    })
+    assert.equal(fixed.status, 'applied', JSON.stringify(fixed))
+    const closed = await call(OWNER, DEF_A, 'kb_get_document', { documentId })
+    assert.equal(closed.inbox.status, 'processed')
+    assert.equal(closed.inbox.reprocess.reason, 'A táblázatok kimaradtak')
+    assert.equal(closed.inbox.reprocess.existingPages, undefined)
+    const withDone = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A, inbox: true, includeDone: true, limit: 200 })
+    assert.equal(withDone.items.find((row: any) => row.documentId === documentId).status, 'processed')
+    const withoutDone = await call(OWNER, DEF_A, 'kb_list_index', { wikiId: WIKI_A, inbox: true, limit: 200 })
+    assert.ok(!withoutDone.items.some((row: any) => row.documentId === documentId))
+
+    // Újabb kör: változtatás nélküli lezárás visszaadja az előző változást, naplóz.
+    const newer = documents.get(documentId)!.wikiProcessedByChangeSetId
+    assert.notEqual(newer, processedBy)
+    await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, reason: 'Ellenőrizd' })
+    await call(OWNER, DEF_A, 'kb_get_document', { documentId, claimForWiki: true })
+    const unchanged = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, action: 'finish_unchanged', reason: 'Minden helyes' })
+    assert.equal(unchanged.outcome, 'unchanged', JSON.stringify(unchanged))
+    assert.equal(documents.get(documentId)!.wikiStatus, 'processed')
+    assert.equal(documents.get(documentId)!.wikiProcessedByChangeSetId, newer)
+    assert.ok(wikis.log.some((row) => row.op === 'lint' && row.note === 'Minden helyes'))
+
+    // Ismeretlen dokumentum és más wiki tétele.
+    const unknown = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId: randomUUID(), reason: 'x' })
+    assert.equal(unknown.code, 'not_in_inbox')
+  })
+
+  await check('#1085 jóváhagyásra váró változásnál nem jelölhető; köteg-jelölésnél a kimaradók száma visszajön', async () => {
+    const batchId = randomUUID()
+    const ingest = async (text: string) => {
+      const res = await call(OWNER, DEF_A, 'kb_ingest', { processingMode: 'wiki', wikiId: WIKI_A, defer: true, ...md(text) })
+      documents.set(res.documentId, { ...documents.get(res.documentId)!, wikiBatchId: batchId })
+      return res.documentId as string
+    }
+    const blocked = await ingest('# Köteg A\n\nköteg egy')
+    const free = await ingest('# Köteg B\n\nköteg kettő')
+    const waiting = await ingest('# Köteg C\n\nköteg három')
+    documents.set(free, { ...documents.get(free)!, wikiStatus: 'processed' })
+    documents.set(blocked, { ...documents.get(blocked)!, wikiStatus: 'processed' })
+    const pending = await wikis.createChangeSet({ wikiId: WIKI_A, connectorId: KB_A, status: 'pending', pages: [], inboxItemId: blocked, approverScope: {} })
+
+    const single = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId: blocked, reason: 'x' })
+    assert.equal(single.code, 'reprocess_pending_approval')
+    assert.equal(documents.get(blocked)!.wikiStatus, 'processed', 'semmi nem változik')
+
+    const bulk = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, batchId, reason: 'Mind újra' })
+    assert.equal(bulk.isError, false, JSON.stringify(bulk))
+    assert.deepEqual(
+      { marked: bulk.documentIds, waitingForApproval: bulk.waitingForApproval, alreadyInInbox: bulk.alreadyInInbox },
+      { marked: [free], waitingForApproval: 1, alreadyInInbox: 1 },
+    )
+    assert.equal(documents.get(waiting)!.wikiStatus, 'pending')
+    assert.equal(parseWikiReprocess(documents.get(waiting)!.wikiReprocess), null)
+    await wikis.transitionChangeSet(pending.id, 'pending', 'rejected')
+
+    const both = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, batchId, documentId: free, reason: 'x' })
+    assert.equal(both.isError, true)
+    assert.equal(both.code, 'invalid_args')
+  })
+
+  await check('#1085 az oldal forráshivatkozása is blokkolja az újrafeldolgozást jóváhagyásig', async () => {
+    const ingested = await call(OWNER, DEF_A, 'kb_ingest', { processingMode: 'wiki', wikiId: WIKI_A, defer: true, ...md('# Csak hivatkozás\n\nforráshivatkozásos jóváhagyás') })
+    const documentId = ingested.documentId
+    documents.set(documentId, { ...documents.get(documentId)!, wikiStatus: 'processed' })
+    const pending = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A,
+      pages: [{ path: 'sources/ref-approval.md', action: 'upsert', type: 'source', title: 'Forrás', summary: 'f', body: 'Ellenőrzendő', frontmatter: { docStatus: 'approved', sources: [{ documentId }], source_date: '2026-11-01' } }],
+    })
+    assert.equal(pending.status, 'awaiting_approval', JSON.stringify(pending))
+    const blocked = await call(OWNER, DEF_A, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId, reason: 'Újra' })
+    assert.equal(blocked.code, 'reprocess_pending_approval', JSON.stringify(blocked))
+    assert.equal(documents.get(documentId)!.wikiStatus, 'processed')
+    await wikis.transitionChangeSet(pending.changeSetId, 'pending', 'rejected')
+  })
+
+  await check('#1085 olvasási / csak beküldési joggal nem jelölhető; bejövő levél feldolgozása közben tiltott', async () => {
+    assert.equal(inboundMailBlocksTool({ forceWriteApproval: true }, 'kb_wiki_reprocess'), true)
+    const readOnly = randomUUID()
+    define(readOnly, AGENT_B, [{ connectorId: KB_A, type: 'knowledge_base', accessMode: 'read', wikiAccess: 'read' }])
+    try {
+      for (const definitionId of [DEF_B, readOnly]) {
+        currentDefinition[AGENT_B] = definitionId
+        const denied = await call(OWNER, definitionId, 'kb_wiki_reprocess', { wikiId: WIKI_A, documentId: randomUUID(), reason: 'x' })
+        assert.equal(denied.isError, true, definitionId)
+        assert.ok(['wiki_write_not_allowed', 'capability_not_allowed'].includes(denied.code), denied.code)
+      }
+    } finally {
+      currentDefinition[AGENT_B] = DEF_B
+    }
   })
 
   await check('kind: note — a szerver bélyegzi a felhasználót és az időt (D9)', async () => {

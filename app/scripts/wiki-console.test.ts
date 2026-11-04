@@ -130,7 +130,9 @@ function setup() {
           documentId: d.id,
           filename: d.filename,
           purpose: null,
-          status: d.wikiStatus as any,
+          status: (d.wikiStatus === 'pending' && d.wikiReprocess ? 'reprocess' : d.wikiStatus) as any,
+          reprocess: d.wikiReprocess ?? null,
+          reprocessRequestedByLabel: d.wikiReprocess ? 'Tulaj Tamás' : null,
           uploadedById: OWNER,
           uploadedByLabel: 'Tulaj Tamás',
           submittedByAgentId: null,
@@ -209,7 +211,8 @@ function setup() {
         wikis: connectorIds.map((connectorId) => {
           const rows = [...documents.values()].filter((d) => d.connectorId === connectorId)
           const count = (status: string) => rows.filter((d) => d.wikiStatus === status).length
-          return { connectorId, pending: count('pending'), inProgress: count('in_progress'), processed: count('processed'), skipped: count('skipped') }
+          const reprocess = rows.filter((d) => d.wikiStatus === 'pending' && d.wikiReprocess).length
+          return { connectorId, pending: count('pending') - reprocess, reprocess, inProgress: count('in_progress'), processed: count('processed'), skipped: count('skipped') }
         }),
         batches: [],
       }),
@@ -218,6 +221,22 @@ function setup() {
         if (!d || d.connectorId !== connectorId || d.wikiStatus !== 'pending') return false
         d.wikiStatus = 'skipped'
         calls.skip.push(documentId)
+        return true
+      },
+      requestReprocess: async ({ connectorId, target, reason, requestedBy, now }: any) => {
+        const d = documents.get(target.documentId)
+        if (!d || d.connectorId !== connectorId || !d.wikiStatus) return { marked: [], waitingForApproval: [], alreadyInInbox: [] }
+        if (d.wikiStatus === 'pending') return { marked: [], waitingForApproval: [], alreadyInInbox: [d.id] }
+        if (d.blockedByApproval) return { marked: [], waitingForApproval: [d.id], alreadyInInbox: [] }
+        d.wikiReprocess = { reason, requestedAt: now.toISOString(), requestedBy, previousStatus: d.wikiStatus, previousChangeSetId: null }
+        d.wikiStatus = 'pending'
+        return { marked: [d.id], waitingForApproval: [], alreadyInInbox: [] }
+      },
+      cancelReprocess: async ({ documentId, connectorId }: any) => {
+        const d = documents.get(documentId)
+        if (!d || d.connectorId !== connectorId || !d.wikiReprocess || d.wikiStatus !== 'pending') return false
+        d.wikiStatus = d.wikiReprocess.previousStatus
+        d.wikiReprocess = null
         return true
       },
       submitToInbox: async (input: any) => {
@@ -439,6 +458,48 @@ async function main() {
     assert.equal(documents.get(id)!.wikiStatus, 'skipped')
     assert.ok(audit.some((entry) => entry.action === 'kb.wiki.inbox.skipped'))
     await rejectsWith('not_found', () => service.skipInboxItem(owner, KB_PRIV, id))
+  })
+
+  await check('#1085 újrafeldolgozás a konzolról: kezelői jog, indoklás a listában, Mégse, jóváhagyás-kapu', async () => {
+    const { service, documents, audit } = setup()
+    const queued = await service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 0, filename: 'x.txt', buffer: Buffer.from('rp') })
+    const id = (queued as { documentId: string }).documentId
+    await rejectsWith('already_in_inbox', () => service.requestReprocess(owner, KB_PRIV, { target: { documentId: id }, reason: 'x' }))
+
+    documents.get(id)!.wikiStatus = 'processed'
+    await rejectsWith('not_found', () => service.requestReprocess(admin, KB_PRIV, { target: { documentId: id }, reason: 'x' }))
+    await rejectsWith('forbidden', () => service.requestReprocess(operator, KB_SHARED, { target: { documentId: DOC }, reason: 'x' }))
+    await rejectsWith('forbidden', () => service.cancelReprocess(operator, KB_SHARED, DOC))
+    await rejectsWith('not_found', () => service.requestReprocess(owner, KB_PRIV, { target: { documentId: AGENT }, reason: 'x' }))
+
+    assert.deepEqual(await service.requestReprocess(owner, KB_PRIV, { target: { documentId: id }, reason: 'Kimaradt egy tábla' }), {
+      marked: 1,
+      waitingForApproval: 0,
+      alreadyInInbox: 0,
+    })
+    assert.ok(audit.some((entry) => entry.action === 'kb.wiki.inbox.reprocess_requested' && entry.targetId === id))
+    assert.ok(!JSON.stringify(audit).includes('Kimaradt egy tábla'), 'az indoklás nem kerül az auditba')
+
+    const inbox = await service.listInbox(owner, KB_PRIV)
+    assert.equal(inbox.totals.reprocess, 1)
+    assert.equal(inbox.totals.pending, 0)
+    const item = inbox.items.find((row) => row.documentId === id)!
+    assert.equal(item.status, 'reprocess')
+    assert.equal(item.reprocess!.reason, 'Kimaradt egy tábla')
+    assert.deepEqual(item.reprocess!.requestedBy, { kind: 'human', name: 'Tulaj Tamás' })
+    // A feltöltés régi (2026-10-01), de a várakozás a kérés idejétől számít.
+    assert.equal(item.stale, false)
+
+    const overview = await service.getOverview(owner, KB_PRIV)
+    assert.equal(overview.inbox.reprocess, 1)
+
+    await service.cancelReprocess(owner, KB_PRIV, id)
+    assert.equal(documents.get(id)!.wikiStatus, 'processed')
+    assert.ok(audit.some((entry) => entry.action === 'kb.wiki.inbox.reprocess_cancelled'))
+    await rejectsWith('not_found', () => service.cancelReprocess(owner, KB_PRIV, id))
+
+    ;(documents.get(id) as any).blockedByApproval = true
+    await rejectsWith('reprocess_pending_approval', () => service.requestReprocess(owner, KB_PRIV, { target: { documentId: id }, reason: 'x' }))
   })
 
   await check('ZIP-letöltés: wiki-oldalak, index, napló, WIKI.md és nyers források', async () => {

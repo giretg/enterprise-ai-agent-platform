@@ -84,7 +84,7 @@ const MAX_KB_NAME = 120
 export type WikiConsoleActor = { userId: string; tenantId: string; role: UserRole | string; assumed?: boolean }
 
 export class WikiConsoleError extends Error {
-  constructor(readonly code: 'not_found' | 'forbidden' | 'invalid_args' | 'too_large') {
+  constructor(readonly code: 'not_found' | 'forbidden' | 'invalid_args' | 'too_large' | 'already_in_inbox' | 'reprocess_pending_approval') {
     super(code)
     this.name = 'WikiConsoleError'
   }
@@ -124,6 +124,8 @@ export type WikiConsoleDeps = {
     | 'listLog'
     | 'inboxSummary'
     | 'skipInboxItem'
+    | 'requestReprocess'
+    | 'cancelReprocess'
     | 'submitToInbox'
     | 'findDocumentByContentHash'
     | 'listPendingChangeSetIds'
@@ -320,7 +322,8 @@ export class WikiConsoleService {
         ownerLabel: kind === 'private' ? row.ownerLabel : null,
         template: configTemplate(row.config),
         canManage: access.manage,
-        inbox: { pending: counts?.pending ?? 0, inProgress: counts?.inProgress ?? 0 },
+        // A lista-jelvény a tennivalót számolja, ebbe az újrafeldolgozásra várók is beletartoznak.
+        inbox: { pending: (counts?.pending ?? 0) + (counts?.reprocess ?? 0), inProgress: counts?.inProgress ?? 0 },
         ...stats,
       }
     })
@@ -488,6 +491,7 @@ export class WikiConsoleService {
       })),
       inbox: {
         pending: counts?.pending ?? 0,
+        reprocess: counts?.reprocess ?? 0,
         inProgress: counts?.inProgress ?? 0,
         processed: counts?.processed ?? 0,
         skipped: counts?.skipped ?? 0,
@@ -619,12 +623,20 @@ export class WikiConsoleService {
     ])
     const agentNames = await this.deps.console.agentNames(
       actor.tenantId,
-      items.flatMap((item) => [item.claimedByAgentId, item.submittedByAgentId]).filter((id): id is string => !!id),
+      items
+        .flatMap((item) => [
+          item.claimedByAgentId,
+          item.submittedByAgentId,
+          item.reprocess?.requestedBy.kind === 'agent' ? item.reprocess.requestedBy.agentId : null,
+        ])
+        .filter((id): id is string => !!id),
     )
     const partlyWritten = partlyWrittenByDocument(
       await this.deps.wikis.listPagesCitingDocuments(
         [connector.id],
-        items.filter((item) => item.status === 'pending' || item.status === 'in_progress').map((item) => item.documentId),
+        items
+          .filter((item) => item.status === 'pending' || item.status === 'reprocess' || item.status === 'in_progress')
+          .map((item) => item.documentId),
       ),
     )
     const totals = summary.wikis[0]
@@ -633,19 +645,21 @@ export class WikiConsoleService {
       canContribute: access.contribute,
       totals: {
         pending: totals?.pending ?? 0,
+        reprocess: totals?.reprocess ?? 0,
         inProgress: totals?.inProgress ?? 0,
         processed: totals?.processed ?? 0,
         skipped: totals?.skipped ?? 0,
       },
-      batches: summary.batches.map(({ batchId, pending, inProgress, processed, skipped }) => {
+      batches: summary.batches.map(({ batchId, pending, reprocess, inProgress, processed, skipped }) => {
         const first = items.find((item) => item.batchId === batchId)
         return {
           batchId,
           pending,
+          reprocess,
           inProgress,
           processed,
           skipped,
-          total: pending + inProgress + processed + skipped,
+          total: pending + reprocess + inProgress + processed + skipped,
           createdAt: first?.createdAt.toISOString() ?? null,
         }
       }).sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '')),
@@ -661,11 +675,23 @@ export class WikiConsoleService {
         submittedAt: item.createdAt.toISOString(),
         batchId: item.batchId,
         partlyWritten: partlyWritten.get(item.documentId) ?? null,
-        // D17: csak a gazdának emeljük ki.
+        reprocess: item.reprocess
+          ? {
+              reason: item.reprocess.reason,
+              requestedAt: item.reprocess.requestedAt,
+              requestedBy:
+                item.reprocess.requestedBy.kind === 'agent'
+                  ? { kind: 'agent' as const, name: agentNames.get(item.reprocess.requestedBy.agentId) ?? null }
+                  : { kind: 'human' as const, name: item.reprocessRequestedByLabel ?? null },
+              outcome: item.reprocess.outcome ?? null,
+            }
+          : null,
+        // D17: csak a gazdának emeljük ki. #1085: az újrafeldolgozás a kérés idejétől vár, nem a feltöltéstől.
         stale:
           access.manage &&
-          item.status === 'pending' &&
-          now.getTime() - item.createdAt.getTime() > WIKI_INBOX_STALE_MS,
+          (item.status === 'pending' || item.status === 'reprocess') &&
+          now.getTime() - (item.status === 'reprocess' && item.reprocess ? new Date(item.reprocess.requestedAt) : item.createdAt).getTime() >
+            WIKI_INBOX_STALE_MS,
       })),
     }
   }
@@ -724,6 +750,47 @@ export class WikiConsoleService {
     if (!skipped) throw new WikiConsoleError('not_found')
     await this.audit(connector, actor, 'kb.wiki.inbox.skipped', documentId, 'document', { documentId })
     return { skipped: true }
+  }
+
+  /** #1085: lezárt fájl vagy teljes köteg vissza a tálcára. A köteg részben is sikerülhet. */
+  async requestReprocess(
+    actor: WikiConsoleActor,
+    connectorId: string,
+    input: { target: { documentId: string } | { batchId: string }; reason: string },
+  ) {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    const result = await this.deps.wikis.requestReprocess({
+      connectorId: connector.id,
+      target: input.target,
+      reason: input.reason,
+      requestedBy: { kind: 'human', userId: actor.userId },
+      now: this.now(),
+    })
+    if ('documentId' in input.target && result.marked.length === 0) {
+      if (result.waitingForApproval.length > 0) throw new WikiConsoleError('reprocess_pending_approval')
+      if (result.alreadyInInbox.length > 0) throw new WikiConsoleError('already_in_inbox')
+      throw new WikiConsoleError('not_found')
+    }
+    for (const documentId of result.marked) {
+      await this.audit(connector, actor, 'kb.wiki.inbox.reprocess_requested', documentId, 'document', {
+        documentId,
+        ...('batchId' in input.target ? { batchId: input.target.batchId } : {}),
+      })
+    }
+    return {
+      marked: result.marked.length,
+      waitingForApproval: result.waitingForApproval.length,
+      alreadyInInbox: result.alreadyInInbox.length,
+    }
+  }
+
+  /** #1085 „Mégse”: a tétel visszakapja a kérés előtti állapotát. */
+  async cancelReprocess(actor: WikiConsoleActor, connectorId: string, documentId: string) {
+    const { connector } = await this.load(actor, connectorId, 'manage')
+    const cancelled = await this.deps.wikis.cancelReprocess({ documentId, connectorId: connector.id })
+    if (!cancelled) throw new WikiConsoleError('not_found')
+    await this.audit(connector, actor, 'kb.wiki.inbox.reprocess_cancelled', documentId, 'document', { documentId })
+    return { cancelled: true }
   }
 
   // -------------------------------------------------------------------------

@@ -69,7 +69,7 @@ export const CAPABILITY_DECK: readonly CapabilityDeckCard[] = [
   {
     id: 'knowledge',
     readTools: ['kb_search', 'kb_list_index', 'kb_get_page', 'kb_get_document', 'kb_wiki_changes', 'kb_wiki_config_get'],
-    writeTools: ['kb_ingest', 'kb_wiki_write', 'kb_wiki_revert', 'kb_wiki_config_propose', 'kb_wiki_config_withdraw'],
+    writeTools: ['kb_ingest', 'kb_wiki_write', 'kb_wiki_revert', 'kb_wiki_config_propose', 'kb_wiki_config_withdraw', 'kb_wiki_reprocess'],
   },
   {
     id: 'compute',

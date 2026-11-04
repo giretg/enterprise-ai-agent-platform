@@ -27,6 +27,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   kb_wiki_config_get: { connectorType: 'knowledge_base', accessMode: 'read' },
   kb_wiki_config_propose: { connectorType: 'knowledge_base', accessMode: 'write' },
   kb_wiki_config_withdraw: { connectorType: 'knowledge_base', accessMode: 'write' },
+  kb_wiki_reprocess: { connectorType: 'knowledge_base', accessMode: 'write' },
   board_write: { connectorType: 'board', accessMode: 'write' },
   ticket_create: { connectorType: 'board', accessMode: 'write' },
   agent_ask: { connectorType: 'board', accessMode: 'write' },

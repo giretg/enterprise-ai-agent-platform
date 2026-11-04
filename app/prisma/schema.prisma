@@ -1091,6 +1091,11 @@ model Document {
   wikiProcessedByChangeSetId String?                  @map("wiki_processed_by_change_set_id") @db.Uuid
   wikiBatchId                String?                  @map("wiki_batch_id") @db.Uuid
   wikiBatchSeq               Int?                     @map("wiki_batch_seq")
+  /**
+   * #1085: a legutóbbi újrafeldolgozási kérés (`WikiReprocessMarker`). `pending` / lejárt
+   * `in_progress` + jelölés = kifelé `reprocess`; lezárás után előzményként megmarad.
+   */
+  wikiReprocess              Json?                    @map("wiki_reprocess")
   createdAt                  DateTime                 @default(now()) @map("created_at") @db.Timestamptz
 
   tenant     Tenant              @relation(fields: [tenantId], references: [id])

@@ -103,9 +103,9 @@ export default async function KnowledgeBaseWikiPage({
             }`}
           >
             {t(`tabs.${id}`)}
-            {id === 'inbox' && wiki.inbox.pending + wiki.inbox.inProgress > 0 ? (
+            {id === 'inbox' && wiki.inbox.pending + wiki.inbox.reprocess + wiki.inbox.inProgress > 0 ? (
               <span className="ml-1 rounded-full bg-coral/10 px-1.5 text-xs text-coral-deep">
-                {wiki.inbox.pending + wiki.inbox.inProgress}
+                {wiki.inbox.pending + wiki.inbox.reprocess + wiki.inbox.inProgress}
               </span>
             ) : null}
           </Link>
@@ -278,7 +278,7 @@ async function WikiTab({
           {wiki.pageCount === 0 ? t('overview.empty') : t('overview.body', { pages: wiki.pageCount })}
         </p>
         <ul className="mt-3 space-y-1 text-sm text-ink-soft">
-          <li>{t('overview.inbox', { pending: wiki.inbox.pending, inProgress: wiki.inbox.inProgress })}</li>
+          <li>{t('overview.inbox', { pending: wiki.inbox.pending + wiki.inbox.reprocess, inProgress: wiki.inbox.inProgress })}</li>
           <li>{t('overview.writers', { count: wiki.access.filter((row) => row.access === 'write').length })}</li>
         </ul>
       </Card>

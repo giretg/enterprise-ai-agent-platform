@@ -779,6 +779,8 @@
         "forbidden": "You don't have permission for this. Shared knowledge bases are managed by your organization's admin.",
         "invalid_args": "Missing or invalid data. Check the fields and try again.",
         "too_large": "The file is larger than 25 MB. Split it into smaller parts and upload those.",
+        "already_in_inbox": "This file is already in the inbox, so there is nothing to send back. Refresh the page.",
+        "reprocess_pending_approval": "A change from this file is still waiting for approval. Decide on it first, because approving it later would write the old content back.",
         "generic": "Something went wrong. Please try again a little later."
       },
       "header": {
@@ -877,7 +879,7 @@
         "uploading": "Uploading: {done}/{total}…",
         "uploaded": "{total} new files in the inbox.",
         "uploadedNone": "No files were added to the inbox.",
-        "duplicates": "{count} files were already in this knowledge base and were skipped: {names}",
+        "duplicates": "{count} files were already in this knowledge base and were skipped: {names}. To process one again, send it back with Reprocess in the finished list below.",
         "tooLarge": "{count} files are larger than 25 MB and were skipped: {names}",
         "emptyFile": "{count} empty file(s) (0 bytes) skipped: {names}",
         "unreadable": "The browser could not read {count} file(s): {names}. If they are in a OneDrive or other cloud folder, download them to your computer first (or copy them to the Desktop), then try again.",
@@ -886,11 +888,29 @@
         "statusTitle": "Processing status",
         "autoRefresh": "refreshes automatically",
         "latestBatch": "Latest batch",
-        "batchLine": "{done}/{total} done · {pending} waiting · {inProgress} in progress",
-        "totals": "Total: {pending} waiting · {inProgress} in progress · {processed} processed · {skipped} skipped",
+        "batchLine": "{done}/{total} done · {pending} waiting{reprocess, plural, =0 {} other { · # sent back for reprocessing}} · {inProgress} in progress",
+        "totals": "Total: {pending} waiting{reprocess, plural, =0 {} other { · # waiting to be reprocessed}} · {inProgress} in progress · {processed} processed · {skipped} skipped",
         "empty": "Nothing is waiting. Material placed here is processed by a teammate with write access.",
         "stale": "waiting 3+ days",
         "byAgent": "sent by {name} (AI teammate)",
+        "byAgentName": "{name} (AI teammate)",
+        "reprocess": {
+          "action": "Reprocess",
+          "explain": "The file goes back to the inbox, and an AI teammate with write access processes it again when you ask it to. The existing wiki pages stay live until then, and nothing is deleted. The work is done by whichever teammate and model picks it up, so if you want a stronger model, say so in the reason and ask that teammate to process it.",
+          "reasonLabel": "Why does it need reprocessing?",
+          "reasonPlaceholder": "For example: the tables were left out, or check the dates.",
+          "wholeBatch": "The whole batch again ({count} files)",
+          "submit": "Send back to the inbox",
+          "close": "Close",
+          "result": "{marked, plural, one {# file} other {# files}} went back to the inbox.{waitingForApproval, plural, =0 {} one { # left out because a change from it is still waiting for approval.} other { # left out because changes from them are still waiting for approval.}}{alreadyInInbox, plural, =0 {} one { # was already in the inbox.} other { # were already in the inbox.}}",
+          "cancel": "Cancel",
+          "cancelHelp": "Withdraws the request: the item gets its previous state back. Anything finished in the meantime stays.",
+          "requestedAt": "sent back {when}",
+          "reasonLine": "{name} asked: {reason}",
+          "existingPages": "These existing pages were made from this source. They stay live until the reprocessing fixes them ({count} pages):",
+          "done": "reprocessed",
+          "unchanged": "checked, no change needed"
+        },
         "partlyWritten": "partly written",
         "partlyWrittenPages": "These pages already exist from this source, but processing is not finished ({count} pages):",
         "waitingSince": "submitted {when}",
@@ -898,6 +918,7 @@
         "doneList": "Processed and skipped items ({count})",
         "status": {
           "pending": "waiting",
+          "reprocess": "waiting to be reprocessed",
           "in_progress": "in progress",
           "inProgressBy": "in progress — {name}",
           "processed": "processed",
@@ -2687,7 +2708,8 @@
         "none": "Choose a teammate…",
         "loading": "Loading…",
         "loaded": "Settings of “{name}” loaded — enter the new name on the next step.",
-        "copied": "Access, learned methods, independence, AI model and team are copied when hiring. Documents and memory are not copied."
+        "copied": "Access, learned methods, independence, AI model and team are copied when hiring. Documents and memory are not copied.",
+        "sharedMailbox": "The copy also gets the shared mailbox ({names}). Everyone who uses the new teammate can read this mailbox, and the teammate can send on its behalf. Hiring accepts this."
       },
       "blank": {
         "title": "Blank page",
