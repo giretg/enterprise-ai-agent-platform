@@ -481,6 +481,7 @@ const wikiService = new WikiService({
   agents: agentRepo as never,
   knowledgeBase: kbService,
   audit: audit as never,
+  findTenantUser: async (tenantId, query) => tenantId === TENANT && query.userId === OWNER ? { id: OWNER, label: 'Test owner' } : null,
   findUserLabel: async (id) => (id === OWNER ? 'Olga Owner' : null),
   now,
 })
@@ -1396,6 +1397,79 @@ async function main() {
     const after = (await wikis.findPage(KB_A, 'concepts/fm-regi.md'))!
     assert.equal(after.docStatus, 'approved')
     assert.deepEqual(after.frontmatter, {})
+  })
+
+  await check('#1077 owner conflicts include null and role; unknown frontmatter owners are rejected', async () => {
+    for (const [owner, fmOwner] of [
+      [null, { userId: OWNER }],
+      [{ userId: OWNER, role: 'A' }, { userId: OWNER, role: 'B' }],
+    ]) {
+      const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+        wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+        pages: [page1077('concepts/owner-conflict.md', { owner, frontmatter: { owner: fmOwner } })],
+      })
+      assert.equal(res.code, 'invalid_wiki_change', JSON.stringify(res))
+      assert.equal(res.errors[0].code, 'conflicting_field')
+    }
+    const unknown = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+      pages: [page1077('concepts/unknown-owner.md', { frontmatter: { owner: { userId: OTHER_USER } } })],
+    })
+    assert.equal(unknown.errors[0].code, 'unknown_owner')
+  })
+
+  await check('#1077 frontmatter owner uses the page-level schema and tenant lookup', async () => {
+    for (const owner of [{ userId: '-'.repeat(36) }, { userId: OWNER, role: 'x'.repeat(121) }, { userId: OWNER, extra: true }]) {
+      const bad = await call(OWNER, DEF_A, 'kb_wiki_write', {
+        wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+        pages: [page1077('concepts/invalid-owner.md', { frontmatter: { owner } })],
+      })
+      assert.equal(bad.errors[0].code, 'invalid_field', JSON.stringify(bad))
+    }
+    const created = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+      pages: [page1077('concepts/owned.md', { frontmatter: { owner: { userId: OWNER, role: 'Test' } } })],
+    })
+    assert.equal(created.status, 'applied', JSON.stringify(created))
+    assert.equal((await wikis.findPage(KB_A, 'concepts/owned.md'))!.ownerUserId, OWNER)
+    const cleared = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, pages: [{ path: 'concepts/owned.md', action: 'patch', frontmatter: { owner: null, docStatus: null } }],
+    })
+    assert.equal(cleared.status, 'applied', JSON.stringify(cleared))
+    assert.equal((await wikis.findPage(KB_A, 'concepts/owned.md'))!.ownerUserId, null)
+  })
+
+  await check('#1077 approval lifts legacy pending frontmatter metadata', async () => {
+    const pending = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+      pages: [page1077('concepts/legacy-pending.md', { docStatus: 'approved' })],
+    })
+    const changeSet = wikis.changeSets.get(pending.changeSetId)!
+    wikis.changeSets.set(changeSet.id, { ...changeSet, pages: [page1077('concepts/legacy-pending.md', { frontmatter: { docStatus: 'approved', owner: { userId: OWNER } } })] } as never)
+    const approved = await approveGatewayOperation(gatewayDeps, { tenantId: TENANT, operationId: pending.operationId, actor: principal(APPROVER) })
+    assert.equal(approved.ok && approved.view.status, 'succeeded', JSON.stringify(approved))
+    const after = (await wikis.findPage(KB_A, 'concepts/legacy-pending.md'))!
+    assert.equal(after.docStatus, 'approved')
+    assert.equal(after.ownerUserId, OWNER)
+    assert.deepEqual(after.frontmatter, {})
+  })
+
+  await check('#1077 legacy status is removed on move and archive without changing approval', async () => {
+    for (const action of ['move', 'archive']) {
+      const path = `concepts/legacy-${action}.md`
+      await call(OWNER, DEF_A, 'kb_wiki_write', {
+        wikiId: WIKI_A, sourceDocumentIds: [sourceDoc], pages: [page1077(path)],
+      })
+      const row = (await wikis.findPage(KB_A, path))!
+      wikis.pages.set(row.id, { ...row, docStatus: 'approved', frontmatter: { docStatus: 'draft', owner: { userId: OTHER_USER } } } as never)
+      const res = await call(OWNER, DEF_A, 'kb_wiki_write', {
+        wikiId: WIKI_A, pages: [{ path, action, newPath: 'concepts/legacy-moved.md', baseVersion: row.contentHash }],
+      })
+      assert.equal(res.status, 'applied', JSON.stringify(res))
+      const after = (await wikis.findPage(KB_A, action === 'move' ? 'concepts/legacy-moved.md' : path))!
+      assert.equal(after.docStatus, 'approved')
+      assert.deepEqual(after.frontmatter, {})
+    }
   })
 
   await check('#1077 patch: [] nincs művelet: oldal szintű változással lefut, önmagában empty_patch', async () => {

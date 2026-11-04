@@ -26,6 +26,7 @@ import type {
   WikiRepository,
   WikiStructureRepository,
 } from '@/repositories/interfaces'
+import { wikiOwnerSchema } from '@/domain/enterprise-tools/tool-definitions'
 import { diffLines } from '@/lib/text-line-diff'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { resolveKbLanguage } from '@/lib/kb-language'
@@ -1331,10 +1332,14 @@ export class WikiService {
     if ('ok' in target) return target
     if (target.connector.id !== changeSet.connectorId) return { ok: false, code: 'not_found' }
     const pages = (Array.isArray(changeSet.pages) ? changeSet.pages : []) as unknown as WikiPageInput[]
+    const lifted = await this.liftFrontmatterMeta(changeSet.connectorId, pages)
+    if (!lifted.ok) return lifted
+    const owned = await this.resolveOwners(caller.tenantId, lifted.pages)
+    if (!owned.ok) return owned
     const plan = await this.plan({
       connectorId: changeSet.connectorId,
       agentId: changeSet.agentId ?? caller.agentId,
-      pages,
+      pages: owned.pages,
       sourceDocumentIds: changeSet.sourceDocumentIds,
       categories: await this.managedCategories(changeSet.wikiId),
       fields: await this.fieldSettings(changeSet.wikiId),
@@ -1915,14 +1920,18 @@ export class WikiService {
           next.docStatus = docStatus
         }
       }
-      if ('owner' in fm && JSON.stringify(owner) !== JSON.stringify(stored?.owner)) {
+      if ('owner' in fm) {
         const parsed = readFrontmatterOwner(owner)
         if (parsed === undefined) {
           fail(page.path, 'invalid_field', 'frontmatter.owner must be {email, role} (or {userId, role}), or null to clear it.')
-        } else if (page.owner !== undefined && (page.owner?.email ?? page.owner?.userId) !== (parsed?.email ?? parsed?.userId)) {
+        } else if (page.owner !== undefined && (
+          (page.owner === null) !== (parsed === null) ||
+          page.owner?.email !== parsed?.email || page.owner?.userId !== parsed?.userId ||
+          page.owner?.role !== parsed?.role
+        )) {
           fail(page.path, 'conflicting_field', 'owner differs from frontmatter.owner; send it once.')
         } else {
-          next.owner = page.owner ?? parsed
+          next.owner = page.owner !== undefined ? page.owner : parsed
         }
       }
       out.push(next)
@@ -2405,7 +2414,7 @@ export class WikiService {
             summary: page.summary?.trim() || current.summary,
             category: page.category !== undefined ? page.category.trim() || null : current.category,
             // #1061 F3: a patch frontmattere kulcsonként egyesül (null = a kulcs törlése).
-            frontmatter: withoutStrayDocStatus(page.frontmatter ? mergeFrontmatter(current.frontmatter, page.frontmatter) : current.frontmatter),
+            frontmatter: withoutStrayMeta(page.frontmatter ? mergeFrontmatter(current.frontmatter, page.frontmatter) : current.frontmatter),
             body,
             sources,
             meta: applyMetaInput(current.meta ?? EMPTY_WIKI_META, page),
@@ -2866,7 +2875,7 @@ function stateFromRow(page: WikiPage): WikiPageState {
     title: page.title,
     summary: page.summary,
     category: page.category,
-    frontmatter: stripManagedFrontmatter(page.frontmatter),
+    frontmatter: withoutStrayMeta(stripManagedFrontmatter(page.frontmatter)),
     body: page.body,
     sources: readWikiSources(page.sourceRefs),
     meta: metaFromColumns(page),
@@ -2876,22 +2885,15 @@ function stateFromRow(page: WikiPage): WikiPageState {
 /** #1077: `undefined` = érvénytelen; a létező felhasználót a `resolveOwners` ellenőrzi. */
 function readFrontmatterOwner(value: unknown): WikiPageInput['owner'] | undefined {
   if (value === null) return null
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const { email, userId, role } = value as Record<string, unknown>
-  const validEmail = typeof email === 'string' && email.length <= 320 && /^[^\s@]+@[^\s@]+$/.test(email)
-  const validUserId = typeof userId === 'string' && /^[0-9a-f-]{36}$/i.test(userId)
-  if ((!validEmail && !validUserId) || (role !== undefined && typeof role !== 'string')) return undefined
-  return {
-    ...(validEmail ? { email } : {}),
-    ...(validUserId ? { userId } : {}),
-    ...(typeof role === 'string' ? { role } : {}),
-  }
+  const parsed = wikiOwnerSchema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
 }
 
-/** #1077: a régi, néma `docStatus` kulcs a következő írásnál kikerül az oldal szövegéből. */
-function withoutStrayDocStatus(frontmatter: Record<string, unknown>): Record<string, unknown> {
-  const { docStatus: _stray, ...rest } = frontmatter
+/** #1077: a régi, néma `docStatus` / `owner` kulcs a következő írásnál kikerül az oldal szövegéből. */
+function withoutStrayMeta(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const { docStatus: _stray, owner: _owner, ...rest } = frontmatter
   void _stray
+  void _owner
   return rest
 }
 

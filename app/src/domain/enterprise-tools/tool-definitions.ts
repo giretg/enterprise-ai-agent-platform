@@ -980,7 +980,7 @@ const wikiPatchOpSchema = z.discriminatedUnion('op', [
 const wikiPathSchema = z.string().min(1).max(200)
 
 /** #1061 F3 D7: a gazda a szervezet platform-felhasználója (e-mail vagy azonosító) + szerep. */
-const wikiOwnerSchema = z
+export const wikiOwnerSchema = z
   .object({
     email: z.string().email().max(320).optional(),
     userId: z.string().uuid().optional(),
