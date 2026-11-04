@@ -38,6 +38,8 @@ import {
   readWikiSources,
   visibleWikiSources,
   renderWikiIndex,
+  partlyWrittenByDocument,
+  wikiPageDateUnknown,
   renderWikiLog,
   renderWikiPageMarkdown,
   stripManagedFrontmatter,
@@ -46,6 +48,7 @@ import {
 } from '@/lib/kb-wiki'
 import { isKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import { metaFromColumns, readWikiMeta, type WikiPageMeta } from '@/lib/wiki-metadata'
+import { WIKI_MD_MAX_CHARS } from '@/lib/wiki-config'
 import {
   categoryIndex,
   groupPagesByTree,
@@ -73,7 +76,7 @@ import type { WikiService } from './wiki-service'
 export const WIKI_TEMPLATE_IDS = ['general', 'health-journal'] as const
 export type WikiTemplateChoice = (typeof WIKI_TEMPLATE_IDS)[number]
 /** A WIKI.md szabályfájl felső mérete (a sablonok ~3 KB-osak). */
-export const MAX_WIKI_SCHEMA_CHARS = 20_000
+export const MAX_WIKI_SCHEMA_CHARS = WIKI_MD_MAX_CHARS
 /** D17: ennyi után a váró tétel kiemelt a wiki gazdájának. */
 export const WIKI_INBOX_STALE_MS = 3 * 24 * 60 * 60 * 1000
 const MAX_KB_NAME = 120
@@ -117,6 +120,7 @@ export type WikiConsoleDeps = {
     | 'listPages'
     | 'findPage'
     | 'listRevisions'
+    | 'listPagesCitingDocuments'
     | 'listLog'
     | 'inboxSummary'
     | 'skipInboxItem'
@@ -400,6 +404,7 @@ export class WikiConsoleService {
       type: page.type,
       updatedAt: page.updatedAt.toISOString(),
       author: author(page, agentNames, users),
+      dateUnknown: wikiPageDateUnknown(page),
     })
     return {
       connectorId: connector.id,
@@ -423,6 +428,8 @@ export class WikiConsoleService {
             name: group.path === null ? null : group.name,
             description: group.description,
             protected: group.protected,
+            collapsed: group.collapsed,
+            pinned: group.pinned,
             pageCount: group.pageCount,
             pages: group.pages.map(pageView),
             children: group.children.map((child) => ({
@@ -430,6 +437,8 @@ export class WikiConsoleService {
               name: child.name,
               description: child.description,
               protected: child.protected,
+              collapsed: child.collapsed,
+              pinned: child.pinned,
               pageCount: child.pageCount,
               pages: child.pages.map(pageView),
             })),
@@ -441,9 +450,20 @@ export class WikiConsoleService {
               name: group.category === 'Uncategorized' ? null : group.category,
               description: null,
               protected: false,
+              collapsed: false,
+              pinned: [] as string[],
               pageCount: groupPages.length,
               pages: groupPages,
-              children: [] as Array<{ key: string; name: string; description: string | null; protected: boolean; pageCount: number; pages: ReturnType<typeof pageView>[] }>,
+              children: [] as Array<{
+                key: string
+                name: string
+                description: string | null
+                protected: boolean
+                collapsed: boolean
+                pinned: string[]
+                pageCount: number
+                pages: ReturnType<typeof pageView>[]
+              }>,
             }
           }),
       log: [...log].reverse().map((entry) => ({
@@ -601,6 +621,12 @@ export class WikiConsoleService {
       actor.tenantId,
       items.flatMap((item) => [item.claimedByAgentId, item.submittedByAgentId]).filter((id): id is string => !!id),
     )
+    const partlyWritten = partlyWrittenByDocument(
+      await this.deps.wikis.listPagesCitingDocuments(
+        [connector.id],
+        items.filter((item) => item.status === 'pending' || item.status === 'in_progress').map((item) => item.documentId),
+      ),
+    )
     const totals = summary.wikis[0]
     return {
       canManage: access.manage,
@@ -634,6 +660,7 @@ export class WikiConsoleService {
         claimedBy: item.claimedByAgentId ? agentNames.get(item.claimedByAgentId) ?? null : null,
         submittedAt: item.createdAt.toISOString(),
         batchId: item.batchId,
+        partlyWritten: partlyWritten.get(item.documentId) ?? null,
         // D17: csak a gazdának emeljük ki.
         stale:
           access.manage &&

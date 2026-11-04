@@ -14,7 +14,10 @@ import { MAX_WIKI_SCHEMA_CHARS, WikiConsoleError, WIKI_TEMPLATE_IDS, type WikiCo
 import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiCategoryError } from '@/domain/knowledge-base/wiki-category-service'
 import { WikiMetadataError } from '@/domain/knowledge-base/wiki-metadata-service'
+import { WikiConfigError } from '@/domain/knowledge-base/wiki-config-service'
 import { WIKI_FIELD_TYPES, type WikiViewFilter } from '@/lib/wiki-metadata'
+import { WIKI_CATEGORY_MAX_COUNT, WIKI_CATEGORY_MAX_PAGE_ORDER, WIKI_CATEGORY_MAX_PINNED, WIKI_PAGE_SORTS } from '@/lib/wiki-categories'
+import { WIKI_COLLECT_MAX_CHARS } from '@/lib/wiki-config'
 import { fail, ok } from '@/lib/result'
 
 const uuid = z.string().uuid()
@@ -29,7 +32,8 @@ function failFrom(error: unknown, fallback: string) {
     error instanceof WikiConsoleError ||
     error instanceof WikiAccessError ||
     error instanceof WikiCategoryError ||
-    error instanceof WikiMetadataError
+    error instanceof WikiMetadataError ||
+    error instanceof WikiConfigError
   ) {
     return fail(error.code)
   }
@@ -574,8 +578,12 @@ export async function updateWikiCategoryAction(input: {
   name?: string
   parentId?: string | null
   description?: string | null
-  sortOrder?: number
+  sortOrder?: number | null
   approval?: string
+  pageSort?: string
+  pinnedPages?: string[]
+  pageOrder?: string[]
+  collapsed?: boolean
   reviewCycleDays?: number | null
   requiredFields?: string[]
   requiredSections?: string[]
@@ -590,8 +598,13 @@ export async function updateWikiCategoryAction(input: {
         name: z.string().trim().min(1).max(120).optional(),
         parentId: uuid.nullable().optional(),
         description: z.string().max(500).nullable().optional(),
-        sortOrder: z.number().int().min(0).max(100_000).optional(),
+        sortOrder: z.number().int().min(0).max(100_000).nullable().optional(),
         approval: categoryApproval.optional(),
+        // Menü: oldalrendezés, kiemelt oldalak, kézi sorrend, alapból becsukva.
+        pageSort: z.enum(WIKI_PAGE_SORTS).optional(),
+        pinnedPages: z.array(z.string().min(1).max(300)).max(WIKI_CATEGORY_MAX_PINNED).optional(),
+        pageOrder: z.array(z.string().min(1).max(300)).max(WIKI_CATEGORY_MAX_PAGE_ORDER).optional(),
+        collapsed: z.boolean().optional(),
         // #1061 F3/F4: átnézési ciklus, kötelező mezők, oldalsablon.
         reviewCycleDays: z.number().int().min(1).max(3650).nullable().optional(),
         requiredFields: z.array(z.string().max(40)).max(31).optional(),
@@ -606,6 +619,20 @@ export async function updateWikiCategoryAction(input: {
     return ok(result)
   } catch (e) {
     return failFrom(e, 'Failed to update category')
+  }
+}
+
+/** Húzásos rendezés: egy szülő alatti testvér-kategóriák új sorrendje (felső szint: `parentId: null`). */
+export async function reorderWikiCategoriesAction(input: { connectorId: string; parentId: string | null; orderedIds: string[] }) {
+  try {
+    const parsed = z
+      .object({ connectorId: uuid, parentId: uuid.nullable(), orderedIds: z.array(uuid).min(1).max(WIKI_CATEGORY_MAX_COUNT) })
+      .parse(input)
+    const result = await services.wikiCategories.reorder(await actor(), parsed.connectorId, parsed.parentId, parsed.orderedIds)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to reorder categories')
   }
 }
 
@@ -792,5 +819,69 @@ export async function getWikiViewAction(input: { connectorId: string; view: stri
     return ok(await services.wikiMetadata.views(await actor(), parsed.connectorId, filter))
   } catch (e) {
     return failFrom(e, 'Failed to load view')
+  }
+}
+
+// -------------------------------------------------------------------------
+// #1075: agent által javasolt beállítás (Javaslatok fül)
+
+export async function getWikiConfigProposalsAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiConfig.overview(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to load proposals')
+  }
+}
+
+export async function getWikiConfigProposalAction(input: { connectorId: string; proposalId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, proposalId: uuid }).parse(input)
+    return ok(await services.wikiConfig.review(await actor(), parsed.connectorId, parsed.proposalId))
+  } catch (e) {
+    return failFrom(e, 'Failed to load proposal')
+  }
+}
+
+export async function approveWikiConfigProposalAction(input: { connectorId: string; proposalId: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, proposalId: uuid }).parse(input)
+    const result = await services.wikiConfig.approve(await actor(), parsed.connectorId, parsed.proposalId)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to approve proposal')
+  }
+}
+
+export async function rejectWikiConfigProposalAction(input: { connectorId: string; proposalId: string; comment?: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, proposalId: uuid, comment: z.string().max(1000).optional() }).parse(input)
+    const result = await services.wikiConfig.reject(await actor(), parsed.connectorId, parsed.proposalId, parsed.comment ?? null)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to reject proposal')
+  }
+}
+
+export async function setWikiAgentConfigChangesAction(input: { connectorId: string; enabled: boolean }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, enabled: z.boolean() }).parse(input)
+    const result = await services.wikiConfig.setEnabled(await actor(), parsed.connectorId, parsed.enabled)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to change setting')
+  }
+}
+
+export async function setWikiCollectFocusAction(input: { connectorId: string; collect: string | null }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, collect: z.string().max(WIKI_COLLECT_MAX_CHARS).nullable() }).parse(input)
+    const result = await services.wikiConfig.setCollect(await actor(), parsed.connectorId, parsed.collect)
+    revalidateWiki(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save collect focus')
   }
 }

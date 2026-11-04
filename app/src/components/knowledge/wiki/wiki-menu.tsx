@@ -2,13 +2,17 @@ import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
 import { wikiHref } from './wiki-format'
 
-type MenuPage = { path: string; title: string; summary: string }
+type MenuPage = { path: string; title: string; summary: string; dateUnknown?: boolean }
 type MenuGroup = {
   key: string
   /** `null` = kategória nélküli oldalak („Egyéb”). */
   name: string | null
   description: string | null
   protected: boolean
+  /** Alapból becsukva (pl. források) — a nyitott oldal csoportja ettől még kinyílik. */
+  collapsed?: boolean
+  /** A csoport elején álló kiemelt oldalak path-jai. */
+  pinned?: string[]
   pageCount: number
   pages: MenuPage[]
   children: Array<Omit<MenuGroup, 'children'>>
@@ -16,7 +20,8 @@ type MenuGroup = {
 
 /**
  * #1061 F1: a wiki bal oldali menüje — kétszintű, összecsukható, oldalszámmal.
- * Az aktuális oldal csoportja nyitva marad; kevés csoportnál minden nyitva.
+ * Az aktuális oldal csoportja nyitva marad; kevés csoportnál minden nyitva, kivéve
+ * az alapból becsukottakat. A sorrend a szerveré (kategória-sorrend, oldalrendezés, kiemeltek).
  */
 type LinkedWiki = { key: string; name: string; parentKey: string | null; connectorId: string }
 
@@ -38,19 +43,28 @@ export async function WikiMenu({
     !!currentPath &&
     (group.pages.some((page) => page.path === currentPath) || (group.children ?? []).some((child) => contains(child)))
 
-  const pageList = (pages: MenuPage[]) =>
+  const open = (group: Pick<MenuGroup, 'pages' | 'collapsed'> & { children?: MenuGroup['children'] }) =>
+    (openAll && !group.collapsed) || contains(group)
+
+  const pageList = (pages: MenuPage[], pinned: string[] = []) =>
     pages.length ? (
       <ul className="mt-1 space-y-0.5">
         {pages.map((page) => (
-          <li key={page.path}>
+          <li key={page.path} className={pinned.includes(page.path) ? 'flex items-center' : undefined}>
+            {pinned.includes(page.path) ? (
+              <span aria-label={t('pinned')} title={t('pinned')} className="w-3 shrink-0 text-[10px] text-ink-faint">
+                ★
+              </span>
+            ) : null}
             <Link
               href={wikiHref(connectorId, { page: page.path })}
-              className={`block truncate rounded px-1.5 py-0.5 text-sm hover:bg-coral/5 ${
+              className={`block min-w-0 truncate rounded px-1.5 py-0.5 text-sm hover:bg-coral/5 ${
                 currentPath === page.path ? 'bg-coral/10 font-medium text-coral-deep' : 'text-ink'
               }`}
               title={page.summary}
             >
               {page.title}
+              {page.dateUnknown ? <span className="ml-1 text-[10px] text-ink-faint">{t('dateUnknown')}</span> : null}
             </Link>
           </li>
         ))}
@@ -104,15 +118,20 @@ export async function WikiMenu({
   return (
     <div className="space-y-2" data-testid="wiki-toc">
       {groups.map((group) => (
-        <details key={group.key} className="group/l1" open={openAll || contains(group)} data-testid="wiki-toc-group">
+        <details key={group.key} className="group/l1" open={open(group)} data-testid="wiki-toc-group">
           {heading(group, 1)}
+          {group.description ? (
+            <p className="ml-5 line-clamp-2 text-[11px] leading-snug text-ink-faint" data-testid="wiki-toc-group-description">
+              {group.description}
+            </p>
+          ) : null}
           <div className="ml-3">
-            {pageList(group.pages)}
+            {pageList(group.pages, group.pinned)}
             {group.children.map((child) => (
-              <details key={child.key} className="group/l2 mt-1" open={openAll || contains(child)} data-testid="wiki-toc-subgroup">
+              <details key={child.key} className="group/l2 mt-1" open={open(child)} data-testid="wiki-toc-subgroup">
                 {heading(child, 2)}
                 <div className="ml-3">
-                  {child.pages.length ? pageList(child.pages) : <p className="px-1.5 py-0.5 text-xs text-ink-faint">{t('emptyCategory')}</p>}
+                  {child.pages.length ? pageList(child.pages, child.pinned) : <p className="px-1.5 py-0.5 text-xs text-ink-faint">{t('emptyCategory')}</p>}
                 </div>
               </details>
             ))}

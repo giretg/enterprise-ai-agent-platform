@@ -1,6 +1,6 @@
 /**
  * #1061 F1 — kezelt kategória-fa a Control Plane-en: bekapcsolás (előnézettel),
- * létrehozás, átnevezés, áthelyezés, jóváhagyási szabály, törlés.
+ * létrehozás, átnevezés, áthelyezés, jóváhagyási szabály, menüsorrend, törlés.
  *
  * A jogot a `WikiConsoleService.authorize` dönti el (`manage`: közösnél admin,
  * privátnál a tulajdonos; privátnál az admin `not_found`). Az oldalak kategória-
@@ -14,14 +14,20 @@ import {
   WIKI_CATEGORY_MAX_COUNT,
   WIKI_CATEGORY_MAX_DESCRIPTION,
   WIKI_CATEGORY_MAX_NAME,
+  WIKI_CATEGORY_MAX_PAGE_ORDER,
+  WIKI_CATEGORY_MAX_PINNED,
+  WIKI_CATEGORY_ORDER_STEP,
+  WIKI_PAGE_SORTS,
   buildCategoryTree,
   flattenCategoryTree,
   isValidCategoryKey,
   linkedWikiItems,
   normalizeCategoryPath,
   planFreeCategoryImport,
+  sortCategoryPages,
   type WikiCategoryApprovalRule,
   type WikiCategoryRow,
+  type WikiPageSort,
 } from '@/lib/wiki-categories'
 import {
   WIKI_REQUIRABLE_BUILTINS,
@@ -56,8 +62,14 @@ export type WikiCategoryPatch = {
   name?: string
   parentId?: string | null
   description?: string | null
-  sortOrder?: number
+  /** `null` = nincs megadva (a sorrendezettek után, név szerint). */
+  sortOrder?: number | null
   approval?: WikiCategoryApprovalRule
+  /** Menü: oldalrendezés, kiemelt oldalak (path), kézi sorrend (path), alapból becsukva. */
+  pageSort?: WikiPageSort
+  pinnedPages?: string[]
+  pageOrder?: string[]
+  collapsed?: boolean
   /** #1061 F3: átnézési ciklus (nap, `null` = nincs) és kötelező mezők (egyedi kulcs vagy `owner`). */
   reviewCycleDays?: number | null
   requiredFields?: string[]
@@ -68,6 +80,8 @@ export type WikiCategoryPatch = {
 }
 
 const RULE_KEYS = ['reviewCycleDays', 'requiredFields', 'requiredSections', 'sectionRule', 'templateMd'] as const
+const MENU_KEYS = ['pageSort', 'pinnedPages', 'pageOrder', 'collapsed'] as const
+const TEMPLATE_KEYS = ['requiredFields', 'requiredSections', 'sectionRule', 'templateMd'] as const
 
 /** A kategória-fa nem változhat úgy, hogy oldal vesszen el: ilyenkor `conflict`-tal áll meg. */
 export class WikiCategoryError extends Error {
@@ -106,12 +120,19 @@ export class WikiCategoryService {
     ])
     const counts = countByCategory(pages)
     const own = (path: string): PageCounts => counts.get(path) ?? { published: 0, archived: 0 }
+    // A kiemeléshez és a kézi sorrendhez: a kategória publikált oldalai menüsorrendben.
+    const pageList = (node: ReturnType<typeof buildCategoryTree>[number]) =>
+      sortCategoryPages(
+        pages.filter((page) => page.status === 'published' && normalizeCategoryPath(page.category) === node.path),
+        node,
+      ).map((page) => ({ path: page.path, title: page.title }))
     const tree = buildCategoryTree(rows).map((node) => {
-      const children = node.children.map((child) => ({ ...nodeView(child), ...own(child.path), children: [] }))
+      const children = node.children.map((child) => ({ ...nodeView(child), ...own(child.path), pages: pageList(child), children: [] }))
       const self = own(node.path)
       return {
         ...nodeView(node),
         ...self,
+        pages: pageList(node),
         /** Az alkategóriákkal együtt (a szabály ezekre is érvényes). */
         totalPublished: self.published + children.reduce((sum, child) => sum + child.published, 0),
         children,
@@ -170,7 +191,7 @@ export class WikiCategoryService {
     const plan = planFreeCategoryImport(pages, rows)
     const toCreate = plan.filter((row) => !row.exists)
     if (rows.length + toCreate.length > WIKI_CATEGORY_MAX_COUNT) throw new WikiCategoryError('too_many')
-    let sortOrder = rows.reduce((max, row) => Math.max(max, row.sortOrder), 0)
+    let sortOrder = rows.reduce((max, row) => Math.max(max, row.sortOrder ?? 0), 0)
     for (const row of toCreate) {
       sortOrder += 10
       await this.deps.structure.createCategory({
@@ -233,7 +254,7 @@ export class WikiCategoryService {
       parentId,
       name: cleanName(input.name),
       description: cleanDescription(input.description),
-      sortOrder: siblings.reduce((max, row) => Math.max(max, row.sortOrder), 0) + 10,
+      sortOrder: siblings.reduce((max, row) => Math.max(max, row.sortOrder ?? 0), 0) + WIKI_CATEGORY_ORDER_STEP,
       approval: linkedConnectorId ? 'inherit' : input.approval ?? 'inherit',
       ...(linkedConnectorId ? { linkedConnectorId } : {}),
     })
@@ -265,11 +286,15 @@ export class WikiCategoryService {
     }
     const oldPath = pathOf(rows, current)
     const rules = await this.cleanRules(wikiId, current, patch)
+    const menu = await this.cleanMenu(connector.id, oldPath, current, patch)
     const next = {
       ...rules,
+      // #1075: kézi szerkesztés után a szabály már nem követi a névvel ellátott sablont.
+      ...(TEMPLATE_KEYS.some((key) => key in rules) && current.templateKey ? { templateKey: null } : {}),
+      ...menu,
       ...(patch.name !== undefined ? { name: cleanName(patch.name) } : {}),
       ...(patch.description !== undefined ? { description: cleanDescription(patch.description) } : {}),
-      ...(patch.sortOrder !== undefined ? { sortOrder: Math.max(0, Math.min(100_000, Math.floor(patch.sortOrder))) } : {}),
+      ...(patch.sortOrder !== undefined ? { sortOrder: cleanOrder(patch.sortOrder) } : {}),
       ...(patch.approval !== undefined ? { approval: patch.approval } : {}),
       ...(parentChanged ? { parentId: patch.parentId ?? null } : {}),
     }
@@ -308,9 +333,71 @@ export class WikiCategoryService {
         ...(rules.requiredSections ? { requiredSectionCount: rules.requiredSections.length } : {}),
         ...(rules.sectionRule ? { sectionRule: rules.sectionRule } : {}),
         ...('templateMd' in rules ? { templateSet: !!rules.templateMd } : {}),
+        // Menü: a beállítás alakja, oldal-path nélkül.
+        ...('sortOrder' in next ? { sortOrder: next.sortOrder } : {}),
+        ...(menu.pageSort ? { pageSort: menu.pageSort } : {}),
+        ...(menu.pinnedPages ? { pinnedCount: menu.pinnedPages.length } : {}),
+        ...(menu.pageOrder ? { manualOrderCount: menu.pageOrder.length } : {}),
+        ...(menu.collapsed !== undefined ? { collapsed: menu.collapsed } : {}),
       })
     }
     return { id: categoryId, movedPages }
+  }
+
+  /**
+   * Húzásos rendezés: egy szülő alatti testvérek (felső szintnél a felső szintű
+   * kategóriák) új sorrendje 10-es lépésközzel. A listának pontosan a testvéreket kell
+   * tartalmaznia — közben megváltozott fánál `conflict` (a felület újratölt).
+   */
+  async reorder(actor: WikiConsoleActor, connectorId: string, parentId: string | null, orderedIds: string[]) {
+    const { connector, wikiId } = await this.open(actor, connectorId)
+    const rows = await this.deps.structure.listCategories(wikiId)
+    const siblings = rows.filter((row) => !row.linkedConnectorId && (row.parentId ?? null) === parentId)
+    const ids = [...new Set(orderedIds)]
+    if (ids.length !== orderedIds.length || ids.length !== siblings.length || !siblings.every((row) => ids.includes(row.id))) {
+      throw new WikiCategoryError('conflict')
+    }
+    const orders = ids.map((id, i) => ({ id, sortOrder: (i + 1) * WIKI_CATEGORY_ORDER_STEP }))
+    const changed = orders.filter((row) => siblings.find((sibling) => sibling.id === row.id)!.sortOrder !== row.sortOrder)
+    const ok = await this.deps.structure.reorderCategories(wikiId, parentId, orders)
+    if (!ok) throw new WikiCategoryError('conflict')
+    if (changed.length === 0) return { changed: 0 }
+    await this.audit(connector, actor, 'kb.wiki.categories.reordered', wikiId, {
+      wikiId,
+      ...(parentId ? { parentId } : {}),
+      categoryCount: changed.length,
+    })
+    return { changed: changed.length }
+  }
+
+  /**
+   * Menübeállítások: oldalrendezés, kiemelt oldalak, kézi sorrend, becsukva. A path-oknak
+   * a kategória mostani publikált oldalai közül kell lenniük; a kapcsolt wiki menüpontjára nem tehető.
+   */
+  private async cleanMenu(connectorId: string, path: string, current: WikiCategoryRow, patch: WikiCategoryPatch) {
+    const out: Partial<Pick<WikiCategoryRow, (typeof MENU_KEYS)[number]>> = {}
+    if (!MENU_KEYS.some((key) => patch[key] !== undefined)) return out
+    if (current.linkedConnectorId) throw new WikiConsoleError('invalid_args')
+    if (patch.pageSort !== undefined) {
+      if (!(WIKI_PAGE_SORTS as readonly string[]).includes(patch.pageSort)) throw new WikiConsoleError('invalid_args')
+      out.pageSort = patch.pageSort
+    }
+    if (patch.collapsed !== undefined) out.collapsed = !!patch.collapsed
+    if (patch.pinnedPages !== undefined || patch.pageOrder !== undefined) {
+      const inCategory = new Set(
+        (await this.allPages(connectorId))
+          .filter((page) => page.status === 'published' && normalizeCategoryPath(page.category) === path)
+          .map((page) => page.path),
+      )
+      const clean = (list: string[], max: number) => {
+        const paths = [...new Set(list.map((item) => item.trim()).filter(Boolean))]
+        if (paths.length > max || paths.some((item) => !inCategory.has(item))) throw new WikiConsoleError('invalid_args')
+        return paths
+      }
+      if (patch.pinnedPages !== undefined) out.pinnedPages = clean(patch.pinnedPages, WIKI_CATEGORY_MAX_PINNED)
+      if (patch.pageOrder !== undefined) out.pageOrder = clean(patch.pageOrder, WIKI_CATEGORY_MAX_PAGE_ORDER)
+    }
+    return out
   }
 
   /** Csak üres kategória törölhető (alkategória és oldal nélkül, az archivált oldalt is beleértve). */
@@ -420,6 +507,10 @@ function nodeView(node: ReturnType<typeof buildCategoryTree>[number]) {
     sortOrder: node.sortOrder,
     approval: node.approval,
     protected: node.protected,
+    pageSort: node.pageSort ?? 'title',
+    pinnedPages: node.pinnedPages ?? [],
+    pageOrder: node.pageOrder ?? [],
+    collapsed: !!node.collapsed,
     reviewCycleDays: node.reviewCycleDays ?? null,
     requiredFields: node.requiredFields ?? [],
     requiredSections: node.requiredSections ?? [],
@@ -444,6 +535,12 @@ function countByCategory(pages: Array<Pick<WikiPage, 'category' | 'status'>>): M
 function pathOf(rows: WikiCategoryRow[], row: WikiCategoryRow): string {
   const parent = row.parentId ? rows.find((candidate) => candidate.id === row.parentId) : null
   return parent ? `${parent.key}/${row.key}` : row.key
+}
+
+function cleanOrder(order: number | null): number | null {
+  if (order === null) return null
+  if (!Number.isFinite(order)) throw new WikiConsoleError('invalid_args')
+  return Math.max(0, Math.min(100_000, Math.floor(order)))
 }
 
 function cleanName(name: string): string {

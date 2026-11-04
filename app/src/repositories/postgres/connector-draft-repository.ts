@@ -12,6 +12,7 @@ import {
   type GoogleAccountBinding,
 } from '@/domain/connector/google-account-binding'
 import { Prisma } from '@prisma/client'
+import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
 import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import { provenanceTemplateKey } from '@/lib/connector-template-icon-map'
@@ -219,6 +220,33 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         where: { id: draft.connectorId },
         data: {
           config: withGoogleAccountBinding(current, params.binding) as Prisma.InputJsonValue,
+        },
+      })
+      return tx.connectorDraft.findUniqueOrThrow({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+    })
+  }
+
+  async setGitHubRepositoryAccess(params: {
+    draftId: string
+    access: GitHubRepositoryAccess
+  }): Promise<ConnectorDraftWithConnector> {
+    return prisma.$transaction(async (tx) => {
+      const draft = await tx.connectorDraft.findUnique({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+      if (!draft) throw new Error('draft not found')
+      const current =
+        draft.connector.config && typeof draft.connector.config === 'object' && !Array.isArray(draft.connector.config)
+          ? (draft.connector.config as Record<string, unknown>)
+          : {}
+      await tx.connector.update({
+        where: { id: draft.connectorId },
+        data: {
+          config: { ...current, githubRepositoryAccess: params.access } as Prisma.InputJsonValue,
         },
       })
       return tx.connectorDraft.findUniqueOrThrow({

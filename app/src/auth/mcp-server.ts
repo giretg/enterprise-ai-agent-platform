@@ -20,6 +20,8 @@ import { z } from 'zod'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
+import { prisma } from '@/lib/db'
+import { inboundMailBlocksTool, INBOUND_MAIL_TOOL_BLOCKED_MESSAGE } from '@/auth/inbound-mail-tool-guard'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
@@ -98,6 +100,12 @@ import {
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
+  kbWikiConfigGetObject,
+  kbWikiConfigProposeObject,
+  kbWikiConfigWithdrawInputSchema,
   SANDBOX_RUN_TOOL,
   WEB_SEARCH_TOOL,
   webSearchInputSchema,
@@ -106,6 +114,8 @@ import {
   capabilityToolsFor,
   DOCUMENT_EXPORT_TOOL,
   documentExportInputSchema,
+  HTTP_API_SAVED_READ_TOOL,
+  httpApiSavedReadInputSchema,
   type EnterpriseToolResourceLink,
   sandboxRunInputSchema,
   MCP_CALL_TOOL,
@@ -464,6 +474,9 @@ export function productionMcpDeps(): McpRuntimeDeps {
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
     verifyChatToken: productionChatTokenVerifier,
+    inboundMailAllowsDirectWrites: async ({ tenantId, agentId }) =>
+      (await prisma.agentInboundMailRule.findFirst({ where: { agentId, tenantId }, select: { allowDirectWrites: true } }))
+        ?.allowDirectWrites === true,
     users: repositories.users,
     tenants: repositories.tenants,
     memberships: repositories.tenantMemberships,
@@ -2079,7 +2092,7 @@ async function createMcpResourceHandler(
         {
           title: 'HTTP API GET',
           description:
-            'One GET against a bound company HTTP API connector. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition (agentId optional). Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. For totals, averages or per-partner/per-product breakdowns over many rows, prefer an aggregating report endpoint from connectors[].endpoints (with its filters) over fetching raw rows. The result includes the response etag when the API sends one. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email). Unlisted paths return endpoint_not_allowed with the allowed list.',
+            'One GET against a bound company HTTP API connector. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition (agentId optional). Path is relative to the connector baseUrl — do not send credentials or trace headers (X-Agent-Id, X-Acting-User, X-Connector-Call-Id); the platform injects them. For large lists use http_api_get_all. For totals, averages or per-partner/per-product breakdowns over many rows, prefer an aggregating report endpoint from connectors[].endpoints (with its filters) over fetching raw rows. The result includes the response etag when the API sends one. A file download (Excel, PDF, CSV attachment) returns no content, only fileName, sizeBytes, exportId and a downloadUrl for the user. Optional headers: only those the endpoint declares (get_definition → endpoints[].headers). Allowed paths are under connectors[].endpoints in get_definition. With several HTTP connectors, the server usually picks by method+path; otherwise pass connectorName (connectors[].name) or connectorId. If platform.whoami lists several linkedAccounts for this connector, pass account (nickname or email). Unlisted paths return endpoint_not_allowed with the allowed list.',
           inputSchema: httpApiGetInputSchema,
           annotations: { readOnlyHint: true, openWorldHint: true },
         },
@@ -2107,11 +2120,23 @@ async function createMcpResourceHandler(
         async (args) => enterpriseToolResult(principal, HTTP_API_REQUEST_TOOL, args, deps),
       )
       server.registerTool(
+        HTTP_API_SAVED_READ_TOOL,
+        {
+          title: 'Read a saved large API response',
+          description:
+            'Read a large http_api_* response that was saved instead of sent in full (the response has savedResult.savedResultId). Returns rows from offset (default 100 per call, under 20 000 characters) and nextOffset; without a row list it returns a text slice. ' +
+            'Use it to look into or analyse the full data — for an Excel/CSV file call document_export with savedResultId instead of copying rows. Only the requesting user can read it, for 7 days. Omit definitionId when this client is bound; otherwise pass it.',
+          inputSchema: httpApiSavedReadInputSchema,
+          annotations: { readOnlyHint: true, openWorldHint: false },
+        },
+        async (args) => enterpriseToolResult(principal, HTTP_API_SAVED_READ_TOOL, args, deps),
+      )
+      server.registerTool(
         KB_SEARCH_TOOL,
         {
           title: 'Search knowledge base',
           description:
-            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
+            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents; card numbers, PINs and keys are masked in snippets; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
           inputSchema: kbSearchInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),
@@ -2141,7 +2166,7 @@ async function createMcpResourceHandler(
         {
           title: 'Get knowledge base file',
           description:
-            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading. Wiki sources return artifactId instead of the full text. PDF pages include textQuality; for low_text/no_text use pageImages:true and pages:"1-3,7" (max 5 pages per call, default page 1) to receive PNG images. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
+            'Read one raw file by documentId from kb_list_index. Files over 8000 characters return an outline; pass section to read one heading, or offset to read the whole file. One call returns at most 8000 characters: while the response has nextOffset, call again with offset:nextOffset (same section) until it is gone; longSections lists the sections that need several calls. Wiki sources return artifactId instead of the full text. PDF pages include textQuality; for low_text/no_text use pageImages:true and pages:"1-3,7" (max 5 pages per call, default page 1) to receive PNG images. claimForWiki:true claims a wiki inbox item for this agent for 2 hours (write access only; already_claimed if another agent holds it).',
           inputSchema: kbGetDocumentInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_GET_DOCUMENT_TOOL, args, deps),
@@ -2161,7 +2186,7 @@ async function createMcpResourceHandler(
         {
           title: 'Write agent wiki pages',
           description:
-            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category (when the wiki has managed categories: one of its category keys from kb_list_index, e.g. partners/payment; otherwise unknown_category), frontmatter (sources [{documentId}], source_date required on source pages), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a source: a raw source of this knowledge base {documentId}; a raw source of another knowledge base you can read {documentId, connectorId} (only if that one is at least as widely visible as this wiki, else source_audience_narrower); or, when the person you are talking to states it live, {kind:"human_note", occasion, participants?} — the server records who and when (from a scheduled or background run: human_note_requires_session). Link another wiki with [[wiki:<wikiId>/<path>]]. Wikis with metadata fields: put custom field values in frontmatter (see kb_list_index metadataFields; patch merges frontmatter keys, null removes one), docStatus "draft" on pages you write, owner {email, role}; docStatus "approved" always waits for a human approver. action "review" marks a page reviewed only when the person you talk to says they reviewed it (from a scheduled or background run: review_requires_session). Category templates: include template.requiredSections as headings (missing_section). Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. On success the response lists every written page with its new baseVersion — that is the confirmation; do not re-read the pages to verify. Errors: invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode, or for a category that always needs approval, returns awaiting_approval and an approvalUrl — show the link, do not poll.',
+            'Write one atomic change-set (max 50 pages) to an agent wiki you have write access to. pages is a JSON array; each page: path (e.g. sources/x.md, entities/x.md), action upsert|patch|archive|move, title, type (source|entity|concept|analysis|overview), summary (one line for index.md), category (when the wiki has managed categories: one of its category keys from kb_list_index, e.g. partners/payment; otherwise unknown_category), frontmatter (sources [{documentId}], source_date required on source pages: the document\'s own date, or "unknown" if nobody knows it, never invented), body; baseVersion from kb_get_page when updating an existing page. patch: appendToSection / replaceSection / addSource without rewriting the page. Every page except overview cites a source: a raw source of this knowledge base {documentId}; a raw source of another knowledge base you can read {documentId, connectorId} (only if that one is at least as widely visible as this wiki, else source_audience_narrower; a knowledge base visible to the whole organization is the widest, even if it is an agent\'s own); or, when the person you are talking to states it live, {kind:"human_note", occasion, participants?} — the server records who and when (from a scheduled or background run: human_note_requires_session). Link another wiki with [[wiki:<wikiId>/<path>]]. Wikis with metadata fields: put custom field values in frontmatter (see kb_list_index metadataFields; patch merges frontmatter keys, null removes one), docStatus "draft" on pages you write, owner {email, role} (page-level or in frontmatter, both work; a different value in both places is conflicting_field); docStatus "approved" always waits for a human approver. action "review" marks a page reviewed only when the person you talk to says they reviewed it (from a scheduled or background run: review_requires_session). Category templates: include template.requiredSections as headings (missing_section). Pass sourceDocumentIds (comma-separated), logEntry {op, title, note} and inboxItemId (final:false keeps the item claimed). index.md and log.md are generated. On success the response lists every written page with its new baseVersion — that is the confirmation; do not re-read the pages to verify. Errors: invalid_args (a field has the wrong shape, see issues), invalid_wiki_change (nothing written, fix the list), conflict (re-read, retry). In approval mode, or for a category that always needs approval, returns awaiting_approval and an approvalUrl — show the link, do not poll.',
           inputSchema: kbWikiWriteObject,
         },
         async (args) => enterpriseToolResult(principal, KB_WIKI_WRITE_TOOL, args, deps),
@@ -2186,6 +2211,36 @@ async function createMcpResourceHandler(
           inputSchema: kbWikiRevertObject,
         },
         async (args) => enterpriseToolResult(principal, KB_WIKI_REVERT_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CONFIG_GET_TOOL,
+        {
+          title: 'Read agent wiki configuration',
+          description:
+            'The full current configuration of an agent wiki: configVersion, name, collect focus, groups (top-level categories), categories (key group/child, order, pageSort, template, pinned), metadataFields (usedBy per option), templates, wikiMd, pendingProposals, recentProposals (status and the approver comment of your last proposals). Read it before kb_wiki_config_propose. Pass wikiId when several wikis are bound.',
+          inputSchema: kbWikiConfigGetObject,
+          annotations: { readOnlyHint: true },
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CONFIG_GET_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CONFIG_PROPOSE_TOOL,
+        {
+          title: 'Propose agent wiki configuration change',
+          description:
+            'Propose configuration changes for an agent wiki you have write access to. Nothing changes until a wiki admin approves: returns awaiting_approval and an approvalUrl — show the link, say it is pending, do not poll. Use validateOnly:true first and fix every error. Bundle related changes in one proposal; validated in order, so one proposal can create fields, then templates, then categories. Propose only when the user asks, or when ingest is blocked (no fitting category) after asking the user. Operations: setName {name}; setCollectFocus {collect}; setWikiMd {text} (full replacement); upsertGroup {key,label,description?,order?,collapsed?}; upsertCategory {key "group/child",label,description?,order?,pageSort? (title|updated_desc|date_desc|manual),collapsed?,template?,approval? (inherit|always),reviewCycleDays?}; updateCategory {key, any of these}; removeCategory {key}; mergeCategory {from,to} (moves its pages); setPinned {category,paths} (max 3, existing pages); setManualOrder {category,paths}; upsertMetadataField {key,label,type (text|select|multi_select|date),options?,help?}; addFieldOption {field,option}; renameFieldOption {field,from,to}; removeFieldOption {field,option,remapTo?} (the last two rewrite pages); upsertTemplate {id,requiredFields,requiredSections,skeleton,sectionRule?}; removeTemplate {id}. Category keys are unique in a wiki across groups (key_taken). Errors: config_conflict (re-read, propose again), invalid_config_change (nothing created; errors lists every failing operation with index and code), proposal_pending (you already have an open one), config_changes_disabled (a wiki admin must allow proposals), wiki_write_not_allowed.',
+          inputSchema: kbWikiConfigProposeObject,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CONFIG_PROPOSE_TOOL, args, deps),
+      )
+      server.registerTool(
+        KB_WIKI_CONFIG_WITHDRAW_TOOL,
+        {
+          title: 'Withdraw agent wiki configuration proposal',
+          description: 'Withdraw your own open configuration proposal for a wiki (proposalId from kb_wiki_config_propose or kb_wiki_config_get).',
+          inputSchema: kbWikiConfigWithdrawInputSchema,
+        },
+        async (args) => enterpriseToolResult(principal, KB_WIKI_CONFIG_WITHDRAW_TOOL, args, deps),
       )
       server.registerTool(
         SANDBOX_RUN_TOOL,
@@ -2232,7 +2287,7 @@ async function createMcpResourceHandler(
             title: 'Make a downloadable file',
             description:
               'Create a downloadable Excel (xlsx), CSV, Word (docx), PDF or Markdown file for the user — use it whenever the user asks for a file, a spreadsheet, a Word document or a PDF instead of only answering in chat. ' +
-              'xlsx/csv: pass sheets (JSON text with headers, rows and optional numberFormats; numbers as numbers, dates as ISO text). docx/pdf/md: pass markdown. ' +
+              'xlsx/csv: pass sheets (JSON text with headers, rows and optional numberFormats; numbers as numbers, dates as ISO text), or savedResultId when a large http_api_* response was saved — then the platform fills the table from the full data. docx/pdf/md: pass markdown. ' +
               'The file is kept for 7 days and only the requesting user can download it; reply with one short sentence and the link, do not repeat the content. Omit definitionId when this client is bound; otherwise pass it.',
             inputSchema: documentExportInputSchema,
             annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -2340,6 +2395,11 @@ async function createMcpResourceHandler(
             { code: 'tool_not_allowed', message: 'Tool is not allowed on this MCP endpoint' },
             true,
           )
+        }
+        // Bejövő levél feldolgozása: csak olvasás és jóváhagyásra váró írás (engedélylista).
+        if (inboundMailBlocksTool(principal, toolName)) {
+          await auditMcpToolDenied(deps, principal, toolName, 'inbound_mail_blocked')
+          return textResult({ code: 'inbound_mail_blocked', message: INBOUND_MAIL_TOOL_BLOCKED_MESSAGE }, true)
         }
         const rawArgs = request.params.arguments
         let args =

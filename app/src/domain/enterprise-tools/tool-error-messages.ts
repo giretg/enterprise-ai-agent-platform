@@ -31,6 +31,11 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   // #943
   invalid_wiki_change: 'The wiki change is invalid — nothing was written; fix the listed errors and retry',
   conflict: 'The page changed since you read it — nothing was written; merge with the current content and retry with its baseVersion',
+  config_conflict: 'The wiki configuration changed since you read it — nothing was created; call kb_wiki_config_get and propose again',
+  invalid_config_change: 'The configuration proposal is invalid — nothing was created; fix every operation listed in errors and retry',
+  proposal_pending: 'You already have an open configuration proposal for this wiki — wait for the decision or withdraw it',
+  proposal_not_pending: 'This configuration proposal is no longer waiting for a decision',
+  config_changes_disabled: 'Agent configuration proposals are switched off for this wiki — a wiki admin can allow them on its Proposals tab',
   already_claimed: 'Another agent is processing this inbox item (see claimedBy and claimExpiresAt)',
   not_in_inbox: 'This document is not waiting in the wiki inbox',
   changeset_not_pending: 'This wiki change-set is no longer waiting for approval',
@@ -73,6 +78,11 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
     'The file would be too large (max 10 MB or 100 000 rows). Tell the user plainly, and offer to split it into smaller files or to summarise the data',
   document_export_not_found:
     'This file is no longer available (it expired after 7 days, or it belongs to someone else). Offer to make it again with document_export',
+  // #1071: mentett nagy http_api válasz
+  saved_result_not_found:
+    'This saved response is no longer available (it expired after 7 days, or it was saved for another user or agent). Call the same http_api tool again to get fresh data',
+  saved_result_invalid:
+    'The saved response could not be used this way (see detail) — fix arrayPath/columns and try again',
   skill_not_pinned: 'This skill version is not pinned on the published agent definition',
   // #967 mini appok
   // #984 AI-adattárház

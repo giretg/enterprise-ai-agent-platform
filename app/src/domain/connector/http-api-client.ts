@@ -41,6 +41,7 @@ import {
   buildHttpApiTruncationBody,
 } from './http-api-prompt'
 import { buildProtocolRequest, parseProtocolResponse } from './xml-protocols'
+import { detectHttpApiFile, HTTP_API_FILE_MAX_BYTES, readBodyBytes, sha256Hex, type HttpApiFile } from './http-api-file'
 
 export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
@@ -683,6 +684,8 @@ export type HttpApiResponse = {
   etag?: string
   /** XML-protokolloknál a szolgáltató saját hibakódja (pl. Számlázz.hu `hibakod`). */
   errorCode?: string
+  /** #1070: fájl-válasz — ilyenkor a `body` null; a bájtok a modellhez nem mehetnek tovább. */
+  file?: HttpApiFile
 }
 
 export class HttpApiError extends Error {
@@ -1026,6 +1029,28 @@ export class HttpApiClient {
     // retry kettős bizonylatot/dupla megrendelést okozna. Írásnál csak a 429-et
     // ismételjük; az olvasások tartják a teljes 5xx-retryt. Ua., mint a protokoll-ág.
     const res = await this.fetchWithBackoff(url, init, READ_METHODS.has(method))
+    // #1070: a fájl-válasz (Excel, PDF, CSV-letöltés) bájtként jön át, szövegként nem.
+    const fileMeta = res.ok ? detectHttpApiFile(res.headers) : null
+    if (fileMeta) {
+      const bytes = await readBodyBytes(res, HTTP_API_FILE_MAX_BYTES)
+      if (!bytes) {
+        throw new HttpApiError(
+          'file response exceeds the handover limit',
+          'file_too_large',
+          undefined,
+          this.language === 'en'
+            ? `The service returned a file (${fileMeta.fileName}) that is too large to hand over (limit: ${HTTP_API_FILE_MAX_BYTES / 1024 / 1024} MB). Ask the user to download it directly from the source system, or request a smaller export (shorter period, fewer columns).`
+            : `A rendszer egy fájlt adott vissza (${fileMeta.fileName}), ami túl nagy az átadáshoz (legfeljebb ${HTTP_API_FILE_MAX_BYTES / 1024 / 1024} MB). Kérd meg a felhasználót, hogy közvetlenül a forrásrendszerből töltse le, vagy kérj kisebb exportot (rövidebb időszak, kevesebb oszlop).`,
+        )
+      }
+      return {
+        status: res.status,
+        ok: res.ok,
+        body: null,
+        file: { ...fileMeta, bytes, sha256: sha256Hex(bytes) },
+        ...(res.headers.get('etag') ? { etag: res.headers.get('etag')! } : {}),
+      }
+    }
     const text = await res.text()
     const max = this.config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
     const overLimit = text.length > max
@@ -1063,6 +1088,7 @@ export class HttpApiClient {
             maxChars: max,
             preview: text.slice(0, max),
             language: this.language,
+            path: params.path,
           })
         } else {
           body = previewText
@@ -1097,6 +1123,7 @@ export class HttpApiClient {
                 maxChars: max,
                 preview: text.slice(0, Math.min(max, text.length)),
                 language: this.language,
+                path: params.path,
               }).hint
             : undefined
 

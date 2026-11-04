@@ -56,6 +56,7 @@ export type InboundMailSettings = {
     handoffToAgentId: string | null
     senderAllowlist: string
     dailyRunLimit: number
+    allowDirectWrites: boolean
   }
   /** Ki kap értesítést, ha a szabály nem nevez meg senkit (az agent jóváhagyója). */
   fallbackResponsibleName: string | null
@@ -187,6 +188,7 @@ export async function saveInboundMailRuleAction(input: unknown) {
         senderAllowlist: rule.senderAllowlist.length,
         dailyRunLimit: rule.dailyRunLimit,
         hasInstructions: Boolean(rule.instructions),
+        allowDirectWrites: rule.allowDirectWrites,
       },
       tenantId,
     })

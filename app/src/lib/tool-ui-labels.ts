@@ -51,6 +51,19 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description:
       'Egy oldalt egy korábbi verziójára, vagy egy teljes módosítást az előtte lévő állapotra állít vissza. Mindig a wiki jóváhagyója fogadja el.',
   },
+  kb_wiki_config_get: {
+    label: 'Wiki beállításainak olvasása',
+    description: 'Megmutatja a wiki beállításait: kategóriák, mezők, sablonok, szabályfájl. Nem változtat semmit.',
+  },
+  kb_wiki_config_propose: {
+    label: 'Javaslat a wiki beállításaira',
+    description:
+      'Az AI-munkatárs javaslatot tesz a wiki beállításaira. Semmi nem változik, amíg a wiki kezelője jóvá nem hagyja. Csak akkor működik, ha a wikin engedélyezted a javaslatokat.',
+  },
+  kb_wiki_config_withdraw: {
+    label: 'Javaslat visszavonása',
+    description: 'Az AI-munkatárs visszavonja a saját, még el nem bírált javaslatát a wiki beállításaira.',
+  },
 
   'platform.projects.list': {
     label: 'Projektek',
@@ -485,6 +498,13 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   http_api_request: {
     label: 'API írás',
     description: 'Író (POST/PUT/PATCH/DELETE) hívás a hozzárendelt külső REST API-n.',
+  },
+  // #1071
+  http_api_saved_read: {
+    label: 'Nagy API-válasz olvasása',
+    description:
+      'Egy túl nagy, ezért elmentett API-válasz (pl. riport) részletenkénti olvasása. A mentett adatot 7 napig csak az éri el, aki kérte.',
+    progress: 'Olvasom a mentett adatot',
   },
   mcp_list_tools: {
     label: 'Külső MCP-eszközök listája',

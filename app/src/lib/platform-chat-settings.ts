@@ -3,7 +3,7 @@ import { settingsRecord } from '@/lib/tenant-settings'
 
 /**
  * Beépített platform-chat (#1004 D2/D14/D15) a `Tenant.settings.platformChat` alatt.
- * - `enabled`: admin kapcsoló, csak beállított OpenRouter-kulccsal kapcsolható be;
+ * - `enabled`: admin kapcsoló, csak beállított OpenRouter- vagy OpenAI-kulccsal kapcsolható be;
  * - `dailyBudgetUsd`: kötelező napi modell-keret (bekapcsoláskor meg kell adni);
  * - `adminInsight`: csak superadmin állíthatja — a tenant admin láthatja-e a userek beszélgetéseit.
  * Kliens-oldalon is importálható.

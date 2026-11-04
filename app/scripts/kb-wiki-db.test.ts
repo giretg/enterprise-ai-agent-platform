@@ -151,6 +151,29 @@ async function main() {
     assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: doc2.id } })).wikiStatus, 'pending')
   })
 
+  await check('#1077 listPagesCitingDocuments: csak a publikált, ugyanebben a tudástárban hivatkozó oldal', async () => {
+    const cited = randomUUID()
+    const other = randomUUID()
+    const create = async (path: string, sourceRefs: unknown, status: 'published' | 'archived' = 'published') =>
+      prisma.wikiPage.create({
+        data: { wikiId: wiki.id, connectorId: connector.id, path, type: 'entity', title: path, summary: 's', body: 'b', contentHash: path, sourceRefs: sourceRefs as never, status },
+      })
+    await create('entities/cite-1.md', [{ documentId: cited }, { documentId: cited, page: 2 }])
+    await create('entities/cite-own.md', [{ documentId: cited, connectorId: connector.id }])
+    await create('entities/cite-archived.md', [{ documentId: cited }], 'archived')
+    await create('entities/cite-foreign.md', [{ documentId: cited, connectorId: randomUUID() }])
+    await create('entities/cite-other.md', [{ documentId: other }])
+    await create('entities/cite-note.md', [{ kind: 'human_note', occasion: 'x' }])
+    await create('entities/cite-not-array.md', { documentId: cited })
+    const rows = await wikis.listPagesCitingDocuments([connector.id], [cited])
+    assert.deepEqual(rows, [
+      { documentId: cited, path: 'entities/cite-1.md', title: 'entities/cite-1.md' },
+      { documentId: cited, path: 'entities/cite-own.md', title: 'entities/cite-own.md' },
+    ])
+    assert.deepEqual(await wikis.listPagesCitingDocuments([connector.id], []), [])
+    assert.deepEqual(await wikis.listPagesCitingDocuments([randomUUID()], [cited]), [])
+  })
+
   await prisma.$disconnect()
   if (failures > 0) {
     console.log(`\n${failures} FAIL`)

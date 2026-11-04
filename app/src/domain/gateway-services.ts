@@ -61,13 +61,15 @@ import { WikiCategoryService } from '@/domain/knowledge-base/wiki-category-servi
 import { WikiMetadataService } from '@/domain/knowledge-base/wiki-metadata-service'
 import { WikiHistoryService } from '@/domain/knowledge-base/wiki-history-service'
 import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
-import { executeKnowledgeBaseTool, executeWikiTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { executeKnowledgeBaseTool, executeWikiConfigTool, executeWikiTool, isWikiConfigTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { WikiConfigService } from '@/domain/knowledge-base/wiki-config-service'
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
 import { getPolicySnapshot } from '@/domain/client-policy/policy-service'
 import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
 import { PostgresDocumentExportRepository } from '@/repositories/postgres/document-export-repository'
 import { documentExportPath, loadOwnExport } from '@/domain/document-export/document-export-store'
+import { loadOwnSavedResult, SAVED_RESULT_FORMAT, SAVED_RESULT_MIME } from '@/domain/connector/http-api-saved-result'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { ProjectWorkService } from '@/domain/project-work/project-work-service'
 import { CustomerPromiseService } from '@/domain/customer-promise/customer-promise-service'
@@ -288,6 +290,16 @@ const wikiMetadataService = new WikiMetadataService({
   wikis: repositories.wikis,
   structure: repositories.wikiStructure,
   users: wikiConsoleRepository,
+  audit: repositories.audit,
+})
+
+// #1075: agent által javasolt wiki-beállítás.
+const wikiConfigService = new WikiConfigService({
+  wiki: wikiService,
+  wikiConsole: wikiConsoleService,
+  wikis: repositories.wikis,
+  config: repositories.wikiConfig,
+  agentNames: (tenantId, ids) => wikiConsoleRepository.agentNames(tenantId, ids),
   audit: repositories.audit,
 })
 
@@ -520,7 +532,32 @@ async function startAuthorization(input: {
   }
 }
 
+const documentExportStore = new PostgresDocumentExportRepository()
+const documentExportDeps: Pick<EnterpriseToolDeps, 'saveHttpResult' | 'saveDocumentExport' | 'documentExportUrl'> = {
+  // #1024: letölthető fájlok ideiglenes tárolója.
+  // #1071: a nagy http_api válasz ugyanabba a felhasználónkénti, 7 napos tárolóba kerül.
+  saveHttpResult: ({ data, ...input }) =>
+    documentExportStore.create({
+      ...input,
+      format: SAVED_RESULT_FORMAT,
+      mimeType: SAVED_RESULT_MIME,
+      byteSize: data.length,
+      data,
+    }),
+  saveDocumentExport: ({ document, ...input }) =>
+    documentExportStore.create({
+      ...input,
+      fileName: document.fileName,
+      format: document.format,
+      mimeType: document.mimeType,
+      byteSize: document.bytes.length,
+      data: document.bytes,
+    }),
+  documentExportUrl: (id) => `${resolvePublicAppOrigin()}${documentExportPath(id)}`,
+}
+
 const gatewayOperationDeps: GatewayOperationServiceDeps = {
+  ...documentExportDeps,
   ...sharedToolLookups,
   ...mcpGateDeps,
   resolveEgressAllowlist,
@@ -680,7 +717,6 @@ async function listGatewayOperationHistoryRows(input: {
 }
 
 const clientPolicyStore = new PostgresClientPolicyRepository()
-const documentExportStore = new PostgresDocumentExportRepository()
 
 const enterpriseToolDeps: EnterpriseToolDeps = {
   ...sharedToolLookups,
@@ -713,7 +749,10 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   enqueueWrite: (input) => enqueueWriteForMcp(gatewayOperationDeps, input),
   executeKbTool: (toolName, args, ctx) =>
     executeKnowledgeBaseTool(knowledgeBaseService, toolName, args, ctx, wikiService),
-  executeWikiTool: (toolName, args, ctx) => executeWikiTool(wikiService, toolName, args, ctx),
+  executeWikiTool: (toolName, args, ctx) =>
+    isWikiConfigTool(toolName)
+      ? executeWikiConfigTool(wikiConfigService, toolName, args, ctx)
+      : executeWikiTool(wikiService, toolName, args, ctx),
   resolveKbConnector: async ({ tenantId, wikiId, documentId }) => {
     const connectorId = wikiId
       ? (await repositories.wikis.findById(wikiId))?.connectorId
@@ -742,18 +781,9 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   },
   executeSandboxRun,
   resolveClientPolicy: (input) => getPolicySnapshot(clientPolicyStore, input),
-  // #1024: letölthető fájlok ideiglenes tárolója.
-  saveDocumentExport: ({ document, ...input }) =>
-    documentExportStore.create({
-      ...input,
-      fileName: document.fileName,
-      format: document.format,
-      mimeType: document.mimeType,
-      byteSize: document.bytes.length,
-      data: document.bytes,
-    }),
+  ...documentExportDeps,
   loadOwnDocumentExport: (input) => loadOwnExport(documentExportStore, { ...input, now: new Date() }),
-  documentExportUrl: (id) => `${resolvePublicAppOrigin()}${documentExportPath(id)}`,
+  loadHttpResult: (input) => loadOwnSavedResult(documentExportStore, { ...input, now: new Date() }),
   countWebToolCalls: ({ tenantId, toolName, agentId, since }) =>
     prisma.auditLog.count({
       where: { tenantId, action: 'enterprise.tool.ok', inputRef: toolName, ...(agentId ? { targetId: agentId } : {}), createdAt: { gte: since } },
@@ -818,6 +848,7 @@ export const services = {
   wikiHistory: wikiHistoryService,
   wikiCategories: wikiCategoryService,
   wikiMetadata: wikiMetadataService,
+  wikiConfig: wikiConfigService,
   projectWork: {
     service: projectWorkService,
     handoffs: handoffRepository,

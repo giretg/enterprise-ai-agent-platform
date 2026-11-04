@@ -456,6 +456,48 @@ async function main() {
     assert.equal(h.queued.length, 0)
   })
 
+  await check('szolgáltatói kiesés: az LLM-lépés egyre később próbálkozik újra, és a kiesés után folytatódik', async () => {
+    const down = () => new PlatformError('model gateway: 502 provider_unavailable', 502)
+    const h = harness({ llm: [down(), new PlatformError('model gateway: 429 rate_limited', 429), down(), say('Rendben.')], tool: [] })
+    const delays: Array<number | undefined> = []
+    const enqueue = h.deps.queue.enqueue
+    h.deps.queue.enqueue = async (t, options) => {
+      delays.push(options?.delaySeconds)
+      await enqueue(t, options)
+    }
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.deepEqual(delays.slice(1), [15, 30, 60])
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    const events = await h.store.eventsAfter(r.turn.id, 0)
+    assert.equal(events.filter((e) => e.type === 'status' && e.payload.phase === 'model_retry').length, 3)
+  })
+
+  await check('szolgáltatói kiesés: a negyedik hiba után a forduló érthető hibával lezárul', async () => {
+    const down = () => new PlatformError('model gateway: 502 provider_unavailable', 502)
+    const h = harness({ llm: [down(), down(), down(), down()], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'failed')
+    assert.equal(turn?.error, MESSAGES.failed)
+    assert.equal(h.queued.length, 0)
+    assert.equal((await h.store.listSteps(r.turn.id))[0].attempts, 4)
+  })
+
+  await check('nem kiesés jellegű hiba (500) nem kap késleltetett újrapróbálást', async () => {
+    const h = harness({ llm: [new PlatformError('model gateway: 500', 500)], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await assert.rejects(runStep(h.deps, h.queued.shift()!))
+    assert.equal(h.queued.length, 0)
+  })
+
   await check('csatolmány: a kinyert szöveg a user-üzenet mellé kerül', async () => {
     const h = harness({ llm: [say('3 sor van.')], tool: [] })
     const c = await h.conversation()
@@ -693,6 +735,23 @@ async function main() {
     question: 'Melyik Péternek küldjem a beszámolót?',
     options: [{ label: 'Kovács Péter', description: 'kovacs.peter@acme.hu' }, { label: 'Nagy Péter', description: 'nagy.peter@acme.hu' }],
   }
+
+  await check('levélből indult forduló: a Folytatás is háttérfutásként kér tokent (írás jóváhagyásra vár)', async () => {
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{"id":"export"}')] }, { maxSteps: 2 })
+    const minted: Array<{ background?: true }> = []
+    h.deps.platform.continuationToken = async (input) => (minted.push(input), 'fresh-token')
+    const mail = await h.store.createConversation({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, agentName: 'Drive', origin: 'inbound_mail' })
+    const r = await startTurn(h.deps, { conversation: mail, chatToken: 'chat', content: 'levél', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    assert.equal(await resumeTurn(h.deps, { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }), 'ok')
+    assert.equal(minted.at(-1)?.background, true)
+    const own = await h.conversation()
+    const r2 = await startTurn(h.deps, { conversation: own, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r2.ok)
+    assert.equal(minted.at(-1)?.background, undefined)
+  })
 
   await check('#1025 kérdés-kártya: awaiting_input, nincs futó feladat; 1 óra múlva kattintás → folytatódik, jóváhagyás-kártyáig', async () => {
     let clock = new Date('2026-11-01T10:00:00Z')

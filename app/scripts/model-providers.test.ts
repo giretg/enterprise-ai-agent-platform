@@ -26,10 +26,10 @@ function check(name: string, fn: () => void) {
 
 console.log('model-providers')
 
-check('a tenant katalógus csak Gemini és OpenRouter', () => {
+check('a tenant katalógus csak az API-kulcsos Gemini, OpenAI és OpenRouter', () => {
   assert.deepEqual(
     MODEL_PROVIDERS.map((p) => p.value),
-    ['gemini', 'openrouter'],
+    ['gemini', 'openai', 'openrouter'],
   )
 })
 
@@ -43,6 +43,7 @@ check('OAuth-providerek nincsenek a gateway id-k között', () => {
 check('Luna/Terra/Sol a céges API-úton no-op', () => {
   assert.equal(providerUsesThinkingProfile('openrouter'), false)
   assert.equal(providerUsesThinkingProfile('gemini'), false)
+  assert.equal(providerUsesThinkingProfile('openai'), false)
   assert.equal(providerUsesThinkingProfile('ollama'), false)
   assert.equal(providerUsesThinkingProfile('chatgpt-oauth'), false)
 })

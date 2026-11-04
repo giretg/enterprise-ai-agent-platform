@@ -198,6 +198,7 @@ function setup() {
         return {} as any
       },
       listPendingChangeSetIds: async (connectorId: string) => pendingChangeSets.get(connectorId) ?? [],
+      listPagesCitingDocuments: async () => [],
       listPages: async (connectorId: string) => (connectorId === KB_PRIV ? pages : []),
       findPage: async (connectorId: string, path: string) => (connectorId === KB_PRIV ? pages.find((p) => p.path === path) ?? null : null),
       listRevisions: async () => [],

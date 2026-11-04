@@ -22,9 +22,11 @@ import type {
   WikiChunkRow,
   WikiHistoryRepository,
   WikiPageChangeAction,
+  WikiConfigApplyPlan,
   WikiRepository,
   WikiStructureRepository,
 } from '@/repositories/interfaces'
+import { wikiOwnerSchema } from '@/domain/enterprise-tools/tool-definitions'
 import { diffLines } from '@/lib/text-line-diff'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 import { resolveKbLanguage } from '@/lib/kb-language'
@@ -48,6 +50,7 @@ import {
   mergeWikiSources,
   readWikiSources,
   renderWikiIndex,
+  partlyWrittenByDocument,
   renderWikiLog,
   renderWikiPageMarkdown,
   replaceSection,
@@ -78,6 +81,7 @@ import {
   type WikiScope,
   type WikiSnapshotConnector,
 } from '@/lib/wiki-access'
+import type { WikiConfigPageChange } from '@/lib/wiki-config'
 import {
   buildCategoryTree,
   categoryIndex,
@@ -287,7 +291,7 @@ export type WikiChangeSetPreview = {
     protectedCategory: boolean
     /** #1061 F3: dokumentum-állapot váltása (pl. tervezet → jóváhagyott), ha van. */
     docStatusChange: { from: WikiDocStatusName | null; to: WikiDocStatusName | null } | null
-    status: 'published' | 'archived'
+    status: WikiPage['status']
     before: { title: string; summary: string; body: string; status: string } | null
     after: { title: string; summary: string; body: string; sources: WikiSourceRef[] }
   }>
@@ -302,7 +306,7 @@ type PlannedPage = {
   input: WikiPageInput
   existing: WikiPage | null
   state: WikiPageState
-  status: 'published' | 'archived'
+  status: WikiPage['status']
   /** D5: más agent / ember oldalának archiválása vagy áthelyezése. */
   othersPage: boolean
 }
@@ -378,6 +382,11 @@ export class WikiService {
     return { wikiId: wiki.id, connector, scope: target.scope }
   }
 
+  /** #1075: a cél-wiki feloldása a beállítás-eszközöknek (ugyanaz a jog, mint az írásnál). */
+  resolveTarget(caller: WikiCaller, wikiId: string | undefined, need: WikiNeed) {
+    return this.resolve(caller, wikiId, need)
+  }
+
   /** Egy KB = egy wiki (D11); az első használat hozza létre az alap-sémával. */
   private ensureWiki(connector: Connector) {
     return this.deps.wikis.ensureForConnector({
@@ -439,7 +448,7 @@ export class WikiService {
         name: wikiDisplayName(connector),
         access: scope.access,
         ...(scope.access === 'write' ? { writeMode: scope.writeMode } : {}),
-        ...(scope.collectFocus ? { collect: scope.collectFocus } : {}),
+        ...collectOf(wiki.collectFocus, scope.collectFocus),
         ...(scope.visibility === 'private_to_user' ? { private: true } : {}),
         // #1061 F2: „csak a kijelöltek” — a tartalmát csak a névsoron lévőkkel szabad megosztani.
         ...(scope.visibility === 'members' ? { membersOnly: true } : {}),
@@ -565,7 +574,7 @@ export class WikiService {
           ...base,
           status: 'in_progress',
           claimExpiresAt: claimExpiresAt!.toISOString(),
-          nextStep: `Process it now: read the source (kb_get_document documentId, section by section if long), read WIKI.md and index.md (kb_get_page wikiId), then call kb_wiki_write with wikiId, sourceDocumentIds and inboxItemId "${stored.documentId}".`,
+          nextStep: `Process it now: read the source (kb_get_document documentId, section by section if long, following nextOffset to the end), read WIKI.md and index.md (kb_get_page wikiId), then call kb_wiki_write with wikiId, sourceDocumentIds and inboxItemId "${stored.documentId}".`,
         },
       }
     }
@@ -604,6 +613,9 @@ export class WikiService {
       this.deps.wikis.listInbox(connectorIds, { now, batchId: input.batchId, limit: input.limit }),
       this.deps.wikis.inboxSummary(connectorIds, { now, batchId: input.batchId }),
     ])
+    const partlyWritten = partlyWrittenByDocument(
+      await this.deps.wikis.listPagesCitingDocuments(connectorIds, items.map((item) => item.documentId)),
+    )
     const wikiIds = new Map<string, string | null>()
     for (const connectorId of connectorIds) {
       wikiIds.set(connectorId, wikiFilter ?? (await this.deps.wikis.findByConnectorId(connectorId))?.id ?? null)
@@ -636,6 +648,7 @@ export class WikiService {
               }
             : {}),
           ...(item.batchId ? { batchId: item.batchId, batchSeq: item.batchSeq } : {}),
+          ...(partlyWritten.has(item.documentId) ? { partlyWritten: partlyWritten.get(item.documentId) } : {}),
         })),
         summary: {
           wikis: summary.wikis.map(({ connectorId, ...counts }) => ({ wikiId: wikiIds.get(connectorId) ?? null, ...counts })),
@@ -643,7 +656,7 @@ export class WikiService {
         },
         nextStep:
           items.length > 0
-            ? 'Process one item at a time: kb_get_document documentId claimForWiki:true → write the pages → kb_wiki_write inboxItemId. Stop cleanly and report progress when your session budget runs low.'
+            ? 'Process one item at a time: kb_get_document documentId claimForWiki:true → write the pages → kb_wiki_write inboxItemId. An item with partlyWritten already has those pages: read and extend them, do not rewrite them. Stop cleanly and report progress when your session budget runs low.'
             : 'The inbox is empty.',
       },
     }
@@ -914,33 +927,42 @@ export class WikiService {
           : {}),
       }
     }
+    const menuOf = (group: { pageSort: string; collapsed: boolean }) => ({
+      ...(group.pageSort !== 'title' ? { pageSort: group.pageSort } : {}),
+      ...(group.collapsed ? { collapsed: true } : {}),
+    })
     return {
       wikiId,
       name: connector ? wikiDisplayName(connector) : null,
       access: scope.access,
       ...(scope.access === 'write' ? { writeMode: scope.writeMode } : {}),
-      ...(scope.collectFocus ? { collect: scope.collectFocus } : {}),
+      ...collectOf((await this.deps.wikis.findById(wikiId))?.collectFocus, scope.collectFocus),
       pageCount: pages.length,
       // #1061 F1: kezelt kategóriáknál a fa (kulcsút, név, leírás, védettség) — üres kategória is.
+      // A sorrend ugyanaz, mint az ember menüjében (kategóriák `order` szerint, oldalak `pageSort` szerint, kiemeltek elöl).
       ...(categories
         ? {
             managedCategories: true,
             categories: groupPagesByTree(pages, categories).map((group) => ({
               category: group.path ?? group.name,
               name: group.name,
+              order: group.order,
               ...(group.description ? { description: group.description } : {}),
               ...(group.protected ? { approval: 'always' } : {}),
+              ...menuOf(group),
               ...rulesOf(group.path),
-              pages: group.pages.map(pageRow),
+              pages: group.pages.map((page) => ({ ...pageRow(page), ...(group.pinned.includes(page.path) ? { pinned: true } : {}) })),
               ...(group.children.length
                 ? {
                     subcategories: group.children.map((child) => ({
                       category: child.path,
                       name: child.name,
+                      order: child.order,
                       ...(child.description ? { description: child.description } : {}),
                       ...(child.protected ? { approval: 'always' } : {}),
+                      ...menuOf(child),
                       ...rulesOf(child.path),
-                      pages: child.pages.map(pageRow),
+                      pages: child.pages.map((page) => ({ ...pageRow(page), ...(child.pinned.includes(page.path) ? { pinned: true } : {}) })),
                     })),
                   }
                 : {}),
@@ -967,7 +989,7 @@ export class WikiService {
       hint: [
         'Read a page with kb_get_page wikiId + path; the rules are in path "WIKI.md".',
         categories
-          ? 'This wiki has managed categories: set a page category to one of the category keys above (e.g. "partners/payment"); other values are rejected. approval "always" = changes there wait for approval. template.requiredSections = headings a page in that category must have; start new pages from template.skeleton.'
+          ? 'This wiki has managed categories: set a page category to one of the category keys above (e.g. "partners/payment"); other values are rejected. Categories and pages are listed in the same order as the menu people see (order, then name; pinned pages first, pageSort title unless stated) — use this order when you refer to the menu. approval "always" = changes there wait for approval. template.requiredSections = headings a page in that category must have; start new pages from template.skeleton.'
           : null,
         fields
           ? 'Metadata: put metadataFields values in the page frontmatter (multi_select as a list); requiredFields must be filled. Set docStatus "draft" on pages you write and owner {email, role} when known; docStatus "approved" always waits for a human. Never mark a page reviewed unless the person you talk to says they reviewed it. Views: kb_list_index wikiId + docStatus, owner, reviewOverdue, category, orphans or field.<key> (comma-separated values).'
@@ -1101,7 +1123,9 @@ export class WikiService {
     }
     const requested = input.pages.map((page) => ({ ...page, meta: undefined }))
     // #1061 F2: az emberi rögzítés szerzője és ideje a munkamenetből jön, nem az argumentumból.
-    const stamped = await this.stampHumanNotes(caller, connector.id, requested, now)
+    const lifted = await this.liftFrontmatterMeta(connector.id, requested)
+    if (!lifted.ok) return lifted
+    const stamped = await this.stampHumanNotes(caller, connector.id, lifted.pages, now)
     if (!stamped.ok) return stamped
     // #1061 F3: „Átnéztem” csak interaktív munkamenetből (a szerző a munkamenet embere); gazda = platform-felhasználó.
     const reviewed = this.stampReviews(caller, stamped.pages, now)
@@ -1308,10 +1332,14 @@ export class WikiService {
     if ('ok' in target) return target
     if (target.connector.id !== changeSet.connectorId) return { ok: false, code: 'not_found' }
     const pages = (Array.isArray(changeSet.pages) ? changeSet.pages : []) as unknown as WikiPageInput[]
+    const lifted = await this.liftFrontmatterMeta(changeSet.connectorId, pages)
+    if (!lifted.ok) return lifted
+    const owned = await this.resolveOwners(caller.tenantId, lifted.pages)
+    if (!owned.ok) return owned
     const plan = await this.plan({
       connectorId: changeSet.connectorId,
       agentId: changeSet.agentId ?? caller.agentId,
-      pages,
+      pages: owned.pages,
       sourceDocumentIds: changeSet.sourceDocumentIds,
       categories: await this.managedCategories(changeSet.wikiId),
       fields: await this.fieldSettings(changeSet.wikiId),
@@ -1706,6 +1734,60 @@ export class WikiService {
   }
 
   /**
+   * #1075: jóváhagyott beállítás-javaslat. A beállítás és az érintett oldalak (kategória,
+   * frontmatter) egyetlen emberi change-setben, egy tranzakcióban íródnak. A jogot a hívó ellenőrizte.
+   */
+  async applyConfigChange(input: {
+    tenantId: string
+    userId: string
+    connector: Connector
+    wikiId: string
+    pages: WikiConfigPageChange[]
+    configPlan: WikiConfigApplyPlan
+    title: string
+    note: string | null
+  }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
+    const caller: WikiCaller = { tenantId: input.tenantId, userId: input.userId, agentId: input.userId, snapshot: { connectors: [] }, human: true }
+    const batch: WikiPageInput[] = []
+    for (const change of input.pages) {
+      const page = await this.deps.wikis.findPage(input.connector.id, change.path)
+      if (!page) continue
+      batch.push({
+        path: page.path,
+        action: 'recategorize',
+        category: change.toCategory ?? '',
+        baseVersion: page.contentHash,
+        ...(change.frontmatter ? { frontmatter: change.frontmatter } : {}),
+      })
+    }
+    const plan = await this.plan({ connectorId: input.connector.id, agentId: '', pages: batch, sourceDocumentIds: [] })
+    if (!plan.ok) return plan
+    const log = { op: 'schema' as const, title: input.title.slice(0, 200), note: input.note }
+    return this.apply({
+      caller,
+      connector: input.connector,
+      wikiId: input.wikiId,
+      planned: plan.planned,
+      configPlan: input.configPlan,
+      changeSet: {
+        create: {
+          wikiId: input.wikiId,
+          connectorId: input.connector.id,
+          agentId: null,
+          userId: input.userId,
+          pages: batch as unknown as Prisma.InputJsonValue,
+          validation: { issues: [] } as unknown as Prisma.InputJsonValue,
+          logEntry: log as unknown as Prisma.InputJsonValue,
+          sourceDocumentIds: [],
+          approverScope: (await this.approverScopeFor(input.connector)) as unknown as Prisma.InputJsonValue,
+        },
+      },
+      log,
+      inbox: null,
+    })
+  }
+
+  /**
    * #1061 F3: beépített mezők a Control Plane-ről (átnézés, állapot, gazda, ciklus) és a
    * bekapcsoláskori átemelés. Emberi change-set (revízió, napló, NFR-4); jóváhagyásra nem
    * vár — a jogot a hívó ellenőrizte. A `frontmatter` csak az átemelésnél cserélődik.
@@ -1801,6 +1883,61 @@ export class WikiService {
         continue
       }
       out.push({ ...page, owner: { userId: user.id, ...(page.owner.role?.trim() ? { role: page.owner.role.trim().slice(0, 120) } : {}) } })
+    }
+    if (errors.length) {
+      return { ok: false, code: 'invalid_wiki_change', details: { errors, hint: 'Nothing was written. Fix every error and call kb_wiki_write again with the whole change-set.' } }
+    }
+    return { ok: true, pages: out }
+  }
+
+  /**
+   * #1077: a frontmatterben küldött `docStatus` / `owner` ugyanaz, mintha oldal szinten jött
+   * volna, így ugyanazok a kapuk érvényesek rá. A szövegben maradt régi érték visszaküldve nem
+   * szándék: nem írhat felül egy azóta átállított oldalt.
+   */
+  private async liftFrontmatterMeta(
+    connectorId: string,
+    pages: WikiPageInput[],
+  ): Promise<{ ok: true; pages: WikiPageInput[] } | WikiFailure> {
+    const errors: KbValidationIssue[] = []
+    const fail = (path: string, code: string, message: string) => errors.push({ severity: 'error', code, path, message })
+    const out: WikiPageInput[] = []
+    for (const page of pages) {
+      const fm = page.frontmatter
+      if ((page.action !== 'upsert' && page.action !== 'patch') || !fm || !('docStatus' in fm || 'owner' in fm)) {
+        out.push(page)
+        continue
+      }
+      const { docStatus, owner, ...frontmatter } = fm
+      const next: WikiPageInput = { ...page, frontmatter }
+      const stored = (await this.deps.wikis.findPage(connectorId, page.path.trim()))?.frontmatter as Record<string, unknown> | null | undefined
+      if ('docStatus' in fm && docStatus !== null && docStatus !== stored?.docStatus) {
+        if (docStatus !== 'draft' && docStatus !== 'approved') {
+          fail(page.path, 'invalid_field', 'frontmatter.docStatus must be "draft" or "approved".')
+        } else if (page.docStatus && page.docStatus !== docStatus) {
+          fail(page.path, 'conflicting_field', 'docStatus differs from frontmatter.docStatus; send it once.')
+        } else {
+          next.docStatus = docStatus
+        }
+      }
+      if (typeof owner === 'string' && owner === stored?.owner) {
+        // A `kb_get_page`-ből visszaküldött régi szöveges gazda nem szándék, és nem hiba.
+        next.frontmatter = { ...frontmatter, owner }
+      } else if ('owner' in fm) {
+        const parsed = readFrontmatterOwner(owner)
+        if (parsed === undefined) {
+          fail(page.path, 'invalid_field', 'frontmatter.owner must be {email, role} (or {userId, role}), or null to clear it.')
+        } else if (page.owner !== undefined && (
+          (page.owner === null) !== (parsed === null) ||
+          page.owner?.email !== parsed?.email || page.owner?.userId !== parsed?.userId ||
+          page.owner?.role !== parsed?.role
+        )) {
+          fail(page.path, 'conflicting_field', 'owner differs from frontmatter.owner; send it once.')
+        } else {
+          next.owner = page.owner !== undefined ? page.owner : parsed
+        }
+      }
+      out.push(next)
     }
     if (errors.length) {
       return { ok: false, code: 'invalid_wiki_change', details: { errors, hint: 'Nothing was written. Fix every error and call kb_wiki_write again with the whole change-set.' } }
@@ -2185,8 +2322,13 @@ export class WikiService {
         planned.push({
           input: page,
           existing,
-          state: { ...stateFromRow(existing), category: page.category?.trim() || null },
-          status: existing.status === 'archived' ? 'archived' : 'published',
+          state: {
+            ...stateFromRow(existing),
+            category: page.category?.trim() || null,
+            // #1075: mező-opció átnevezésekor a frontmatter is ugyanebben a lépésben változik.
+            ...(page.frontmatter ? { frontmatter: stripManagedFrontmatter(page.frontmatter) } : {}),
+          },
+          status: existing.status,
           othersPage: false,
         })
         continue
@@ -2239,7 +2381,7 @@ export class WikiService {
           !page.patch?.length && page.title === undefined && page.summary === undefined && page.category === undefined &&
           page.docStatus === undefined && page.owner === undefined && page.frontmatter === undefined
         ) {
-          error(path, 'empty_patch', 'patch needs at least one operation.')
+          error(path, 'empty_patch', 'patch needs at least one operation or a page-level change (title, summary, category, frontmatter, docStatus, owner).')
           continue
         }
         if (page.baseVersion && page.baseVersion !== existing.contentHash) {
@@ -2275,7 +2417,7 @@ export class WikiService {
             summary: page.summary?.trim() || current.summary,
             category: page.category !== undefined ? page.category.trim() || null : current.category,
             // #1061 F3: a patch frontmattere kulcsonként egyesül (null = a kulcs törlése).
-            frontmatter: page.frontmatter ? mergeFrontmatter(current.frontmatter, page.frontmatter) : current.frontmatter,
+            frontmatter: withoutStrayMeta(page.frontmatter ? mergeFrontmatter(current.frontmatter, page.frontmatter) : current.frontmatter),
             body,
             sources,
             meta: applyMetaInput(current.meta ?? EMPTY_WIKI_META, page),
@@ -2517,12 +2659,13 @@ export class WikiService {
     /** #978 D5: a visszavont change-set (audithoz; a repó a change-set sorából is tudja). */
     revertsId?: string | null
     categoryUpdate?: Parameters<WikiRepository['applyChangeSet']>[0]['categoryUpdate']
+    configPlan?: WikiConfigApplyPlan
   }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
     const { caller, connector } = input
     const agentId = caller.human ? null : caller.agentId
     const ops: WikiApplyPageOp[] = input.planned.map((page) => {
       const write = toPageWrite(page)
-      const chunks = page.status === 'archived' ? [] : pageChunks(page.state)
+      const chunks = page.status === 'published' ? pageChunks(page.state) : []
       if (!page.existing) {
         return {
           kind: 'create',
@@ -2548,6 +2691,7 @@ export class WikiService {
       connectorId: connector.id,
       ops,
       categoryUpdate: input.categoryUpdate,
+      configPlan: input.configPlan,
       log: {
         ...input.log,
         pagePaths: input.planned.map((page) => page.state.path),
@@ -2561,6 +2705,7 @@ export class WikiService {
     if (!result.ok) {
       if (result.reason === 'changeset_not_pending') return { ok: false, code: 'changeset_not_pending' }
       if (result.reason === 'changeset_not_revertible') return { ok: false, code: 'changeset_not_revertible' }
+      if (result.reason === 'config_conflict' || result.reason === 'proposal_not_pending') return { ok: false, code: result.reason }
       const existing = result.path ? await this.deps.wikis.findPage(connector.id, result.path) : null
       return {
         ok: false,
@@ -2699,6 +2844,7 @@ function briefingCategories(categories: WikiCategoryRow[]) {
     .map((node) => ({
       key: node.path,
       name: node.name,
+      order: node.sortOrder,
       ...(node.description ? { description: node.description.slice(0, 160) } : {}),
       ...(node.protected ? { approval: 'always' as const } : {}),
       // #1061 F3/F4: kötelező mezők és fejezetek (a szülőé is).
@@ -2709,6 +2855,12 @@ function briefingCategories(categories: WikiCategoryRow[]) {
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+/** #1075: elöl a wiki élő fókusza, utána az agent-kötés saját (publikált) fókusza. */
+function collectOf(wikiFocus: string | null | undefined, agentFocus: string | null) {
+  const collect = [wikiFocus?.trim(), agentFocus].filter(Boolean).join('\n')
+  return collect ? { collect } : {}
 }
 
 export function wikiDisplayName(connector: Pick<Connector, 'name' | 'config' | 'visibility'>): string {
@@ -2726,11 +2878,29 @@ function stateFromRow(page: WikiPage): WikiPageState {
     title: page.title,
     summary: page.summary,
     category: page.category,
-    frontmatter: stripManagedFrontmatter(page.frontmatter),
+    frontmatter: withoutStrayMeta(stripManagedFrontmatter(page.frontmatter)),
     body: page.body,
     sources: readWikiSources(page.sourceRefs),
     meta: metaFromColumns(page),
   }
+}
+
+/** #1077: `undefined` = érvénytelen; a létező felhasználót a `resolveOwners` ellenőrzi. */
+function readFrontmatterOwner(value: unknown): WikiPageInput['owner'] | undefined {
+  if (value === null) return null
+  const parsed = wikiOwnerSchema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+/**
+ * #1077: a régi, néma `docStatus` és objektum-alakú `owner` a következő írásnál kikerül az oldal
+ * szövegéből. A szöveges `owner` marad: a metaadat-átállás ebből olvas (`legacyMetaFromFrontmatter`).
+ */
+function withoutStrayMeta(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const { docStatus: _stray, ...rest } = frontmatter
+  void _stray
+  if (rest.owner && typeof rest.owner === 'object') delete rest.owner
+  return rest
 }
 
 /** #1061 F3: az írás `docStatus` / `owner` mezői a meglévő beépített mezőkre (a többi marad, D6). */

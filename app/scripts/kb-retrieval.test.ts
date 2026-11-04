@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import {
   assembleKbCatalog,
   assembleKbDocument,
+  maskKbSensitiveText,
   assembleKbHits,
   assembleKbIndex,
   assembleKbPage,
@@ -384,6 +385,90 @@ async function run() {
       assert.equal(part2.text?.length, KB_DOCUMENT_INLINE_CHARS)
     },
   )
+
+  await check('#1077 assembleKbDocument: egy címsor alatti hosszú szöveg nextOffset-tel hiánytalanul összeáll', () => {
+    const body = Array.from({ length: 18_735 }, (_, i) => String.fromCharCode(97 + (i % 26))).join('')
+    const doc = { documentId: 'd9', filename: 'rendszer.docx', purpose: null, text: `# Bevezetés\n${body}` }
+    const outline = assembleKbDocument(doc)
+    assert.deepEqual(outline.outline, ['Bevezetés'])
+    assert.equal(outline.nextOffset, 0)
+    assert.deepEqual(outline.longSections, [{ section: 'Bevezetés', chars: 18_735, parts: 3 }])
+    let read = ''
+    let offset: number | undefined = 0
+    let calls = 0
+    while (offset !== undefined) {
+      const part = assembleKbDocument({ ...doc, section: 'Bevezetés', offset })
+      assert.equal(part.offset, offset)
+      assert.equal(part.truncated, part.nextOffset !== undefined)
+      read += part.text
+      offset = part.nextOffset
+      calls++
+    }
+    assert.equal(read, body)
+    assert.equal(calls, 3)
+  })
+
+  await check('#1077 assembleKbDocument: lapozás section nélkül, limit, szöveg vége, helyettesítő pár', () => {
+    const text = 'a'.repeat(9_000)
+    const base = { documentId: 'd9', filename: 'x.md', purpose: null }
+    const first = assembleKbDocument({ ...base, text, limit: 100 })
+    assert.equal(first.text?.length, 100)
+    assert.equal(first.nextOffset, 100)
+    const rest = assembleKbDocument({ ...base, text, offset: 8_500 })
+    assert.equal(rest.text?.length, 500)
+    assert.equal(rest.truncated, false)
+    assert.equal(rest.nextOffset, undefined)
+    const beyond = assembleKbDocument({ ...base, text, offset: 99_999 })
+    assert.equal(beyond.text, '')
+    assert.equal(beyond.truncated, false)
+    const short = assembleKbDocument({ ...base, text: 'rövid' })
+    assert.equal(short.text, 'rövid')
+    assert.equal(short.nextOffset, undefined)
+    const emoji = `${'a'.repeat(99)}😀${'b'.repeat(50)}`
+    const cut = assembleKbDocument({ ...base, text: emoji, limit: 100 })
+    assert.equal(cut.text, 'a'.repeat(99))
+    assert.equal(cut.nextOffset, 99)
+    assert.ok(assembleKbDocument({ ...base, text: emoji, offset: cut.nextOffset, limit: 100 }).text?.startsWith('😀'))
+  })
+
+  await check('#1077 one-unit pagination never returns half an emoji', () => {
+    const base = { documentId: 'test', filename: 'test.md', purpose: null, text: '😀x' }
+    const first = assembleKbDocument({ ...base, offset: 0, limit: 1 })
+    assert.equal(first.text, '')
+    assert.equal(first.nextOffset, 0)
+    assert.match(first.nextStep!, /limit at least 2/)
+    assert.equal(assembleKbDocument({ ...base, offset: first.nextOffset, limit: 2 }).text, '😀')
+    assert.equal(assembleKbDocument({ ...base, offset: 1, limit: 2 }).text, '😀')
+  })
+
+  await check('#1077 masking handles separators, truncated edges and long numeric runs', () => {
+    assert.equal(maskKbSensitiveText('PIN: 12 34 x'), 'PIN: •••• x')
+    assert.equal(maskKbSensitiveText('PIN:\u00a01234 x'), 'PIN:\u00a0•••• x')
+    assert.equal(maskKbSensitiveText('a 4111  1111  1111  1111 x'), 'a ••••  ••••  ••••  1111 x')
+    assert.equal(maskKbSensitiveText('a 4111\u00a01111\u00a01111\u00a01111 x'), 'a ••••\u00a0••••\u00a0••••\u00a01111 x')
+    assert.equal(maskKbSensitiveText('tail 12345678...'), 'tail ••••••••...')
+    const long = '9'.repeat(100_000) + 'x'
+    const start = performance.now()
+    maskKbSensitiveText(long)
+    assert.ok(performance.now() - start < 1_000, 'long non-matching input must stay linear')
+  })
+
+  await check('#1077 maskKbSensitiveText: kártyaszám, PIN és kulcs maszkolva, a hétköznapi szám marad', () => {
+    assert.equal(maskKbSensitiveText('szám: 4111111111111111 itt'), 'szám: ••••••••••••1111 itt')
+    assert.equal(maskKbSensitiveText('a 4111 1111 1111 1111 kártya'), 'a •••• •••• •••• 1111 kártya')
+    assert.equal(maskKbSensitiveText('2024 11 03 4111 1111 1111 1111 x'), '2024 •• •• •••• •••• •••• 1111 x')
+    assert.equal(maskKbSensitiveText('Kártyaszám: 12345678 ok'), 'Kártyaszám: ••••5678 ok')
+    assert.equal(maskKbSensitiveText('PIN: 1234 x'), 'PIN: •••• x')
+    assert.equal(maskKbSensitiveText('PIN-kód = 123456 x'), 'PIN-kód = •••• x')
+    assert.equal(maskKbSensitiveText('| PIN | 1234 |'), '| PIN | •••• |')
+    assert.equal(maskKbSensitiveText('Key A: FFFFFFFFFFFF x'), 'Key A: •••••••••••• x')
+    assert.equal(maskKbSensitiveText('MIFARE kulcs: A0A1A2A3A4A5 x'), 'MIFARE kulcs: •••••••••••• x')
+    assert.equal(maskKbSensitiveText('12345678 eleje'), '•••••••• eleje')
+    assert.equal(maskKbSensitiveText('vége 1234 5678'), 'vége •••• ••••')
+    for (const plain of ['2026-11-04 riport', 'riport 2026-11-04', 'SPIN 1234 x', 'Összeg: 1 250 000 Ft, 18 735 karakter', 'tel 12345 x']) {
+      assert.equal(maskKbSensitiveText(plain), plain)
+    }
+  })
 
   await check('assembleKbDocument: egyedi útvonal-címek, részfa-törzs, többértelmű név jelöltlistát ad', () => {
     const text = [

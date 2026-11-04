@@ -116,6 +116,7 @@ jobs:
           npm run test:model-gateway-proxy
           npm run test:openrouter-tenant-key
           npm run test:gemini-tenant-key
+          npm run test:openai-provider
           npm run test:model-gateway-jwt-key
           npm run test:model-gateway-content-filter
           npm run test:ai-audit
@@ -125,6 +126,8 @@ jobs:
           npm run test:document-export
           npm run test:tenant-mailbox
           npm run test:http-api
+          npm run test:http-api-file-response
+          npm run test:http-api-saved-result
           npm run test:write-approval-modes
           npm run test:write-approval-ui
           npm run test:pending-args-summary
@@ -150,6 +153,7 @@ jobs:
           npm run test:wiki-categories
           npm run test:wiki-sources
           npm run test:wiki-metadata
+          npm run test:wiki-config
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -317,6 +321,9 @@ jobs:
       # #1061 F3/F4: metaadat-mezők, nézetek, „Átnéztem”, kategória-sablon.
       - name: Wiki metadata fields, views and templates (Postgres)
         run: npm run test:wiki-metadata-db
+      # #1075: agent által javasolt wiki-beállítás (javaslat, jóváhagyás, ütközés, oldalmozgatás).
+      - name: Wiki config proposals (Postgres)
+        run: npm run test:wiki-config-db
 
       # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
       - name: Wiki console queries (Postgres)

@@ -12,7 +12,15 @@ import {
   GoogleWorkspaceApiAuthError,
   GoogleWorkspaceApiError,
 } from '@/domain/connector-grant/google-workspace-api-client'
-import { findHttpApiEndpoint, HttpApiError } from '@/domain/connector/http-api-client'
+import { DEFAULT_MAX_RESPONSE_CHARS, findHttpApiEndpoint, HttpApiError } from '@/domain/connector/http-api-client'
+import {
+  parseColumnChoices,
+  readSavedResult,
+  savedResultFileName,
+  SavedResultError,
+  savedResultToSheet,
+  type SaveOversizedHttpResult,
+} from '@/domain/connector/http-api-saved-result'
 import { appendTextSignature, isAgentMailSendRequest, withAgentMailSignature } from '@/domain/agent-mailbox/agent-mailbox'
 import { executeMailTool } from '@/domain/mail/providers'
 import { listMailAccounts, publicMailAccount, resolveMailAccounts } from '@/domain/mail/mail'
@@ -24,13 +32,14 @@ import {
 } from './authorize-tool-call'
 import {
   checkDefinitionPin,
+  auditSafeDenialDetails,
   invalidArgsDetails,
   withDefinitionUpdatedNotice,
   type DefinitionPinDeps,
 } from './definition-pin'
 import { executeGoogleDriveTool } from './handlers/google-drive'
 import { executeGmailTool } from './handlers/gmail'
-import { executeHttpApiTool } from './handlers/http-api'
+import { executeHttpApiTool, type SaveHttpApiFile } from './handlers/http-api'
 import { executeSandboxRun as defaultExecuteSandboxRun } from './handlers/sandbox-run'
 import { executeWebSearch as defaultExecuteWebSearch } from './handlers/web-search'
 import { executeWebFetch as defaultExecuteWebFetch, type WebFetchPage } from './handlers/web-fetch'
@@ -106,6 +115,8 @@ import {
   WEB_SEARCH_TOOL,
   isDocumentExportTool,
   documentExportInputSchema,
+  isHttpApiSavedReadTool,
+  httpApiSavedReadInputSchema,
   isEnterpriseTool,
   isEnterpriseWriteTool,
   KB_GET_DOCUMENT_TOOL,
@@ -115,6 +126,9 @@ import {
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
   MCP_CALL_TOOL,
   MCP_LIST_TOOLS_TOOL,
   mcpCallInputSchema,
@@ -247,6 +261,10 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     /** #717: a modellnek szóló http_api hintek nyelve. */
     language?: TenantLanguage,
     allowedEgressHosts?: string[],
+    /** #1070: a fájl-válasz mentése a letölthető-fájl tárolóba. */
+    saveFile?: SaveHttpApiFile,
+    /** #1071: a plafon feletti, hiánytalan válasz mentése a kérő usernek. */
+    options?: { saveOversized?: SaveOversizedHttpResult },
   ) => Promise<unknown>
   /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
   resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
@@ -340,17 +358,38 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
     agentId: string
     definitionId: string
     client: string
-    document: RenderedDocument
+    /** #1024 előállított fájl, vagy #1070 kapcsolt rendszerből letöltött fájl. */
+    document: Pick<RenderedDocument, 'bytes' | 'fileName' | 'mimeType'> & { format: string }
     expiresAt: Date
   }) => Promise<{ id: string }>
   /** #1024: a kérő saját, még élő fájlja (Drive-mentés `exportId`-vel). */
   loadOwnDocumentExport?: (input: { tenantId: string; userId: string; exportId: string }) => Promise<{
     fileName: string
     mimeType: string
+    format: string
     data: Buffer
   } | null>
   /** #1024: a letöltési link abszolút címe; hiányában relatív útvonal. */
   documentExportUrl?: (id: string) => string
+  /**
+   * #1071: a modell-plafon feletti, hiánytalan http_api válasz mentése (7 nap, a kérő user + munkatárs).
+   * Hiányában a modell a régi előnézetet kapja.
+   */
+  saveHttpResult?: (input: {
+    tenantId: string
+    userId: string
+    agentId: string
+    definitionId: string
+    client: string
+    fileName: string
+    data: Buffer
+    expiresAt: Date
+  }) => Promise<{ id: string }>
+  /** #1071: a mentett válasz — csak ugyanannak a usernek ugyanannál a munkatársnál, lejárat előtt. */
+  loadHttpResult?: (input: { tenantId: string; userId: string; agentId: string; id: string }) => Promise<{
+    fileName: string
+    data: Buffer
+  } | null>
   /** #395: külső MCP-hívás; tesztben cserélhető. */
   executeMcpTool?: (input: ExecuteMcpToolInput) => Promise<McpCallResult>
   audit?: AuditSink
@@ -423,7 +462,7 @@ async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
-    ...errorDetails,
+    ...auditSafeDenialDetails(errorDetails),
   }
   console.info('enterprise.tool.denied', payload)
   await writeAudit(deps.audit, {
@@ -598,9 +637,11 @@ async function tryDirectWrite(
     definitionId: string
     toolName: string
     args: Record<string, unknown>
+    client: McpClientName
   },
 ): Promise<EnterpriseToolMcpResult | null> {
   const { principal, definition, definitionId, toolName, args } = input
+  if (principal.forceWriteApproval) return null
   const parsed = schemaForEnterpriseTool(toolName)?.safeParse(args)
   if (!parsed?.success) return null
   const parsedArgs = parsed.data as Record<string, unknown>
@@ -682,6 +723,8 @@ async function tryDirectWrite(
       accessToken,
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
+      saveOversized: httpResultSaver(deps, { principal, definition, definitionId, client: input.client }),
+      saveFile: httpApiFileSaver(deps, { principal, definitionId, agentId: definition.agentId, client: input.client }),
     })
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -702,6 +745,8 @@ async function tryDirectWrite(
       connectorId: authorized.connectorId,
       ...mailboxMeta,
       approvalBypass: bypass,
+      ...savedResultAuditMeta(result),
+      ...httpApiFileAuditMeta(result),
     }
     console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
@@ -718,7 +763,7 @@ async function tryDirectWrite(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return textResult(result, upstreamFailure)
+    return withHttpApiFileLink(textResult(result, upstreamFailure), result)
   } catch (error) {
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -862,7 +907,7 @@ export async function invokeEnterpriseTool(
     // #1030/#1029: előbb a konkrét postafiók, aztán az aláírás — a jóváhagyó a végleges from+szöveget látja.
     const withAccount = await withResolvedMailAccount(deps, principal, definition, toolName, exportArgs.args)
     const writeArgs = await withPrimaryMailboxSignature(deps, principal, definition, toolName, withAccount)
-    const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs })
+    const direct = await tryDirectWrite(deps, { principal, definition, definitionId, toolName, args: writeArgs, client: input.client ?? 'unknown' })
     if (direct) return direct
     return deps.enqueueWrite({ principal, toolName, args: writeArgs, origin, confirm })
   }
@@ -895,6 +940,10 @@ export async function invokeEnterpriseTool(
 
   if (isDocumentExportTool(toolName)) {
     return invokeDocumentExportTool(deps, { principal, toolName, args, definitionId, definition, client: input.client ?? 'unknown' })
+  }
+
+  if (isHttpApiSavedReadTool(toolName)) {
+    return invokeSavedResultRead(deps, { principal, toolName, args, definitionId, definition })
   }
 
   if (!isEnterpriseTool(toolName)) {
@@ -1003,6 +1052,8 @@ export async function invokeEnterpriseTool(
       accessToken,
       actingUser,
       agent: { id: definition.agentId, version: definition.version },
+      saveOversized: httpResultSaver(deps, { principal, definition, definitionId, client: input.client ?? 'unknown' }),
+      saveFile: httpApiFileSaver(deps, { principal, definitionId, agentId: definition.agentId, client: input.client ?? 'unknown' }),
     })
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: result })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -1022,6 +1073,8 @@ export async function invokeEnterpriseTool(
       agentId: definition.agentId,
       connectorId: authorized.connectorId,
       ...mailboxMeta,
+      ...savedResultAuditMeta(result),
+      ...httpApiFileAuditMeta(result),
     }
     console.info(upstreamFailure ? 'enterprise.tool.error' : 'enterprise.tool.ok', payload)
     await writeAudit(deps.audit, {
@@ -1038,7 +1091,7 @@ export async function invokeEnterpriseTool(
       metadata: payload,
       tenantId: principal.tenantId,
     })
-    return textResult(result, upstreamFailure)
+    return withHttpApiFileLink(textResult(result, upstreamFailure), result)
   } catch (error) {
     if (await expireRejectedTenantMailbox(deps, { connector, grantId: authorized.grantId, userId: principal.userId, tenantId: principal.tenantId, outcome: error })) {
       await auditDenied(deps, principal, toolName, TENANT_MAILBOX_DISCONNECTED, definitionId, definition.agentId, mailboxMeta)
@@ -1284,6 +1337,36 @@ async function invokeMailRead(
   }
 }
 
+/** #1071: a nagy http_api válasz mentése a kérő user + munkatárs nevére (a mentés hibája nem buktatja a hívást). */
+export function httpResultSaver(
+  deps: Pick<EnterpriseToolDeps, 'saveHttpResult' | 'now'>,
+  input: { principal: Pick<ToolCallPrincipal, 'tenantId' | 'userId'>; definition: AgentDefinition; definitionId: string; client: string },
+): SaveOversizedHttpResult | undefined {
+  const save = deps.saveHttpResult
+  if (!save) return undefined
+  return async ({ data, path }) => {
+    const now = (deps.now ?? (() => new Date()))()
+    const expiresAt = new Date(now.getTime() + DOCUMENT_EXPORT_TTL_MS)
+    const saved = await save({
+      tenantId: input.principal.tenantId,
+      userId: input.principal.userId,
+      agentId: input.definition.agentId,
+      definitionId: input.definitionId,
+      client: input.client,
+      fileName: savedResultFileName(path, now),
+      data,
+      expiresAt,
+    })
+    return { id: saved.id, expiresAt }
+  }
+}
+
+/** Az auditba a mentett válasz azonosítója kerül (a tartalom nem). */
+export function savedResultAuditMeta(result: unknown): { savedResultId?: string } {
+  const saved = result && typeof result === 'object' ? (result as { savedResult?: { savedResultId?: unknown } }).savedResult : undefined
+  return typeof saved?.savedResultId === 'string' ? { savedResultId: saved.savedResultId } : {}
+}
+
 async function dispatchTool(
   deps: EnterpriseToolDeps,
   input: {
@@ -1293,6 +1376,8 @@ async function dispatchTool(
     accessToken?: string
     actingUser?: HttpApiActingUser
     agent?: { id: string; version?: number }
+    saveOversized?: SaveOversizedHttpResult
+    saveFile?: SaveHttpApiFile
   },
 ): Promise<unknown> {
   if (isEnterpriseMailTool(input.toolName)) {
@@ -1328,6 +1413,8 @@ async function dispatchTool(
       input.agent,
       language,
       allowedEgressHosts,
+      input.saveFile,
+      input.saveOversized ? { saveOversized: input.saveOversized } : undefined,
     )
   }
   const execute = deps.executeDriveTool ?? executeGoogleDriveTool
@@ -1565,7 +1652,7 @@ async function invokeMcpTool(
       gate.risk === 'write' && deps.findAgentWriteModes
         ? await deps.findAgentWriteModes({ agentId: definition.agentId, tenantId: principal.tenantId })
         : null
-    if (!skipsWriteApproval(MCP_CALL_TOOL, modes)) {
+    if (principal.forceWriteApproval || !skipsWriteApproval(MCP_CALL_TOOL, modes)) {
       if (!deps.enqueueWrite) return deny('tool_not_configured')
       return deps.enqueueWrite({ principal, toolName, args: callArgs, origin: input.origin, confirm: input.confirm })
     }
@@ -1700,7 +1787,11 @@ async function invokeKbTool(
     }
   }
 
-  const userConnectors = scopeSnapshotConnectorsToUser(definition.snapshot.connectors, principal.userId)
+  const scoped = scopeSnapshotConnectorsToUser(definition.snapshot.connectors, principal.userId)
+  // Bejövő levél feldolgozása: a wiki-írás is jóváhagyásra vár, a kapcsolat írási módjától függetlenül.
+  const userConnectors = principal.forceWriteApproval
+    ? scoped.map((row) => (row.type === 'knowledge_base' ? { ...row, wikiWriteMode: 'approval' as const } : row))
+    : scoped
   const kbBindings = userConnectors.filter((row) => row.type === 'knowledge_base')
   const wikiOverview =
     toolName === KB_LIST_INDEX_TOOL &&
@@ -1716,6 +1807,9 @@ async function invokeKbTool(
     toolName === KB_WIKI_WRITE_TOOL ||
     toolName === KB_WIKI_CHANGES_TOOL ||
     toolName === KB_WIKI_REVERT_TOOL ||
+    toolName === KB_WIKI_CONFIG_GET_TOOL ||
+    toolName === KB_WIKI_CONFIG_PROPOSE_TOOL ||
+    toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL ||
     parsedArgs.processingMode === 'wiki' ||
     parsedArgs.inbox === true
   ) {
@@ -1828,6 +1922,10 @@ const WIKI_TOOL_CAPABILITIES: Record<string, readonly string[]> = {
   // #978: az előzmény-eszközök a meglévő wiki-képességre épülnek (a jog a kötésen dől el).
   [KB_WIKI_REVERT_TOOL]: [KB_WIKI_REVERT_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   [KB_WIKI_CHANGES_TOOL]: [KB_WIKI_CHANGES_TOOL, KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  // #1075: ugyanazok a képességek; a jog a kötésen és a wiki kapcsolóján dől el.
+  [KB_WIKI_CONFIG_GET_TOOL]: [KB_WIKI_CONFIG_GET_TOOL, KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  [KB_WIKI_CONFIG_PROPOSE_TOOL]: [KB_WIKI_CONFIG_PROPOSE_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_CONFIG_WITHDRAW_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   [KB_INGEST_TOOL]: [KB_INGEST_TOOL],
   [KB_LIST_INDEX_TOOL]: [KB_LIST_INDEX_TOOL],
 }
@@ -1879,12 +1977,12 @@ async function invokeWikiTool(
 
   if (outcome.ok === false) {
     await auditDenied(deps, principal, toolName, outcome.code, definitionId, definition.agentId)
-    return errorResult(outcome.code, outcome.details)
+    return errorResult(outcome.code, outcome.details && withApprovalUrls(outcome.details, input.origin))
   }
   if (outcome.ok === true) {
     const connectorId = asUuid(args.connectorId) ?? null
     await auditKbOk(deps, { principal, toolName, definitionId, agentId: definition.agentId, connectorId })
-    return textResult(outcome.result)
+    return textResult(withApprovalUrls(outcome.result, input.origin))
   }
 
   // Jóváhagyás: egy kártya a teljes change-setre a gateway-sorban (D1/D4).
@@ -1913,6 +2011,20 @@ async function invokeWikiTool(
   await deps.onWikiApprovalQueued?.({ tenantId: principal.tenantId, changeSetId: request.changeSetId, operationId })
   if (!operationId || !queuedPayload) return queued
   return textResult({ ...queuedPayload, ...outcome.result })
+}
+
+/** #1075: a szolgáltatás relatív útvonalat ad, a kérés origin-je csak itt ismert. */
+function withApprovalUrls<T>(value: T, origin: string | undefined): T {
+  if (!value || typeof value !== 'object') return value
+  const toUrl = (row: Record<string, unknown>) => {
+    if (typeof row.approvalPath !== 'string') return row
+    const { approvalPath, ...rest } = row
+    return { ...rest, approvalUrl: `${origin?.replace(/\/+$/, '') ?? ''}${approvalPath}` }
+  }
+  const row = toUrl(value as Record<string, unknown>)
+  return (Array.isArray(row.pendingProposals)
+    ? { ...row, pendingProposals: row.pendingProposals.map((item) => toUrl(item as Record<string, unknown>)) }
+    : row) as T
 }
 
 function parseToolJson(result: EnterpriseToolMcpResult): Record<string, unknown> | null {
@@ -2429,7 +2541,7 @@ async function withDocumentExportContent(
   const found = deps.loadOwnDocumentExport
     ? await deps.loadOwnDocumentExport({ tenantId: principal.tenantId, userId: principal.userId, exportId })
     : null
-  if (!found) return { error: 'document_export_not_found' }
+  if (!found || found.format === 'json') return { error: 'document_export_not_found' }
   return {
     args: {
       ...args,
@@ -2437,6 +2549,68 @@ async function withDocumentExportContent(
       contentBase64: found.data.toString('base64'),
       mimeType: typeof args.mimeType === 'string' ? args.mimeType : found.mimeType.split(';')[0],
     },
+  }
+}
+
+/**
+ * #1070: a kapcsolt rendszer fájl-válasza a letölthető-fájl tárolóba kerül, ugyanazzal a lejárattal és
+ * „csak a kérőnek” láthatósággal, mint a `document_export`. Tároló nélkül nincs fájlátadás.
+ */
+export function httpApiFileSaver(
+  deps: Pick<EnterpriseToolDeps, 'saveDocumentExport' | 'documentExportUrl' | 'now'>,
+  input: { principal: Pick<ToolCallPrincipal, 'userId' | 'tenantId'>; definitionId: string; agentId: string; client: McpClientName },
+): SaveHttpApiFile | undefined {
+  const save = deps.saveDocumentExport
+  if (!save) return undefined
+  return async (file) => {
+    const now = (deps.now ?? (() => new Date()))()
+    const expiresAt = new Date(now.getTime() + DOCUMENT_EXPORT_TTL_MS)
+    const saved = await save({
+      tenantId: input.principal.tenantId,
+      userId: input.principal.userId,
+      agentId: input.agentId,
+      definitionId: input.definitionId,
+      client: input.client,
+      document: { bytes: file.bytes, fileName: file.fileName, mimeType: file.mimeType, format: file.format },
+      expiresAt,
+    })
+    const downloadUrl = deps.documentExportUrl ? deps.documentExportUrl(saved.id) : documentExportPath(saved.id)
+    return { exportId: saved.id, downloadUrl, expiresAt }
+  }
+}
+
+type HttpApiFileResult = { exportId: string; fileName: string; mimeType: string; sizeBytes: number; sha256: string; downloadUrl: string; expiresAt: string }
+
+function httpApiFileOf(result: unknown): HttpApiFileResult | null {
+  if (!result || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  return typeof r.exportId === 'string' && typeof r.downloadUrl === 'string' && typeof r.sha256 === 'string'
+    ? (r as HttpApiFileResult)
+    : null
+}
+
+/** #1070: az audit rögzíti, hogy fájl jött át (név, méret, hash), a tartalom nélkül. */
+export function httpApiFileAuditMeta(result: unknown): Record<string, unknown> {
+  const file = httpApiFileOf(result)
+  if (!file) return {}
+  return { file: { exportId: file.exportId, fileName: file.fileName, mimeType: file.mimeType, byteSize: file.sizeBytes, sha256: file.sha256 } }
+}
+
+/** #1070: a letöltés `resource_link`-ként is megy, így a chat fájl-kártyát mutat (mint a `document_export`). */
+function withHttpApiFileLink(base: EnterpriseToolMcpResult, result: unknown): EnterpriseToolMcpResult {
+  const file = httpApiFileOf(result)
+  if (!file) return base
+  return {
+    ...base,
+    links: [
+      {
+        uri: file.downloadUrl,
+        name: file.fileName,
+        mimeType: file.mimeType,
+        size: file.sizeBytes,
+        description: `Letölthető fájl — ${formatExpiry(new Date(file.expiresAt))}-ig érhető el.`,
+      },
+    ],
   }
 }
 
@@ -2478,9 +2652,16 @@ async function invokeDocumentExportTool(
   const parsed = documentExportInputSchema.safeParse(args)
   if (!parsed.success) return deny('invalid_args', invalidArgsDetails(parsed.error))
 
+  let sheetList: unknown[] | undefined
+  if (parsed.data.savedResultId !== undefined) {
+    const built = await savedResultSheets(deps, principal, definition, parsed.data)
+    if ('error' in built) return deny(built.error, built.extra)
+    sheetList = built.sheets
+  }
+
   let document: RenderedDocument
   try {
-    document = await renderDocument(parsed.data)
+    document = await renderDocument(sheetList ? { ...parsed.data, sheets: undefined, sheetList } : parsed.data)
   } catch (error) {
     if (error instanceof DocumentExportError) return deny(error.code, { detail: error.detail })
     throw error
@@ -2507,6 +2688,7 @@ async function invokeDocumentExportTool(
     format: document.format,
     byteSize: document.bytes.length,
     rowCount: document.rowCount,
+    ...(parsed.data.savedResultId ? { fromSavedResult: true } : {}),
     ...policyMeta,
   }
   console.info('enterprise.tool.ok', metadata)
@@ -2551,4 +2733,89 @@ async function invokeDocumentExportTool(
       },
     ],
   }
+}
+
+const MAX_SAVED_SHEETS = 20
+
+/**
+ * #1071: `document_export` a mentett http_api válaszból — a teljes adat a modellen át-gépelés nélkül kerül
+ * a táblázatba. Csak a kérő user saját, ugyanennél a munkatársnál mentett, élő válasza használható.
+ */
+async function savedResultSheets(
+  deps: EnterpriseToolDeps,
+  principal: ToolCallPrincipal,
+  definition: AgentDefinition,
+  args: { format: string; sheets?: string; title?: string; savedResultId?: string; columns?: string; arrayPath?: string },
+): Promise<{ sheets: unknown[] } | { error: string; extra?: Record<string, unknown> }> {
+  const invalidContent = (detail: string) => ({ error: 'document_export_invalid_content', extra: { detail } })
+  if (args.format !== 'xlsx' && args.format !== 'csv') return invalidContent('savedResultId: csak xlsx vagy csv formátumhoz')
+  if (args.sheets !== undefined) return invalidContent('savedResultId mellett ne add meg a sheets mezőt')
+  const ids = (args.savedResultId ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+  if (ids.length === 0 || ids.length > MAX_SAVED_SHEETS || ids.some((id) => !asUuid(id))) {
+    return invalidContent(`savedResultId: 1–${MAX_SAVED_SHEETS} azonosító, vesszővel elválasztva`)
+  }
+  if (!deps.loadHttpResult) return { error: 'tool_not_configured' }
+  try {
+    const columns = parseColumnChoices(args.columns)
+    const sheets: unknown[] = []
+    for (const id of ids) {
+      const found = await deps.loadHttpResult({ tenantId: principal.tenantId, userId: principal.userId, agentId: definition.agentId, id })
+      if (!found) return { error: 'saved_result_not_found', extra: { savedResultId: id } }
+      const name = ids.length === 1 ? args.title?.trim() || 'Adatok' : found.fileName.replace(/\.json$/i, '')
+      sheets.push(savedResultToSheet(found.data, { name, arrayPath: args.arrayPath, columns }))
+    }
+    return { sheets }
+  } catch (error) {
+    if (error instanceof SavedResultError) return { error: 'saved_result_invalid', extra: { detail: error.detail } }
+    throw error
+  }
+}
+
+/**
+ * #1071: a mentett http_api válasz lapozott olvasása. Céges rendszert nem hív; a mentés a kérő user +
+ * munkatárs sajátja (más user / másik munkatárs: `saved_result_not_found`). A válasz a http_api
+ * plafon alatt marad.
+ */
+async function invokeSavedResultRead(
+  deps: EnterpriseToolDeps,
+  input: {
+    principal: ToolCallPrincipal
+    toolName: string
+    args: Record<string, unknown>
+    definitionId: string
+    definition: AgentDefinition
+  },
+): Promise<EnterpriseToolMcpResult> {
+  const { principal, toolName, args, definitionId, definition } = input
+  const deny = async (code: string, extra?: Record<string, unknown>) => {
+    await auditDenied(deps, principal, toolName, code, definitionId, definition.agentId, extra)
+    return errorResult(code, extra)
+  }
+  if (!deps.loadHttpResult) return deny('tool_not_configured')
+  const parsed = httpApiSavedReadInputSchema.safeParse(args)
+  if (!parsed.success) return deny('invalid_args', invalidArgsDetails(parsed.error))
+  const { savedResultId, offset, limit, arrayPath, asText } = parsed.data
+  const found = await deps.loadHttpResult({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    agentId: definition.agentId,
+    id: savedResultId,
+  })
+  if (!found) return deny('saved_result_not_found', { savedResultId })
+  let page: ReturnType<typeof readSavedResult>
+  try {
+    page = readSavedResult(found.data, { offset, limit, arrayPath, asText, maxChars: DEFAULT_MAX_RESPONSE_CHARS - JSON.stringify({ savedResultId }).length })
+  } catch (error) {
+    if (error instanceof SavedResultError) return deny('saved_result_invalid', { detail: error.detail })
+    throw error
+  }
+  await auditToolOutcome(deps, {
+    principal,
+    toolName,
+    definitionId,
+    agentId: definition.agentId,
+    ok: true,
+    metadata: { savedResultId, offset: page.offset, ...('rows' in page ? { returnedRows: page.returnedRows } : {}) },
+  })
+  return textResult({ savedResultId, ...page })
 }

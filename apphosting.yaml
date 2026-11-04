@@ -128,6 +128,19 @@ env:
     value: "https://ai.excellencepay.com/api/connectors/oauth/callback"
     availability:
       - RUNTIME
+  # --- #1032 Gmail azonnali értesítés (Pub/Sub push, ops/tools/gmail-push-setup.sh) ---
+  - variable: GMAIL_PUSH_TOPIC
+    value: "projects/enterprise-ai-demo/topics/gmail-inbound-push"
+    availability:
+      - RUNTIME
+  - variable: GMAIL_PUSH_AUDIENCE
+    value: "https://ai.excellencepay.com/api/webhooks/mail/google"
+    availability:
+      - RUNTIME
+  - variable: GMAIL_PUSH_SERVICE_ACCOUNT
+    value: "inbound-mail-push@enterprise-ai-demo.iam.gserviceaccount.com"
+    availability:
+      - RUNTIME
   # --- Agent workspace storage (file editor, GCS) ---
   - variable: WORKSPACE_BUCKET
     value: "platform-workspace-prod"

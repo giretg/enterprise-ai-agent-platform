@@ -23,12 +23,13 @@ export function cloudTasksQueue(config: Config, fetchImpl: typeof fetch = fetch)
   const { project, location, queue, serviceAccountEmail } = config.queue
   const url = `https://cloudtasks.googleapis.com/v2/projects/${project}/locations/${location}/queues/${queue}/tasks`
   return {
-    async enqueue(task) {
+    async enqueue(task, options) {
       const res = await fetchImpl(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${await metadataAccessToken(fetchImpl)}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           task: {
+            ...(options?.delaySeconds ? { scheduleTime: new Date(Date.now() + options.delaySeconds * 1000).toISOString() } : {}),
             httpRequest: {
               httpMethod: 'POST',
               url: `${config.selfUrl}/internal/step`,
@@ -56,8 +57,9 @@ export function inlineQueue(run: (task: { turnId: string; seq: number }) => Prom
     }
   }
   return {
-    async enqueue(task) {
-      setImmediate(() => void attempt(task, 1))
+    async enqueue(task, options) {
+      if (options?.delaySeconds) setTimeout(() => void attempt(task, 1), options.delaySeconds * 1000)
+      else setImmediate(() => void attempt(task, 1))
     },
   }
 }

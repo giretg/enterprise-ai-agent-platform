@@ -156,10 +156,22 @@ function AttachmentList({ attachments }: { attachments: ChatAttachment[] }) {
 
 const FILE_BADGES: Record<string, string> = {
   xlsx: 'bg-emerald-600',
+  xls: 'bg-emerald-600',
   csv: 'bg-emerald-700',
   docx: 'bg-sky-700',
+  doc: 'bg-sky-700',
   pdf: 'bg-rose-600',
   md: 'bg-ink-soft',
+}
+
+/** #1070: a letöltés gombja a fájl fajtáját mondja („Excel letöltése”). */
+const DOWNLOAD_LABELS: Record<string, string> = {
+  xlsx: 'Excel letöltése',
+  xls: 'Excel letöltése',
+  csv: 'CSV letöltése',
+  docx: 'Word letöltése',
+  doc: 'Word letöltése',
+  pdf: 'PDF letöltése',
 }
 
 function fileSize(bytes: number | null): string | null {
@@ -218,7 +230,7 @@ function FileCards({ files, onSaveToDrive }: { files: ChatFile[]; onSaveToDrive?
                   download={file.name}
                   className="flex items-center gap-1.5 rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-white transition hover:bg-ink/85"
                 >
-                  <Icon name="download" className="h-3.5 w-3.5" /> Letöltés
+                  <Icon name="download" className="h-3.5 w-3.5" /> {DOWNLOAD_LABELS[ext] ?? 'Letöltés'}
                 </a>
               </div>
             ) : null}
@@ -508,7 +520,7 @@ export function PlatformChat({
               if (!prev || prev.turnId !== turnId) return prev
               const p = { ...prev, lastId: Math.max(prev.lastId, e.id) }
               if (e.type === 'delta') return { ...p, text: p.text + String(e.data.text ?? ''), status: '' }
-              if (e.type === 'status') return { ...p, ...(e.data.phase === 'resumed' ? { paused: null } : {}), status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
+              if (e.type === 'status') return { ...p, ...(e.data.phase === 'resumed' ? { paused: null } : {}), status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : e.data.phase === 'model_retry' ? 'A modell most nem válaszol, kis idő múlva újrapróbálom…' : p.status }
               if (e.type === 'pause') return { ...p, status: '', text: String(e.data.text ?? p.text), paused: { message: String(e.data.message ?? ''), completedOperations: Number(e.data.completedOperations ?? 0), files: (e.data.files as ChatFile[]) ?? [] } }
               if (e.type === 'tool') {
                 return { ...p, text: p.text && !p.text.endsWith('\n\n') ? `${p.text}\n\n` : p.text, status: e.data.phase === 'start' ? toolStatus(String(e.data.name ?? ''), e.data.detail) : 'Gondolkodom…' }

@@ -198,6 +198,15 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.category.updated',
   'kb.wiki.category.deleted',
   'kb.wiki.category.rule_changed',
+  // Menüsorrend: testvér-kategóriák húzásos átrendezése (azonosítók és darabszám).
+  'kb.wiki.categories.reordered',
+  // #1075: agent által javasolt beállítás (azonosítók és darabszámok, tartalom nélkül).
+  'kb.wiki.config.proposed',
+  'kb.wiki.config.applied',
+  'kb.wiki.config.rejected',
+  'kb.wiki.config.withdrawn',
+  'kb.wiki.config.setting_changed',
+  'kb.wiki.config.collect_updated',
   // #1061 F3: metaadat-mezők (séma, átnézés, beépített mezők) és F4 sablon (category.updated).
   'kb.wiki.fields.enabled',
   'kb.wiki.fields.disabled',
@@ -308,6 +317,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.model_config',
   'model.openrouter_key.set',
   'model.gemini_key.set',
+  'model.openai_key.set',
   'model.gateway_jwt_key.set',
   // Client Policy heartbeat-regiszter (#774): Guard-eltérés (nincs/lejárt heartbeat, nem regisztrált session).
   'client_policy.deviation',

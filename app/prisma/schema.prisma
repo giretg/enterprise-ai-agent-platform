@@ -245,6 +245,22 @@ enum WikiCategoryApproval {
   always
 }
 
+/// #1075: agent konfig-javaslatának állapota.
+enum WikiConfigProposalStatus {
+  pending
+  applied
+  rejected
+  withdrawn
+}
+
+/// Oldalak sorrendje egy kategórián belül a menüben és a `kb_list_index`-ben.
+enum WikiPageSort {
+  title
+  updated_desc
+  date_desc
+  manual
+}
+
 /// #1061 F3: az oldal dokumentum-állapota (külön a technikai `WikiPageStatus`-tól).
 enum WikiDocStatus {
   draft
@@ -1173,12 +1189,21 @@ model AgentWiki {
    * #1061 F3: metaadat-mezők (állapot, gazda, átnézés + egyedi mezők) — kikapcsolva minden a régi.
    */
   managedFields       Boolean  @default(false) @map("managed_fields")
+  /**
+   * #1075: wiki-szintű gyűjtési fókusz, élőben olvasva (az agent-kötés saját fókusza mellé).
+   */
+  collectFocus        String?  @map("collect_focus") @db.Text
+  /**
+   * #1075: a munkatársak javasolhatnak-e beállítás-változást (alapból nem).
+   */
+  agentConfigChanges  Boolean  @default(false) @map("agent_config_changes")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   connector   Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   categories  WikiCategory[]
   fields      WikiField[]
+  configProposals WikiConfigProposal[]
   pages       WikiPage[]
   changeSets  WikiChangeSet[]
   logEntries  WikiLogEntry[]
@@ -1266,8 +1291,21 @@ model WikiCategory {
    * Az agent ebből tudja, mi kerül ide (briefing, `kb_list_index`).
    */
   description       String?
-  sortOrder         Int                  @default(0) @map("sort_order")
+  /**
+   * Menüsorrend a testvérek között (10-es lépésköz); `null` = nincs megadva → a
+   * sorrendezettek után, név szerint.
+   */
+  sortOrder         Int?                 @map("sort_order")
   approval          WikiCategoryApproval @default(inherit)
+  /**
+   * Oldalak sorrendje a kategórián belül; `manual`-nál a `pageOrder` path-listája.
+   * A `pinnedPages` a rendezéstől függetlenül felülre kerül. Áthelyezéskor a path a listákban is cserélődik.
+   */
+  pageSort          WikiPageSort         @default(title) @map("page_sort")
+  pinnedPages       String[]             @default([]) @map("pinned_pages")
+  pageOrder         String[]             @default([]) @map("page_order")
+  /** Alapból becsukott csoport a menüben (a nyitott oldal csoportja ettől még kinyílik). */
+  collapsed         Boolean              @default(false)
   /**
    * #1061 F2: „kapcsolt wiki” menüpont — egy másik tudástárra mutat, oldal nem kerülhet bele.
    * Csak annak látszik, aki a kapcsolt wikit is látja; az `index.md`-be nem kerül.
@@ -1284,6 +1322,10 @@ model WikiCategory {
   requiredSections  String[]             @default([]) @map("required_sections")
   sectionRule       WikiSectionRule      @default(warn) @map("section_rule")
   templateMd        String?              @map("template_md") @db.Text
+  /**
+   * #1075: a névvel ellátott sablon, amelyből a szabályok jöttek; felületi szerkesztés után `null`.
+   */
+  templateKey       String?              @map("template_key")
   createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1317,6 +1359,36 @@ model WikiField {
 
   @@unique([wikiId, key])
   @@map("wiki_fields")
+}
+
+/**
+ * #1075: agent által javasolt beállítás-változás — jóváhagyásig semmi nem változik.
+ * Agentenként és wikinként egy nyitott lehet (részleges egyedi index a migrációban).
+ */
+model WikiConfigProposal {
+  id                String                   @id @default(uuid()) @db.Uuid
+  wikiId            String                   @map("wiki_id") @db.Uuid
+  connectorId       String                   @map("connector_id") @db.Uuid
+  agentId           String                   @map("agent_id") @db.Uuid
+  /** A hívó ember, akinek a munkamenetéből a javaslat jött. */
+  userId            String                   @map("user_id") @db.Uuid
+  status            WikiConfigProposalStatus @default(pending)
+  baseConfigVersion String                   @map("base_config_version")
+  operations        Json
+  note              String
+  decidedByUserId   String?                  @map("decided_by_user_id") @db.Uuid
+  decidedAt         DateTime?                @map("decided_at") @db.Timestamptz
+  /** A jóváhagyó üzenete az agentnek. */
+  decisionComment   String?                  @map("decision_comment")
+  /** Gépi ok, pl. `config_conflict`. */
+  decisionReason    String?                  @map("decision_reason")
+  changeSetId       String?                  @map("change_set_id") @db.Uuid
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+
+  wiki AgentWiki @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+
+  @@index([wikiId, status, createdAt])
+  @@map("wiki_config_proposals")
 }
 
 /**
@@ -2236,6 +2308,8 @@ model AgentInboundMailRule {
   /// Csak innen érkező levél indít feldolgozást/átadást (domain vagy cím); üres = bárki.
   senderAllowlist   String[]        @default([]) @map("sender_allowlist")
   dailyRunLimit     Int             @default(20) @map("daily_run_limit")
+  /// Feldolgozáskor is mehet jóváhagyás nélküli írás (az agent írási módja szerint). Alap: nem.
+  allowDirectWrites Boolean         @default(false) @map("allow_direct_writes")
   updatedById       String?         @map("updated_by_id") @db.Uuid
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz

@@ -312,7 +312,16 @@ async function main() {
       assert.deepEqual(good.rule.senderAllowlist, ['partner.hu', 'anna@ceg.hu', 'sub.hu'])
       assert.equal(good.rule.dailyRunLimit, 5)
       assert.equal(good.rule.handoffToUserId, null)
+      assert.equal(good.rule.allowDirectWrites, false)
     }
+    // Jóváhagyás nélküli írás csak „Dolgozza fel” módban kapcsolható be; alapból ki van kapcsolva.
+    const processRule = { mode: 'process', instructions: 'x', responsibleUserId: USER }
+    const off = validateInboundMailRule(processRule)
+    assert.ok(off.ok && off.rule.allowDirectWrites === false)
+    const on = validateInboundMailRule({ ...processRule, allowDirectWrites: true })
+    assert.ok(on.ok && on.rule.allowDirectWrites === true)
+    const notify = validateInboundMailRule({ mode: 'notify', allowDirectWrites: true })
+    assert.ok(notify.ok && notify.rule.allowDirectWrites === false)
   })
 
   await check('feladó-szűrő: domain (aldomainnel), pontos cím; üres lista = bárki', () => {

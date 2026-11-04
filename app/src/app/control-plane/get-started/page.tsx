@@ -5,6 +5,7 @@ import { DEFAULT_AGENT_WORKSPACE_FALLBACK } from '@/lib/control-plane-entry'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { buildMcpClientSetup } from '@/lib/mcp-client-setup'
 import { loadGeminiTenantKey, resolveGeminiApiKey } from '@/lib/gemini-tenant-key'
+import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { loadOpenRouterTenantKey, resolveOpenRouterApiKey } from '@/lib/openrouter-tenant-key'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { repositories } from '@/repositories/postgres'
@@ -15,11 +16,12 @@ export const dynamic = 'force-dynamic'
 async function hermesAdminSetup(tenantId: string, currentUserId: string): Promise<HermesAdminSetup> {
   let modelKeyConfigured: boolean | null
   try {
-    const [openRouter, gemini] = await Promise.all([
+    const [openRouter, gemini, openAi] = await Promise.all([
       resolveOpenRouterApiKey(tenantId, loadOpenRouterTenantKey),
       resolveGeminiApiKey(tenantId, loadGeminiTenantKey),
+      loadOpenAiTenantKey(tenantId),
     ])
-    modelKeyConfigured = Boolean(openRouter || gemini)
+    modelKeyConfigured = Boolean(openRouter || gemini || openAi)
   } catch {
     modelKeyConfigured = null
   }
