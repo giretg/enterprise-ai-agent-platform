@@ -102,6 +102,7 @@ function coerceParam(param: SavedQueryParam, value: unknown, now: Date): string 
       return number
     }
     case 'boolean':
+      if (value === 'true' || value === 'false') return value === 'true'
       if (typeof value !== 'boolean') throw invalid()
       return value
     default: {
@@ -120,7 +121,7 @@ export function resolveSavedQuery(spec: QuerySpec, params: SavedQueryParam[], ar
   const valueOf = (name: string) => {
     const param = known.get(name)
     if (!param) throw new QueryError('unknown_param', name)
-    const raw = args[name] ?? param.default
+    const raw = (Object.hasOwn(args, name) ? args[name] : undefined) ?? param.default
     if (raw === undefined || raw === null) throw new QueryError('missing_param', name)
     return coerceParam(param, raw, now)
   }
@@ -308,14 +309,15 @@ const BUCKET_COLUMN_HU: Record<string, string> = { day: 'nap', week: 'hét', mon
 
 /** Eredményoszlop emberi felirata: `sum:netto` → „Nettó összeg (összeg)”, `datum:month` → „Dátum (hónap)”. */
 export function savedQueryColumnLabel(spec: QuerySpec, catalog: Map<string, CatalogDataset>, column: string): string {
-  if (column === 'count') return 'Darabszám'
+  // Az oszlop eredetét a leíróból olvassuk, hogy egy `count` vagy `sum` nevű mező ne keveredjen az összesítéssel.
+  if (column === 'count' && spec.aggregates.some((aggregate) => aggregate.fn === 'count' && !aggregate.field)) return 'Darabszám'
+  const aggregate = spec.aggregates.find((candidate) => candidate.field && `${candidate.fn}:${candidate.field}` === column)
+  if (aggregate) return `${fieldLabel(spec, catalog, aggregate.field!)} (${AGGREGATE_COLUMN_HU[aggregate.fn]})`
+  const bucketed = spec.groupBy.map(parseGroupField).find((group) => group.bucket !== null && `${group.path}:${group.bucket}` === column)
+  if (bucketed) return `${fieldLabel(spec, catalog, bucketed.path)} (${BUCKET_COLUMN_HU[bucketed.bucket!] ?? bucketed.bucket})`
   if (column === '_id') return 'Belső azonosító'
   if (column === '_updated_at') return 'Utolsó módosítás'
-  const at = column.indexOf(':')
-  if (at < 0) return fieldLabel(spec, catalog, column)
-  const [prefix, rest] = [column.slice(0, at), column.slice(at + 1)]
-  if (prefix in AGGREGATE_COLUMN_HU) return `${fieldLabel(spec, catalog, rest)} (${AGGREGATE_COLUMN_HU[prefix]})`
-  return `${fieldLabel(spec, catalog, prefix)} (${BUCKET_COLUMN_HU[rest] ?? rest})`
+  return fieldLabel(spec, catalog, column)
 }
 
 /** Hétköznapi mondat a Control Plane-re (§6): szakszó és SQL nélkül. */

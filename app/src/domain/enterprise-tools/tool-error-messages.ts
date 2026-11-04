@@ -91,6 +91,8 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   // #984 AI-adattárház
   warehouse_not_ready: 'The company data warehouse is not activated yet — an admin can turn it on at activateUrl',
   // #1083 mentett lekérdezések
+  warehouse_upgrade_failed: 'The data warehouse is being updated and is temporarily unavailable — nothing was changed; try again in a minute',
+  query_timeout: 'The query took too long and was stopped — narrow it down with filters or fewer rows',
   saved_query_not_found: 'Saved query not found — check it with warehouse.list_saved_queries',
   saved_query_name_taken: 'You already have a different saved query with this name (see queryId) — pass queryId to save a new version, or pick another name',
   saved_query_name_immutable: 'The name of a saved query cannot be changed (see name) — archive it and save a new one if needed',

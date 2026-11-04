@@ -36,6 +36,13 @@ function formatDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' }) : '—'
 }
 
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'number') return value.toLocaleString('hu-HU')
+  if (typeof value === 'boolean') return value ? 'igen' : 'nem'
+  return String(value)
+}
+
 function defaultLabel(value: unknown): string | null {
   if (value === undefined || value === null) return null
   if (typeof value === 'object') {
@@ -50,6 +57,7 @@ function defaultLabel(value: unknown): string | null {
 /** #1083 §6: az AI munkatársak mentett lekérdezései, állapottal és próbafuttatással. */
 export function SavedQueriesCard({
   queries,
+  truncated,
   agentNames,
   datasetTitles,
   canArchive,
@@ -57,6 +65,7 @@ export function SavedQueriesCard({
   act,
 }: {
   queries: SavedQueryView[]
+  truncated: boolean
   agentNames: Record<string, string>
   datasetTitles: Record<string, string>
   canArchive: boolean
@@ -95,6 +104,7 @@ export function SavedQueriesCard({
           ))}
         </ul>
       )}
+      {truncated ? <p className="mt-3 text-sm text-ink-soft">Csak az utoljára használt {queries.length} lekérdezés látszik.</p> : null}
     </Card>
   )
 }
@@ -116,6 +126,7 @@ function SavedQueryRow({
 }) {
   const status = SAVED_QUERY_STATUS[query.schemaStatus]!
   const [versions, setVersions] = useState<Versions | null>(null)
+  const [versionsError, setVersionsError] = useState<string | null>(null)
   return (
     <li className="rounded-lg border border-ink/10 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -146,13 +157,18 @@ function SavedQueryRow({
       <details
         className="mt-2"
         onToggle={(event) => {
-          if (event.currentTarget.open && !versions) void getSavedQueryVersionsAction({ queryId: query.queryId }).then((res) => res.success && setVersions(res.data))
+          if (!event.currentTarget.open || versions) return
+          void getSavedQueryVersionsAction({ queryId: query.queryId }).then((res) => {
+            if (res.success) setVersions(res.data)
+            else setVersionsError(res.error)
+          })
         }}
       >
         <summary className="cursor-pointer">Részletek és próbafuttatás</summary>
         <div className="mt-2 space-y-3">
           <p>{query.summary}</p>
           <SchemaChanges query={query} />
+          {versionsError ? <p role="alert" className="rounded-lg bg-red-50 p-2 text-red-800">{versionsError}</p> : null}
           {versions && versions.length > 1 ? (
             <div>
               <p className="font-medium">Verziók</p>
@@ -175,7 +191,12 @@ function SavedQueryRow({
 
 function SchemaChanges({ query }: { query: SavedQueryView }) {
   if (query.schemaStatus === 'broken') {
-    return <p role="alert" className="rounded-lg bg-red-50 p-2 text-red-800">{SAVED_QUERY_STATUS.broken!.hint}</p>
+    return (
+      <p role="alert" className="rounded-lg bg-red-50 p-2 text-red-800">
+        {SAVED_QUERY_STATUS.broken!.hint}
+        {query.error?.detail ? ` Érintett mező: ${query.error.detail}.` : ''}
+      </p>
+    )
   }
   if (query.schemaStatus === 'meaning_changed') {
     return (
@@ -279,7 +300,7 @@ function TrialResult({ result }: { result: Trial }) {
             <tbody>
               {result.rows.map((row, index) => (
                 <tr key={index} className="border-t border-ink/10">
-                  {row.map((value, column) => <td key={column} className="py-1 pr-4">{value === null ? '—' : String(value)}</td>)}
+                  {row.map((value, column) => <td key={column} className="py-1 pr-4">{formatCell(value)}</td>)}
                 </tr>
               ))}
             </tbody>

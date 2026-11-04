@@ -410,6 +410,7 @@ async function main() {
     assert.equal((await service.commit(ai, { importId: plainImport.import.id, previewHash: plainPreview.import.previewHash! })).status, 'published')
     assert.equal((await statusOf()).schemaStatus, 'current', 'szerkezeti változás nélküli import nem riaszt')
     const before = (await statusOf()).datasets.find((d) => d.key === 'rendelesek')!
+    const allFields = await service.saveQuery(ai, { name: 'minden_rendeles', description: 'Minden rendelés minden mezője.', query: { dataset: 'rendelesek' } })
     const widened = await service.prepareImport(ai, { fileName: 'uj-oszlop.xlsx', content: await ordersXlsx({ extraRow: true }) })
     await service.submitPlan(ai, widened.import.id, { ...ordersPlan, fields: [...ordersPlan.fields, { source: 'Összeg / Bruttó', target: 'brutto_1083', type: 'decimal', label: 'Bruttó' }] }, 'ai')
     const widenedPreview = await service.preview(ai, widened.import.id)
@@ -420,6 +421,13 @@ async function main() {
     const afterWiden = extended.datasets.find((d) => d.key === 'rendelesek')!
     assert.ok(afterWiden.structureVersionNow! > before.structureVersionNow!)
     assert.ok(afterWiden.structureChangedAt, 'a szerkezet változási ideje rögzült')
+    // „Összes mező”: az új oszlop után az azonos kérés megerősítés, nem új verzió, és a mezőlista marad (AC11).
+    const pinnedAgain = await service.saveQuery(ai, { queryId: allFields.query.queryId, description: 'Minden rendelés minden mezője.', query: { dataset: 'rendelesek' } })
+    assert.equal(pinnedAgain.change, 'reviewed')
+    assert.equal(pinnedAgain.query.version, 1)
+    assert.equal(pinnedAgain.query.schemaStatus, 'current')
+    assert.ok(!(await service.getSavedQuery(ai, { queryId: allFields.query.queryId })).spec.fields.includes('brutto_1083'))
+    await service.archiveSavedQuery(ai, { queryId: allFields.query.queryId })
     const stillRuns = await service.runSavedQuery(ai, { queryId: saved.query.queryId })
     assert.ok(stillRuns.warnings.some((w) => w.code === 'saved_query_dataset_extended'))
     assert.equal((await service.listSavedQueries(ai))[0]?.lastRunAt !== null, true)
@@ -439,6 +447,15 @@ async function main() {
     assert.equal(reviewed.query.schemaStatus, 'current')
     assert.ok(reviewed.query.reviewedAt)
     console.log('  OK  AC8–AC11 import nem riaszt; új mező és jelentésváltozás látszik; átnézés után naprakész')
+
+    // Párhuzamos új verziók: a várakozó mentés nem kaphat téves „nem található” hibát.
+    const racing = await service.saveQuery(ai, { name: 'versenyzo', description: 'Alap.', query: { dataset: 'rendelesek', aggregates: 'count:*' } })
+    const raced = await Promise.all(
+      ['Első.', 'Második.', 'Harmadik.'].map((text) => service.saveQuery(ai, { queryId: racing.query.queryId, description: text, query: { dataset: 'rendelesek', aggregates: 'count:*' } })),
+    )
+    assert.deepEqual(raced.map((res) => res.query.version).sort(), [2, 3, 4])
+    await Promise.all([service.archiveSavedQuery(ai, { queryId: racing.query.queryId }), service.archiveSavedQuery(ai, { queryId: racing.query.queryId })])
+    console.log('  OK  Párhuzamos mentés és archiválás nem ad téves hibát')
 
     // ── #1083 broken + archiválás + audit ──────────────────────────────────────
     await prisma.$executeRawUnsafe(`UPDATE "${schema}"._saved_query_versions SET spec = jsonb_set(spec, '{aggregates,0,field}', '"eltunt_mezo"') WHERE query_id = $1::uuid AND version = 2`, saved.query.queryId)

@@ -153,10 +153,16 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
-/** Adattípus-hiba a Postgrestől (22xxx): a paraméter értéke nem illik a mezőhöz — a hívó hibája, nem üzemzavar. */
-function isDataValueError(error: unknown): boolean {
-  const code = (error as { meta?: { code?: unknown } } | null)?.meta?.code
-  return typeof code === 'string' && code.startsWith('22')
+/**
+ * Mentett lekérdezés futásának Postgres-hibái érthető kóddal: 22xxx = az érték nem illik a
+ * mezőhöz (a hívó hibája), 57014 / P2028 = időtúllépés. Minden más üzemzavar, megy tovább.
+ */
+function translateRunError(error: unknown): unknown {
+  const prisma = error as { code?: unknown; meta?: { code?: unknown } } | null
+  const code = prisma?.meta?.code
+  if (typeof code === 'string' && code.startsWith('22')) return new WarehouseError('invalid_param_value')
+  if (code === '57014' || prisma?.code === 'P2028') return new WarehouseError('query_timeout')
+  return error
 }
 
 function parseJsonArg(raw: string | undefined, code: string): unknown {
@@ -211,6 +217,9 @@ function aliasKey(value: string, by: 'key' | 'name'): string {
 }
 
 export class WarehouseService {
+  /** Egy oldalbetöltés több párhuzamos hívása egyetlen sémafrissítést indítson. */
+  private readonly upgrades = new Map<string, Promise<void>>()
+
   constructor(private readonly deps: WarehouseServiceDeps) {}
 
   // ── Jogosultság + állapot ──────────────────────────────────────────────────
@@ -227,7 +236,14 @@ export class WarehouseService {
     // A séma neve mindig a szerveroldali tenantId-ből képződik (AC8).
     const expected = warehouseSchemaName(actor.tenantId)
     if (record.schemaName !== expected) throw new WarehouseError('warehouse_not_ready', { status: 'inconsistent' })
-    if ((record.internalVersion ?? 0) < WAREHOUSE_INTERNAL_VERSION) await this.upgradeSchema(actor, expected)
+    if ((record.internalVersion ?? 0) < WAREHOUSE_INTERNAL_VERSION) {
+      let upgrade = this.upgrades.get(expected)
+      if (!upgrade) {
+        upgrade = this.upgradeSchema(actor, expected).finally(() => this.upgrades.delete(expected))
+        this.upgrades.set(expected, upgrade)
+      }
+      await upgrade
+    }
     return expected
   }
 
@@ -238,8 +254,9 @@ export class WarehouseService {
       const resources = await this.deps.provisioner.provision(schema)
       await this.deps.registry.update(actor.tenantId, { internalVersion: resources.internalVersion })
       internalVersion = resources.internalVersion
-    } catch {
-      throw new WarehouseError('warehouse_not_ready', { status: 'upgrade_failed' })
+    } catch (error) {
+      console.error('[warehouse] belső séma frissítése sikertelen', { tenantId: actor.tenantId, error: error instanceof Error ? error.message : String(error) })
+      throw new WarehouseError('warehouse_upgrade_failed')
     }
     await this.audit(actor, 'warehouse.upgraded', null, { internalVersion })
   }
@@ -1085,7 +1102,13 @@ export class WarehouseService {
     const outcome = await this.deps.db.run(
       async (sql) => {
         const catalog = await store.loadCatalog(sql, schema)
-        const spec = pinFields(requested, catalog)
+        const lockedId = await savedQueries.lockSavedQuery(sql, schema, input.queryId ? { id: input.queryId, ownerAgentId: agentId } : { name: input.name!, ownerAgentId: agentId })
+        const existing = lockedId ? await savedQueries.findSavedQuery(sql, schema, { id: lockedId, ownerAgentId: agentId }) : null
+        if (input.queryId && (!existing || existing.status !== 'active')) throw new WarehouseError('saved_query_not_found')
+        if (existing && input.queryId && input.name && input.name !== existing.name) throw new WarehouseError('saved_query_name_immutable', { name: existing.name })
+        // „Összes mező” újramentésnél a korábban rögzített lista marad, hogy az azonos kérés megerősítés legyen, ne új verzió.
+        const unpinned = existing && requested.fields.length === 0 && existing.spec.dataset === requested.dataset ? { ...requested, fields: existing.spec.fields } : requested
+        const spec = pinFields(unpinned, catalog)
         withQueryErrors(() => checkSavedQueryParams(spec, params, catalog))
         const missing = requiredParams(params).filter((name) => testArgs[name] === undefined)
         if (missing.length > 0) throw new WarehouseError('test_params_required', { params: missing })
@@ -1095,11 +1118,6 @@ export class WarehouseService {
         const snapshots = buildSnapshots(spec, catalog)
         const version = { description, spec, params, contentHash, snapshots, changeNote, userId: actor.userId }
 
-        const existing = input.queryId
-          ? await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId: agentId, forUpdate: true })
-          : await savedQueries.findSavedQuery(sql, schema, { name: input.name!, ownerAgentId: agentId, forUpdate: true })
-        if (input.queryId && (!existing || existing.status !== 'active')) throw new WarehouseError('saved_query_not_found')
-        if (existing && input.queryId && input.name && input.name !== existing.name) throw new WarehouseError('saved_query_name_immutable', { name: existing.name })
         // Más tartalom ugyanazon a néven: ne írjuk felül véletlenül a kész lekérdezést.
         if (existing && !input.queryId && existing.contentHash !== contentHash) throw new WarehouseError('saved_query_name_taken', { queryId: existing.id })
 
@@ -1131,8 +1149,7 @@ export class WarehouseService {
       },
       { statementTimeoutMs: 10_000, timeoutMs: 20_000 },
     ).catch((error: unknown) => {
-      if (isDataValueError(error)) throw new WarehouseError('invalid_param_value')
-      throw error
+      throw translateRunError(error)
     })
     await this.audit(actor, `warehouse.saved_query.${outcome.change === 'reviewed' ? 'reviewed' : 'saved'}`, outcome.query.queryId, {
       version: outcome.query.version,
@@ -1211,8 +1228,7 @@ export class WarehouseService {
       },
       { readOnly: true, statementTimeoutMs: 10_000, timeoutMs: 15_000 },
     ).catch((error: unknown) => {
-      if (isDataValueError(error)) throw new WarehouseError('invalid_param_value')
-      throw error
+      throw translateRunError(error)
     })
     if (!input.trial) {
       // A futás-számláló csak tájékoztató: a hibája ne vigye el a kész eredményt.
@@ -1236,7 +1252,8 @@ export class WarehouseService {
     const schema = await this.schemaFor(actor)
     const archived = await this.deps.db.run(
       async (sql) => {
-        const record = await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId, forUpdate: true })
+        const lockedId = await savedQueries.lockSavedQuery(sql, schema, { id: input.queryId, ownerAgentId })
+        const record = lockedId ? await savedQueries.findSavedQuery(sql, schema, { id: lockedId, ownerAgentId }) : null
         if (!record) throw new WarehouseError('saved_query_not_found')
         if (record.status === 'archived') return false
         await savedQueries.archiveSavedQuery(sql, schema, record.id)

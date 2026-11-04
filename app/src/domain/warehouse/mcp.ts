@@ -11,7 +11,7 @@ import { writeAudit } from '@/lib/audit/types'
 import { authorizeProjectWorkCall, type ProjectWorkMcpDeps } from '@/domain/project-work/mcp'
 import type { WarehouseAgentAccess } from '@/lib/warehouse-settings'
 import { QUERY_MAX_LIMIT } from './query'
-import { SAVED_QUERY_CHANGE_NOTE_MAX, SAVED_QUERY_DESCRIPTION_MAX, SAVED_QUERY_NAME } from './saved-query'
+import { SAVED_QUERY_CHANGE_NOTE_MAX, SAVED_QUERY_DESCRIPTION_MAX, SAVED_QUERY_MAX_PER_AGENT, SAVED_QUERY_NAME } from './saved-query'
 import { IMPORT_PLAN_GUIDE, WarehouseError, type WarehouseActor, type WarehouseService } from './warehouse-service'
 
 export const MCP_WAREHOUSE_LIST_DATASETS_TOOL = 'warehouse.list_datasets'
@@ -165,7 +165,8 @@ export const warehouseInputSchemas: Record<WarehouseTool, z.ZodTypeAny> = {
       query: z.string().max(200).optional().describe('Search in name and description.'),
       dataset: dataset.optional(),
       queryId: queryId.optional().describe('Returns this query with its full definition and versions.'),
-      version: z.number().int().min(1).optional().describe('With queryId: an older version.'),
+      version: z.number().int().min(1).max(1_000_000).optional().describe('With queryId: an older version.'),
+      limit: z.number().int().min(1).max(SAVED_QUERY_MAX_PER_AGENT).optional().describe('Default 50.'),
     })
     .passthrough(),
   [MCP_WAREHOUSE_RUN_SAVED_QUERY_TOOL]: z
@@ -462,7 +463,9 @@ export async function invokeWarehouseTool(
       case MCP_WAREHOUSE_LIST_SAVED_QUERIES_TOOL: {
         const id = str('queryId')
         if (id) return { ...(await svc.getSavedQuery(actor, { queryId: id, version: num('version') })), ...SAVED_QUERY_TRUST }
-        return { queries: await svc.listSavedQueries(actor, { query: str('query'), dataset: str('dataset') }), ...SAVED_QUERY_TRUST }
+        const limit = num('limit') ?? 50
+        const queries = await svc.listSavedQueries(actor, { query: str('query'), dataset: str('dataset'), limit: limit + 1 })
+        return { queries: queries.slice(0, limit), hasMore: queries.length > limit, ...SAVED_QUERY_TRUST }
       }
       case MCP_WAREHOUSE_RUN_SAVED_QUERY_TOOL: {
         const res = await svc.runSavedQuery(actor, { queryId: str('queryId'), name: str('name'), params: str('params'), limit: num('limit'), offset: num('offset') })

@@ -16,6 +16,8 @@ import { repositories } from '@/repositories/postgres'
 
 type Ctx = Awaited<ReturnType<typeof requireTenantRole>>
 
+const SAVED_QUERIES_PAGE_LIMIT = 1_000
+
 function actor(ctx: Ctx): WarehouseActor {
   return { tenantId: ctx.activeTenantId, userId: ctx.user.id, role: ctx.activeTenantRole, channel: 'ui' }
 }
@@ -23,6 +25,8 @@ function actor(ctx: Ctx): WarehouseActor {
 /** Üzleti nyelvű hibaüzenet (a kód a felhasználónak nem mond semmit). */
 const MESSAGES: Record<string, string> = {
   warehouse_not_ready: 'Az adattárház még nincs bekapcsolva.',
+  warehouse_upgrade_failed: 'Az adattárház frissítése most nem sikerült, az adatok nem változtak. Próbáld újra egy perc múlva.',
+  query_timeout: 'A lekérdezés túl sokáig futott, ezért leállt. Próbáld szűkebb feltételekkel.',
   warehouse_permission_denied: 'Ehhez a művelethez nincs jogosultságod — kérd egy jóváhagyó vagy admin kollégát.',
   file_too_large: 'A fájl nagyobb 10 MB-nál. Bontsd kisebb részekre.',
   unsafe_archive: 'Az Excel-fájl sérült vagy kicsomagolva túl nagy — nem tároltuk el.',
@@ -74,10 +78,11 @@ export async function loadWarehousePageAction(importId?: string) {
       svc.usage(a),
       svc.listExceptions(a, { status: 'pending', limit: 200 }),
       importId && z.string().uuid().safeParse(importId).success ? svc.getImport(a, importId).catch(() => null) : Promise.resolve(null),
-      svc.listSavedQueries(a, { limit: 200 }),
+      svc.listSavedQueries(a, { limit: SAVED_QUERIES_PAGE_LIMIT + 1 }),
       repositories.agents.findMany({ tenantId: ctx.activeTenantId }),
     ])
     const details = await Promise.all(datasets.map((d) => svc.describeDataset(a, d.key)))
+    const owners = new Set(savedQueries.map((query) => query.ownerAgentId))
     return ok({
       status,
       permissions,
@@ -95,8 +100,10 @@ export async function loadWarehousePageAction(importId?: string) {
       usage,
       exceptions,
       selected,
-      savedQueries,
-      agentNames: Object.fromEntries(agents.map((agent) => [agent.id, agent.name])),
+      savedQueries: savedQueries.slice(0, SAVED_QUERIES_PAGE_LIMIT),
+      savedQueriesTruncated: savedQueries.length > SAVED_QUERIES_PAGE_LIMIT,
+      // Csak a lekérdezések tulajdonosainak neve kerül a kliensre, nem a cég összes munkatársáé.
+      agentNames: Object.fromEntries(agents.filter((agent) => owners.has(agent.id)).map((agent) => [agent.id, agent.name])),
     })
   } catch (error) {
     if (error instanceof WarehouseError) return fail(MESSAGES[error.code] ?? 'Az adattárház nem tölthető be.')
@@ -179,14 +186,18 @@ export async function trialRunSavedQueryAction(input: { queryId: string; params:
   try {
     const ctx = await requireTenantRole('viewer')
     const values = z.record(z.string().regex(/^[a-z][a-z0-9_]{0,40}$/), z.string().max(1_000)).parse(input.params)
-    // Az üres mező az alapértéket jelenti; az igen/nem a szűrőben logikai érték.
-    const params = Object.fromEntries(
-      Object.entries(values)
-        .filter(([, value]) => value !== '')
-        .map(([name, value]) => [name, value === 'true' ? true : value === 'false' ? false : value]),
-    )
+    // Az üres mező az alapértéket jelenti.
+    const params = Object.fromEntries(Object.entries(values).filter(([, value]) => value !== ''))
     const res = await warehouseService().runSavedQuery(actor(ctx), { queryId: z.string().uuid().parse(input.queryId), params, limit: 20, trial: true })
-    return ok({ columns: res.columnLabels, rows: res.rows, hasMore: res.hasMore, warnings: [...new Set(res.warnings.map((warning) => warning.code))], freshness: res.provenance.freshness })
+    // A belső azonosító a felhasználónak nem mond semmit.
+    const shown = res.columns.flatMap((column, index) => (column === '_id' ? [] : [index]))
+    return ok({
+      columns: shown.map((index) => res.columnLabels[index]!),
+      rows: res.rows.map((row) => shown.map((index) => row[index])),
+      hasMore: res.hasMore,
+      warnings: [...new Set(res.warnings.map((warning) => warning.code))],
+      freshness: res.provenance.freshness,
+    })
   } catch (error) {
     if (error instanceof WarehouseError) return fail(MESSAGES[error.code] ?? 'A próbafuttatás nem sikerült.')
     return fail('A próbafuttatás nem sikerült.')

@@ -87,11 +87,37 @@ function selectFrom(schema: string): string {
     FROM ${qt(schema, '_saved_queries')} q`
 }
 
+/**
+ * Sorzár a fejlécre, a verzió-JOIN nélkül: várakozás után a Postgres a feltételt az új sorral
+ * értékelné újra, a JOIN pedig a régi verzióra mutatna, és téves „nem található” lenne belőle.
+ */
+export async function lockSavedQuery(
+  sql: SqlExecutor,
+  schema: string,
+  input: { id: string; ownerAgentId: string | null } | { name: string; ownerAgentId: string },
+): Promise<string | null> {
+  const params: unknown[] = []
+  const where: string[] = []
+  if ('id' in input) {
+    params.push(input.id)
+    where.push(`id = $${params.length}::uuid`)
+  } else {
+    params.push(input.name)
+    where.push(`name = $${params.length}`, `status = 'active'`)
+  }
+  if (input.ownerAgentId !== null) {
+    params.push(input.ownerAgentId)
+    where.push(`owner_agent_id = $${params.length}::uuid`)
+  }
+  const rows = await sql.query<{ id: string }>(`SELECT id::text AS id FROM ${qt(schema, '_saved_queries')} WHERE ${where.join(' AND ')} LIMIT 1 FOR UPDATE`, params)
+  return rows[0]?.id ?? null
+}
+
 /** Azonosító vagy név alapján; a név csak az aktív lekérdezések között egyedi. */
 export async function findSavedQuery(
   sql: SqlExecutor,
   schema: string,
-  input: ({ id: string; ownerAgentId: string | null } | { name: string; ownerAgentId: string }) & { version?: number; forUpdate?: boolean },
+  input: ({ id: string; ownerAgentId: string | null } | { name: string; ownerAgentId: string }) & { version?: number },
 ): Promise<SavedQueryRecord | null> {
   const params: unknown[] = []
   const where: string[] = []
@@ -113,7 +139,7 @@ export async function findSavedQuery(
   }
   const rows = await sql.query<Row>(
     `${selectFrom(schema)} JOIN ${qt(schema, '_saved_query_versions')} v ON v.query_id = q.id AND v.version = ${versionExpr}
-     WHERE ${where.join(' AND ')} LIMIT 1${input.forUpdate ? ' FOR UPDATE OF q' : ''}`,
+     WHERE ${where.join(' AND ')} LIMIT 1`,
     params,
   )
   return rows[0] ? toRecord(rows[0]) : null
@@ -142,7 +168,7 @@ export async function listSavedQueries(
     params.push(input.dataset)
     where.push(`v.spec->>'dataset' = $${params.length}`)
   }
-  params.push(Math.max(1, Math.min(200, input.limit)))
+  params.push(Math.max(1, Math.min(1_001, input.limit)))
   const rows = await sql.query<Row>(
     `${selectFrom(schema)} JOIN ${qt(schema, '_saved_query_versions')} v ON v.query_id = q.id AND v.version = q.current_version
      WHERE ${where.join(' AND ')} ORDER BY q.last_run_at DESC NULLS LAST, q.created_at DESC LIMIT $${params.length}::int`,

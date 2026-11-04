@@ -638,6 +638,17 @@ async function main() {
     code(() => resolveSavedQuery(monthly(), monthlyParams, { tol: '2026-02-30' }, now), 'invalid_param')
     code(() => resolveSavedQuery(monthly(), monthlyParams, { masik: 1 }, now), 'unknown_param')
     code(() => resolveSavedQuery(monthly(), savedQueryParamsSchema.parse([{ name: 'tol', type: 'date' }, { name: 'ig', type: 'date' }]), {}, now), 'missing_param')
+    // Az objektum örökölt mezője nem érték; az igen/nem űrlapról szövegként is jöhet, de a szöveges paraméter szöveg marad.
+    const named = (name: string, type: 'text' | 'boolean') => ({
+      spec: buildQuerySpec({ dataset: 'rendelesek', filters: `[{"field":"szam","op":"eq","value":{"param":"${name}"}}]` }),
+      params: savedQueryParamsSchema.parse([{ name, type, default: type === 'text' ? 'alap' : false }]),
+    })
+    const inherited = named('constructor', 'text')
+    assert.equal(resolveSavedQuery(inherited.spec, inherited.params, {}, now).filters[0]!.value, 'alap')
+    const flag = named('aktiv', 'boolean')
+    assert.equal(resolveSavedQuery(flag.spec, flag.params, { aktiv: 'true' }, now).filters[0]!.value, true)
+    const text = named('szoveg', 'text')
+    assert.equal(resolveSavedQuery(text.spec, text.params, { szoveg: 'true' }, now).filters[0]!.value, 'true')
     // Paraméter-hivatkozás feloldás nélkül nem jut a fordítóhoz értékként.
     code(() => compileQuery(qSchema, monthly(), qCatalog()), 'invalid_filter_value')
   })
@@ -711,7 +722,11 @@ async function main() {
     assert.equal(label('datum:month'), 'Dátum (hónap)')
     assert.equal(label('sum:netto'), 'Nettó összeg (összeg)')
     assert.equal(label('ugyfel_ref.nev'), 'Ügyfél neve')
-    assert.equal(label('count'), 'Darabszám')
+    assert.equal(savedQueryColumnLabel(buildQuerySpec({ dataset: 'rendelesek', aggregates: 'count:*' }), qCatalog(), 'count'), 'Darabszám')
+    // Egy `count` nevű mező nem keveredik az összesítéssel.
+    const countField = new Map(qCatalog())
+    countField.set('rendelesek', { ...qOrders, fields: [...qOrders.fields, qField('count', { label: 'Készlet' })] })
+    assert.equal(savedQueryColumnLabel(buildQuerySpec({ dataset: 'rendelesek', fields: 'count' }), countField, 'count'), 'Készlet')
   })
 
   await check('lusta frissítés: régi belső verziójú aktív cég kézi újraaktiválás nélkül frissül; hibánál érthető kód', async () => {
@@ -741,10 +756,11 @@ async function main() {
     })
     const actor: WarehouseActor = { tenantId: TENANT, userId: '33333333-3333-4333-8333-333333333333', role: 'viewer', agentId: null, channel: 'ui' }
     failProvision = true
-    await assert.rejects(service.listDatasets(actor), (e: unknown) => e instanceof WarehouseError && e.code === 'warehouse_not_ready' && e.extra?.status === 'upgrade_failed')
+    await assert.rejects(service.listDatasets(actor), (e: unknown) => e instanceof WarehouseError && e.code === 'warehouse_upgrade_failed')
     assert.equal(record.internalVersion, 1)
     failProvision = false
-    await service.listDatasets(actor)
+    // Egy oldalbetöltés párhuzamos hívásai egyetlen frissítést indítanak.
+    await Promise.all([service.listDatasets(actor), service.listDatasets(actor), service.listDatasets(actor)])
     await service.listDatasets(actor)
     assert.deepEqual(provisioned, [warehouseSchemaName(TENANT)])
     assert.equal(record.internalVersion, WAREHOUSE_INTERNAL_VERSION)

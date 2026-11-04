@@ -204,6 +204,8 @@ export function internalSchemaDdl(schema: string): string[] {
 export async function applyInternalSchema(sql: SqlExecutor, schema: string): Promise<void> {
   // Párhuzamos aktiválás ugyanarra a sémára: sorosítva.
   await sql.exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, [schema])
+  // Egy futó import zárja mögött várakozó DDL minden olvasót feltartana: inkább bukjon, a következő hívás újrapróbálja.
+  await sql.exec(`SET LOCAL lock_timeout = '5s'`)
   for (const statement of internalSchemaDdl(schema)) await sql.exec(statement)
 }
 
