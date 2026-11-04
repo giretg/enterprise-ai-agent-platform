@@ -523,7 +523,13 @@ export class PostgresWikiRepository implements WikiRepository {
       SELECT 1 FROM wiki_change_sets c
       WHERE c.connector_id = d.connector_id
         AND c.status = CAST('pending' AS "WikiChangeSetStatus")
-        AND (c.inbox_item_id = d.id OR d.id::text = ANY(c.source_document_ids))
+        AND (c.inbox_item_id = d.id OR d.id::text = ANY(c.source_document_ids)
+          OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(c.pages) AS p
+            LEFT JOIN wiki_pages wp ON wp.wiki_id = c.wiki_id AND wp.path = p->>'path'
+            WHERE p->'frontmatter'->'sources' @> jsonb_build_array(jsonb_build_object('documentId', d.id::text))
+              OR wp.source_refs @> jsonb_build_array(jsonb_build_object('documentId', d.id::text))
+          ))
     )`
     const marked = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       UPDATE documents d
@@ -588,6 +594,7 @@ export class PostgresWikiRepository implements WikiRepository {
         AND d.connector_id = ${input.connectorId}::uuid
         AND d.wiki_status = 'in_progress'
         AND d.wiki_claimed_by_agent_id = ${input.agentId}::uuid
+        AND d.wiki_claim_expires_at > ${input.now}
         AND d.wiki_reprocess IS NOT NULL
     `)
     return count > 0

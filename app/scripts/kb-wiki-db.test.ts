@@ -192,6 +192,18 @@ async function main() {
     })
     const pending = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [], inboxItemId: blocked.id, approverScope: {} })
     const pendingBySource = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [], sourceDocumentIds: [blockedBySource.id], approverScope: {} })
+    // Régebbi change-setnél is csak az oldal hivatkozásában lehet meg a forrás.
+    const cited = await create('rp-cited.md', { wikiStatus: 'processed', wikiBatchId: null })
+    const citedPage = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [{ path: 'sources/cited.md', frontmatter: { sources: [{ documentId: cited.id }] } }], approverScope: {} })
+    const citedRequest = () => wikis.requestReprocess({ connectorId: connector.id, target: { documentId: cited.id }, reason: 'Újra', requestedBy: { kind: 'human', userId: user.id }, now })
+    assert.deepEqual((await citedRequest()).waitingForApproval, [cited.id])
+    await wikis.transitionChangeSet(citedPage.id, 'pending', 'rejected')
+    await wikis.createPage({ wikiId: wiki.id, connectorId: connector.id, ...page('sources/cited.md', 'Cited', 'cited-hash'), sourceRefs: [{ documentId: cited.id }], createdByAgentId: agent.id })
+    const patch = await wikis.createChangeSet({ wikiId: wiki.id, connectorId: connector.id, status: 'pending', pages: [{ path: 'sources/cited.md', action: 'patch' }], approverScope: {} })
+    assert.deepEqual((await citedRequest()).waitingForApproval, [cited.id], 'a meglévő oldal megtartott forrása is blokkol')
+    await wikis.transitionChangeSet(patch.id, 'pending', 'rejected')
+    assert.deepEqual((await citedRequest()).marked, [cited.id])
+
     const requestedBy = { kind: 'human' as const, userId: user.id }
     const request = (target: { documentId: string } | { batchId: string }, reason = 'Hibás') =>
       wikis.requestReprocess({ connectorId: connector.id, target, reason, requestedBy, now })
@@ -240,6 +252,15 @@ async function main() {
     assert.equal((await wikis.listInbox([connector.id], { now, batchId })).find((item) => item.documentId === processed.id)!.status, 'in_progress')
     const later = new Date(now.getTime() + 2 * hour)
     assert.equal((await wikis.listInbox([connector.id], { now: later, batchId })).find((item) => item.documentId === processed.id)!.status, 'reprocess')
+
+    // Lejárt, hiányzó vagy más agent foglalásával nem zárható le.
+    const finish = (at: Date) => wikis.finishReprocessUnchanged({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now: at })
+    assert.equal(await finish(new Date(now.getTime() + hour)), false, 'a lejárat pillanatától nincs élő foglalás')
+    assert.equal(await finish(later), false, 'lejárt foglalással nem zárható le')
+    assert.equal((await prisma.document.findUniqueOrThrow({ where: { id: processed.id } })).wikiStatus, 'in_progress')
+    await prisma.document.update({ where: { id: processed.id }, data: { wikiClaimExpiresAt: null } })
+    assert.equal(await finish(now), false, 'lejárati idő nélkül nincs élő foglalás')
+    await wikis.claimInboxItem({ documentId: processed.id, connectorId: connector.id, agentId: agent.id, now, expiresAt: new Date(now.getTime() + hour) })
 
     // Más agent nem zárhatja le; a saját igen, és visszaáll az előző változás.
     assert.equal(await wikis.finishReprocessUnchanged({ documentId: processed.id, connectorId: connector.id, agentId: randomUUID(), now }), false)

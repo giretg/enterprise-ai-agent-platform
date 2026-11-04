@@ -353,7 +353,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
                       {t('inbox.reprocess.action')}
                     </button>
                   ) : null}
-                  {item.reprocess && item.status === 'processed' ? <ReprocessNote reprocess={item.reprocess} /> : null}
+                  {item.reprocess ? <ReprocessNote reprocess={item.reprocess} /> : null}
                   {reprocessFormId === item.documentId ? (
                     <ReprocessForm
                       connectorId={connectorId}
