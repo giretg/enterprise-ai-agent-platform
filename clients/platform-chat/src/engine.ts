@@ -61,6 +61,9 @@ export const APPROVAL_TTL_MS = 15 * 60_000
 const FLUSH_MS = 250
 const LEASE_SECONDS = 180
 const DEFINITION_MAX_CHARS = 60_000
+/** Szolgáltatói kiesésnél az LLM-lépés újrapróbálása előtti várakozás: a kiesés percekig is tarthat. */
+const MODEL_RETRY_DELAYS_SECONDS = [15, 30, 60]
+const TRANSIENT_MODEL_STATUSES = [429, 502, 503, 504]
 /** Agent-szerkesztő eszközök: a beszélgetésben nincs rájuk szükség, csak a modell-kontextust hizlalnák. */
 const EXCLUDED_TOOLS = new Set([
   'platform.agent.create_draft',
@@ -69,7 +72,7 @@ const EXCLUDED_TOOLS = new Set([
   'platform.agent.get_working_set',
 ])
 
-export type TaskQueue = { enqueue(task: { turnId: string; seq: number }): Promise<void> }
+export type TaskQueue = { enqueue(task: { turnId: string; seq: number }, options?: { delaySeconds?: number }): Promise<void> }
 
 export type EngineDeps = {
   store: Store
@@ -852,6 +855,7 @@ async function askUser(
  * - `done` / `skip`: 2xx, a feladat kész (vagy duplikált volt);
  * - `retry`: 5xx, a Cloud Tasks később újraküldi (pl. bérlet foglalt).
  * Dobott hiba → 5xx → újrapróbálás; a `maxAttemptsPerStep`-edik hibánál a forduló közérthetően `failed`.
+ * Szolgáltatói kiesésnél az LLM-lépés késleltetett új feladatot kap, így nem a sor gyors újraküldése dönt.
  */
 export async function runStep(deps: EngineDeps, task: { turnId: string; seq: number }): Promise<'done' | 'skip' | 'retry'> {
   let turn = await deps.store.getTurn(task.turnId)
@@ -871,7 +875,8 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
     const done = steps.filter((s) => s.status === 'done')
     current = steps.find((s) => s.seq === task.seq)
     if (task.seq !== done.length) return 'skip' // már kész, vagy nem ez a soron következő
-    if (current && current.attempts >= deps.limits.maxAttemptsPerStep && current.status === 'running') {
+    const maxAttempts = current?.kind === 'llm' ? MODEL_RETRY_DELAYS_SECONDS.length + 1 : deps.limits.maxAttemptsPerStep
+    if (current && current.attempts >= maxAttempts && current.status === 'running') {
       await fail(deps, turn, MESSAGES.failed, 'max_attempts')
       return 'done'
     }
@@ -908,7 +913,18 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
       await pauseTurn(deps, turn, 'credit', `${MESSAGES.creditExhausted} Az eddigi eredmények megmaradtak; a keret rendezése után folytathatod.`)
       return 'done'
     }
-    const attempts = (await deps.store.listSteps(turn.id)).find((s) => s.seq === task.seq)?.attempts ?? 1
+    const step = (await deps.store.listSteps(turn.id)).find((s) => s.seq === task.seq)
+    const attempts = step?.attempts ?? 1
+    if (
+      step?.kind === 'llm' && step.status === 'running' && attempts <= MODEL_RETRY_DELAYS_SECONDS.length &&
+      error instanceof PlatformError && TRANSIENT_MODEL_STATUSES.includes(error.status)
+    ) {
+      const delaySeconds = MODEL_RETRY_DELAYS_SECONDS[attempts - 1]
+      console.warn('platform-chat model retry scheduled', { turnId: turn.id, seq: task.seq, attempts, delaySeconds, status: error.status })
+      await deps.store.appendEvent(turn.id, 'status', { phase: 'model_retry' })
+      await deps.queue.enqueue(task, { delaySeconds })
+      return 'done'
+    }
     if (attempts >= deps.limits.maxAttemptsPerStep) {
       await fail(deps, turn, MESSAGES.failed, 'step_failed')
       return 'done'

@@ -93,6 +93,17 @@ export type GatewayCallContext = {
   stream: boolean
 }
 
+/** `status`/`code`/`upstream`/`detail`: a szolgáltató hibájának naplózható része, ha van. */
+export type FailedCandidate = {
+  model: string
+  errorClass: FallbackErrorClass
+  status?: number
+  code?: string
+  /** Az OpenRouter mögötti tényleges szolgáltató (pl. Azure). */
+  upstream?: string
+  detail?: string
+}
+
 export type ModelCallEvent = GatewayCallContext & {
   requestedModel: string | null
   /** A ténylegesen válaszoló modell (`provider/model`); blokknál null. */
@@ -100,7 +111,7 @@ export type ModelCallEvent = GatewayCallContext & {
   /** A kért modell nem engedett (vagy nem azonosítható) → az agent modellje futott. */
   substituted: boolean
   /** A tartalék-váltás előtt sikertelen jelöltek. */
-  failedCandidates: Array<{ model: string; errorClass: FallbackErrorClass }>
+  failedCandidates: FailedCandidate[]
   outcome: 'ok' | 'blocked' | 'error' | 'aborted'
   blockReason?: string
   errorClass?: FallbackErrorClass
@@ -169,6 +180,48 @@ class ProviderHttpError extends Error {
   }
 }
 
+type ProviderErrorPayload = { code?: string | number; message?: string; metadata?: { provider_name?: unknown } }
+
+/** A provider a törzsben adott hibát (az OpenRouter akár 200-zal is). */
+class ProviderPayloadError extends Error {
+  constructor(
+    provider: string,
+    readonly payload: ProviderErrorPayload,
+  ) {
+    super(`${provider} provider failed: ${payload.code ?? ''} ${payload.message ?? 'no choices'}`)
+    this.name = 'ProviderPayloadError'
+  }
+}
+
+/** A hibaszöveg visszhangozhat kulcsot vagy személyes adatot, az audit `meta` pedig nincs titkosítva. */
+const SENSITIVE_IN_DETAIL = /\b(?:sk|rk|or)[-_][\w-]{8,}|\bBearer\s+[^\s,;"']+|[^\s@"',;]+@[^\s@"',;]+|\d{6,}/gi
+
+/** A `metadata.raw` (a szolgáltató nyers válasza) szándékosan kimarad: a kérésből is idézhet. */
+function providerFailureInfo(error: unknown, errorClass: FallbackErrorClass): Omit<FailedCandidate, 'model' | 'errorClass'> {
+  let payload: ProviderErrorPayload | undefined
+  if (error instanceof ProviderPayloadError) payload = error.payload
+  if (error instanceof ProviderHttpError) {
+    try {
+      const parsed = JSON.parse(error.body)?.error
+      if (parsed && typeof parsed === 'object') payload = parsed
+    } catch {
+      // nem JSON (pl. HTML-hibaoldal): marad a hibaüzenet eleje
+    }
+  }
+  const upstream = payload?.metadata?.provider_name
+  const cause = error instanceof Error ? (error.cause as { code?: unknown } | undefined)?.code : undefined
+  const message = payload?.message ?? (error instanceof Error ? error.message : String(error))
+  return {
+    ...(error instanceof ProviderHttpError ? { status: error.status } : {}),
+    ...(payload?.code !== undefined ? { code: String(payload.code).slice(0, 40) } : {}),
+    ...(typeof upstream === 'string' ? { upstream: upstream.slice(0, 60) } : {}),
+    // A tartalom-hiba szövege a kérésből idézhet: abból csak a státusz marad.
+    ...(errorClass === 'content_error'
+      ? {}
+      : { detail: `${message}${typeof cause === 'string' ? ` (${cause})` : ''}`.replace(SENSITIVE_IN_DETAIL, '[rejtve]').slice(0, 200) }),
+  }
+}
+
 const json = (status: number, payload: unknown): Response =>
   new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } })
 
@@ -215,7 +268,7 @@ export function syntheticCompletion(
 /** Az OpenAI-válasz (nem-stream body vagy SSE-chunk) azon része, amit az audit és a hibafelismerés olvas. */
 type OpenAiPayload = {
   model?: string
-  error?: { code?: string | number; message?: string }
+  error?: ProviderErrorPayload
   usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }
   choices?: Array<{
     finish_reason?: string | null
@@ -325,7 +378,7 @@ async function peekFirstData(
       // nem JSON: nem tudjuk hibának minősíteni, átengedjük
     }
     if (parsed?.error) {
-      throw new Error(`${provider} provider failed: ${parsed.error.code ?? ''} ${parsed.error.message ?? ''}`)
+      throw new ProviderPayloadError(provider, parsed.error)
     }
     return buffered
   }
@@ -468,7 +521,12 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
     } catch (error) {
       lastError = error
       const errorClass = classifyProviderError(error)
-      failed.push({ model: modelRefKey(candidate), errorClass })
+      const failure = { model: modelRefKey(candidate), errorClass, ...providerFailureInfo(error, errorClass) }
+      failed.push(failure)
+      logger.warn(
+        { event: 'model_gateway.provider_failed', tenantId: ctx.tenantId, agentId: ctx.agentId, turnId: ctx.turnId, ...failure },
+        'Model provider call failed',
+      )
       // Első token előtt vagyunk (a callProvider csak sikeres elsőre tér vissza): csak provider-oldali hiba vált.
       if (!isFallbackEligible(errorClass)) break
     }
@@ -553,7 +611,7 @@ async function callProvider(
     }
     // Az OpenRouter időnként 200-zal ad `{error}` testet.
     if (data?.error || !Array.isArray(data?.choices)) {
-      throw new Error(`${candidate.provider} provider failed: ${data?.error?.code ?? ''} ${data?.error?.message ?? 'no choices'}`)
+      throw new ProviderPayloadError(candidate.provider, data?.error ?? {})
     }
     const msg = data.choices[0]?.message
     onDone('ok', {
