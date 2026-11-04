@@ -349,12 +349,29 @@ export function replaceSection(body: string, section: string, text: string): str
 // ---------------------------------------------------------------------------
 // index.md / log.md / WIKI.md (D8)
 
+/** #1077: a dokumentum dátuma nem állapítható meg (`source_date: "unknown"`). */
+export function isUnknownSourceDate(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === 'unknown'
+}
+
+/** Nincs használható dátum: a `date` mező elsőbbséget élvez az ismeretlen `source_date`-tel szemben. */
+export function wikiPageDateUnknown(page: { frontmatter?: unknown }): boolean {
+  const fm = page.frontmatter && typeof page.frontmatter === 'object' ? (page.frontmatter as Record<string, unknown>) : {}
+  return isUnknownSourceDate(fm.source_date) && !fm.date
+}
+
+export function wikiIndexLine(page: WikiIndexPage): string {
+  const date = wikiPageDateUnknown(page) ? ' (date unknown)' : ''
+  return `- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}${date}: ${page.summary}`
+}
+
 export type WikiIndexPage = {
   path: string
   title: string
   summary: string
   category: string | null
   type: string
+  frontmatter?: unknown
 }
 
 export const WIKI_UNCATEGORIZED = 'Uncategorized'
@@ -376,10 +393,29 @@ export function renderWikiIndex(pages: WikiIndexPage[]): string {
   for (const group of groupWikiIndex(pages)) {
     lines.push('', `## ${group.category}`, '')
     for (const page of group.pages) {
-      lines.push(`- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}: ${page.summary}`)
+      lines.push(wikiIndexLine(page))
     }
   }
   return `${lines.join('\n')}\n`
+}
+
+/** #1077: tételenként ennyi oldal megy a tálca-válaszba (a `pageCount` a teljes szám). */
+export const WIKI_PARTLY_WRITTEN_MAX_PAGES = 20
+
+export type WikiPartlyWritten = { pageCount: number; pages: Array<{ path: string; title: string }> }
+
+/** A még nyitott tálca-tétel forrására hivatkozó oldalak dokumentumonként. */
+export function partlyWrittenByDocument(
+  rows: Array<{ documentId: string; path: string; title: string }>,
+): Map<string, WikiPartlyWritten> {
+  const out = new Map<string, WikiPartlyWritten>()
+  for (const { documentId, path, title } of rows) {
+    const entry = out.get(documentId) ?? { pageCount: 0, pages: [] }
+    entry.pageCount++
+    if (entry.pages.length < WIKI_PARTLY_WRITTEN_MAX_PAGES) entry.pages.push({ path, title })
+    out.set(documentId, entry)
+  }
+  return out
 }
 
 export type WikiLogRow = {

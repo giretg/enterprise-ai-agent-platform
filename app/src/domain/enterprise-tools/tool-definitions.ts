@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { KB_DOCUMENT_INLINE_CHARS } from '@/lib/kb-retrieval'
 import { WIKI_CONFIG_MAX_NOTE, WIKI_CONFIG_MAX_OPERATIONS } from '@/lib/wiki-config'
 
 export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
@@ -911,6 +912,8 @@ export const kbGetDocumentInputSchema = z
     agentId: optionalAgentId,
     documentId: z.string().uuid(),
     section: z.string().max(200).optional(),
+    offset: z.number().int().min(0).optional().describe('Character offset to read from, inside section when section is set. Use nextOffset from the previous response.'),
+    limit: z.number().int().min(1).max(KB_DOCUMENT_INLINE_CHARS).optional().describe(`Characters to return (default and maximum ${KB_DOCUMENT_INLINE_CHARS}).`),
     pageImages: z.boolean().optional().describe('Return original PDF pages as PNG images; max 5 pages per call.'),
     pages: z.string().min(1).max(100).optional().describe('1-based PDF pages, e.g. "1-3,7". Defaults to page 1.'),
     /** #943: tálca-tétel foglalása a hívó agentre (2 óra), csak írási joggal. */
@@ -999,7 +1002,7 @@ export const kbWikiPageInputSchema = z
     body: z.string().max(40_000).optional(),
     /** Az utoljára olvasott tartalom hash-e (`kb_get_page` `baseVersion`). */
     baseVersion: z.string().max(128).optional(),
-    patch: z.array(wikiPatchOpSchema).min(1).max(20).optional(),
+    patch: z.array(wikiPatchOpSchema).max(20).optional(),
     /** `move` cél-path. */
     newPath: wikiPathSchema.optional(),
     /** #1061 F3: `approved` mindig jóváhagyásra megy (D5). */

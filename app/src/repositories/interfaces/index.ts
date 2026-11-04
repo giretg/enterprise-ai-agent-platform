@@ -1054,6 +1054,11 @@ export interface WikiRepository {
   updateLastLint(wikiId: string, lastLint: Prisma.InputJsonValue): Promise<void>
 
   findPage(connectorId: string, path: string): Promise<WikiPage | null>
+  /** #1077: a publikált oldalak, amelyek ugyanebben a tudástárban ezekre a dokumentumokra hivatkoznak. */
+  listPagesCitingDocuments(
+    connectorIds: string[],
+    documentIds: string[],
+  ): Promise<Array<{ documentId: string; path: string; title: string }>>
   listPages(
     connectorId: string,
     filter?: { status?: WikiPageStatus | WikiPageStatus[]; pathPrefix?: string; category?: string; limit?: number },

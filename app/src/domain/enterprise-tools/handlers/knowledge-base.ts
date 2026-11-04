@@ -210,6 +210,10 @@ export async function executeKnowledgeBaseTool(
   }
   if (toolName === KB_GET_DOCUMENT_TOOL) {
     const documentId = String(args.documentId)
+    const paging = {
+      offset: typeof args.offset === 'number' ? args.offset : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+    }
     if (args.claimForWiki === true) {
       if (!wiki || !caller) throw new KbToolError('tool_not_configured')
       const claim = await wiki.claim(caller, { connectorId: ctx.connectorId, documentId })
@@ -218,6 +222,7 @@ export async function executeKnowledgeBaseTool(
         connectorId: ctx.connectorId,
         documentId,
         section: typeof args.section === 'string' ? args.section : undefined,
+        ...paging,
       })
       // A szkennelt / rossz szövegű oldalak `pageImages`-tippje a foglalásnál se vesszen el (#947).
       const pdfHint = 'nextStep' in document && document.nextStep ? `${document.nextStep} ` : ''
@@ -238,6 +243,7 @@ export async function executeKnowledgeBaseTool(
       tenantId: ctx.tenantId,
       userId: ctx.userId,
       section: typeof args.section === 'string' ? args.section : undefined,
+      ...paging,
     })
   }
   if (toolName === KB_GET_PAGE_TOOL) {

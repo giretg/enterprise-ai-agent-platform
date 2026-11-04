@@ -32,6 +32,7 @@ import {
 } from './authorize-tool-call'
 import {
   checkDefinitionPin,
+  auditSafeDenialDetails,
   invalidArgsDetails,
   withDefinitionUpdatedNotice,
   type DefinitionPinDeps,
@@ -461,7 +462,7 @@ async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
-    ...errorDetails,
+    ...auditSafeDenialDetails(errorDetails),
   }
   console.info('enterprise.tool.denied', payload)
   await writeAudit(deps.audit, {

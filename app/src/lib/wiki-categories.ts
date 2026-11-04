@@ -8,7 +8,7 @@
  * - menüsorrend: explicit `sortOrder` (nincs → név szerint, a sorrendezettek után),
  *   kategóriánként oldalrendezés (`pageSort`) és kiemelt oldalak (`pinnedPages`).
  */
-import type { WikiIndexPage } from './kb-wiki'
+import { isUnknownSourceDate, wikiIndexLine, type WikiIndexPage } from './kb-wiki'
 
 /** = `kb-wiki` `WIKI_UNCATEGORIZED`; itt nem importáljuk, mert a felület is használja ezt a modult (node:crypto). */
 const WIKI_UNCATEGORIZED = 'Uncategorized'
@@ -121,10 +121,13 @@ function time(value: unknown): number | null {
   return Number.isFinite(ms) ? ms : null
 }
 
-/** A `date_desc` dátuma: a frontmatter `date` vagy `source_date` mezője, különben a létrehozás. */
+/**
+ * A `date_desc` dátuma: a frontmatter `date` vagy `source_date` mezője, különben a létrehozás.
+ * #1077: az ismeretlen dátum a lista végére kerül (két ilyen különbsége `NaN`, ott a cím dönt).
+ */
 export function wikiPageDate(page: WikiSortablePage): number {
   const fm = page.frontmatter && typeof page.frontmatter === 'object' ? (page.frontmatter as Record<string, unknown>) : {}
-  return time(fm.date) ?? time(fm.source_date) ?? time(page.createdAt) ?? 0
+  return time(fm.date) ?? (isUnknownSourceDate(fm.source_date) ? Number.NEGATIVE_INFINITY : time(fm.source_date) ?? time(page.createdAt) ?? 0)
 }
 
 const byTitle = (a: WikiSortablePage, b: WikiSortablePage) =>
@@ -346,7 +349,7 @@ export function groupPagesByTree<P extends Pick<WikiIndexPage, 'path' | 'categor
 
 /** `index.md` a fa szerint: `## Kategória` → `### Alkategória` (D8 determinisztikus). */
 export function renderWikiTreeIndex(pages: Array<WikiIndexPage & WikiSortablePage>, rows: WikiCategoryRow[]): string {
-  const line = (page: WikiIndexPage) => `- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}: ${page.summary}`
+  const line = wikiIndexLine
   const lines = ['# Index', '', `${pages.length} page${pages.length === 1 ? '' : 's'}.`]
   for (const group of groupPagesByTree(pages, rows)) {
     if (group.pageCount === 0) continue

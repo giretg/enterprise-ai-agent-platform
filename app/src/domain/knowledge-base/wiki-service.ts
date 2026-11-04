@@ -49,6 +49,7 @@ import {
   mergeWikiSources,
   readWikiSources,
   renderWikiIndex,
+  partlyWrittenByDocument,
   renderWikiLog,
   renderWikiPageMarkdown,
   replaceSection,
@@ -572,7 +573,7 @@ export class WikiService {
           ...base,
           status: 'in_progress',
           claimExpiresAt: claimExpiresAt!.toISOString(),
-          nextStep: `Process it now: read the source (kb_get_document documentId, section by section if long), read WIKI.md and index.md (kb_get_page wikiId), then call kb_wiki_write with wikiId, sourceDocumentIds and inboxItemId "${stored.documentId}".`,
+          nextStep: `Process it now: read the source (kb_get_document documentId, section by section if long, following nextOffset to the end), read WIKI.md and index.md (kb_get_page wikiId), then call kb_wiki_write with wikiId, sourceDocumentIds and inboxItemId "${stored.documentId}".`,
         },
       }
     }
@@ -611,6 +612,9 @@ export class WikiService {
       this.deps.wikis.listInbox(connectorIds, { now, batchId: input.batchId, limit: input.limit }),
       this.deps.wikis.inboxSummary(connectorIds, { now, batchId: input.batchId }),
     ])
+    const partlyWritten = partlyWrittenByDocument(
+      await this.deps.wikis.listPagesCitingDocuments(connectorIds, items.map((item) => item.documentId)),
+    )
     const wikiIds = new Map<string, string | null>()
     for (const connectorId of connectorIds) {
       wikiIds.set(connectorId, wikiFilter ?? (await this.deps.wikis.findByConnectorId(connectorId))?.id ?? null)
@@ -643,6 +647,7 @@ export class WikiService {
               }
             : {}),
           ...(item.batchId ? { batchId: item.batchId, batchSeq: item.batchSeq } : {}),
+          ...(partlyWritten.has(item.documentId) ? { partlyWritten: partlyWritten.get(item.documentId) } : {}),
         })),
         summary: {
           wikis: summary.wikis.map(({ connectorId, ...counts }) => ({ wikiId: wikiIds.get(connectorId) ?? null, ...counts })),
@@ -650,7 +655,7 @@ export class WikiService {
         },
         nextStep:
           items.length > 0
-            ? 'Process one item at a time: kb_get_document documentId claimForWiki:true → write the pages → kb_wiki_write inboxItemId. Stop cleanly and report progress when your session budget runs low.'
+            ? 'Process one item at a time: kb_get_document documentId claimForWiki:true → write the pages → kb_wiki_write inboxItemId. An item with partlyWritten already has those pages: read and extend them, do not rewrite them. Stop cleanly and report progress when your session budget runs low.'
             : 'The inbox is empty.',
       },
     }
@@ -1117,7 +1122,9 @@ export class WikiService {
     }
     const requested = input.pages.map((page) => ({ ...page, meta: undefined }))
     // #1061 F2: az emberi rögzítés szerzője és ideje a munkamenetből jön, nem az argumentumból.
-    const stamped = await this.stampHumanNotes(caller, connector.id, requested, now)
+    const lifted = await this.liftFrontmatterMeta(connector.id, requested)
+    if (!lifted.ok) return lifted
+    const stamped = await this.stampHumanNotes(caller, connector.id, lifted.pages, now)
     if (!stamped.ok) return stamped
     // #1061 F3: „Átnéztem” csak interaktív munkamenetből (a szerző a munkamenet embere); gazda = platform-felhasználó.
     const reviewed = this.stampReviews(caller, stamped.pages, now)
@@ -1878,6 +1885,54 @@ export class WikiService {
     return { ok: true, pages: out }
   }
 
+  /**
+   * #1077: a frontmatterben küldött `docStatus` / `owner` ugyanaz, mintha oldal szinten jött
+   * volna, így ugyanazok a kapuk érvényesek rá. A szövegben maradt régi érték visszaküldve nem
+   * szándék: nem írhat felül egy azóta átállított oldalt.
+   */
+  private async liftFrontmatterMeta(
+    connectorId: string,
+    pages: WikiPageInput[],
+  ): Promise<{ ok: true; pages: WikiPageInput[] } | WikiFailure> {
+    const errors: KbValidationIssue[] = []
+    const fail = (path: string, code: string, message: string) => errors.push({ severity: 'error', code, path, message })
+    const out: WikiPageInput[] = []
+    for (const page of pages) {
+      const fm = page.frontmatter
+      if ((page.action !== 'upsert' && page.action !== 'patch') || !fm || !('docStatus' in fm || 'owner' in fm)) {
+        out.push(page)
+        continue
+      }
+      const { docStatus, owner, ...frontmatter } = fm
+      const next: WikiPageInput = { ...page, frontmatter }
+      const stored = (await this.deps.wikis.findPage(connectorId, page.path.trim()))?.frontmatter as Record<string, unknown> | null | undefined
+      if ('docStatus' in fm && docStatus !== null && docStatus !== stored?.docStatus) {
+        if (docStatus !== 'draft' && docStatus !== 'approved') {
+          fail(page.path, 'invalid_field', 'frontmatter.docStatus must be "draft" or "approved".')
+        } else if (page.docStatus && page.docStatus !== docStatus) {
+          fail(page.path, 'conflicting_field', 'docStatus differs from frontmatter.docStatus; send it once.')
+        } else {
+          next.docStatus = docStatus
+        }
+      }
+      if ('owner' in fm && JSON.stringify(owner) !== JSON.stringify(stored?.owner)) {
+        const parsed = readFrontmatterOwner(owner)
+        if (parsed === undefined) {
+          fail(page.path, 'invalid_field', 'frontmatter.owner must be {email, role} (or {userId, role}), or null to clear it.')
+        } else if (page.owner !== undefined && (page.owner?.email ?? page.owner?.userId) !== (parsed?.email ?? parsed?.userId)) {
+          fail(page.path, 'conflicting_field', 'owner differs from frontmatter.owner; send it once.')
+        } else {
+          next.owner = page.owner ?? parsed
+        }
+      }
+      out.push(next)
+    }
+    if (errors.length) {
+      return { ok: false, code: 'invalid_wiki_change', details: { errors, hint: 'Nothing was written. Fix every error and call kb_wiki_write again with the whole change-set.' } }
+    }
+    return { ok: true, pages: out }
+  }
+
   // -------------------------------------------------------------------------
   // #978 §5.4 Agent-változáslista (D4: összefoglaló, diff nélkül)
 
@@ -2314,7 +2369,7 @@ export class WikiService {
           !page.patch?.length && page.title === undefined && page.summary === undefined && page.category === undefined &&
           page.docStatus === undefined && page.owner === undefined && page.frontmatter === undefined
         ) {
-          error(path, 'empty_patch', 'patch needs at least one operation.')
+          error(path, 'empty_patch', 'patch needs at least one operation or a page-level change (title, summary, category, frontmatter, docStatus, owner).')
           continue
         }
         if (page.baseVersion && page.baseVersion !== existing.contentHash) {
@@ -2350,7 +2405,7 @@ export class WikiService {
             summary: page.summary?.trim() || current.summary,
             category: page.category !== undefined ? page.category.trim() || null : current.category,
             // #1061 F3: a patch frontmattere kulcsonként egyesül (null = a kulcs törlése).
-            frontmatter: page.frontmatter ? mergeFrontmatter(current.frontmatter, page.frontmatter) : current.frontmatter,
+            frontmatter: withoutStrayDocStatus(page.frontmatter ? mergeFrontmatter(current.frontmatter, page.frontmatter) : current.frontmatter),
             body,
             sources,
             meta: applyMetaInput(current.meta ?? EMPTY_WIKI_META, page),
@@ -2816,6 +2871,28 @@ function stateFromRow(page: WikiPage): WikiPageState {
     sources: readWikiSources(page.sourceRefs),
     meta: metaFromColumns(page),
   }
+}
+
+/** #1077: `undefined` = érvénytelen; a létező felhasználót a `resolveOwners` ellenőrzi. */
+function readFrontmatterOwner(value: unknown): WikiPageInput['owner'] | undefined {
+  if (value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const { email, userId, role } = value as Record<string, unknown>
+  const validEmail = typeof email === 'string' && email.length <= 320 && /^[^\s@]+@[^\s@]+$/.test(email)
+  const validUserId = typeof userId === 'string' && /^[0-9a-f-]{36}$/i.test(userId)
+  if ((!validEmail && !validUserId) || (role !== undefined && typeof role !== 'string')) return undefined
+  return {
+    ...(validEmail ? { email } : {}),
+    ...(validUserId ? { userId } : {}),
+    ...(typeof role === 'string' ? { role } : {}),
+  }
+}
+
+/** #1077: a régi, néma `docStatus` kulcs a következő írásnál kikerül az oldal szövegéből. */
+function withoutStrayDocStatus(frontmatter: Record<string, unknown>): Record<string, unknown> {
+  const { docStatus: _stray, ...rest } = frontmatter
+  void _stray
+  return rest
 }
 
 /** #1061 F3: az írás `docStatus` / `owner` mezői a meglévő beépített mezőkre (a többi marad, D6). */

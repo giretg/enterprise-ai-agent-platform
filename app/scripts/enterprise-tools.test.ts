@@ -29,6 +29,7 @@ import {
   GoogleDriveApiError,
 } from '../src/domain/connector-grant/google-drive-api-client'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -600,6 +601,8 @@ async function main() {
       ...invokeDeps(),
       audit: {
         async append(data) {
+          // #1077: az éles audit-tár őre: a `message` kulcs itt kivételt dobna.
+          assertAuditMetadataSafe(data.metadata)
           audit.push({ action: data.action, metadata: data.metadata })
         },
       },
@@ -613,7 +616,7 @@ async function main() {
     const payload = parsePayload(result as { content: Array<{ text: string }> })
     assert.equal(payload.code, 'invalid_args')
     const issues = payload.issues as Array<{ path: string; message: string }>
-    assert.ok(issues.some((issue) => issue.path === 'fileId'))
+    assert.ok(issues.some((issue) => issue.path === 'fileId' && issue.message))
     const denied = audit.find((row) => row.action === 'enterprise.tool.denied')
     assert.ok(
       (denied?.metadata as { issues?: Array<{ path: string }> }).issues?.some((issue) => issue.path === 'fileId'),

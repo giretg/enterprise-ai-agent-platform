@@ -27,6 +27,7 @@ import {
 import {
   assembleKbCatalog,
   assembleKbDocument,
+  maskKbSensitiveText,
   assembleKbHits,
   assembleKbIndex,
   assembleKbPage,
@@ -620,7 +621,7 @@ export class KnowledgeBaseService {
       docs: [],
       supersededDocIds: new Set(),
     })
-    return rankKbHits(
+    const ranked = rankKbHits(
       [
         ...okfHits.map((hit, i) => ({
           hit: wikiArtifactIds.has(okfChunkHits[i].artifactId) ? { ...hit, kind: 'wiki_page' as const } : hit,
@@ -642,6 +643,13 @@ export class KnowledgeBaseService {
       ],
       k,
     )
+    // #1077 D6: kártyaszám, PIN és kulcs a találatban maszkolva; a tárolt forrás változatlan.
+    return ranked.map((hit) => ({
+      ...hit,
+      snippet: maskKbSensitiveText(hit.snippet),
+      ...(hit.title ? { title: maskKbSensitiveText(hit.title) } : {}),
+      ...(hit.source?.section ? { source: { ...hit.source, section: maskKbSensitiveText(hit.source.section) } } : {}),
+    }))
   }
 
   async listIndex(input: {
@@ -715,6 +723,7 @@ export class KnowledgeBaseService {
 
   async getDocument(input: {
     connectorId: string; documentId: string; section?: string
+    offset?: number; limit?: number
     pageImages?: boolean; pages?: string
     tenantId?: string; userId?: string
   }) {
@@ -761,6 +770,8 @@ export class KnowledgeBaseService {
       purpose: readKbPurpose(document.metadata),
       text: document.extractedText ?? '',
       section: input.section,
+      offset: input.offset,
+      limit: input.limit,
     }) }
   }
 }

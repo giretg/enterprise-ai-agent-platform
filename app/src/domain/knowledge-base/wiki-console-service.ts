@@ -38,6 +38,8 @@ import {
   readWikiSources,
   visibleWikiSources,
   renderWikiIndex,
+  partlyWrittenByDocument,
+  wikiPageDateUnknown,
   renderWikiLog,
   renderWikiPageMarkdown,
   stripManagedFrontmatter,
@@ -118,6 +120,7 @@ export type WikiConsoleDeps = {
     | 'listPages'
     | 'findPage'
     | 'listRevisions'
+    | 'listPagesCitingDocuments'
     | 'listLog'
     | 'inboxSummary'
     | 'skipInboxItem'
@@ -401,6 +404,7 @@ export class WikiConsoleService {
       type: page.type,
       updatedAt: page.updatedAt.toISOString(),
       author: author(page, agentNames, users),
+      dateUnknown: wikiPageDateUnknown(page),
     })
     return {
       connectorId: connector.id,
@@ -617,6 +621,12 @@ export class WikiConsoleService {
       actor.tenantId,
       items.flatMap((item) => [item.claimedByAgentId, item.submittedByAgentId]).filter((id): id is string => !!id),
     )
+    const partlyWritten = partlyWrittenByDocument(
+      await this.deps.wikis.listPagesCitingDocuments(
+        [connector.id],
+        items.filter((item) => item.status === 'pending' || item.status === 'in_progress').map((item) => item.documentId),
+      ),
+    )
     const totals = summary.wikis[0]
     return {
       canManage: access.manage,
@@ -650,6 +660,7 @@ export class WikiConsoleService {
         claimedBy: item.claimedByAgentId ? agentNames.get(item.claimedByAgentId) ?? null : null,
         submittedAt: item.createdAt.toISOString(),
         batchId: item.batchId,
+        partlyWritten: partlyWritten.get(item.documentId) ?? null,
         // D17: csak a gazdának emeljük ki.
         stale:
           access.manage &&

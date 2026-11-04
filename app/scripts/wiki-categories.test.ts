@@ -139,4 +139,12 @@ assert.deepEqual(order(menuGroups[1].pages), ['d/how.md', 'd/c.md', 'd/b.md', 'd
 const menuIndex = renderWikiTreeIndex(menuGroups.flatMap((group) => group.pages), menuRows)
 assert.ok(menuIndex.indexOf('## Decision log') < menuIndex.indexOf('## Sources'))
 assert.ok(menuIndex.indexOf('[[d/how]]') < menuIndex.indexOf('[[d/c]]'))
+// #1077: az ismeretlen dátum a lista végére kerül, egymás közt cím szerint; a `date` mező elsőbbséget élvez.
+const undated = [
+  { path: 'u/z.md', title: 'Z', createdAt: '2026-11-01', frontmatter: { source_date: 'unknown' } },
+  { path: 'u/old.md', title: 'Old', createdAt: '2020-01-01', frontmatter: { source_date: '2001-01-01' } },
+  { path: 'u/a.md', title: 'A', createdAt: '2026-11-02', frontmatter: { source_date: 'Unknown' } },
+  { path: 'u/dated.md', title: 'Dated', createdAt: '2020-01-01', frontmatter: { source_date: 'unknown', date: '2010-01-01' } },
+]
+assert.deepEqual(order(sortCategoryPages(undated, { pageSort: 'date_desc' })), ['u/dated.md', 'u/old.md', 'u/a.md', 'u/z.md'])
 console.log('wiki-categories: ok')

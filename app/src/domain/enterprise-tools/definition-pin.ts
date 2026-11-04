@@ -49,7 +49,16 @@ export function withDefinitionUpdatedNotice<T extends TextToolResult>(
   return { ...result, content: [...result.content, { type: 'text', text: JSON.stringify(notice) }] }
 }
 
-/** Zod-hiba → a kliensnek és az auditnak is olvasható mezőlista (rövidítve). */
+/**
+ * #1077: az audit csak a hibás mezők útvonalát kapja. A szöveges üzenet csak a kliensé:
+ * a `message` kulcsot a payload-guard tiltja, és a kivétel elfedné a valódi hibát.
+ */
+export function auditSafeDenialDetails(details?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!details || !Array.isArray(details.issues)) return details
+  return { ...details, issues: (details.issues as Array<{ path: string }>).map(({ path }) => ({ path })) }
+}
+
+/** Zod-hiba → a kliensnek olvasható mezőlista (rövidítve). */
 export function invalidArgsDetails(error: {
   issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>
 }): { issues: Array<{ path: string; message: string }> } {
