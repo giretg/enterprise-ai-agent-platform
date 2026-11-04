@@ -7,6 +7,8 @@ import {
   assignConnectorToAgent,
   unassignConnectorFromAgent,
 } from '@/app/actions/provisioning'
+import { assignTenantMailboxAction } from '@/app/actions/tenant-mailbox'
+import { TENANT_MAILBOX_ASSIGN_WARNING } from '@/domain/connector-grant/tenant-mailbox'
 import { Card } from '@/components/ui/shell'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 import {
@@ -24,6 +26,8 @@ export type ConnectorCatalogOption = {
   description?: string | null
   baseUrl?: string | null
   templateKey?: string | null
+  /** Közös (tenant-szintű) postafiók: kötéskor figyelmeztetés kell, csak-olvasásnál nincs írás. */
+  tenantMailbox?: { readOnly: boolean } | null
   iconDataUrl?: string | null
   tools?: Array<{ method: string; path: string; description?: string | null }>
 }
@@ -163,11 +167,11 @@ function AddConnectorBindingsDialog({
       const failures: string[] = []
       for (const connectorId of selectedIds) {
         const pick = picks[connectorId]
-        const result = await assignConnectorToAgent({
-          agentId,
-          connectorId,
-          accessMode: pick?.accessMode ?? 'read',
-        })
+        const accessMode = pick?.accessMode ?? 'read'
+        // A közös postafiók figyelmeztetése a sor alatt látszik; a Kötés gomb az elfogadása.
+        const result = ordered.find((item) => item.id === connectorId)?.tenantMailbox
+          ? await assignTenantMailboxAction({ connectorId, agentId, access: accessMode, confirmed: true })
+          : await assignConnectorToAgent({ agentId, connectorId, accessMode })
         if (!result.success) {
           const name = ordered.find((item) => item.id === connectorId)?.name ?? connectorId
           failures.push(`${name}: ${result.error}`)
@@ -270,9 +274,14 @@ function AddConnectorBindingsDialog({
                           }
                         >
                           <option value="read">olvasás</option>
-                          <option value="write">írás</option>
+                          {item.tenantMailbox?.readOnly ? null : <option value="write">írás</option>}
                         </select>
                       </label>
+                    ) : null}
+                    {checked && item.tenantMailbox ? (
+                      <p className="basis-full rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-ink">
+                        {TENANT_MAILBOX_ASSIGN_WARNING}
+                      </p>
                     ) : null}
                   </div>
                 </li>

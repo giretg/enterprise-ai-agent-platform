@@ -27,6 +27,7 @@ import {
 } from '@/app/actions/platform'
 import { updateAgentModelConfig, type getAgentModelSettings } from '@/app/actions/model-config'
 import { assignConnectorToAgent } from '@/app/actions/provisioning'
+import { assignTenantMailboxAction } from '@/app/actions/tenant-mailbox'
 import {
   assignSkillAction,
   getAgentSkillsAction,
@@ -470,6 +471,19 @@ export function CreateAgentWizard({
     }
   }
 
+  const sharedMailboxIds = useMemo(
+    () =>
+      new Set(
+        (catalogDetails.length > 0 ? catalogDetails : catalog)
+          .filter((item) => item.tenantMailbox)
+          .map((item) => item.id),
+      ),
+    [catalog, catalogDetails],
+  )
+  const cloneSharedMailboxNames = (cloneTemplate?.connectors ?? [])
+    .filter((connector) => sharedMailboxIds.has(connector.connectorId))
+    .map((connector) => connector.name)
+
   async function applyCloneSettings(agentId: string, template: CreateAgentWizardCloneTemplate) {
     const warnings: string[] = []
     if (template.enabledTools.length > 0) {
@@ -481,11 +495,19 @@ export function CreateAgentWizard({
       if (!res.success) warnings.push(t('cloneSkill', { error: res.error }))
     }
     for (const connector of template.connectors) {
-      const res = await assignConnectorToAgent({
-        agentId,
-        connectorId: connector.connectorId,
-        accessMode: connector.accessMode,
-      })
+      // Közös postafiók: a figyelmeztetés a kezdő lépésen látszott, a felvétel az elfogadása.
+      const res = sharedMailboxIds.has(connector.connectorId)
+        ? await assignTenantMailboxAction({
+            connectorId: connector.connectorId,
+            agentId,
+            access: connector.accessMode,
+            confirmed: true,
+          })
+        : await assignConnectorToAgent({
+            agentId,
+            connectorId: connector.connectorId,
+            accessMode: connector.accessMode,
+          })
       if (!res.success) warnings.push(t('cloneConnector', { name: connector.name, error: res.error }))
     }
     // A forrás lehet önállóbb, mint amit a céges korlát most enged — a másolat a korlátig kap.
@@ -808,6 +830,7 @@ export function CreateAgentWizard({
                   onCloneSource={(id) => void handleCloneSourceChange(id)}
                   cloneLoading={loadingClone}
                   cloneLoadedName={cloneTemplate?.sourceAgentName ?? null}
+                  cloneSharedMailboxNames={cloneSharedMailboxNames}
                   onBlank={startBlank}
                 />
               ) : null}

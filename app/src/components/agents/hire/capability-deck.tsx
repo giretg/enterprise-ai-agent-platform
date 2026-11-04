@@ -4,6 +4,8 @@ import { useState, useTransition } from 'react'
 import { useTranslations } from 'next-intl'
 import { updateAgentCapabilities } from '@/app/actions/platform'
 import { assignConnectorToAgent, unassignConnectorFromAgent } from '@/app/actions/provisioning'
+import { assignTenantMailboxAction } from '@/app/actions/tenant-mailbox'
+import { TENANT_MAILBOX_ASSIGN_WARNING } from '@/domain/connector-grant/tenant-mailbox'
 import {
   assignSkillAction,
   unassignSkillAction,
@@ -220,16 +222,22 @@ export function CapabilityDeck({
                 {option.description ? (
                   <span className="block text-xs text-ink-soft">{option.description}</span>
                 ) : null}
+                {option.tenantMailbox ? (
+                  <span className="mt-1 block text-xs text-ink">{TENANT_MAILBOX_ASSIGN_WARNING}</span>
+                ) : null}
               </span>
               <span className="flex gap-1.5">
-                {(['read', 'write'] as const).map((mode) => (
+                {(option.tenantMailbox?.readOnly ? (['read'] as const) : (['read', 'write'] as const)).map((mode) => (
                   <button
                     key={mode}
                     type="button"
                     disabled={pending}
                     onClick={() =>
                       run(`conn:${option.id}`, async () => {
-                        const res = await assignConnectorToAgent({ agentId, connectorId: option.id, accessMode: mode })
+                        // Közös postafiók: a gomb melletti figyelmeztetés elfogadása a kattintás.
+                        const res = option.tenantMailbox
+                          ? await assignTenantMailboxAction({ connectorId: option.id, agentId, access: mode, confirmed: true })
+                          : await assignConnectorToAgent({ agentId, connectorId: option.id, accessMode: mode })
                         return res.success ? { success: true } : { success: false, error: res.error }
                       })
                     }

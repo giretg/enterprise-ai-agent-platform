@@ -842,7 +842,7 @@ export class ProvisioningService {
     if (tenantMailboxOf({ authMode: connector.authMode ?? '', config: connector.config }) && !input.mailboxConfirmed) {
       throw new ProvisioningError(
         'PROVISIONING_INVALID_INPUT',
-        'A közös postafiókot a Postafiókok oldalon rendeld hozzá az agenthez, a hozzáférési figyelmeztetés elfogadásával.',
+        'A közös postafiók kötéséhez el kell fogadni a hozzáférési figyelmeztetést (az agent minden használója olvashatja a leveleit).',
       )
     }
     if (
@@ -1477,6 +1477,7 @@ export class ProvisioningService {
       name: string
       connectorMode: 'fixed' | 'self_updating'
       templateKey?: string | null
+      tenantMailbox?: { readOnly: boolean; connected: boolean } | null
       iconDataUrl?: string | null
       description?: string | null
       baseUrl?: string | null

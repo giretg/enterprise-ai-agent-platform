@@ -2704,7 +2704,8 @@
         "none": "Válassz munkatársat…",
         "loading": "Betöltés…",
         "loaded": "„{name}” beállításai betöltve — add meg az új nevet a következő lépésen.",
-        "copied": "A hozzáférések, betanult módszerek, önállóság, AI-modell és a csapat a felvételkor másolódnak. Dokumentumokat és memóriát nem viszünk át."
+        "copied": "A hozzáférések, betanult módszerek, önállóság, AI-modell és a csapat a felvételkor másolódnak. Dokumentumokat és memóriát nem viszünk át.",
+        "sharedMailbox": "A másolat a közös postafiókot is megkapja ({names}). Az új munkatárs minden használója olvashatja ennek a postafióknak a leveleit, és a munkatárs a postafiók nevében küldhet. A felvétellel ezt elfogadod."
       },
       "blank": {
         "title": "Üres lap",

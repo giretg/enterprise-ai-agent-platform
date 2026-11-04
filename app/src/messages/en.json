@@ -2704,7 +2704,8 @@
         "none": "Choose a teammate…",
         "loading": "Loading…",
         "loaded": "Settings of “{name}” loaded — enter the new name on the next step.",
-        "copied": "Access, learned methods, independence, AI model and team are copied when hiring. Documents and memory are not copied."
+        "copied": "Access, learned methods, independence, AI model and team are copied when hiring. Documents and memory are not copied.",
+        "sharedMailbox": "The copy also gets the shared mailbox ({names}). Everyone who uses the new teammate can read this mailbox, and the teammate can send on its behalf. Hiring accepts this."
       },
       "blank": {
         "title": "Blank page",
