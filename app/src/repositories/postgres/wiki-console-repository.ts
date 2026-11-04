@@ -2,6 +2,8 @@
  * #946 LLM Wiki 5/6 — a Control Plane wiki-nézetének olvasásai (lista, tálca,
  * hozzáférés, export). Jogosultságot nem dönt: azt a `WikiConsoleService` végzi.
  */
+import { parseWikiReprocess, type WikiEffectiveInboxStatus, type WikiReprocessMarker } from '@/lib/wiki-access'
+import { effectiveStatusSql } from './wiki-repository'
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { readKbPurpose } from '@/lib/kb-retrieval'
@@ -27,7 +29,10 @@ export type WikiConsoleInboxRow = {
   documentId: string
   filename: string
   purpose: string | null
-  status: 'pending' | 'in_progress' | 'processed' | 'skipped'
+  status: WikiEffectiveInboxStatus
+  /** #1085: a legutóbbi újrafeldolgozási kérés + a kérő ember neve (agent neve külön jön). */
+  reprocess?: WikiReprocessMarker | null
+  reprocessRequestedByLabel?: string | null
   uploadedById: string
   uploadedByLabel: string | null
   submittedByAgentId: string | null
@@ -68,12 +73,6 @@ export interface WikiConsoleRepository {
   listAgentsForWikiAccess(tenantId: string, userId: string | null): Promise<Array<{ id: string; name: string }>>
   /** #1061 F2: a tenant aktív tagjai (a „csak a kijelöltek” névsor-választójához). */
   listTenantUsers(tenantId: string): Promise<Array<{ id: string; label: string; email: string }>>
-}
-
-function effectiveStatusSql(now: Date) {
-  return Prisma.sql`CASE
-    WHEN d.wiki_status = 'in_progress' AND (d.wiki_claim_expires_at IS NULL OR d.wiki_claim_expires_at <= ${now})
-    THEN 'pending' ELSE d.wiki_status::text END`
 }
 
 export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
@@ -137,15 +136,20 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
         wiki_claim_expires_at: Date | null
         wiki_batch_id: string | null
         wiki_batch_seq: number | null
+        wiki_reprocess: Prisma.JsonValue
+        reprocess_requested_by_label: string | null
         created_at: Date
       }>
     >(Prisma.sql`
       SELECT d.id, d.filename, d.metadata, ${effectiveStatusSql(input.now)} AS status, d.uploaded_by,
              COALESCE(NULLIF(u.name, ''), u.email) AS uploaded_by_label,
              d.wiki_submitted_by_agent_id, d.wiki_claimed_by_agent_id, d.wiki_claim_expires_at,
-             d.wiki_batch_id, d.wiki_batch_seq, d.created_at
+             d.wiki_batch_id, d.wiki_batch_seq, d.wiki_reprocess,
+             COALESCE(NULLIF(r.name, ''), r.email) AS reprocess_requested_by_label,
+             d.created_at
       FROM documents d
       LEFT JOIN users u ON u.id = d.uploaded_by
+      LEFT JOIN users r ON r.id::text = d.wiki_reprocess->'requestedBy'->>'userId'
       WHERE d.connector_id = ${connectorId}::uuid AND d.wiki_status IS NOT NULL
       ORDER BY CASE WHEN d.wiki_status IN ('pending', 'in_progress') THEN 0 ELSE 1 END,
                d.created_at DESC, d.wiki_batch_seq NULLS LAST
@@ -158,6 +162,8 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
         filename: row.filename,
         purpose: readKbPurpose(row.metadata),
         status: row.status,
+        reprocess: parseWikiReprocess(row.wiki_reprocess),
+        reprocessRequestedByLabel: row.reprocess_requested_by_label,
         uploadedById: row.uploaded_by,
         uploadedByLabel: row.uploaded_by_label,
         submittedByAgentId: row.wiki_submitted_by_agent_id,

@@ -38,6 +38,9 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   config_changes_disabled: 'Agent configuration proposals are switched off for this wiki — a wiki admin can allow them on its Proposals tab',
   already_claimed: 'Another agent is processing this inbox item (see claimedBy and claimExpiresAt)',
   not_in_inbox: 'This document is not waiting in the wiki inbox',
+  already_in_inbox: 'This source is already in the wiki inbox, nothing to put back (see status)',
+  reprocess_pending_approval: 'A change made from this source is still waiting for approval. Ask the wiki approver to decide first, because approving it later would write the old content back',
+  reprocess_not_claimed: 'finish_unchanged works only on a reprocess item you claimed: call kb_get_document claimForWiki:true first',
   changeset_not_pending: 'This wiki change-set is no longer waiting for approval',
   missing_code_sandbox_connector_read: 'Published definition has no code sandbox connector',
   missing_code_sandbox_connector_write:

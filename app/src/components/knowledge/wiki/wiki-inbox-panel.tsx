@@ -6,6 +6,8 @@ import { useLocale, useTranslations } from 'next-intl'
 import {
   listWikiInboxAction,
   skipWikiInboxItemAction,
+  requestWikiReprocessAction,
+  cancelWikiReprocessAction,
   uploadWikiInboxFileAction,
 } from '@/app/actions/knowledge-wiki'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
@@ -21,10 +23,11 @@ const PARALLEL_UPLOADS = 3
 export type WikiInboxData = {
   canManage: boolean
   canContribute: boolean
-  totals: { pending: number; inProgress: number; processed: number; skipped: number }
+  totals: { pending: number; reprocess: number; inProgress: number; processed: number; skipped: number }
   batches: Array<{
     batchId: string
     pending: number
+    reprocess: number
     inProgress: number
     processed: number
     skipped: number
@@ -35,13 +38,20 @@ export type WikiInboxData = {
     documentId: string
     filename: string
     purpose: string | null
-    status: 'pending' | 'in_progress' | 'processed' | 'skipped'
+    status: 'pending' | 'reprocess' | 'in_progress' | 'processed' | 'skipped'
     submittedBy: { kind: 'agent' | 'human'; name: string | null }
     claimedBy: string | null
     submittedAt: string
     batchId: string | null
     /** #1077: már vannak oldalak ebből a forrásból, de a tétel nincs lezárva. */
     partlyWritten: { pageCount: number; pages: Array<{ path: string; title: string }> } | null
+    /** #1085: a legutóbbi újrafeldolgozási kérés (lezárt tételen előzmény). */
+    reprocess: {
+      reason: string
+      requestedAt: string
+      requestedBy: { kind: 'agent' | 'human'; name: string | null }
+      outcome: 'unchanged' | null
+    } | null
     stale: boolean
   }>
 }
@@ -62,6 +72,8 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [reprocessFormId, setReprocessFormId] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
 
@@ -71,7 +83,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
   }, [connectorId])
 
   // A köteg-állás magától frissül, amíg van váró vagy feldolgozás alatti tétel.
-  const active = data.totals.pending + data.totals.inProgress > 0 || upload !== null
+  const active = data.totals.pending + data.totals.reprocess + data.totals.inProgress > 0 || upload !== null
   useEffect(() => {
     if (!active) return
     const timer = setInterval(() => void reload(), POLL_MS)
@@ -119,7 +131,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
   }
 
   const latest = data.batches[0]
-  const pendingItems = data.items.filter((item) => item.status === 'pending' || item.status === 'in_progress')
+  const pendingItems = data.items.filter((item) => item.status === 'pending' || item.status === 'reprocess' || item.status === 'in_progress')
   const doneItems = data.items.filter((item) => item.status === 'processed' || item.status === 'skipped')
 
   return (
@@ -215,6 +227,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
           </div>
         ) : null}
         {error ? <p className="mt-2 text-sm text-coral-deep">{error}</p> : null}
+        {notice ? <p className="mt-2 text-sm text-ink-soft" data-testid="wiki-inbox-notice">{notice}</p> : null}
       </Card>
 
       <Card>
@@ -228,6 +241,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
         <p className="mt-2 text-sm text-ink-soft" data-testid="wiki-inbox-totals">
           {t('inbox.totals', {
             pending: data.totals.pending,
+            reprocess: data.totals.reprocess,
             inProgress: data.totals.inProgress,
             processed: data.totals.processed,
             skipped: data.totals.skipped,
@@ -246,14 +260,36 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
                 <span className="min-w-0 flex-1 truncate font-medium text-ink">{item.filename}</span>
                 <StatusBadge status={item.status} claimedBy={item.claimedBy} />
                 {item.stale ? <Badge tone="warning">{t('inbox.stale')}</Badge> : null}
-                {item.partlyWritten ? <Badge tone="warning">{t('inbox.partlyWritten')}</Badge> : null}
+                {item.partlyWritten && !item.reprocess ? <Badge tone="warning">{t('inbox.partlyWritten')}</Badge> : null}
                 <span className="text-xs text-ink-faint">
                   {item.submittedBy.kind === 'agent'
                     ? t('inbox.byAgent', { name: item.submittedBy.name ?? '—' })
                     : item.submittedBy.name ?? '—'}{' '}
-                  · {t('inbox.waitingSince', { when: formatWhen(item.submittedAt, locale) })}
+                  · {item.status === 'reprocess' && item.reprocess
+                    ? t('inbox.reprocess.requestedAt', { when: formatWhen(item.reprocess.requestedAt, locale) })
+                    : t('inbox.waitingSince', { when: formatWhen(item.submittedAt, locale) })}
                 </span>
-                {data.canManage ? (
+                {data.canManage && item.reprocess ? (
+                  <button
+                    type="button"
+                    disabled={busyId === item.documentId}
+                    data-testid="wiki-reprocess-cancel"
+                    title={t('inbox.reprocess.cancelHelp')}
+                    onClick={async () => {
+                      setBusyId(item.documentId)
+                      setError(null)
+                      setNotice(null)
+                      const res = await cancelWikiReprocessAction({ connectorId, documentId: item.documentId })
+                      setBusyId(null)
+                      if (!res.success) setError(t(`errors.${errorKey(res.error)}`))
+                      await reload()
+                    }}
+                    className="text-xs text-coral-deep disabled:opacity-50"
+                  >
+                    {t('inbox.reprocess.cancel')}
+                  </button>
+                ) : null}
+                {data.canManage && !item.reprocess ? (
                   <button
                     type="button"
                     disabled={busyId === item.documentId}
@@ -269,9 +305,14 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
                     {t('inbox.skip')}
                   </button>
                 ) : null}
+                {item.reprocess ? <ReprocessNote reprocess={item.reprocess} /> : null}
                 {item.partlyWritten ? (
                   <div className="w-full text-xs text-ink-faint" data-testid="wiki-inbox-partly-written">
-                    <p>{t('inbox.partlyWrittenPages', { count: item.partlyWritten.pageCount })}</p>
+                    <p>
+                      {item.reprocess
+                        ? t('inbox.reprocess.existingPages', { count: item.partlyWritten.pageCount })
+                        : t('inbox.partlyWrittenPages', { count: item.partlyWritten.pageCount })}
+                    </p>
                     <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                       {item.partlyWritten.pages.map((page) => (
                         <li key={page.path}>
@@ -296,13 +337,137 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
                 <li key={item.documentId} className="flex flex-wrap items-center gap-2 py-1.5 text-sm">
                   <span className="min-w-0 flex-1 truncate text-ink-soft">{item.filename}</span>
                   <StatusBadge status={item.status} claimedBy={null} />
+                  {item.reprocess?.outcome === 'unchanged' ? (
+                    <Badge tone="neutral">{t('inbox.reprocess.unchanged')}</Badge>
+                  ) : item.reprocess && item.status === 'processed' ? (
+                    <Badge tone="neutral">{t('inbox.reprocess.done')}</Badge>
+                  ) : null}
                   <span className="text-xs text-ink-faint">{formatWhen(item.submittedAt, locale)}</span>
+                  {data.canManage ? (
+                    <button
+                      type="button"
+                      data-testid="wiki-reprocess-open"
+                      onClick={() => setReprocessFormId(reprocessFormId === item.documentId ? null : item.documentId)}
+                      className="text-xs text-coral-deep"
+                    >
+                      {t('inbox.reprocess.action')}
+                    </button>
+                  ) : null}
+                  {item.reprocess && item.status === 'processed' ? <ReprocessNote reprocess={item.reprocess} /> : null}
+                  {reprocessFormId === item.documentId ? (
+                    <ReprocessForm
+                      connectorId={connectorId}
+                      documentId={item.documentId}
+                      batchId={item.batchId}
+                      batchTotal={data.batches.find((batch) => batch.batchId === item.batchId)?.total ?? 0}
+                      onClose={() => setReprocessFormId(null)}
+                      onDone={async (message) => {
+                        setReprocessFormId(null)
+                        setNotice(message)
+                        setError(null)
+                        await reload()
+                      }}
+                    />
+                  ) : null}
                 </li>
               ))}
             </ul>
           </details>
         ) : null}
       </Card>
+    </div>
+  )
+}
+
+function ReprocessNote({ reprocess }: { reprocess: NonNullable<WikiInboxData['items'][number]['reprocess']> }) {
+  const t = useTranslations('ControlPlane.wiki')
+  return (
+    <p className="w-full text-xs text-ink-soft" data-testid="wiki-reprocess-reason">
+      {t('inbox.reprocess.reasonLine', {
+        name:
+          reprocess.requestedBy.kind === 'agent'
+            ? t('inbox.byAgentName', { name: reprocess.requestedBy.name ?? '—' })
+            : reprocess.requestedBy.name ?? '—',
+        reason: reprocess.reason,
+      })}
+    </p>
+  )
+}
+
+function ReprocessForm({
+  connectorId,
+  documentId,
+  batchId,
+  batchTotal,
+  onClose,
+  onDone,
+}: {
+  connectorId: string
+  documentId: string
+  batchId: string | null
+  batchTotal: number
+  onClose: () => void
+  onDone: (message: string) => Promise<void>
+}) {
+  const t = useTranslations('ControlPlane.wiki')
+  const [reason, setReason] = useState('')
+  const [wholeBatch, setWholeBatch] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+
+  async function submit() {
+    setBusy(true)
+    setFormError(null)
+    const res = await requestWikiReprocessAction({
+      connectorId,
+      reason,
+      ...(wholeBatch && batchId ? { batchId } : { documentId }),
+    })
+    setBusy(false)
+    if (!res.success) {
+      setFormError(t(`errors.${errorKey(res.error)}`))
+      return
+    }
+    const { marked, waitingForApproval, alreadyInInbox } = res.data
+    await onDone(t('inbox.reprocess.result', { marked, waitingForApproval, alreadyInInbox }))
+  }
+
+  return (
+    <div className="mt-1 w-full space-y-2 rounded-lg border border-line p-3" data-testid="wiki-reprocess-form">
+      <p className="text-xs text-ink-soft">{t('inbox.reprocess.explain')}</p>
+      <label className="block text-xs font-medium text-ink">
+        {t('inbox.reprocess.reasonLabel')}
+        <textarea
+          value={reason}
+          maxLength={1000}
+          rows={2}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder={t('inbox.reprocess.reasonPlaceholder')}
+          data-testid="wiki-reprocess-reason-input"
+          className="mt-1 w-full rounded-lg border border-line/70 px-3 py-1.5 text-sm font-normal"
+        />
+      </label>
+      {batchId && batchTotal > 1 ? (
+        <label className="flex items-center gap-2 text-xs text-ink-soft">
+          <input type="checkbox" checked={wholeBatch} onChange={(event) => setWholeBatch(event.target.checked)} />
+          {t('inbox.reprocess.wholeBatch', { count: batchTotal })}
+        </label>
+      ) : null}
+      {formError ? <p className="text-xs text-coral-deep">{formError}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy || reason.trim().length === 0}
+          onClick={() => void submit()}
+          data-testid="wiki-reprocess-submit"
+          className="rounded-lg bg-coral px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+        >
+          {t('inbox.reprocess.submit')}
+        </button>
+        <button type="button" onClick={onClose} className="rounded-lg border border-line px-3 py-1.5 text-xs">
+          {t('inbox.reprocess.close')}
+        </button>
+      </div>
     </div>
   )
 }
@@ -318,7 +483,7 @@ function BatchBar({ batch, label }: { batch: WikiInboxData['batches'][number]; l
         <div className="h-full bg-sage" style={{ width: `${pct}%` }} />
       </div>
       <p className="mt-1 text-sm text-ink">
-        {t('inbox.batchLine', { done: finished, total: batch.total, pending: batch.pending, inProgress: batch.inProgress })}
+        {t('inbox.batchLine', { done: finished, total: batch.total, pending: batch.pending, reprocess: batch.reprocess, inProgress: batch.inProgress })}
       </p>
     </div>
   )

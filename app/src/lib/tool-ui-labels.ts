@@ -60,6 +60,11 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description:
       'Az AI-munkatárs javaslatot tesz a wiki beállításaira. Semmi nem változik, amíg a wiki kezelője jóvá nem hagyja. Csak akkor működik, ha a wikin engedélyezted a javaslatokat.',
   },
+  kb_wiki_reprocess: {
+    label: 'Forrás újrafeldolgozása',
+    description:
+      'Egy már feldolgozott forrást visszatesz a wiki tálcájára, indoklással, ha hibát talál vagy ellenőrzést kérnek. A meglévő oldalakat a jelölés nem változtatja meg. Csak írási joggal.',
+  },
   kb_wiki_config_withdraw: {
     label: 'Javaslat visszavonása',
     description: 'Az AI-munkatárs visszavonja a saját, még el nem bírált javaslatát a wiki beállításaira.',

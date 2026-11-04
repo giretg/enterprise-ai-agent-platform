@@ -184,6 +184,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.inbox.released',
   'kb.wiki.inbox.processed',
   'kb.wiki.inbox.skipped',
+  // #1085: újrafeldolgozás. Az indoklás szabad szöveg, ezért az auditba nem kerül.
+  'kb.wiki.inbox.reprocess_requested',
+  'kb.wiki.inbox.reprocess_cancelled',
+  'kb.wiki.inbox.reprocess_unchanged',
   'kb.wiki.lint.run',
   'kb.wiki.schema.changed',
   'kb.wiki.access.changed',

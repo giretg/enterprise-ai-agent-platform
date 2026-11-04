@@ -558,6 +558,23 @@ async function main() {
     assert.equal(effectiveInboxStatus({ wikiStatus: null, wikiClaimExpiresAt: null }, now), null)
   })
 
+  await check('#1085 tálca: az újrafeldolgozási jelölés a várakozást reprocess-re, a lezártat nem változtatja', () => {
+    const now = new Date('2026-10-22T12:00:00Z')
+    const wikiReprocess = {
+      reason: 'x',
+      requestedAt: '2026-10-22T10:00:00.000Z',
+      requestedBy: { kind: 'human', userId: 'u' },
+      previousStatus: 'processed',
+      previousChangeSetId: null,
+    }
+    assert.equal(effectiveInboxStatus({ wikiStatus: 'pending', wikiClaimExpiresAt: null, wikiReprocess }, now), 'reprocess')
+    assert.equal(effectiveInboxStatus({ wikiStatus: 'in_progress', wikiClaimExpiresAt: new Date('2026-10-22T11:00:00Z'), wikiReprocess }, now), 'reprocess')
+    assert.equal(effectiveInboxStatus({ wikiStatus: 'in_progress', wikiClaimExpiresAt: new Date('2026-10-22T13:00:00Z'), wikiReprocess }, now), 'in_progress')
+    assert.equal(effectiveInboxStatus({ wikiStatus: 'processed', wikiClaimExpiresAt: null, wikiReprocess }, now), 'processed')
+    // Hibás sor nem számít jelölésnek.
+    assert.equal(effectiveInboxStatus({ wikiStatus: 'pending', wikiClaimExpiresAt: null, wikiReprocess: { reason: 'x' } }, now), 'pending')
+  })
+
   // --- 5. Privát KB audit: nincs oldalcím, path, fájlnév ---
   await check('audit: minden wiki-esemény regisztrált', () => {
     for (const action of [
