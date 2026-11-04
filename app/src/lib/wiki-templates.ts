@@ -8,7 +8,7 @@ export const WIKI_TEMPLATES = [
 export type WikiTemplateId = typeof WIKI_TEMPLATES[number]['id']
 
 /** A mostani sablonverzió; a korábbi alapszöveg (pl. 1) sem számít „módosítottnak”. */
-export const WIKI_TEMPLATE_VERSION = 2
+export const WIKI_TEMPLATE_VERSION = 3
 
 export function renderWikiTemplate(template: WikiTemplateId, language: KbLanguage, version: number = WIKI_TEMPLATE_VERSION): string {
   const en = language === 'en'
@@ -25,6 +25,19 @@ Another wiki: cite a raw source of another knowledge base you can read as {docum
 Emberi rögzítés: ha a beszélgetőtársad élőben közöl egy tényt (pl. egy megbeszélésen született döntést), és nincs róla dokumentum, a forrás {kind: "human_note", occasion: "<dátum> <alkalom>", participants?}. Hogy ki és mikor rögzítette, azt a szerver tölti ki; csak élő beszélgetésben működik, ütemezett vagy háttérfutásban nem. Ha van dokumentum (emlékeztető, e-mail, szerződés), inkább azt töltsd fel (kb_ingest), és arra hivatkozz.
 Másik wiki: egy másik, általad olvasható tudástár nyers forrására {documentId, connectorId} formában hivatkozz, az ottani oldalakra [[wiki:<wikiId>/<path>]] linkkel. Csak olyan wikit idézz, amelyet legalább annyian látnak, mint ezt; csak a kijelölteknek szóló vagy privát wikiből szélesebbe nem idézhetsz.
 `
+    : ''
+  // #1077 (3. verzió): ismeretlen dátum és a hosszú forrás végigolvasása.
+  const unknownDate = version >= 3
+    ? en
+      ? 'Ask when unknown; if nobody knows, write source_date: unknown. Never invent a date or source.'
+      : 'Ismeretlen dátumnál kérdezz; ha senki sem tudja, írd: source_date: unknown. Dátumot és forrást ne találj ki.'
+    : en
+      ? 'Ask when unknown; never invent a date or source.'
+      : 'Ismeretlen dátumnál kérdezz; dátumot és forrást ne találj ki.'
+  const fullRead = version >= 3
+    ? en
+      ? ' (keep reading while kb_get_document returns nextOffset; never finalize a partly read source)'
+      : ' (olvass tovább, amíg a kb_get_document nextOffset-et ad; részben olvasott forrást ne zárj le)'
     : ''
   const health = template === 'health-journal'
   const paths = health
@@ -53,10 +66,10 @@ ${paths}
 Paths use lowercase ASCII letters, digits, hyphens and slashes, ending in .md; transliterate names. index.md and log.md are server-generated; WIKI.md is human-edited.
 
 ## Frontmatter
-Each page supplies type, title, summary (one line), category, and frontmatter.sources: [{documentId, page?, section?, cell?}]. Every page except overview requires an existing raw source from this KB. Source pages require frontmatter.source_date (YYYY-MM-DD, the document date). Ask when unknown; never invent a date or source. Send the body separately from frontmatter. Link related pages with [[path]].
+Each page supplies type, title, summary (one line), category, and frontmatter.sources: [{documentId, page?, section?, cell?}]. Every page except overview requires an existing raw source from this KB. Source pages require frontmatter.source_date (YYYY-MM-DD, the document date). ${unknownDate} Send the body separately from frontmatter. Link related pages with [[path]].
 
 ## Workflow
-Read WIKI.md and index.md, read the full source, find existing pages, write the source summary and update related pages. Patch small additions; upsert new pages. Cite original document IDs and page numbers. Write each source immediately before reading the next; finalize its inbox item only after all updates. Keep both dated claims when sources contradict, mark ⚠️ contradiction, and use the newer source_date for current state when it supersedes the old claim. Preserve historical facts.
+Read WIKI.md and index.md, read the full source${fullRead}, find existing pages, write the source summary and update related pages. Patch small additions; upsert new pages. Cite original document IDs and page numbers. Write each source immediately before reading the next; finalize its inbox item only after all updates. Keep both dated claims when sources contradict, mark ⚠️ contradiction, and use the newer source_date for current state when it supersedes the old claim. Preserve historical facts.
 ${beyond}${health ? `
 ## Health journal
 A source is one report: include provider, clinician and kind (lab / visit / discharge / imaging). Labs pages record unit, reference range and a chronological table:
@@ -77,10 +90,10 @@ ${paths}
 Az útvonal kisbetűs ASCII betűt, számot, kötőjelet és perjelet tartalmazhat, .md végződéssel; az ékezetes nevet írd át. Az index.md és log.md szerver által generált; a WIKI.md ember által szerkesztett.
 
 ## Frontmatter
-Minden oldal mezői: type, title, summary (egy sor), category, frontmatter.sources: [{documentId, page?, section?, cell?}]. Az overview kivételével minden oldalhoz létező, ugyanebben a tudástárban tárolt nyers forrás kell. Forrásoldalon kötelező a frontmatter.source_date (YYYY-MM-DD, a dokumentum saját dátuma). Ismeretlen dátumnál kérdezz; dátumot és forrást ne találj ki. A törzset külön küldd a frontmattertől. Kapcsolatok: [[path]].
+Minden oldal mezői: type, title, summary (egy sor), category, frontmatter.sources: [{documentId, page?, section?, cell?}]. Az overview kivételével minden oldalhoz létező, ugyanebben a tudástárban tárolt nyers forrás kell. Forrásoldalon kötelező a frontmatter.source_date (YYYY-MM-DD, a dokumentum saját dátuma). ${unknownDate} A törzset külön küldd a frontmattertől. Kapcsolatok: [[path]].
 
 ## Munkafolyamat
-Olvasd a WIKI.md-t és index.md-t, a teljes forrást és a kapcsolódó meglévő oldalakat. Írd meg a forrás összefoglalóját és frissítsd az érintett oldalakat. Kis bővítéshez patch, új oldalhoz upsert. Hivatkozz az eredeti dokumentumra és oldalszámra. Forrásonként azonnal írj, mielőtt a következőt olvasod; a tálcatételt csak az összes frissítés után zárd le. Ellentmondásnál őrizd meg mindkét dátumozott állítást, jelöld: ⚠️ ellentmondás; az aktuális állapotnál az újabb source_date irányadó, ha felváltja a régit. A történeti tényeket őrizd meg.
+Olvasd a WIKI.md-t és index.md-t, a teljes forrást${fullRead} és a kapcsolódó meglévő oldalakat. Írd meg a forrás összefoglalóját és frissítsd az érintett oldalakat. Kis bővítéshez patch, új oldalhoz upsert. Hivatkozz az eredeti dokumentumra és oldalszámra. Forrásonként azonnal írj, mielőtt a következőt olvasod; a tálcatételt csak az összes frissítés után zárd le. Ellentmondásnál őrizd meg mindkét dátumozott állítást, jelöld: ⚠️ ellentmondás; az aktuális állapotnál az újabb source_date irányadó, ha felváltja a régit. A történeti tényeket őrizd meg.
 ${beyond}${health ? `
 ## Egészség-napló
 Egy forrás egy lelet: intézmény, orvos, típus (labor / vizit / zárójelentés / képalkotó). A sources/<dátum>-<intézmény>-<típus>.md nevet ékezet nélkül használd. A labs/<paraméter>.md oldalon mértékegység, referenciatartomány és időrendi táblázat szerepel:

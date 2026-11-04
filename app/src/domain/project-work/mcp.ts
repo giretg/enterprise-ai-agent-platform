@@ -4,6 +4,7 @@ import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/ag
 import { canOperateAgent, canReadPublishedAgent, type AgentDefinition } from '@/domain/agent-definition'
 import {
   checkDefinitionPin,
+  auditSafeDenialDetails,
   invalidArgsDetails,
   withDefinitionUpdatedNotice,
   type DefinitionPinDeps,
@@ -363,7 +364,7 @@ export async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
-    ...details,
+    ...auditSafeDenialDetails(details),
   }
   await writeAudit(deps.audit, {
     actorType: 'human',

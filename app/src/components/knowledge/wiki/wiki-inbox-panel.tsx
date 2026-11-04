@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import {
   listWikiInboxAction,
@@ -10,7 +11,7 @@ import {
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Badge, Card } from '@/components/ui/shell'
 import { errorKey } from './knowledge-bases-list'
-import { formatWhen } from './wiki-format'
+import { formatWhen, wikiHref } from './wiki-format'
 
 /** D12: fájlonként legfeljebb 25 MB (a szerver is ellenőrzi: KB_MAX_FILE_BYTES). */
 const MAX_FILE_BYTES = 25 * 1024 * 1024
@@ -39,6 +40,8 @@ export type WikiInboxData = {
     claimedBy: string | null
     submittedAt: string
     batchId: string | null
+    /** #1077: már vannak oldalak ebből a forrásból, de a tétel nincs lezárva. */
+    partlyWritten: { pageCount: number; pages: Array<{ path: string; title: string }> } | null
     stale: boolean
   }>
 }
@@ -243,6 +246,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
                 <span className="min-w-0 flex-1 truncate font-medium text-ink">{item.filename}</span>
                 <StatusBadge status={item.status} claimedBy={item.claimedBy} />
                 {item.stale ? <Badge tone="warning">{t('inbox.stale')}</Badge> : null}
+                {item.partlyWritten ? <Badge tone="warning">{t('inbox.partlyWritten')}</Badge> : null}
                 <span className="text-xs text-ink-faint">
                   {item.submittedBy.kind === 'agent'
                     ? t('inbox.byAgent', { name: item.submittedBy.name ?? '—' })
@@ -264,6 +268,20 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
                   >
                     {t('inbox.skip')}
                   </button>
+                ) : null}
+                {item.partlyWritten ? (
+                  <div className="w-full text-xs text-ink-faint" data-testid="wiki-inbox-partly-written">
+                    <p>{t('inbox.partlyWrittenPages', { count: item.partlyWritten.pageCount })}</p>
+                    <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                      {item.partlyWritten.pages.map((page) => (
+                        <li key={page.path}>
+                          <Link href={wikiHref(connectorId, { page: page.path })} className="text-coral-deep hover:underline">
+                            {page.title}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ) : null}
               </li>
             ))}

@@ -821,6 +821,7 @@
         }
       },
       "toc": {
+        "dateUnknown": "dátum ismeretlen",
         "title": "Tartalomjegyzék",
         "help": "A wiki oldalai kategóriánként. Az oldalakat az AI-munkatársak írják a tálcára került anyagokból.",
         "empty": "A wiki még üres. Tölts fel anyagot a Tálca fülön, majd kérd meg egy írási joggal rendelkező munkatársat, hogy dolgozza fel (pl. „Dolgozd fel a tálcát”).",
@@ -886,6 +887,8 @@
         "empty": "Nincs váró anyag. Ami ide kerül, azt egy írási joggal rendelkező munkatárs dolgozza fel.",
         "stale": "3 napja vár",
         "byAgent": "{name} (AI-munkatárs) küldte",
+        "partlyWritten": "részben megírva",
+        "partlyWrittenPages": "Ezek az oldalak már elkészültek ebből a forrásból, de a feldolgozás nincs lezárva ({count} oldal):",
         "waitingSince": "beküldve: {when}",
         "skip": "Kihagyás",
         "doneList": "Feldolgozott és kihagyott tételek ({count})",

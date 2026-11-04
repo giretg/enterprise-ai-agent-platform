@@ -29,6 +29,8 @@ import {
   GoogleDriveApiError,
 } from '../src/domain/connector-grant/google-drive-api-client'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
+import { auditSafeDenialDetails } from '../src/domain/enterprise-tools/definition-pin'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
 const TENANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -594,12 +596,22 @@ async function main() {
     assert.equal(parsePayload(result as { content: Array<{ text: string }> }).code, 'agent_stale')
   })
 
+  await check('denial audit drops client-only HTTP error text', () => {
+    const details = { httpCode: 'egress_blocked', reason: 'policy', message: 'client explanation', issues: [{ path: 'fileId', message: 'required' }] }
+    const safe = auditSafeDenialDetails(details)
+    assertAuditMetadataSafe(safe)
+    assert.deepEqual(safe, { httpCode: 'egress_blocked', issues: [{ path: 'fileId' }] })
+    assert.equal(details.message, 'client explanation')
+  })
+
   await check('invalid_args names the bad fields for the client and the audit', async () => {
     const audit: Array<{ action: string; metadata?: unknown }> = []
     const deps: EnterpriseToolDeps = {
       ...invokeDeps(),
       audit: {
         async append(data) {
+          // #1077: az éles audit-tár őre: a `message` kulcs itt kivételt dobna.
+          assertAuditMetadataSafe(data.metadata)
           audit.push({ action: data.action, metadata: data.metadata })
         },
       },
@@ -613,7 +625,7 @@ async function main() {
     const payload = parsePayload(result as { content: Array<{ text: string }> })
     assert.equal(payload.code, 'invalid_args')
     const issues = payload.issues as Array<{ path: string; message: string }>
-    assert.ok(issues.some((issue) => issue.path === 'fileId'))
+    assert.ok(issues.some((issue) => issue.path === 'fileId' && issue.message))
     const denied = audit.find((row) => row.action === 'enterprise.tool.denied')
     assert.ok(
       (denied?.metadata as { issues?: Array<{ path: string }> }).issues?.some((issue) => issue.path === 'fileId'),

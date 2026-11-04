@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
 import { wikiHref } from './wiki-format'
 
-type MenuPage = { path: string; title: string; summary: string }
+type MenuPage = { path: string; title: string; summary: string; dateUnknown?: boolean }
 type MenuGroup = {
   key: string
   /** `null` = kategória nélküli oldalak („Egyéb”). */
@@ -64,6 +64,7 @@ export async function WikiMenu({
               title={page.summary}
             >
               {page.title}
+              {page.dateUnknown ? <span className="ml-1 text-[10px] text-ink-faint">{t('dateUnknown')}</span> : null}
             </Link>
           </li>
         ))}

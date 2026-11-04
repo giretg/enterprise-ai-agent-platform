@@ -1,3 +1,5 @@
+import { wikiIndexLine } from './wiki-categories'
+export { isUnknownSourceDate, wikiPageDateUnknown, wikiIndexLine } from './wiki-categories'
 import { WIKI_TEMPLATE_VERSION, renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
 import { resolveKbLanguage } from './kb-language'
 import type { WikiPageMeta } from './wiki-metadata'
@@ -355,6 +357,7 @@ export type WikiIndexPage = {
   summary: string
   category: string | null
   type: string
+  frontmatter?: unknown
 }
 
 export const WIKI_UNCATEGORIZED = 'Uncategorized'
@@ -376,10 +379,29 @@ export function renderWikiIndex(pages: WikiIndexPage[]): string {
   for (const group of groupWikiIndex(pages)) {
     lines.push('', `## ${group.category}`, '')
     for (const page of group.pages) {
-      lines.push(`- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}: ${page.summary}`)
+      lines.push(wikiIndexLine(page))
     }
   }
   return `${lines.join('\n')}\n`
+}
+
+/** #1077: tételenként ennyi oldal megy a tálca-válaszba (a `pageCount` a teljes szám). */
+export const WIKI_PARTLY_WRITTEN_MAX_PAGES = 20
+
+export type WikiPartlyWritten = { pageCount: number; pages: Array<{ path: string; title: string }> }
+
+/** A még nyitott tálca-tétel forrására hivatkozó oldalak dokumentumonként. */
+export function partlyWrittenByDocument(
+  rows: Array<{ documentId: string; path: string; title: string }>,
+): Map<string, WikiPartlyWritten> {
+  const out = new Map<string, WikiPartlyWritten>()
+  for (const { documentId, path, title } of rows) {
+    const entry = out.get(documentId) ?? { pageCount: 0, pages: [] }
+    entry.pageCount++
+    if (entry.pages.length < WIKI_PARTLY_WRITTEN_MAX_PAGES) entry.pages.push({ path, title })
+    out.set(documentId, entry)
+  }
+  return out
 }
 
 export type WikiLogRow = {

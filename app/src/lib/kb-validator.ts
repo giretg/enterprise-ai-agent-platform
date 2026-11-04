@@ -11,6 +11,7 @@ import {
   isValidWikiPath,
   renderWikiPageMarkdown,
   type WikiPageState,
+  isUnknownSourceDate,
 } from './kb-wiki'
 
 /**
@@ -294,12 +295,12 @@ export function validateWikiPages(input: {
     if (!state.body.trim()) add('error', 'empty_page', path, 'body is empty.')
     if (state.type === 'source') {
       const sourceDate = state.frontmatter.source_date
-      if (typeof sourceDate !== 'string' || !SOURCE_DATE_RE.test(sourceDate.trim())) {
+      if (!isUnknownSourceDate(sourceDate) && (typeof sourceDate !== 'string' || !SOURCE_DATE_RE.test(sourceDate.trim()))) {
         add(
           'error',
           'missing_source_date',
           path,
-          'type: source pages need frontmatter.source_date (YYYY, YYYY-MM, or YYYY-MM-DD) — the document\'s own date, not the upload date.',
+          'type: source pages need frontmatter.source_date (YYYY, YYYY-MM, or YYYY-MM-DD) — the document\'s own date, not the upload date. If nobody knows it, write "unknown"; never invent a date.',
         )
       }
     }

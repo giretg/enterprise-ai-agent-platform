@@ -312,6 +312,23 @@ export class PostgresWikiRepository implements WikiRepository {
     return rows.reverse()
   }
 
+  async listPagesCitingDocuments(connectorIds: string[], documentIds: string[]) {
+    if (connectorIds.length === 0 || documentIds.length === 0) return []
+    const rows = await prisma.$queryRaw<Array<{ document_id: string; path: string; title: string }>>(Prisma.sql`
+      SELECT DISTINCT ref->>'documentId' AS document_id, p.path, p.title
+      FROM wiki_pages p
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(p.source_refs) = 'array' THEN p.source_refs ELSE '[]'::jsonb END
+      ) AS ref
+      WHERE p.connector_id = ANY(${connectorIds}::uuid[])
+        AND p.status = CAST('published' AS "WikiPageStatus")
+        AND ref->>'documentId' = ANY(${documentIds}::text[])
+        AND (ref->>'connectorId' IS NULL OR ref->>'connectorId' = p.connector_id::text)
+      ORDER BY p.path
+    `)
+    return rows.map((row) => ({ documentId: row.document_id, path: row.path, title: row.title }))
+  }
+
   async listInbox(
     connectorIds: string[],
     input: { now: Date; batchId?: string; limit?: number },
