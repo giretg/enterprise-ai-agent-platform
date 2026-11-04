@@ -28,8 +28,28 @@ import {
   type PlanCheck,
 } from './plan'
 import { profileWorkbook, type SheetProfile, type WorkbookProfile } from './profiler'
-import type { WarehouseProvisioner } from './provisioner'
-import { buildQuerySpec, compileQuery, QueryError, type QuerySpec } from './query'
+import { WAREHOUSE_INTERNAL_VERSION, type WarehouseProvisioner } from './provisioner'
+import { buildQuerySpec, compileQuery, QUERY_MAX_LIMIT, QueryError, type QuerySpec } from './query'
+import {
+  buildSnapshots,
+  checkSavedQueryParams,
+  describeSavedQuery,
+  pinFields,
+  requiredParams,
+  resolveSavedQuery,
+  savedQueryColumnLabel,
+  SAVED_QUERY_CHANGE_NOTE_MAX,
+  SAVED_QUERY_DESCRIPTION_MAX,
+  SAVED_QUERY_MAX_PER_AGENT,
+  SAVED_QUERY_NAME,
+  savedQueryHash,
+  savedQueryParamsSchema,
+  savedQueryStatus,
+  type SavedQueryParam,
+  type SavedQueryStatusReport,
+} from './saved-query'
+import * as savedQueries from './saved-query-store'
+import type { SavedQueryRecord } from './saved-query-store'
 import { datasetTableName, qi, qt, SQL_TYPE, warehouseSchemaName, type SqlExecutor, type WarehouseDatabase } from './sql'
 import * as store from './store'
 import type { ExceptionInput, ImportRecord } from './store'
@@ -133,6 +153,59 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/** Adattípus-hiba a Postgrestől (22xxx): a paraméter értéke nem illik a mezőhöz — a hívó hibája, nem üzemzavar. */
+function isDataValueError(error: unknown): boolean {
+  const code = (error as { meta?: { code?: unknown } } | null)?.meta?.code
+  return typeof code === 'string' && code.startsWith('22')
+}
+
+function parseJsonArg(raw: string | undefined, code: string): unknown {
+  if (raw === undefined) return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    throw new WarehouseError(code, { detail: 'not valid JSON' })
+  }
+}
+
+function parseParamArgs(raw: string | Record<string, unknown> | undefined): Record<string, unknown> {
+  const value = typeof raw === 'string' ? parseJsonArg(raw, 'invalid_param') : raw
+  if (value === undefined) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WarehouseError('invalid_param', { detail: 'params must be a JSON object' })
+  return value as Record<string, unknown>
+}
+
+function withQueryErrors<T>(fn: () => T): T {
+  try {
+    return fn()
+  } catch (error) {
+    if (error instanceof QueryError) throw new WarehouseError(error.code, { detail: error.detail })
+    throw error
+  }
+}
+
+export type SavedQueryView = {
+  queryId: string
+  name: string
+  description: string
+  ownerAgentId: string
+  version: number
+  dataset: string
+  summary: string
+  params: SavedQueryParam[]
+  savedAt: string
+  firstSavedAt: string
+  reviewedAt: string | null
+  lastRunAt: string | null
+  runCount: number
+  changeNote: string | null
+  schemaStatus: SavedQueryStatusReport['status']
+  datasets: SavedQueryStatusReport['datasets']
+  newFields: SavedQueryStatusReport['newFields']
+  changedFields: SavedQueryStatusReport['changedFields']
+  error?: SavedQueryStatusReport['error']
+}
+
 function aliasKey(value: string, by: 'key' | 'name'): string {
   return by === 'key' ? value.trim() : normalizeName(value)
 }
@@ -154,7 +227,21 @@ export class WarehouseService {
     // A séma neve mindig a szerveroldali tenantId-ből képződik (AC8).
     const expected = warehouseSchemaName(actor.tenantId)
     if (record.schemaName !== expected) throw new WarehouseError('warehouse_not_ready', { status: 'inconsistent' })
+    if ((record.internalVersion ?? 0) < WAREHOUSE_INTERNAL_VERSION) await this.upgradeSchema(actor, expected)
     return expected
+  }
+
+  /** A már aktív cég belső táblái kézi újraaktiválás nélkül frissülnek; a DDL idempotens és sorosított. */
+  private async upgradeSchema(actor: WarehouseActor, schema: string) {
+    let internalVersion: number
+    try {
+      const resources = await this.deps.provisioner.provision(schema)
+      await this.deps.registry.update(actor.tenantId, { internalVersion: resources.internalVersion })
+      internalVersion = resources.internalVersion
+    } catch {
+      throw new WarehouseError('warehouse_not_ready', { status: 'upgrade_failed' })
+    }
+    await this.audit(actor, 'warehouse.upgraded', null, { internalVersion })
   }
 
   private async audit(actor: WarehouseActor, action: string, targetId: string | null, metadata: Record<string, unknown>, denied = false) {
@@ -914,23 +1001,251 @@ export class WarehouseService {
 
   private async runSpec(schema: string, spec: QuerySpec, statementTimeoutMs = 10_000) {
     return this.deps.db.run(
-      async (sql) => {
-        const catalog = await store.loadCatalog(sql, schema)
-        let compiled
-        try {
-          compiled = compileQuery(schema, spec, catalog)
-        } catch (error) {
-          if (error instanceof QueryError) throw new WarehouseError(error.code, { detail: error.detail })
-          throw error
-        }
-        const raw = await sql.query<{ r: Record<string, unknown> }>(compiled.sql, compiled.params)
-        const hasMore = raw.length > spec.limit
-        const rows = raw.slice(0, spec.limit).map(({ r }) => compiled.columns.map((_, i) => r[`c${i}`] ?? null))
-        const provenance = await this.provenance(sql, schema, catalog, spec)
-        return { columns: compiled.columns, rows, hasMore, nextOffset: hasMore ? spec.offset + spec.limit : null, ...provenance }
-      },
+      async (sql) => this.executeSpec(sql, schema, spec, await store.loadCatalog(sql, schema)),
       { readOnly: true, statementTimeoutMs, timeoutMs: statementTimeoutMs + 5_000 },
     )
+  }
+
+  private async executeSpec(sql: SqlExecutor, schema: string, spec: QuerySpec, catalog: Map<string, CatalogDataset>) {
+    const compiled = withQueryErrors(() => compileQuery(schema, spec, catalog))
+    const raw = await sql.query<{ r: Record<string, unknown> }>(compiled.sql, compiled.params)
+    const hasMore = raw.length > spec.limit
+    const rows = raw.slice(0, spec.limit).map(({ r }) => compiled.columns.map((_, i) => r[`c${i}`] ?? null))
+    const provenance = await this.provenance(sql, schema, catalog, spec)
+    return { columns: compiled.columns, rows, hasMore, nextOffset: hasMore ? spec.offset + spec.limit : null, ...provenance }
+  }
+
+  // ── Mentett lekérdezések (#1083) ──────────────────────────────────────────
+
+  /** Az agent csak a sajátját látja; az ember (Control Plane) a cég összeset. */
+  private savedQueryOwner(actor: WarehouseActor): string | null {
+    if (actor.channel === 'ui') return null
+    if (!actor.agentId) throw new WarehouseError('saved_query_not_found')
+    return actor.agentId
+  }
+
+  private savedQueryView(record: SavedQueryRecord, schema: string, catalog: Map<string, CatalogDataset>): SavedQueryView {
+    const report = savedQueryStatus({ schema, spec: record.spec, params: record.params, snapshots: record.snapshots, catalog, now: new Date() })
+    return {
+      queryId: record.id,
+      name: record.name,
+      description: record.description,
+      ownerAgentId: record.ownerAgentId,
+      version: record.version,
+      dataset: record.spec.dataset,
+      summary: describeSavedQuery(record.spec, catalog),
+      params: record.params,
+      savedAt: record.versionCreatedAt,
+      firstSavedAt: record.createdAt,
+      reviewedAt: record.reviewedAt,
+      lastRunAt: record.lastRunAt,
+      runCount: record.runCount,
+      changeNote: record.changeNote,
+      schemaStatus: report.status,
+      datasets: report.datasets,
+      newFields: report.newFields,
+      changedFields: report.changedFields,
+      ...(report.error ? { error: report.error } : {}),
+    }
+  }
+
+  /**
+   * Mentés: új lekérdezés vagy új verzió (`queryId`). Mentés előtt lefut, ami nem fut,
+   * az nem kerül be. Azonos tartalom újramentése nem új verzió, csak a lenyomatot és a
+   * `reviewedAt`-et frissíti (§2) — ezért a kérés ismétlése is biztonságos.
+   */
+  async saveQuery(
+    actor: WarehouseActor,
+    input: {
+      queryId?: string
+      name?: string
+      description: string
+      query: Parameters<typeof buildQuerySpec>[0]
+      params?: string
+      testParams?: string
+      changeNote?: string
+    },
+  ) {
+    this.require(actor, 'read')
+    if (actor.channel !== 'mcp' || !actor.agentId) throw new WarehouseError('warehouse_permission_denied', { needed: 'agent' })
+    const agentId = actor.agentId
+    const description = input.description.trim()
+    if (!description || description.length > SAVED_QUERY_DESCRIPTION_MAX) throw new WarehouseError('invalid_args', { detail: `description must be 1-${SAVED_QUERY_DESCRIPTION_MAX} characters` })
+    const changeNote = input.changeNote?.trim() || null
+    if (changeNote && changeNote.length > SAVED_QUERY_CHANGE_NOTE_MAX) throw new WarehouseError('invalid_args', { detail: 'changeNote is too long' })
+    if (!input.queryId && !input.name) throw new WarehouseError('invalid_args', { detail: 'name is required for a new saved query' })
+    if (input.name && !SAVED_QUERY_NAME.test(input.name)) throw new WarehouseError('invalid_args', { detail: 'name must look like monthly_revenue_by_customer' })
+    const parsedParams = savedQueryParamsSchema.safeParse(parseJsonArg(input.params, 'invalid_params') ?? [])
+    if (!parsedParams.success) throw new WarehouseError('invalid_params', { detail: parsedParams.error.issues[0]?.message })
+    const params = parsedParams.data
+    const testArgs = parseParamArgs(input.testParams)
+    const requested = withQueryErrors(() => buildQuerySpec(input.query))
+    const schema = await this.schemaFor(actor)
+
+    const outcome = await this.deps.db.run(
+      async (sql) => {
+        const catalog = await store.loadCatalog(sql, schema)
+        const spec = pinFields(requested, catalog)
+        withQueryErrors(() => checkSavedQueryParams(spec, params, catalog))
+        const missing = requiredParams(params).filter((name) => testArgs[name] === undefined)
+        if (missing.length > 0) throw new WarehouseError('test_params_required', { params: missing })
+        const sampleSpec = { ...withQueryErrors(() => resolveSavedQuery(spec, params, testArgs, new Date())), limit: 5, offset: 0 }
+        const sample = await this.executeSpec(sql, schema, sampleSpec, catalog)
+        const contentHash = savedQueryHash({ description, spec, params })
+        const snapshots = buildSnapshots(spec, catalog)
+        const version = { description, spec, params, contentHash, snapshots, changeNote, userId: actor.userId }
+
+        const existing = input.queryId
+          ? await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId: agentId, forUpdate: true })
+          : await savedQueries.findSavedQuery(sql, schema, { name: input.name!, ownerAgentId: agentId, forUpdate: true })
+        if (input.queryId && (!existing || existing.status !== 'active')) throw new WarehouseError('saved_query_not_found')
+        if (existing && input.queryId && input.name && input.name !== existing.name) throw new WarehouseError('saved_query_name_immutable', { name: existing.name })
+        // Más tartalom ugyanazon a néven: ne írjuk felül véletlenül a kész lekérdezést.
+        if (existing && !input.queryId && existing.contentHash !== contentHash) throw new WarehouseError('saved_query_name_taken', { queryId: existing.id })
+
+        let change: 'created' | 'new_version' | 'reviewed'
+        let queryId: string
+        if (!existing) {
+          if ((await savedQueries.countActive(sql, schema, agentId)) >= SAVED_QUERY_MAX_PER_AGENT) throw new WarehouseError('saved_query_limit', { limit: SAVED_QUERY_MAX_PER_AGENT })
+          queryId = randomUUID()
+          if (!(await savedQueries.insertSavedQuery(sql, schema, { id: queryId, ownerAgentId: agentId, name: input.name!, ...version }))) {
+            throw new WarehouseError('saved_query_conflict')
+          }
+          change = 'created'
+        } else if (existing.contentHash === contentHash) {
+          queryId = existing.id
+          await savedQueries.reviewVersion(sql, schema, { id: existing.id, version: existing.version, snapshots, userId: actor.userId })
+          change = 'reviewed'
+        } else {
+          queryId = existing.id
+          await savedQueries.addVersion(sql, schema, { id: existing.id, version: existing.version + 1, ...version })
+          change = 'new_version'
+        }
+        const saved = await savedQueries.findSavedQuery(sql, schema, { id: queryId, ownerAgentId: agentId })
+        return {
+          change,
+          query: this.savedQueryView(saved!, schema, catalog),
+          sample: { columns: sample.columns, rows: sample.rows, hasMore: sample.hasMore },
+          warnings: sample.warnings,
+        }
+      },
+      { statementTimeoutMs: 10_000, timeoutMs: 20_000 },
+    ).catch((error: unknown) => {
+      if (isDataValueError(error)) throw new WarehouseError('invalid_param_value')
+      throw error
+    })
+    await this.audit(actor, `warehouse.saved_query.${outcome.change === 'reviewed' ? 'reviewed' : 'saved'}`, outcome.query.queryId, {
+      version: outcome.query.version,
+      datasetKey: outcome.query.dataset,
+      change: outcome.change,
+    })
+    return outcome
+  }
+
+  async listSavedQueries(actor: WarehouseActor, filter: { query?: string; dataset?: string; limit?: number } = {}): Promise<SavedQueryView[]> {
+    this.require(actor, 'read')
+    const ownerAgentId = this.savedQueryOwner(actor)
+    const schema = await this.schemaFor(actor)
+    return this.deps.db.run(
+      async (sql) => {
+        const catalog = await store.loadCatalog(sql, schema)
+        const rows = await savedQueries.listSavedQueries(sql, schema, { ownerAgentId, query: filter.query, dataset: filter.dataset, limit: filter.limit ?? 50 })
+        return rows.map((row) => this.savedQueryView(row, schema, catalog))
+      },
+      { readOnly: true, statementTimeoutMs: 10_000, timeoutMs: 15_000 },
+    )
+  }
+
+  /** Egy lekérdezés teljes leírója; `version`-nel egy régi verzió is lekérhető. */
+  async getSavedQuery(actor: WarehouseActor, input: { queryId: string; version?: number }) {
+    this.require(actor, 'read')
+    const ownerAgentId = this.savedQueryOwner(actor)
+    const schema = await this.schemaFor(actor)
+    return this.deps.db.run(
+      async (sql) => {
+        const catalog = await store.loadCatalog(sql, schema)
+        const record = await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId, version: input.version })
+        if (!record || record.status !== 'active') throw new WarehouseError('saved_query_not_found')
+        return {
+          query: this.savedQueryView(record, schema, catalog),
+          spec: record.spec,
+          currentVersion: record.currentVersion,
+          versions: await savedQueries.listVersions(sql, schema, record.id),
+        }
+      },
+      { readOnly: true, statementTimeoutMs: 10_000, timeoutMs: 15_000 },
+    )
+  }
+
+  /** Futtatás: `broken` állapotban nem fut; `meaning_changed` lefut, de figyelmeztet (§2). */
+  async runSavedQuery(
+    actor: WarehouseActor,
+    input: { queryId?: string; name?: string; params?: string | Record<string, unknown>; limit?: number; offset?: number; trial?: boolean },
+  ) {
+    this.require(actor, 'read')
+    const ownerAgentId = this.savedQueryOwner(actor)
+    // A név agentenként egyedi, ezért név szerint csak agent futtathat.
+    if (!input.queryId && (!input.name || !ownerAgentId)) throw new WarehouseError('invalid_args', { detail: 'pass queryId or name' })
+    const args = parseParamArgs(input.params)
+    const schema = await this.schemaFor(actor)
+    const outcome = await this.deps.db.run(
+      async (sql) => {
+        const catalog = await store.loadCatalog(sql, schema)
+        const record = input.queryId
+          ? await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId })
+          : await savedQueries.findSavedQuery(sql, schema, { name: input.name!, ownerAgentId: ownerAgentId! })
+        if (!record || record.status !== 'active') throw new WarehouseError('saved_query_not_found')
+        const view = this.savedQueryView(record, schema, catalog)
+        if (view.schemaStatus === 'broken') throw new WarehouseError('saved_query_broken', { queryId: record.id, error: view.error })
+        const resolved = withQueryErrors(() => resolveSavedQuery(record.spec, record.params, args, new Date()))
+        const spec: QuerySpec = {
+          ...resolved,
+          limit: Math.max(1, Math.min(QUERY_MAX_LIMIT, input.limit ?? resolved.limit)),
+          offset: Math.max(0, Math.min(1_000_000, input.offset ?? 0)),
+        }
+        const result = await this.executeSpec(sql, schema, spec, catalog)
+        const warnings: Array<{ code: string; dataset: string; detail?: unknown }> = [...result.warnings]
+        for (const changed of view.changedFields) warnings.push({ code: 'saved_query_meaning_changed', dataset: changed.dataset, detail: { field: changed.field } })
+        for (const added of view.newFields) warnings.push({ code: 'saved_query_dataset_extended', dataset: added.dataset, detail: { field: added.field } })
+        return { ...result, columnLabels: result.columns.map((column) => savedQueryColumnLabel(spec, catalog, column)), warnings, savedQuery: view }
+      },
+      { readOnly: true, statementTimeoutMs: 10_000, timeoutMs: 15_000 },
+    ).catch((error: unknown) => {
+      if (isDataValueError(error)) throw new WarehouseError('invalid_param_value')
+      throw error
+    })
+    if (!input.trial) {
+      // A futás-számláló csak tájékoztató: a hibája ne vigye el a kész eredményt.
+      await this.deps.db
+        .run((sql) => savedQueries.recordRun(sql, schema, outcome.savedQuery.queryId), { statementTimeoutMs: 5_000, timeoutMs: 8_000 })
+        .catch(() => undefined)
+    }
+    await this.audit(actor, 'warehouse.saved_query.run', outcome.savedQuery.queryId, {
+      version: outcome.savedQuery.version,
+      datasetKey: outcome.savedQuery.dataset,
+      rows: outcome.rows.length,
+      schemaStatus: outcome.savedQuery.schemaStatus,
+      ...(input.trial ? { trial: true } : {}),
+    })
+    return outcome
+  }
+
+  async archiveSavedQuery(actor: WarehouseActor, input: { queryId: string }) {
+    this.require(actor, actor.channel === 'ui' ? 'import' : 'read')
+    const ownerAgentId = this.savedQueryOwner(actor)
+    const schema = await this.schemaFor(actor)
+    const archived = await this.deps.db.run(
+      async (sql) => {
+        const record = await savedQueries.findSavedQuery(sql, schema, { id: input.queryId, ownerAgentId, forUpdate: true })
+        if (!record) throw new WarehouseError('saved_query_not_found')
+        if (record.status === 'archived') return false
+        await savedQueries.archiveSavedQuery(sql, schema, record.id)
+        return true
+      },
+      { statementTimeoutMs: 5_000, timeoutMs: 8_000 },
+    )
+    if (archived) await this.audit(actor, 'warehouse.saved_query.archived', input.queryId, {})
+    return { queryId: input.queryId, archived: true }
   }
 
   /** §7: forrás, frissesség és figyelmeztetés hiányos összerendelésre / elavult forrásra / nem igazolt definícióra. */

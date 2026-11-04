@@ -90,6 +90,20 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   // #967 mini appok
   // #984 AI-adattárház
   warehouse_not_ready: 'The company data warehouse is not activated yet — an admin can turn it on at activateUrl',
+  // #1083 mentett lekérdezések
+  saved_query_not_found: 'Saved query not found — check it with warehouse.list_saved_queries',
+  saved_query_name_taken: 'You already have a different saved query with this name (see queryId) — pass queryId to save a new version, or pick another name',
+  saved_query_name_immutable: 'The name of a saved query cannot be changed (see name) — archive it and save a new one if needed',
+  saved_query_limit: 'This agent reached the saved query limit (see limit) — archive the ones no longer needed with warehouse.archive_saved_query',
+  saved_query_conflict: 'The saved query was changed at the same time — check warehouse.list_saved_queries and try again',
+  saved_query_broken: 'This saved query no longer fits the data and cannot run (see error) — fix it with warehouse.save_query and queryId',
+  test_params_required: 'These parameters have no default (see params) — pass values for the test run in testParams',
+  invalid_params: 'The parameter definition is invalid (see detail) — nothing was saved; fix it and try again',
+  invalid_param: 'A parameter value is invalid (see detail) — check types with warehouse.list_saved_queries',
+  unknown_param: 'Unknown parameter (see detail) — check the parameters with warehouse.list_saved_queries',
+  missing_param: 'A required parameter has no value (see detail) — pass it in params',
+  invalid_param_value: 'A parameter value does not fit the field it filters — correct the value and try again',
+  invalid_group_bucket: 'Time buckets work on date fields only: day, week, month, quarter, year (see detail)',
   warehouse_agent_disabled: 'This agent has no access to the company data warehouse — an admin can enable it at settingsUrl',
   warehouse_agent_read_only: 'This agent may only read the data warehouse, not load data — an admin can change it at settingsUrl',
   warehouse_permission_denied: 'Your role does not allow this data warehouse action (see needed)',

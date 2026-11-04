@@ -296,6 +296,22 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Adatkészlet exportja',
     description: 'Egy adatkészlet kimásolása CSV-ként.',
   },
+  'warehouse.save_query': {
+    label: 'Lekérdezés mentése',
+    description: 'A munkatárs elment egy működő lekérdezést leírással, hogy legközelebb ne kelljen újraírnia. Adat nem változik.',
+  },
+  'warehouse.list_saved_queries': {
+    label: 'Mentett lekérdezések',
+    description: 'A munkatárs saját mentett lekérdezései, és hogy illenek-e még az adatokhoz.',
+  },
+  'warehouse.run_saved_query': {
+    label: 'Mentett lekérdezés futtatása',
+    description: 'Egy kész lekérdezés futtatása az aktuális adatokon, forrással és frissességgel együtt.',
+  },
+  'warehouse.archive_saved_query': {
+    label: 'Mentett lekérdezés archiválása',
+    description: 'A már nem használt lekérdezés kikerül a munkatárs listájából. Adat nem változik.',
+  },
 
   // Sandbox verziókezelés
   'sandbox.commit': {

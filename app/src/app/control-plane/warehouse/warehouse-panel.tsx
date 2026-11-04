@@ -26,6 +26,7 @@ import {
   WAREHOUSE_UPLOAD_NEED_FILE,
   WAREHOUSE_UPLOAD_NEED_ROLE,
 } from '@/lib/warehouse-labels'
+import { SavedQueriesCard } from './saved-queries-card'
 
 type PageData = Extract<Awaited<ReturnType<typeof loadWarehousePageAction>>, { success: true }>['data']
 type ReadyData = Extract<PageData, { ready: true }>
@@ -146,6 +147,14 @@ export function WarehousePanel({ data, selectedImportId }: { data: PageData; sel
       {data.selected ? <ImportDetail data={data} pending={pending} act={act} /> : selectedImportId ? <p className="text-sm text-ink-soft">Ez a betöltés nem található.</p> : null}
       <ExceptionsCard data={data} pending={pending} act={act} />
       <DatasetsCard data={data} pending={pending} act={act} />
+      <SavedQueriesCard
+        queries={data.savedQueries}
+        agentNames={data.agentNames}
+        datasetTitles={Object.fromEntries(data.datasets.map((dataset) => [dataset.key, dataset.title]))}
+        canArchive={data.permissions.import}
+        pending={pending}
+        act={act}
+      />
       <ImportsCard data={data} pending={pending} act={act} selectedImportId={selectedImportId} />
     </div>
   )

@@ -28,6 +28,8 @@ const INBOUND_MAIL_ALLOWED_TOOLS = new Set<string>([
   'warehouse.get_import_status',
   'warehouse.query_dataset',
   'warehouse.export_dataset',
+  'warehouse.list_saved_queries',
+  'warehouse.run_saved_query',
   'platform.gateway_operation.get',
   'google_drive_search',
   'google_drive_read_file',

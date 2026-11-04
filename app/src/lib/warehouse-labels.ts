@@ -26,10 +26,20 @@ const MESSAGES: Record<string, string> = {
   definitions_not_confirmed: 'A mezők üzleti jelentését még nem erősítették meg.',
   open_exceptions: 'Hiányzó kapcsolatok vagy más tisztázandó tételek vannak az adatokban.',
   stale_source: 'Az adatok több mint 90 napja frissültek; ellenőrizd, hogy még aktuálisak-e.',
+  saved_query_meaning_changed: 'A lekérdezés egyik mezőjének jelentése megváltozott a mentés óta; ellenőrizd az eredményt.',
+  saved_query_dataset_extended: 'Az adatkészlet új mezőt kapott a mentés óta; az eredmény továbbra is helyes.',
 }
 
 export function warehouseMessage(code: string): string {
   return MESSAGES[code] ?? 'Az adat vagy a betöltési terv ellenőrzést igényel.'
+}
+
+/** Mentett lekérdezés állapota (#1083 §2): felirat, tooltip, jelvény-szín. */
+export const SAVED_QUERY_STATUS: Record<string, { label: string; hint: string; tone: 'success' | 'neutral' | 'warning' | 'danger' }> = {
+  current: { label: 'Naprakész', hint: 'A lekérdezés mezői a mentés óta nem változtak.', tone: 'success' },
+  dataset_extended: { label: 'Az adatkészlet bővült', hint: 'Új mező jelent meg a mentés óta. Az eredmény továbbra is helyes, de érdemes megnézni, kell-e az új mező.', tone: 'neutral' },
+  meaning_changed: { label: 'Mezőjelentés változott', hint: 'Egy használt mező jelentése, pénzneme vagy mértékegysége megváltozott. A lekérdezés lefut, de ellenőrizd az eredményt.', tone: 'warning' },
+  broken: { label: 'Nem futtatható', hint: 'A lekérdezés már nem illik az adatokhoz, javítani kell. Kérd meg rá az AI munkatársat.', tone: 'danger' },
 }
 
 const FIELD_TYPES: Record<string, string> = {

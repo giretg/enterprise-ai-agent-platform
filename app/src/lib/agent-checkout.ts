@@ -41,6 +41,11 @@ const HERMES_WAREHOUSE_READ_TOOLS = [
   'warehouse.get_import_status',
   'warehouse.query_dataset',
   'warehouse.export_dataset',
+  'warehouse.list_saved_queries',
+  'warehouse.run_saved_query',
+  // #1083: a munkatárs saját lekérdezései — üzleti adatot nem változtatnak, ezért „Csak olvasás” szinten is.
+  'warehouse.save_query',
+  'warehouse.archive_saved_query',
 ]
 const HERMES_WAREHOUSE_IMPORT_TOOLS = [
   'warehouse.prepare_import',
