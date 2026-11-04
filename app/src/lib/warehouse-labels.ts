@@ -37,9 +37,9 @@ export function warehouseMessage(code: string): string {
 /** Mentett lekérdezés állapota (#1083 §2): felirat, tooltip, jelvény-szín. */
 export const SAVED_QUERY_STATUS: Record<string, { label: string; hint: string; tone: 'success' | 'neutral' | 'warning' | 'danger' }> = {
   current: { label: 'Naprakész', hint: 'A lekérdezés mezői a mentés óta nem változtak.', tone: 'success' },
-  dataset_extended: { label: 'Az adatkészlet bővült', hint: 'Új mező jelent meg a mentés óta. Az eredmény továbbra is helyes, de érdemes megnézni, kell-e az új mező.', tone: 'neutral' },
-  meaning_changed: { label: 'Mezőjelentés változott', hint: 'Egy használt mező jelentése, pénzneme vagy mértékegysége megváltozott. A lekérdezés lefut, de ellenőrizd az eredményt.', tone: 'warning' },
-  broken: { label: 'Nem futtatható', hint: 'A lekérdezés már nem illik az adatokhoz, javítani kell. Kérd meg rá az AI munkatársat.', tone: 'danger' },
+  dataset_extended: { label: 'Az adatkészlet bővült a mentés óta', hint: 'Új mező jelent meg a mentés óta. Az eredmény továbbra is helyes, de érdemes megnézni, kell-e az új mező.', tone: 'neutral' },
+  meaning_changed: { label: 'Egy használt mező jelentése megváltozott, ellenőrizd az eredményt', hint: 'Egy használt mező jelentése, pénzneme vagy mértékegysége megváltozott. A lekérdezés lefut, de ellenőrizd az eredményt.', tone: 'warning' },
+  broken: { label: 'Nem futtatható: javítani kell', hint: 'A lekérdezés már nem illik az adatokhoz, javítani kell. Kérd meg rá az AI munkatársat.', tone: 'danger' },
 }
 
 const FIELD_TYPES: Record<string, string> = {

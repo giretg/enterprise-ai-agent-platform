@@ -652,6 +652,8 @@ async function main() {
   await check('Lejárt push vagy megújítási hiba esetén működik a tartalék polling', async () => {
     const h = harness('google')
     const now = new Date()
+    // A harness órája áll: a `now`-hoz kötjük, különben lassú gépen a „lejárt” időpont még a jövőbe esik.
+    h.setNow(now)
     h.respond(() => ({ messages: [] }))
     await h.watcher.poll(mailbox('google'))
     h.watches.set(CONNECTOR, { ...h.watches.get(CONNECTOR)!, externalId: 'gmail-watch', expiresAt: new Date(now.getTime() - 1), lastPolledAt: null })

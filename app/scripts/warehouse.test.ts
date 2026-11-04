@@ -678,14 +678,15 @@ async function main() {
     extended.set('rendelesek', { ...qOrders, structureVersion: 2, structureChangedAt: '2026-11-04T00:00:00.000Z', fields: [...qOrders.fields, qField('brutto')] })
     const ext = status(extended)
     assert.equal(ext.status, 'dataset_extended')
-    assert.deepEqual(ext.newFields, [{ dataset: 'rendelesek', field: 'brutto' }])
+    assert.deepEqual(ext.newFields, [{ dataset: 'rendelesek', field: 'brutto', label: 'brutto' }])
     assert.equal(ext.datasets.find((d) => d.key === 'rendelesek')?.structureChangedAt, '2026-11-04T00:00:00.000Z')
     // AC10: nem megerősített mező pénzneme átíródik, a structure_version NEM nő.
     const currency = new Map(qCatalog())
     currency.set('rendelesek', { ...qOrders, fields: qOrders.fields.map((f) => (f.name === 'netto' ? { ...f, currency: 'EUR' } : f)) })
     const changed = status(currency)
     assert.equal(changed.status, 'meaning_changed')
-    assert.deepEqual(changed.changedFields, [{ dataset: 'rendelesek', field: 'netto' }])
+    // A felület a feliratot mutatja, nem a technikai mezőnevet (AC22).
+    assert.deepEqual(changed.changedFields, [{ dataset: 'rendelesek', field: 'netto', label: 'Nettó összeg' }])
     // Nem használt mező jelentése nem számít.
     const unused = new Map(qCatalog())
     unused.set('rendelesek', { ...qOrders, fields: qOrders.fields.map((f) => (f.name === 'szam' ? { ...f, meaning: 'más' } : f)) })
@@ -698,7 +699,7 @@ async function main() {
     assert.deepEqual(broken.error, { code: 'field_not_found', detail: 'netto' })
     const linked = new Map(qCatalog())
     linked.set('ugyfelek', { ...qCustomers, fields: [qField('nev', { meaning: 'más jelentés' })] })
-    assert.deepEqual(status(linked).changedFields, [{ dataset: 'ugyfelek', field: 'nev' }])
+    assert.deepEqual(status(linked).changedFields, [{ dataset: 'ugyfelek', field: 'nev', label: 'nev' }])
     // AC11: a lenyomat újraszámolása után megint naprakész.
     assert.equal(status(currency, buildSnapshots(spec, currency)).status, 'current')
   })

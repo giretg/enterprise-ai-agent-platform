@@ -51,7 +51,6 @@ function splitList(value: string | undefined): string[] {
     .filter(Boolean)
 }
 
-/** `sum:osszeg,count:*` → aggregátumok. */
 /** Időbontás a csoportosításban: `datum:month`. */
 export const TIME_BUCKETS = ['day', 'week', 'month', 'quarter', 'year'] as const
 export type TimeBucket = (typeof TIME_BUCKETS)[number]
@@ -62,6 +61,7 @@ export function parseGroupField(value: string): { path: string; bucket: string |
   return at < 0 ? { path: value, bucket: null } : { path: value.slice(0, at), bucket: value.slice(at + 1) }
 }
 
+/** `sum:osszeg,count:*` → aggregátumok. */
 export function parseAggregates(value: string | undefined): QuerySpec['aggregates'] {
   return splitList(value).map((item) => {
     const [fn, field] = item.split(':').map((p) => p.trim())

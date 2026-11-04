@@ -46,8 +46,8 @@ export type SavedQuerySnapshots = Record<string, DatasetSnapshot>
 export type SavedQueryStatusReport = {
   status: SavedQueryStatus
   datasets: Array<{ key: string; structureVersionAtSave: number; structureVersionNow: number | null; structureChangedAt: string | null }>
-  newFields: Array<{ dataset: string; field: string }>
-  changedFields: Array<{ dataset: string; field: string }>
+  newFields: Array<{ dataset: string; field: string; label: string }>
+  changedFields: Array<{ dataset: string; field: string; label: string }>
   error?: { code: string; detail?: string }
 }
 
@@ -230,11 +230,11 @@ export function savedQueryStatus(input: {
     for (const [name, fingerprint] of Object.entries(snapshot.fields)) {
       const field = current.fields.find((candidate) => candidate.name === name)
       if (!field) return { ...report, status: 'broken', error: { code: 'field_not_found', detail: `${key}.${name}` } }
-      if (fieldFingerprint(field) !== fingerprint) report.changedFields.push({ dataset: key, field: name })
+      if (fieldFingerprint(field) !== fingerprint) report.changedFields.push({ dataset: key, field: name, label: field.label })
     }
     if (current.structureVersion !== snapshot.structureVersion) {
       const known = new Set(snapshot.fieldNames)
-      for (const field of current.fields) if (!known.has(field.name)) report.newFields.push({ dataset: key, field: field.name })
+      for (const field of current.fields) if (!known.has(field.name)) report.newFields.push({ dataset: key, field: field.name, label: field.label })
     }
   }
   if (report.changedFields.length > 0) return { ...report, status: 'meaning_changed' }
