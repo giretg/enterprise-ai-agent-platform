@@ -453,6 +453,7 @@ async function main() {
     }
     const seenTenants: string[] = []
     const registry: WarehouseRegistry = {
+      listReadyTenantIds: async () => [],
       find: async (tenantId) => {
         seenTenants.push(tenantId)
         return { tenantId, status: 'ready', provisioner: 'pg_schema', schemaName: warehouseSchemaName(tenantId), internalVersion: WAREHOUSE_INTERNAL_VERSION, lastError: null, attempts: 1, readyAt: null }
@@ -736,6 +737,7 @@ async function main() {
     const service = new WarehouseService({
       db: { run: async (fn) => fn({ query: async () => [], exec: async () => 0 }) },
       registry: {
+        listReadyTenantIds: async () => [],
         find: async () => record,
         ensure: async () => record,
         update: async (_tenantId, patch) => {
@@ -798,6 +800,7 @@ async function main() {
             }),
         },
         registry: {
+          listReadyTenantIds: async () => [],
           find: async (tenantId) => ({ tenantId, status: 'ready', provisioner: 'pg_schema', schemaName: warehouseSchemaName(tenantId), internalVersion: WAREHOUSE_INTERNAL_VERSION, lastError: null, attempts: 1, readyAt: null }),
           ensure: async () => {
             throw new Error('not used')

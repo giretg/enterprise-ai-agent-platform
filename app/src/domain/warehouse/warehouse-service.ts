@@ -71,6 +71,8 @@ export type WarehouseRegistryRecord = {
 
 export interface WarehouseRegistry {
   find(tenantId: string): Promise<WarehouseRegistryRecord | null>
+  /** A kész adattárházú cégek: a napi karbantartás ezeken megy végig. */
+  listReadyTenantIds(): Promise<string[]>
   /** Idempotens: a tenantId egyedi, ismételt kérés ugyanazt a rekordot adja. */
   ensure(input: { tenantId: string; schemaName: string; provisioner: string; requestedById: string }): Promise<WarehouseRegistryRecord>
   update(tenantId: string, patch: Partial<Pick<WarehouseRegistryRecord, 'status' | 'internalVersion' | 'lastError'>> & { attempt?: boolean; ready?: boolean }): Promise<WarehouseRegistryRecord>
@@ -189,6 +191,9 @@ function withQueryErrors<T>(fn: () => T): T {
     throw error
   }
 }
+
+/** §5: ennyi nap után törlődik véglegesen az archivált lekérdezés. */
+export const SAVED_QUERY_ARCHIVE_RETENTION_DAYS = 90
 
 export type SavedQueryView = {
   queryId: string
@@ -1263,6 +1268,40 @@ export class WarehouseService {
     )
     if (archived) await this.audit(actor, 'warehouse.saved_query.archived', input.queryId, {})
     return { queryId: input.queryId, archived: true }
+  }
+
+  /**
+   * §5: az archivált lekérdezés 90 nap után törlődik (napi karbantartás). Egy cég hibája
+   * nem állítja meg a többit; a következő nap újra sorra kerül.
+   */
+  async purgeArchivedSavedQueries(now = new Date()): Promise<{ deleted: number; failedTenants: number }> {
+    const cutoff = new Date(now.getTime() - SAVED_QUERY_ARCHIVE_RETENTION_DAYS * 86_400_000)
+    let deleted = 0
+    let failedTenants = 0
+    for (const tenantId of await this.deps.registry.listReadyTenantIds()) {
+      try {
+        // Frissítetlen belső sémában még nincs mentett lekérdezés, és a karbantartás nem indít frissítést.
+        if (((await this.deps.registry.find(tenantId))?.internalVersion ?? 0) < WAREHOUSE_INTERNAL_VERSION) continue
+        const schema = warehouseSchemaName(tenantId)
+        const purged = await this.deps.db.run((sql) => savedQueries.purgeArchivedBefore(sql, schema, cutoff), { statementTimeoutMs: 15_000, timeoutMs: 20_000 })
+        deleted += purged.length
+        for (const queryId of purged) {
+          await writeAudit(this.deps.audit, {
+            actorType: 'system',
+            action: 'warehouse.saved_query.purged',
+            targetType: 'warehouse',
+            targetId: queryId,
+            policyDecision: 'allowed',
+            metadata: { tenantId, retentionDays: SAVED_QUERY_ARCHIVE_RETENTION_DAYS },
+            tenantId,
+          })
+        }
+      } catch (error) {
+        failedTenants += 1
+        console.error('[warehouse] archivált lekérdezések törlése sikertelen', { tenantId, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    return { deleted, failedTenants }
   }
 
   /** §7: forrás, frissesség és figyelmeztetés hiányos összerendelésre / elavult forrásra / nem igazolt definícióra. */

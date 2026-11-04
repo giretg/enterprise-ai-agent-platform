@@ -238,3 +238,12 @@ export async function recordRun(sql: SqlExecutor, schema: string, id: string) {
 export async function archiveSavedQuery(sql: SqlExecutor, schema: string, id: string) {
   await sql.exec(`UPDATE ${qt(schema, '_saved_queries')} SET status = 'archived', archived_at = now(), updated_at = now() WHERE id = $1::uuid`, [id])
 }
+
+/** §5: az archivált lekérdezés a határidő után véglegesen törlődik, a verziók CASCADE-del mennek. */
+export async function purgeArchivedBefore(sql: SqlExecutor, schema: string, cutoff: Date): Promise<string[]> {
+  const rows = await sql.query<{ id: string }>(
+    `DELETE FROM ${qt(schema, '_saved_queries')} WHERE status = 'archived' AND archived_at < $1::timestamptz RETURNING id::text AS id`,
+    [cutoff.toISOString()],
+  )
+  return rows.map((row) => row.id)
+}

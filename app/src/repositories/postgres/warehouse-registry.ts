@@ -24,6 +24,11 @@ export class PostgresWarehouseRegistry implements WarehouseRegistry {
     return row ? toRecord(row) : null
   }
 
+  async listReadyTenantIds() {
+    const rows = await this.client.tenantWarehouse.findMany({ where: { status: 'ready' }, select: { tenantId: true } })
+    return rows.map((row) => row.tenantId)
+  }
+
   async ensure(input: { tenantId: string; schemaName: string; provisioner: string; requestedById: string }) {
     const row = await this.client.tenantWarehouse.upsert({
       where: { tenantId: input.tenantId },

@@ -472,6 +472,21 @@ async function main() {
     const savedAudits = audits.filter((a) => a.action.startsWith('warehouse.saved_query.'))
     assert.ok(['saved', 'reviewed', 'run', 'archived'].every((kind) => savedAudits.some((a) => a.action === `warehouse.saved_query.${kind}`)))
     assert.ok(savedAudits.every((a) => !/2030-01-01|Kovács|netto/.test(JSON.stringify(a.metadata))), 'audit: nincs szűrőérték és üzleti adat')
+    // §5: 90 nap után törlődik, a frissen archivált és az aktív marad.
+    const stale = await service.saveQuery(ai, { name: 'regi_archivalt', description: 'Régi.', query: { dataset: 'rendelesek', aggregates: 'count:*' } })
+    const fresh = await service.saveQuery(ai, { name: 'friss_archivalt', description: 'Friss.', query: { dataset: 'rendelesek', aggregates: 'count:*' } })
+    await service.archiveSavedQuery(ai, { queryId: stale.query.queryId })
+    await service.archiveSavedQuery(ai, { queryId: fresh.query.queryId })
+    await prisma.$executeRawUnsafe(`UPDATE "${schema}"._saved_queries SET archived_at = now() - interval '91 days' WHERE id = $1::uuid`, stale.query.queryId)
+    const purge = await service.purgeArchivedSavedQueries()
+    assert.equal(purge.failedTenants, 0)
+    const left = await prisma.$queryRawUnsafe<Array<{ id: string }>>(`SELECT id::text AS id FROM "${schema}"._saved_queries`)
+    assert.equal(left.some((row) => row.id === stale.query.queryId), false)
+    assert.equal(left.some((row) => row.id === fresh.query.queryId), true)
+    const versionsLeft = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${schema}"._saved_query_versions WHERE query_id = $1::uuid`, stale.query.queryId)
+    assert.equal(versionsLeft[0]!.n, 0)
+    assert.ok(audits.some((a) => a.action === 'warehouse.saved_query.purged' && a.targetId === stale.query.queryId))
+    console.log('  OK  §5 archivált lekérdezés 90 nap után törlődik, verzióival együtt')
     console.log('  OK  Nem futtatható lekérdezés nem fut; archiválás idempotens, a név újra használható; az audit csak azonosítókat tartalmaz')
 
   } finally {

@@ -283,6 +283,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'warehouse.saved_query.reviewed',
   'warehouse.saved_query.run',
   'warehouse.saved_query.archived',
+  'warehouse.saved_query.purged',
   'agent.placement_overrides',
   'platform_setting.mini_app_link_ttl_changed',
   'platform_setting.web_search_changed',
