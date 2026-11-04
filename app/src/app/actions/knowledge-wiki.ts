@@ -135,6 +135,13 @@ export async function uploadWikiInboxFileAction(formData: FormData) {
     })
     return ok(result)
   } catch (e) {
+    // A felület érthető hibát mutat; a váratlan ok a naplóból derül ki (fájlnév és tartalom nélkül).
+    if (!(e instanceof WikiConsoleError) && !(e instanceof z.ZodError)) {
+      console.error('wiki_inbox_upload_failed', {
+        connectorId: formData.get('connectorId'),
+        message: e instanceof Error ? e.message : String(e),
+      })
+    }
     return failFrom(e, 'Failed to upload file')
   }
 }

@@ -14,9 +14,8 @@ import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Badge, Card } from '@/components/ui/shell'
 import { errorKey } from './knowledge-bases-list'
 import { formatWhen, wikiHref } from './wiki-format'
+import { MAX_INBOX_FILE_BYTES, uploadInboxFile } from './wiki-inbox-upload'
 
-/** D12: fájlonként legfeljebb 25 MB (a szerver is ellenőrzi: KB_MAX_FILE_BYTES). */
-const MAX_FILE_BYTES = 25 * 1024 * 1024
 const POLL_MS = 10_000
 const PARALLEL_UPLOADS = 3
 
@@ -59,9 +58,18 @@ export type WikiInboxData = {
 type UploadState = {
   total: number
   done: number
+  queued: number
   duplicates: string[]
   tooLarge: string[]
-  failed: string[]
+  empty: string[]
+  unreadable: string[]
+  interrupted: string[]
+  rejected: Array<{ name: string; reason: ReturnType<typeof errorKey> }>
+}
+
+function listNames(names: string[]) {
+  const shown = names.slice(0, 5).join(', ')
+  return names.length > 5 ? `${shown} +${names.length - 5}` : shown
 }
 
 export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; initial: WikiInboxData }) {
@@ -93,10 +101,20 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
   async function uploadFiles(files: File[]) {
     if (files.length === 0) return
     setError(null)
-    const tooLarge = files.filter((file) => file.size > MAX_FILE_BYTES).map((file) => file.name)
-    const queue = files.filter((file) => file.size > 0 && file.size <= MAX_FILE_BYTES)
-    const failed = files.filter((file) => file.size === 0).map((file) => file.name)
-    const state: UploadState = { total: files.length, done: tooLarge.length + failed.length, duplicates: [], tooLarge, failed }
+    const tooLarge = files.filter((file) => file.size > MAX_INBOX_FILE_BYTES).map((file) => file.name)
+    const queue = files.filter((file) => file.size > 0 && file.size <= MAX_INBOX_FILE_BYTES)
+    const empty = files.filter((file) => file.size === 0).map((file) => file.name)
+    const state: UploadState = {
+      total: files.length,
+      done: tooLarge.length + empty.length,
+      queued: 0,
+      duplicates: [],
+      tooLarge,
+      empty,
+      unreadable: [],
+      interrupted: [],
+      rejected: [],
+    }
     setUpload({ ...state })
     const batchId = crypto.randomUUID()
     let next = 0
@@ -104,21 +122,22 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
       while (next < queue.length) {
         const seq = next++
         const file = queue[seq]
-        const form = new FormData()
-        form.set('connectorId', connectorId)
-        form.set('batchId', batchId)
-        form.set('batchSeq', String(seq))
-        form.set('file', file)
-        try {
-          const res = await uploadWikiInboxFileAction(form)
-          if (!res.success) state.failed.push(file.name)
-          else if (res.data.status === 'duplicate') state.duplicates.push(file.name)
-        } catch {
-          state.failed.push(file.name)
-        } finally {
-          state.done++
-          setUpload({ ...state, duplicates: [...state.duplicates], failed: [...state.failed] })
-        }
+        const outcome = await uploadInboxFile(file, (copy) => {
+          const form = new FormData()
+          form.set('connectorId', connectorId)
+          form.set('batchId', batchId)
+          form.set('batchSeq', String(seq))
+          form.set('file', copy)
+          return uploadWikiInboxFileAction(form)
+        })
+        if (outcome.kind === 'queued') state.queued++
+        else if (outcome.kind === 'duplicate') state.duplicates.push(file.name)
+        else if (outcome.kind === 'unreadable') state.unreadable.push(file.name)
+        else if (outcome.kind === 'interrupted') state.interrupted.push(file.name)
+        else if (outcome.error === 'too_large') state.tooLarge.push(file.name)
+        else state.rejected.push({ name: file.name, reason: errorKey(outcome.error) })
+        state.done++
+        setUpload({ ...state })
       }
     }
     await Promise.all(Array.from({ length: Math.min(PARALLEL_UPLOADS, queue.length) }, worker))
@@ -213,17 +232,31 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
             <p className="text-ink">
               {upload.done < upload.total
                 ? t('inbox.uploading', { done: upload.done, total: upload.total })
-                : t('inbox.uploaded', { total: upload.total - upload.tooLarge.length - upload.failed.length - upload.duplicates.length })}
+                : upload.queued > 0
+                  ? t('inbox.uploaded', { total: upload.queued })
+                  : t('inbox.uploadedNone')}
             </p>
             {upload.duplicates.length ? (
-              <p className="text-xs text-amber-800">{t('inbox.duplicates', { count: upload.duplicates.length, names: upload.duplicates.slice(0, 5).join(', ') })}</p>
+              <p className="text-xs text-amber-800">{t('inbox.duplicates', { count: upload.duplicates.length, names: listNames(upload.duplicates) })}</p>
             ) : null}
             {upload.tooLarge.length ? (
-              <p className="text-xs text-coral-deep">{t('inbox.tooLarge', { count: upload.tooLarge.length, names: upload.tooLarge.slice(0, 5).join(', ') })}</p>
+              <p className="text-xs text-coral-deep">{t('inbox.tooLarge', { count: upload.tooLarge.length, names: listNames(upload.tooLarge) })}</p>
             ) : null}
-            {upload.failed.length ? (
-              <p className="text-xs text-coral-deep">{t('inbox.failed', { count: upload.failed.length, names: upload.failed.slice(0, 5).join(', ') })}</p>
+            {upload.empty.length ? (
+              <p className="text-xs text-coral-deep">{t('inbox.emptyFile', { count: upload.empty.length, names: listNames(upload.empty) })}</p>
             ) : null}
+            {upload.unreadable.length ? (
+              <p className="text-xs text-coral-deep">{t('inbox.unreadable', { count: upload.unreadable.length, names: listNames(upload.unreadable) })}</p>
+            ) : null}
+            {upload.interrupted.length ? (
+              <p className="text-xs text-coral-deep">{t('inbox.interrupted', { count: upload.interrupted.length, names: listNames(upload.interrupted) })}</p>
+            ) : null}
+            {(['not_found', 'forbidden', 'invalid_args', 'too_large', 'generic'] as const).map((reason) => {
+              const names = upload.rejected.filter((item) => item.reason === reason).map((item) => item.name)
+              return names.length ? (
+                <p key={reason} className="text-xs text-coral-deep">{t('inbox.rejected', { reason: t(`errors.${reason}`), names: listNames(names) })}</p>
+              ) : null
+            })}
           </div>
         ) : null}
         {error ? <p className="mt-2 text-sm text-coral-deep">{error}</p> : null}
