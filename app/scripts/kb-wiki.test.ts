@@ -1506,6 +1506,21 @@ async function main() {
     if (untouched) assert.equal(untouched.partlyWritten, undefined)
   })
 
+  await check('#1077 claimForWiki pagination reads the whole long source without overlap', async () => {
+    const text = '# Long source\n' + 'abcdefghijklmnop'.repeat(1200)
+    const ingested = await call(OWNER, DEF_A, 'kb_ingest', { filename: 'long-source.md', content: text, processingMode: 'wiki', wikiId: WIKI_A, defer: true })
+    let offset: number | undefined = 0
+    let read = ''
+    do {
+      const part = await call(OWNER, DEF_A, 'kb_get_document', { documentId: ingested.documentId, claimForWiki: true, offset, limit: 6000 })
+      assert.equal(part.status, 'in_progress')
+      assert.equal(part.offset, offset)
+      read += part.text
+      offset = part.nextOffset
+    } while (offset !== undefined)
+    assert.equal(read, text)
+  })
+
   await check('#1077 kb_search: a nyers találatban a kártyaszám maszkolva, a tárolt szöveg változatlan', async () => {
     const original = documentRepo.searchRaw
     const raw = 'Teszt kártya 4111 1111 1111 1111, PIN: 1234.'

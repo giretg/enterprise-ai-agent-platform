@@ -579,6 +579,7 @@ export type KbDocumentResult =
       matches?: string[]
       /** #1077: a visszaadott szelet kezdete (`section` mellett a szakaszon belül). */
       offset?: number
+      nextStep?: string
       /** #1077: innen folytatható az olvasás; hiánya = a szöveg végére értünk. */
       nextOffset?: number
       /** #1077: egy hívásba nem férő szakaszok (a vázlat mellett). */
@@ -587,15 +588,17 @@ export type KbDocumentResult =
 
 /** #1077: egy szelet a szövegből; a vágás nem szakít ketté helyettesítő párt. */
 function sliceKbText(text: string, offset = 0, limit = KB_DOCUMENT_INLINE_CHARS) {
-  const start = Math.min(offset, text.length)
+  let start = Math.min(offset, text.length)
+  if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start] ?? '') && /[\uD800-\uDBFF]/.test(text[start - 1])) start--
   let end = Math.min(start + limit, text.length)
   const last = text.charCodeAt(end - 1)
-  if (end < text.length && end - start > 1 && last >= 0xd800 && last <= 0xdbff) end--
+  if (end < text.length && last >= 0xd800 && last <= 0xdbff && /[\uDC00-\uDFFF]/.test(text[end])) end--
   return {
     truncated: end < text.length,
     text: text.slice(start, end),
     offset: start,
     ...(end < text.length ? { nextOffset: end } : {}),
+    ...(end === start && start < text.length ? { nextStep: 'The next character is a UTF-16 pair. Retry with limit at least 2 at the same offset.' } : {}),
   }
 }
 

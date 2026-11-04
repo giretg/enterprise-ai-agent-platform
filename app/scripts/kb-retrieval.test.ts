@@ -431,6 +431,16 @@ async function run() {
     assert.ok(assembleKbDocument({ ...base, text: emoji, offset: cut.nextOffset, limit: 100 }).text?.startsWith('😀'))
   })
 
+  await check('#1077 one-unit pagination never returns half an emoji', () => {
+    const base = { documentId: 'test', filename: 'test.md', purpose: null, text: '😀x' }
+    const first = assembleKbDocument({ ...base, offset: 0, limit: 1 })
+    assert.equal(first.text, '')
+    assert.equal(first.nextOffset, 0)
+    assert.match(first.nextStep!, /limit at least 2/)
+    assert.equal(assembleKbDocument({ ...base, offset: first.nextOffset, limit: 2 }).text, '😀')
+    assert.equal(assembleKbDocument({ ...base, offset: 1, limit: 2 }).text, '😀')
+  })
+
   await check('#1077 maskKbSensitiveText: kártyaszám, PIN és kulcs maszkolva, a hétköznapi szám marad', () => {
     assert.equal(maskKbSensitiveText('szám: 4111111111111111 itt'), 'szám: ••••••••••••1111 itt')
     assert.equal(maskKbSensitiveText('a 4111 1111 1111 1111 kártya'), 'a •••• •••• •••• 1111 kártya')
