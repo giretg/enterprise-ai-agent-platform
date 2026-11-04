@@ -9,7 +9,7 @@ import { prisma } from '../src/lib/db'
 import { PostgresMiniAppRepository, listMiniAppsForAgentPage } from '../src/repositories/postgres/mini-app-repository'
 
 function version(html: string, key: string | null = null) {
-  return { html, contentHash: `h-${html.length}-${key ?? ''}`, byteSize: html.length, lintWarnings: ['fetch_call'], changeNote: null, idempotencyKey: key, createdByUserId: '' }
+  return { html, contentHash: `h-${html.length}-${key ?? ''}`, byteSize: html.length, lintWarnings: ['fetch_call'], changeNote: null, idempotencyKey: key, createdByUserId: '', dataBindings: [] as MiniAppDataBinding[] }
 }
 
 async function main() {
@@ -83,6 +83,20 @@ async function main() {
     assert.equal(await prisma.miniAppVersion.count({ where: { appId } }), 0)
     assert.equal(await prisma.miniAppShare.count({ where: { appId } }), 0)
     console.log('  OK  archiválás + 90 napos purge kaszkáddal')
+    // #1083: a kötés a verzióval együtt tárolódik; a lista csak az aktív app aktuális verzióját nézi.
+    const binding = { alias: 'bevetel', queryId: randomUUID(), queryVersion: 2, params: { tol: { relative: 'year_start' } }, maxRows: 100 }
+    const live = await repo.createWithVersion({ ...base, name: 'Élő riport', createIdempotencyKey: 'live-1', version: { ...version('<p>élő</p>'), createdByUserId: user.id, dataBindings: [binding] } })
+    const liveVersion = await repo.findVersion(live.app.id, 1)
+    assert.deepEqual(liveVersion!.dataBindings, [binding])
+    assert.deepEqual((await repo.listVersions(live.app.id))[0]!.dataBindings, [binding])
+    const plain = await repo.createWithVersion({ ...base, name: 'Statikus riport', createIdempotencyKey: 'plain-1', version: { ...version('<p>statikus</p>'), createdByUserId: user.id } })
+    assert.deepEqual((await repo.findVersion(plain.app.id, 1))!.dataBindings, [], 'a statikus verzió kötés nélküli')
+    assert.deepEqual((await repo.listBoundApps(tenant.id)).map((row) => [row.appId, row.name, row.bindings[0]!.queryId]), [[live.app.id, 'Élő riport', binding.queryId]])
+    assert.deepEqual(await repo.listBoundApps(other.id), [], 'tenant-határ')
+    const unbound = await repo.addVersion({ appId: live.app.id, tenantId: tenant.id, expectedCurrentVersion: 1, version: { ...version('<p>statikus lett</p>'), createdByUserId: user.id } })
+    assert.notEqual(unbound, 'conflict')
+    assert.deepEqual(await repo.listBoundApps(tenant.id), [], 'a régi verzió kötése már nem számít')
+    console.log('  OK  élő adat-kötés: tárolás, aktuális verzió, tenant-határ')
     console.log('\nmini-app-db: ok')
   } finally {
     await prisma.miniApp.deleteMany({ where: { tenantId: { in: [tenant.id, other.id] } } })

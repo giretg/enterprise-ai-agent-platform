@@ -5,6 +5,7 @@
  * A HTML-t SOHA nem logoljuk — csak a találatok kódját.
  */
 import { createHash } from 'node:crypto'
+import { MINI_APP_INLINE_SCRIPTS_MAX, scanHtml } from './data-binding'
 
 export const MINI_APP_DEFAULT_MAX_BYTES = 1024 * 1024
 
@@ -34,6 +35,33 @@ const WARNING_RULES: Rule[] = [
   { code: 'window_top', pattern: /window\s*\.\s*top\b/ },
   { code: 'parent_post_message', pattern: /parent\s*\.\s*postMessage/ },
 ]
+
+/**
+ * Kötött verziónál kemény hiba (#1083 §5): külső forrású szöveg kerül a lapra, ezért a
+ * HTML-ként értelmezett kiírás tilos, a kimenő API-k pedig nem maradhatnak figyelmeztetésben.
+ * Forrásszöveg-minta, tehát jelzés; a védelmet a CSP adja.
+ */
+const BOUND_HARD_FAIL_RULES: Rule[] = [
+  { code: 'unsafe_html_sink', pattern: /\b(?:innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment|srcdoc)\b/ },
+  { code: 'document_write', pattern: /\bdocument\s*\.\s*write(?:ln)?\b/ },
+  { code: 'send_beacon', pattern: /\bsendBeacon\b/ },
+  { code: 'dynamic_code', pattern: /\b(?:eval|importScripts)\s*\(|\bnew\s+Function\b|\bimport\s*\(/ },
+]
+
+const BOUND_PROMOTED_WARNINGS = new Set(['external_script', 'external_stylesheet', 'fetch_call', 'xhr', 'websocket', 'event_source', 'peer_connection', 'embedded_document', 'resource_hint'])
+
+/** A kötött verzió többlet-hibái; a statikus app lintje ettől nem változik (AC21). */
+export function lintBoundMiniAppHtml(html: string): string[] {
+  const { warnings } = lintMiniAppHtml(html)
+  const scan = scanHtml(html)
+  return [
+    ...BOUND_HARD_FAIL_RULES.filter((rule) => rule.pattern.test(html)).map((rule) => rule.code),
+    ...(scan.eventHandler ? ['inline_event_handler'] : []),
+    ...(scan.metaRefresh ? ['meta_refresh'] : []),
+    ...warnings.filter((code) => BOUND_PROMOTED_WARNINGS.has(code)),
+    ...(scan.scripts.length > MINI_APP_INLINE_SCRIPTS_MAX ? ['too_many_inline_scripts'] : []),
+  ]
+}
 
 export type MiniAppLintResult = { errors: string[]; warnings: string[] }
 

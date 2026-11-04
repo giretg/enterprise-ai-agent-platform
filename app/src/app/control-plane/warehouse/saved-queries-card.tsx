@@ -60,6 +60,7 @@ export function SavedQueriesCard({
   truncated,
   agentNames,
   datasetTitles,
+  queryApps,
   canArchive,
   pending,
   act,
@@ -68,6 +69,7 @@ export function SavedQueriesCard({
   truncated: boolean
   agentNames: Record<string, string>
   datasetTitles: Record<string, string>
+  queryApps: Record<string, Array<{ appId: string; name: string }>>
   canArchive: boolean
   pending: boolean
   act: Act
@@ -97,6 +99,7 @@ export function SavedQueriesCard({
               query={query}
               agentName={agentNames[query.ownerAgentId] ?? 'Ismeretlen munkatárs'}
               datasetTitle={datasetTitles[query.dataset] ?? query.dataset}
+              apps={queryApps[query.queryId] ?? []}
               canArchive={canArchive}
               pending={pending}
               act={act}
@@ -113,6 +116,7 @@ function SavedQueryRow({
   query,
   agentName,
   datasetTitle,
+  apps,
   canArchive,
   pending,
   act,
@@ -120,6 +124,7 @@ function SavedQueryRow({
   query: SavedQueryView
   agentName: string
   datasetTitle: string
+  apps: Array<{ appId: string; name: string }>
   canArchive: boolean
   pending: boolean
   act: Act
@@ -154,6 +159,18 @@ function SavedQueryRow({
         {agentName} · {datasetTitle} · Mentve: {formatDate(query.savedAt)} ({query.version}. verzió)
         {query.reviewedAt ? ` · Átnézve: ${formatDate(query.reviewedAt)}` : ''} · Utolsó futás: {formatDate(query.lastRunAt)} · {query.runCount} futás
       </p>
+      {apps.length > 0 ? (
+        <p className="mt-1 text-ink-soft">
+          Ebből dolgozik:{' '}
+          {apps.map((app, index) => (
+            <span key={app.appId}>
+              {index > 0 ? ', ' : ''}
+              <a href={`/control-plane/mini-apps/${app.appId}`} className="font-medium text-coral-deep underline">{app.name}</a>
+            </span>
+          ))}
+          . Amíg ezek használják, a lekérdezés nem archiválható.
+        </p>
+      ) : null}
       <details
         className="mt-2"
         onToggle={(event) => {

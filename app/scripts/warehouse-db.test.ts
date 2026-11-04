@@ -12,6 +12,7 @@ import { PgSchemaProvisioner, WAREHOUSE_INTERNAL_VERSION } from '../src/domain/w
 import { prismaWarehouseDatabase, warehouseSchemaName, type WarehouseDatabase } from '../src/domain/warehouse/sql'
 import { WarehouseError, WarehouseService, type WarehouseActor } from '../src/domain/warehouse/warehouse-service'
 import { PostgresWarehouseRegistry } from '../src/repositories/postgres/warehouse-registry'
+import { loadLiveData, prepareBindings, type MiniAppLiveDataDeps } from '../src/domain/mini-app/live-data'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type { AuditAppendInput } from '../src/lib/audit/types'
 import { customersXlsx, ordersXlsx } from './warehouse-fixtures'
@@ -77,7 +78,9 @@ async function main() {
         options,
       ),
   }
+  const usedBy = new Map<string, Array<{ appId: string; name: string }>>()
   const service = new WarehouseService({
+    savedQueryUsage: async (_tenantId, queryId) => usedBy.get(queryId) ?? [],
     db,
     registry: new PostgresWarehouseRegistry(prisma),
     provisioner: new PgSchemaProvisioner(baseDb),
@@ -405,10 +408,82 @@ async function main() {
     // ── #1083 AC8–AC11: elavulás valódi importokkal ────────────────────────────
     const statusOf = async () => (await service.getSavedQuery(ai, { queryId: saved.query.queryId })).query
     assert.equal((await statusOf()).schemaStatus, 'current')
+
+    // ── #1083 élő mini app: kötés futtatása valódi adattárházon ────────────────
+    const liveQuery = await service.saveQuery(ai, { name: 'elo_rendelesek', description: 'A rendelések listája.', query: { dataset: 'rendelesek', fields: 'szam,ugyfel_nev', orderBy: 'szam' } })
+    const liveDeps: MiniAppLiveDataDeps = {
+      findMembership: async () => ({ role: 'viewer', status: 'active' }),
+      canReadWarehouse: () => true,
+      agentAccess: async () => 'read',
+      findOwnerAgent: async () => ({ retiredAt: null }),
+      runBoundQuery: (actor, input) => service.runBoundQuery({ ...actor, channel: 'mini_app' }, input),
+      errorCode: (error) => (error instanceof WarehouseError ? error.code : 'live_data_unavailable'),
+    }
+    const liveBinding = { alias: 'rendelesek', queryId: liveQuery.query.queryId, queryVersion: 1, params: {}, maxRows: 1000 }
+    const liveLoad = (purpose: 'status' | 'content', binding: typeof liveBinding = liveBinding) =>
+      loadLiveData(liveDeps, { app: { tenantId: tenant.id, ownerAgentId: ai.agentId! }, userId: user.id, role: 'viewer', bindings: [binding], purpose })
+    const auditCount = () => audits.filter((a) => a.action === 'warehouse.saved_query.run').length
+    const auditsBefore = auditCount()
+    await liveLoad('status')
+    assert.equal(auditCount(), auditsBefore, 'a sáv állapota nem számít futásnak')
+    const beforeImport = await liveLoad('content')
+    assert.equal(auditCount(), auditsBefore + 1)
+    const firstBlock = beforeImport.data.rendelesek!
+    assert.ok(firstBlock.status === 'ok' && firstBlock.rows.length > 0 && firstBlock.truncated === false)
+    assert.deepEqual(firstBlock.columnLabels, ['Rendelésszám', 'Ügyfél (forrásnév)'])
+    const linkAudit = audits.filter((a) => a.action === 'warehouse.saved_query.run').at(-1)!
+    assert.equal(linkAudit.actorType, 'system')
+    assert.equal(linkAudit.actorId, null)
+    assert.equal((linkAudit.metadata as { linkIssuedToUserId?: string }).linkIssuedToUserId, user.id)
+    assert.equal(JSON.stringify(linkAudit.metadata).includes(String(firstBlock.rows[0]![0])), false, 'cellaérték nem kerül auditba')
+
+    // AC19: sorkeret és bájtkeret; a bájtkeretet az adatbázis tartja.
+    const oneRow = (await liveLoad('status', { ...liveBinding, maxRows: 1 })).data.rendelesek!
+    assert.ok(oneRow.status === 'ok' && oneRow.rows.length === 1 && oneRow.truncated === true)
+    const byBytes = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: 1, audit: false })
+    assert.deepEqual(byBytes.rows, [])
+    assert.equal(byBytes.truncated, true)
+    const firstSize = (await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1, maxBytes: 1_000_000, audit: false })).bytes
+    const partial = await service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId!, channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1000, maxBytes: firstSize, audit: false })
+    assert.equal(partial.rows.length, 1)
+    assert.equal(partial.truncated, firstBlock.rows.length > 1)
+
+    // D7: a kötés a rögzített verziót futtatja; a sáv jelzi, hogy van újabb.
+    const liveV2 = await service.saveQuery(ai, { queryId: liveQuery.query.queryId, description: 'Csak a számok.', query: { dataset: 'rendelesek', fields: 'szam', orderBy: 'szam' } })
+    assert.equal(liveV2.query.version, 2)
+    const pinned = await liveLoad('status')
+    const pinnedBlock = pinned.data.rendelesek!
+    assert.ok(pinnedBlock.status === 'ok')
+    assert.deepEqual(pinnedBlock.columns, ['szam', 'ugyfel_nev'])
+    assert.ok(pinned.bar.warnings.some((warning) => warning.includes('újabb lekérdezés-verzió')))
+
+    // AC6: más agent lekérdezése kötésen át sem fut, és nem derül ki, hogy létezik.
+    await expectCode(service.runBoundQuery({ tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: randomUUID(), channel: 'mini_app' }, { queryId: liveQuery.query.queryId, version: 1, params: {}, maxRows: 1, maxBytes: 1_000, audit: false }), 'saved_query_not_found')
+
+    // AC18: használatban lévő lekérdezés nem archiválható; a válasz felsorolja az appokat.
+    usedBy.set(liveQuery.query.queryId, [{ appId: 'app-1', name: 'Havi riport' }])
+    await assert.rejects(service.archiveSavedQuery(ai, { queryId: liveQuery.query.queryId }), (e: unknown) => e instanceof WarehouseError && e.code === 'saved_query_in_use' && JSON.stringify(e.extra).includes('Havi riport'))
+    usedBy.delete(liveQuery.query.queryId)
+
+    // Kötéskor próbafuttat, a verzió az aktuális lesz.
+    const prepared = await prepareBindings(liveDeps, { tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId! }, [{ alias: 'a', queryId: liveQuery.query.queryId }])
+    assert.ok(prepared.ok && prepared.bindings[0]!.queryVersion === 2)
+    const missing = await prepareBindings(liveDeps, { tenantId: tenant.id, userId: user.id, role: 'viewer', agentId: ai.agentId! }, [{ alias: 'a', queryId: randomUUID() }])
+    assert.ok(!missing.ok && missing.code === 'saved_query_not_found')
+    console.log('  OK  élő adat: rögzített verzió, sor- és bájtkeret, tulajdonos-határ, archiválás-védelem, audit adat nélkül')
+
     const plainImport = await service.prepareImport(ai, { fileName: 'ujabb-adat.xlsx', content: await ordersXlsx({ extraRow: true, injection: true }) })
     const plainPreview = await service.preview(ai, plainImport.import.id)
     assert.equal((await service.commit(ai, { importId: plainImport.import.id, previewHash: plainPreview.import.previewHash! })).status, 'published')
     assert.equal((await statusOf()).schemaStatus, 'current', 'szerkezeti változás nélküli import nem riaszt')
+    // AC13: új import után ugyanaz a kötés, új app-verzió nélkül, az új adatot adja.
+    const afterImport = await liveLoad('content')
+    const newBlock = afterImport.data.rendelesek!
+    assert.ok(newBlock.status === 'ok')
+    assert.notEqual(JSON.stringify(newBlock.rows), JSON.stringify(firstBlock.status === 'ok' ? firstBlock.rows : []))
+    assert.ok(afterImport.bar.lastLoadAt!.getTime() >= beforeImport.bar.lastLoadAt!.getTime())
+    await service.archiveSavedQuery(ai, { queryId: liveQuery.query.queryId })
+    console.log('  OK  AC13 új import után újranyitáskor az új adat látszik')
     const before = (await statusOf()).datasets.find((d) => d.key === 'rendelesek')!
     const allFields = await service.saveQuery(ai, { name: 'minden_rendeles', description: 'Minden rendelés minden mezője.', query: { dataset: 'rendelesek' } })
     const widened = await service.prepareImport(ai, { fileName: 'uj-oszlop.xlsx', content: await ordersXlsx({ extraRow: true }) })

@@ -150,6 +150,7 @@ export function WarehousePanel({ data, selectedImportId }: { data: PageData; sel
       <SavedQueriesCard
         queries={data.savedQueries}
         truncated={data.savedQueriesTruncated}
+        queryApps={data.queryApps}
         agentNames={data.agentNames}
         datasetTitles={Object.fromEntries(data.datasets.map((dataset) => [dataset.key, dataset.title]))}
         canArchive={data.permissions.import}

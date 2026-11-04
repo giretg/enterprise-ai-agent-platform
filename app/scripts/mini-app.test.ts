@@ -8,15 +8,21 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentDefinition } from '../src/domain/agent-definition'
-import { lintMiniAppHtml, miniAppContentHash, guideConflicts } from '../src/domain/mini-app/html-lint'
+import { enterpriseToolErrorPayload } from '../src/domain/enterprise-tools'
+import { inlineScriptBodies, scriptHashSource, serializeLiveData } from '../src/domain/mini-app/data-binding'
+import { checkLiveAccess, createLiveRateLimiter, liveDeniedMessage, liveLinkTooLong, loadLiveData, type MiniAppLiveDataDeps } from '../src/domain/mini-app/live-data'
+import { miniAppLiveDeps } from '../src/lib/mini-app-live'
+import { lintBoundMiniAppHtml, lintMiniAppHtml, miniAppContentHash, guideConflicts } from '../src/domain/mini-app/html-lint'
 import { signMiniAppLink, verifyMiniAppLink } from '../src/domain/mini-app/link-token'
 import { MiniAppService } from '../src/domain/mini-app/mini-app-service'
 import { invokeMiniAppTool, MCP_MINI_APP_SHARE_TOOL, type MiniAppMcpDeps } from '../src/domain/mini-app/mcp'
 import { miniAppHumanAccess } from '../src/domain/mini-app/human-access'
 import { miniAppLintLabel } from '../src/domain/mini-app/lint-labels'
 import {
+  buildMiniAppLiveDocument,
   MINI_APP_CONTENT_HEADERS,
   miniAppBarParts,
+  miniAppBoundContentFetchDecision,
   miniAppContentCsp,
   miniAppContentFetchDecision,
   miniAppFrameCsp,
@@ -111,6 +117,9 @@ class MemStore implements MiniAppStore {
   }
   async findVersionByKey(appId: string, key: string) {
     return this.versions.find((v) => v.appId === appId && v.idempotencyKey === key) ?? null
+  }
+  async listBoundApps() {
+    return []
   }
   async listVersions(appId: string): Promise<MiniAppVersionMeta[]> {
     return this.versions.filter((v) => v.appId === appId).sort((a, b) => b.version - a.version)
@@ -529,7 +538,7 @@ async function main() {
   await check('tartalom-route: beágyazva keményített választ ad, közvetlen megnyitásnál a keretre visz', async () => {
     const html = '<!doctype html><h1>Riport</h1>'
     const app = { id: 'app-1', tenantId: TENANT, status: 'active', ownerAgentId: 'agent-1', name: 'Riport', createdAt: new Date(), currentVersion: 1 }
-    const version = { version: 1, html, contentHash: miniAppContentHash(html), createdAt: new Date() }
+    const version = { version: 1, html, contentHash: miniAppContentHash(html), createdAt: new Date(), dataBindings: [] }
     const stub = (target: object, key: string, value: unknown) => Object.defineProperty(target, key, { value, configurable: true, writable: true })
     stub(repositories.miniApps, 'findById', async () => app)
     stub(repositories.miniApps, 'findVersion', async () => version)
@@ -555,6 +564,293 @@ async function main() {
 
     assert.equal((await get('empty')).status, 404)
     assert.equal((await get(null)).status, 200)
+  })
+
+  // ── #1083 élő adat ─────────────────────────────────────────────────────────
+  const QUERY_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const LIVE_HTML = '<!doctype html><html><body><div id="o"></div><script>document.getElementById("o").textContent = "x"</script></body></html>'
+  const bindingsJson = (extra: Record<string, unknown> = {}) => JSON.stringify([{ alias: 'bevetel', queryId: QUERY_ID, ...extra }])
+  const liveService = () => {
+    const ctx = setup()
+    const prepared: unknown[] = []
+    const service = new MiniAppService({
+      store: ctx.store,
+      agentNames: async () => new Map(),
+      settings: async () => ({ linkTtl: '7d', maxBytes: 1024 * 1024 }),
+      links: {
+        mint: (input) => ({ openUrl: 'https://apps.test/o', openUrlExpiresAt: new Date(Date.now() + input.ttlMs).toISOString(), permanentUrl: 'https://app.test/p' }),
+        permanentUrl: () => 'https://app.test/p',
+      },
+      liveData: {
+        prepare: async (_actor, inputs) => {
+          prepared.push(inputs)
+          return { ok: true, bindings: inputs.map((input) => ({ alias: input.alias, queryId: input.queryId, queryVersion: 3, params: input.params ?? {}, maxRows: input.maxRows ?? 1000 })) }
+        },
+        latestQueryVersion: async () => 4,
+      },
+    })
+    return { ...ctx, service, prepared, actor: { tenantId: TENANT, agentId: REKA, userId: ANNA, role: 'operator' } }
+  }
+
+  await check('AC15: cellaérték nem tör ki a JSON-blokkból, és a tartalma változatlan marad', () => {
+    const cell = '</script><script>alert(1)</script><img src=x onerror=alert(2)><!--&'
+    const separators = `a${String.fromCharCode(0x2028)}b${String.fromCharCode(0x2029)}c`
+    const json = serializeLiveData({ a: { status: 'ok', columns: ['c'], columnLabels: ['C'], rows: [[cell], [separators]], truncated: false, dataAsOf: null, warnings: [] } })
+    for (const unsafe of ['<', '>', String.fromCharCode(0x2028), String.fromCharCode(0x2029)]) assert.equal(json.includes(unsafe), false, unsafe)
+    const back = JSON.parse(json) as { a: { rows: string[][] } }
+    assert.equal(back.a.rows[0]![0], cell)
+    assert.equal(back.a.rows[1]![0], separators)
+  })
+
+  await check('beágyazott szkriptek: külső forrás, komment, nyers szöveg és indexelés', () => {
+    assert.deepEqual(inlineScriptBodies('<script>a()</script><SCRIPT type="module">b()</SCRIPT>'), ['a()', 'b()'])
+    assert.deepEqual(inlineScriptBodies('<script src="https://x/y.js"></script><svg><script href="z"></script></svg>'), [])
+    assert.deepEqual(inlineScriptBodies('<!-- <script>a()</script> --><textarea><script>b()</script></textarea><title><script>c()</script></title>'), [])
+    assert.deepEqual(inlineScriptBodies('<a title="<script>d()</script>">x</a><a title=\'>\'>y</a><script>e()</script>'), ['e()'])
+    assert.deepEqual(inlineScriptBodies('<script>a()\r\nb()\rc()</script>'), ['a()\nb()\nc()'])
+    assert.deepEqual(inlineScriptBodies('<script>var s="</scripty>"</script >'), ['var s="</scripty>"'])
+    // A kisbetűsítés nem tolhatja el az indexeket: az `İ` teljes `toLowerCase`-szal hosszabb lenne.
+    assert.deepEqual(inlineScriptBodies('<p>İİİİ</p><script>f()</script>'), ['f()'])
+    assert.deepEqual(inlineScriptBodies('<script>g()'), ['g()'])
+    assert.deepEqual(inlineScriptBodies('<plaintext><script>h()</script>'), [])
+    // Sok kitöltés sem lassíthatja a bejárást.
+    const started = Date.now()
+    inlineScriptBodies('<'.repeat(1_000_000))
+    inlineScriptBodies('<a '.repeat(300_000))
+    inlineScriptBodies('<script>'.repeat(100_000))
+    assert.ok(Date.now() - started < 5_000, 'lineáris bejárás')
+  })
+
+  await check('kötött dokumentum: hash-alapú CSP, adat a szkriptek előtt, a forrás változatlan', () => {
+    const { html, csp } = buildMiniAppLiveDocument(LIVE_HTML, { dataJson: '{"a":1}' })
+    assert.equal(csp.includes("'unsafe-inline'; style"), false)
+    assert.equal(/script-src[^;]*unsafe-inline/.test(csp), false)
+    assert.equal(/script-src[^;]*nonce/.test(csp), false)
+    assert.equal(csp.includes('sandbox allow-scripts'), true)
+    assert.equal(csp.includes("connect-src 'none'"), true)
+    assert.equal((/script-src ([^;]*)/.exec(csp)![1]!.match(/'sha256-/g) ?? []).length, 2, 'platform + agent szkript')
+    assert.equal(csp.includes(scriptHashSource('document.getElementById("o").textContent = "x"')), true)
+    assert.ok(html.startsWith('<!doctype html><script>(function(w,d){'))
+    assert.ok(html.indexOf('id="platform-data">{"a":1}</script>') < html.indexOf('<html>'))
+    assert.ok(html.endsWith(LIVE_HTML))
+    // A kötött indítószkript minden bővítése ténylegesen érvényesült.
+    for (const part of ['createScriptURL:function(){return null}', "replace(/<script/gi,'<x-blocked')", 'tail=s.slice(-6)']) assert.ok(html.includes(part), part)
+    // AC21: a statikus app CSP-je és indítószkriptje nem változott.
+    assert.ok(miniAppContentCsp().includes("script-src 'unsafe-inline'"))
+    assert.ok(withMiniAppHardening('<p>').includes('createScriptURL:same'))
+    assert.equal(withMiniAppHardening('<p>').includes('x-blocked'), false)
+    // A letöltött fájl a CSP-t magával viszi, a meta-ban érvénytelen irányelvek nélkül.
+    const meta = /<meta http-equiv="Content-Security-Policy" content="([^"]*)">/.exec(buildMiniAppLiveDocument(LIVE_HTML, { dataJson: '{}', meta: true }).html)
+    assert.ok(meta && meta[1]!.includes('sha256-') && !meta[1]!.includes('sandbox') && !meta[1]!.includes('frame-ancestors'))
+  })
+
+  await check('kötött lint: HTML-kiírás, eseménykezelő és kimenő API kemény hiba; a statikus lint nem változik', () => {
+    for (const [html, code] of [
+      ['<script>e.innerHTML = rows</script>', 'unsafe_html_sink'],
+      ['<script>e.insertAdjacentHTML("beforeend", x)</script>', 'unsafe_html_sink'],
+      ['<script>document.write(x)</script>', 'document_write'],
+      ['<img src=x onerror=alert(1)>', 'inline_event_handler'],
+      ['<button/onclick="x()">', 'inline_event_handler'],
+      ['<script src="https://x/y.js"></script>', 'external_script'],
+      ['<script>fetch("/x")</script>', 'fetch_call'],
+      ['<script>navigator.sendBeacon("/x")</script>', 'send_beacon'],
+      ['<meta http-equiv="refresh" content="0;url=x">', 'meta_refresh'],
+    ] as const) {
+      assert.ok(lintBoundMiniAppHtml(html).includes(code), html)
+      assert.deepEqual(lintMiniAppHtml(html).errors, [], `statikus lint: ${html}`)
+      assert.notEqual(miniAppLintLabel(code), code)
+    }
+    assert.deepEqual(lintBoundMiniAppHtml(LIVE_HTML), [])
+    assert.deepEqual(lintBoundMiniAppHtml('<script>el.online = true; if (a < b) c.onload = d</script>'), [])
+    assert.ok(lintBoundMiniAppHtml(`${'<script>a()</script>'.repeat(51)}`).includes('too_many_inline_scripts'))
+    assert.notEqual(miniAppLintLabel('too_many_inline_scripts'), 'too_many_inline_scripts')
+  })
+
+  await check('AC14 + D6 + D7: kötés új verzió, a link 1 órás, a forrás és a hash adat nélküli', async () => {
+    const { service, actor, store } = liveService()
+    const plain = await service.create(actor, { name: 'Statikus', html: HTML, idempotencyKey: 'plain' })
+    assert.ok(plain.ok && Date.parse(plain.links.openUrlExpiresAt) - Date.now() > 6 * 24 * 3_600_000, 'AC21 statikus app: 7 nap')
+    const bound = await service.create(actor, { name: 'Élő', html: LIVE_HTML, dataBindings: bindingsJson({ params: { tol: { relative: 'year_start' } } }), idempotencyKey: 'bound' })
+    assert.ok(bound.ok)
+    assert.ok(Date.parse(bound.links.openUrlExpiresAt) - Date.now() <= 3_600_000)
+    assert.equal(bound.contentHash, miniAppContentHash(LIVE_HTML))
+    const v1 = await store.findVersion(bound.app.id, 1)
+    assert.deepEqual(v1!.dataBindings, [{ alias: 'bevetel', queryId: QUERY_ID, queryVersion: 3, params: { tol: { relative: 'year_start' } }, maxRows: 1000 }])
+    assert.equal(v1!.html, LIVE_HTML)
+
+    // Kötés-változás azonos HTML-lel új verzió; azonos kötés nem; HTML nélkül is cserélhető.
+    const sameHtml = await service.update(actor, { appId: bound.app.id, html: LIVE_HTML, dataBindings: bindingsJson({ maxRows: 50 }), idempotencyKey: 'u1' })
+    assert.ok(sameHtml.ok && sameHtml.version === 2 && !sameHtml.unchanged)
+    const repeat = await service.update(actor, { appId: bound.app.id, html: LIVE_HTML, idempotencyKey: 'u2' })
+    assert.ok(repeat.ok && repeat.unchanged && repeat.version === 2, 'kötés nélküli frissítés megtartja a kötést')
+    const noHtml = await service.update(actor, { appId: bound.app.id, dataBindings: bindingsJson({ maxRows: 60 }), idempotencyKey: 'u3' })
+    assert.ok(noHtml.ok && noHtml.version === 3)
+    assert.equal((await store.findVersion(bound.app.id, 3))!.html, LIVE_HTML)
+    assert.equal((await service.update(actor, { appId: bound.app.id, idempotencyKey: 'u4' })).ok, false, 'sem HTML, sem kötés')
+
+    // A forrás nem tartalmaz adatot; a tulajdonos látja, ha van újabb lekérdezés-verzió.
+    const got = await service.get(actor, { appId: bound.app.id, include: 'source' })
+    assert.ok(got.ok)
+    assert.equal(got.source!.html, LIVE_HTML)
+    assert.deepEqual(got.dataBindings, [{ alias: 'bevetel', queryId: QUERY_ID, queryVersion: 3, maxRows: 60, latestQueryVersion: 4 }])
+
+    // A kötés levétele után a link újra a szervezeti élettartamú.
+    const removed = await service.update(actor, { appId: bound.app.id, dataBindings: '[]', idempotencyKey: 'u5' })
+    assert.ok(removed.ok && Date.parse(removed.links.openUrlExpiresAt) - Date.now() > 6 * 24 * 3_600_000)
+  })
+
+  await check('kötés: lint, hibás bemenet, másolás és kötés-kapu', async () => {
+    const { service, actor, prepared } = liveService()
+    const unsafe = await service.create(actor, { name: 'Veszélyes', html: '<script>e.innerHTML = rows</script>', dataBindings: bindingsJson(), idempotencyKey: 'x1' })
+    assert.ok(!unsafe.ok && unsafe.code === 'mini_app_validation_failed' && (unsafe.extra!.errors as string[]).includes('unsafe_html_sink'))
+    // Ugyanez kötés nélkül a mai szabály szerint elfogadott (AC21).
+    assert.equal((await service.create(actor, { name: 'Statikus2', html: '<script>e.innerHTML = rows</script>', idempotencyKey: 'x2' })).ok, true)
+    for (const raw of ['nem json', '{"alias":"a"}', '[{"alias":"1a","queryId":"x"}]', JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ alias: `a${i}`, queryId: QUERY_ID }))), `[{"alias":"a","queryId":"${QUERY_ID}"},{"alias":"a","queryId":"${QUERY_ID}"}]`, `[{"alias":"a","queryId":"${QUERY_ID}","maxRows":5001}]`]) {
+      const res = await service.create(actor, { name: 'Rossz kötés', html: LIVE_HTML, dataBindings: raw, idempotencyKey: `bad-${raw.length}` })
+      assert.ok(!res.ok && res.code === 'invalid_data_bindings', raw)
+    }
+    assert.equal(prepared.length, 1, 'hibás bemenet nem jut el a próbafuttatásig')
+
+    const bound = await service.create(actor, { name: 'Forrás', html: LIVE_HTML, dataBindings: bindingsJson(), idempotencyKey: 'x3' })
+    assert.ok(bound.ok)
+    const copy = await service.create({ tenantId: TENANT, agentId: REKA, userId: ANNA }, { name: 'Másolat', copyFromAppId: bound.app.id, idempotencyKey: 'x4' })
+    assert.ok(!copy.ok && copy.code === 'mini_app_copy_has_data_binding')
+    assert.ok(enterpriseToolErrorPayload('mini_app_copy_has_data_binding').message !== 'mini_app_copy_has_data_binding')
+
+    // Kötést csak a tulajdonos tud frissíteni.
+    const foreign = await service.update({ tenantId: TENANT, agentId: ZOLI, userId: ANNA }, { appId: bound.app.id, dataBindings: bindingsJson(), idempotencyKey: 'x5' })
+    assert.equal(foreign.ok, false)
+  })
+
+  const liveDeps = (overrides: Partial<MiniAppLiveDataDeps> = {}): MiniAppLiveDataDeps => ({
+    findMembership: async () => ({ role: 'viewer', status: 'active' }),
+    canReadWarehouse: (role) => role !== 'guest',
+    agentAccess: async () => 'read',
+    findOwnerAgent: async () => ({ retiredAt: null }),
+    runBoundQuery: async () => ({ columns: ['c'], columnLabels: ['C'], rows: [[1]], truncated: false, bytes: 10, dataAsOf: '2026-11-03T13:20:00.000Z', warnings: [], schemaStatus: 'current', version: 1, currentVersion: 1 }),
+    errorCode: (error) => (error instanceof Error ? error.message : 'live_data_unavailable'),
+    ...overrides,
+  })
+  const liveApp = { tenantId: TENANT, ownerAgentId: REKA }
+
+  await check('AC16: tag eltávolítása, jog hiánya, off szint, inaktív agent → adat nem megy ki, érthető ok', async () => {
+    assert.deepEqual(await checkLiveAccess(liveDeps(), liveApp, ANNA), { ok: true, role: 'viewer' })
+    const denied: Array<[string, MiniAppLiveDataDeps, string | undefined]> = [
+      ['link_without_user', liveDeps(), undefined],
+      ['member_removed', liveDeps({ findMembership: async () => null }), ANNA],
+      ['member_removed', liveDeps({ findMembership: async () => ({ role: 'admin', status: 'suspended' }) }), ANNA],
+      ['no_read_permission', liveDeps({ findMembership: async () => ({ role: 'guest', status: 'active' }) }), ANNA],
+      ['agent_access_off', liveDeps({ agentAccess: async () => 'off' }), ANNA],
+      ['owner_agent_unavailable', liveDeps({ findOwnerAgent: async () => null }), ANNA],
+      ['owner_agent_unavailable', liveDeps({ findOwnerAgent: async () => ({ retiredAt: new Date() }) }), ANNA],
+    ]
+    for (const [code, deps, user] of denied) {
+      const verdict = await checkLiveAccess(deps, liveApp, user)
+      assert.deepEqual(verdict, { ok: false, code })
+      assert.notEqual(liveDeniedMessage(code), 'Az élő adat most nem jeleníthető meg.', code)
+    }
+  })
+
+  await check('AC16 + AC19 + §4.4: hibás kötés hibablokkot kap, közös keret, kötelező figyelmeztetések a sávon', async () => {
+    const budgets: number[] = []
+    const deps = liveDeps({
+      runBoundQuery: async (_actor, input) => {
+        budgets.push(input.maxBytes)
+        if (input.queryId === 'broken') throw new Error('saved_query_broken')
+        return {
+          columns: ['c'],
+          columnLabels: ['C'],
+          rows: [[1], [2]],
+          truncated: true,
+          bytes: 1_000,
+          dataAsOf: input.queryId === 'q1' ? '2026-11-03T13:20:00.000Z' : '2026-10-01T10:00:00.000Z',
+          warnings: [
+            { code: 'open_exceptions', dataset: 'd', detail: { count: 3 } },
+            { code: 'definitions_not_confirmed', dataset: 'd', detail: ['x'] },
+          ],
+          schemaStatus: 'meaning_changed',
+          version: 1,
+          currentVersion: 2,
+        }
+      },
+    })
+    const binding = (alias: string, queryId: string) => ({ alias, queryId, queryVersion: 1, params: {}, maxRows: 2 })
+    const load = await loadLiveData(deps, { app: liveApp, userId: ANNA, role: 'viewer', bindings: [binding('egy', 'q1'), binding('ketto', 'broken'), binding('harom', 'q3')], purpose: 'content' })
+    assert.equal(budgets[0]! - budgets[2]!, 1_000, 'a második futás kevesebb keretet kap')
+    assert.deepEqual(load.data.ketto, { status: 'error', code: 'saved_query_broken' })
+    assert.equal(load.data.egy!.status, 'ok')
+    assert.equal(load.bar.lastLoadAt!.toISOString(), '2026-11-03T13:20:00.000Z')
+    const text = load.bar.warnings.join(' | ')
+    for (const part of ['3 megoldatlan adategyezés', 'AI-javaslat, még nem megerősített mezők', 'jelentése megváltozott', 'ketto: nem futtatható', 'egy: csak az első 2 sor látszik', 'újabb lekérdezés-verzió']) assert.ok(text.includes(part), part)
+    assert.equal(text.includes('1000'), false)
+
+    const frame = renderMiniAppFrame({ name: 'R', createdAt: new Date(), versionCreatedAt: new Date(), ownerAgentName: 'Réka', version: 1, currentVersion: 1, contentUrl: '/c', live: load.bar })
+    assert.ok(frame.includes('Élő adat') && frame.includes('⚠ 3 megoldatlan adategyezés') && frame.includes('<iframe'))
+    const denied = renderMiniAppFrame({ name: 'R', createdAt: new Date(), versionCreatedAt: new Date(), ownerAgentName: 'Réka', version: 1, currentVersion: 1, contentUrl: '/c', live: { mode: 'denied', lastLoadAt: null, warnings: [liveDeniedMessage('agent_access_off')] } })
+    assert.ok(denied.includes('nincs hozzáférése az adattárházhoz'))
+    assert.equal(denied.includes('<iframe'), false, 'elutasításnál az agent kódja sem tölt be')
+    const downloaded = withStaticMiniAppBar(LIVE_HTML, { name: 'R', createdAt: new Date(), versionCreatedAt: new Date(), ownerAgentName: 'Réka', version: 1, currentVersion: 1, live: { mode: 'download', lastLoadAt: new Date(), warnings: [], dataTakenAt: new Date() } })
+    assert.ok(downloaded.includes('ez a fájl már nem frissül'))
+  })
+
+  await check('D6 + §5: 1 óránál hosszabb token elutasítva, sebességkorlát appra és linkre', () => {
+    const now = 1_000_000
+    assert.equal(liveLinkTooLong(now + 3_600_000, now), false)
+    assert.equal(liveLinkTooLong(now + 7 * 24 * 3_600_000, now), true)
+    let clock = 0
+    const limit = createLiveRateLimiter(() => clock)
+    assert.equal(limit('k', 2), true)
+    assert.equal(limit('k', 2), true)
+    assert.equal(limit('k', 2), false)
+    assert.equal(limit('m', 2), true, 'más kulcs külön keret')
+    clock += 61_000
+    assert.equal(limit('k', 2), true)
+    assert.equal(miniAppBoundContentFetchDecision('iframe'), 'serve')
+    assert.equal(miniAppBoundContentFetchDecision(null), 'open_frame', 'a fejléc hiánya sem szolgál ki adatot')
+    assert.equal(miniAppBoundContentFetchDecision('document'), 'open_frame')
+    assert.equal(miniAppBoundContentFetchDecision('script'), 'reject')
+  })
+
+  await check('AC13 + AC16 + AC17: a route friss adatot ágyaz, tiltásnál és lejárt linknél nem', async () => {
+    const stub = (target: object, key: string, value: unknown) => Object.defineProperty(target, key, { value, configurable: true, writable: true })
+    const html = LIVE_HTML
+    const app = { id: 'app-live', tenantId: TENANT, status: 'active', ownerAgentId: REKA, name: 'Élő', createdAt: new Date(), currentVersion: 1 }
+    const version = { version: 1, html, contentHash: miniAppContentHash(html), createdAt: new Date(), dataBindings: [{ alias: 'bevetel', queryId: QUERY_ID, queryVersion: 1, params: {}, maxRows: 10 }] }
+    stub(repositories.miniApps, 'findById', async () => app)
+    stub(repositories.miniApps, 'findVersion', async () => version)
+    stub(repositories.agents, 'findById', async () => ({ retiredAt: null }))
+    stub(repositories.audit, 'append', async () => undefined)
+    stub(repositories.tenantMemberships, 'findByTenantAndUser', async () => ({ role: 'viewer', status: 'active' }))
+    stub(repositories.tenants, 'findById', async () => ({ settings: {} }))
+    let cell = 'első import'
+    const saved = miniAppLiveDeps.runBoundQuery
+    miniAppLiveDeps.runBoundQuery = async () => ({ columns: ['c'], columnLabels: ['C'], rows: [[cell]], truncated: false, bytes: 10, dataAsOf: '2026-11-03T13:20:00.000Z', warnings: [], schemaStatus: 'current', version: 1, currentVersion: 1 })
+    const sign = (expiresAt: number, requesterUserId: string | null = ANNA) => signMiniAppLink({ tenantId: TENANT, appId: app.id, version: 1, contentHash: version.contentHash, requesterUserId, expiresAt })
+    const get = (token: string, dest: string | null = 'iframe') =>
+      GET(new Request(`https://apps.test/api/mini-apps/content/${token}`, { headers: dest ? { 'sec-fetch-dest': dest } : {} }), { params: Promise.resolve({ token }) })
+    try {
+      const token = sign(Date.now() + 3_000_000)
+      const first = await get(token)
+      assert.equal(first.status, 200)
+      assert.ok(first.headers.get('Content-Security-Policy')!.includes('sha256-'))
+      assert.equal(/script-src[^;]*unsafe-inline/.test(first.headers.get('Content-Security-Policy')!), false)
+      assert.equal(first.headers.get('Connection-Allowlist'), '()')
+      assert.equal(first.headers.get('Cache-Control'), 'private, no-store')
+      assert.ok((await first.text()).includes('első import'))
+      cell = 'második import'
+      assert.ok((await (await get(token)).text()).includes('második import'), 'AC13 újranyitás új verzió nélkül')
+      assert.equal((await get(token, null)).status, 302, 'tartalom csak iframe-be')
+      assert.equal((await get(sign(Date.now() + 7 * 24 * 3_600_000))).status, 410, 'hosszú lejáratú token nem jó kötött verzióra')
+      assert.equal((await get(sign(Date.now() - 1_000))).status, 410, 'AC17 lejárt')
+      const noUser = await get(sign(Date.now() + 3_000_000, null))
+      assert.equal(noUser.status, 404, 'személyhez nem kötött link nem kap adatot')
+      stub(repositories.tenantMemberships, 'findByTenantAndUser', async () => null)
+      const removed = await get(token)
+      assert.equal(removed.status, 404)
+      assert.equal((await removed.text()).includes('második import'), false)
+    } finally {
+      miniAppLiveDeps.runBoundQuery = saved
+    }
   })
 
   await check('lint: a `/` is lezárja a tilos taget; új figyelmeztetések emberi szöveggel', () => {

@@ -43,6 +43,7 @@ const MESSAGES: Record<string, string> = {
   load_failed: 'A betöltés nem sikerült, semmi sem változott. Nézd meg újra az előnézetet, majd próbáld újra.',
   saved_query_not_found: 'Ez a lekérdezés már nem létezik (lehet, hogy valaki archiválta). Frissítsd az oldalt.',
   saved_query_broken: 'Ez a lekérdezés már nem illik az adatokhoz, ezért nem futtatható. Kérd meg az AI munkatársat, hogy javítsa.',
+  saved_query_in_use: 'Ezt a lekérdezést egy mini app használja, ezért nem archiválható. Előbb az appot kell átállítani vagy archiválni.',
   invalid_param: 'Az egyik megadott érték nem megfelelő formátumú. Ellenőrizd, majd próbáld újra.',
   invalid_param_value: 'Az egyik megadott érték nem illik a mezőhöz. Ellenőrizd, majd próbáld újra.',
   missing_param: 'Ehhez a lekérdezéshez minden kötelező értéket ki kell tölteni.',
@@ -83,6 +84,14 @@ export async function loadWarehousePageAction(importId?: string) {
     ])
     const details = await Promise.all(datasets.map((d) => svc.describeDataset(a, d.key)))
     const owners = new Set(savedQueries.map((query) => query.ownerAgentId))
+    const boundApps = await repositories.miniApps.listBoundApps(ctx.activeTenantId)
+    const shownQueries = new Set(savedQueries.map((query) => query.queryId))
+    const queryApps: Record<string, Array<{ appId: string; name: string }>> = {}
+    for (const app of boundApps) {
+      for (const queryId of new Set(app.bindings.map((binding) => binding.queryId))) {
+        if (shownQueries.has(queryId)) (queryApps[queryId] ??= []).push({ appId: app.appId, name: app.name })
+      }
+    }
     return ok({
       status,
       permissions,
@@ -102,6 +111,7 @@ export async function loadWarehousePageAction(importId?: string) {
       selected,
       savedQueries: savedQueries.slice(0, SAVED_QUERIES_PAGE_LIMIT),
       savedQueriesTruncated: savedQueries.length > SAVED_QUERIES_PAGE_LIMIT,
+      queryApps,
       // Csak a lekérdezések tulajdonosainak neve kerül a kliensre, nem a cég összes munkatársáé.
       agentNames: Object.fromEntries(agents.filter((agent) => owners.has(agent.id)).map((agent) => [agent.id, agent.name])),
     })

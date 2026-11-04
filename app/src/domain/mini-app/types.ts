@@ -1,3 +1,5 @@
+import type { MiniAppDataBinding } from './data-binding'
+
 export type MiniAppVisibility = 'private' | 'agents' | 'organization'
 export type MiniAppStatus = 'active' | 'archived'
 
@@ -29,6 +31,8 @@ export type MiniAppVersionMeta = {
   changeNote: string | null
   createdByUserId: string
   createdAt: Date
+  /** Élő adat-kötések (#1083); üres lista: statikus verzió. */
+  dataBindings: MiniAppDataBinding[]
 }
 
 export type MiniAppVersionRecord = MiniAppVersionMeta & { html: string }
@@ -50,7 +54,11 @@ export type NewMiniAppVersion = {
   changeNote: string | null
   idempotencyKey: string | null
   createdByUserId: string
+  dataBindings: MiniAppDataBinding[]
 }
+
+/** Egy aktív app aktuális verziójának kötései (a lekérdezés-archiválás és a felület ezt nézi). */
+export type MiniAppBoundApp = { appId: string; name: string; ownerAgentId: string; bindings: MiniAppDataBinding[] }
 
 export interface MiniAppStore {
   findById(tenantId: string, appId: string): Promise<MiniAppRecord | null>
@@ -94,6 +102,8 @@ export interface MiniAppStore {
   revokeShares(appId: string, agentIds: string[]): Promise<string[]>
   setVisibility(appId: string, visibility: MiniAppVisibility): Promise<void>
   setStatus(appId: string, status: MiniAppStatus, archivedAt: Date | null): Promise<void>
+  /** A cég aktív appjai, amelyek aktuális verziója élő adatot használ. */
+  listBoundApps(tenantId: string): Promise<MiniAppBoundApp[]>
   /** Archiválás után a határidőn túli appok végleges törlése (D10). */
   purgeArchivedBefore(cutoff: Date): Promise<Array<{ id: string; tenantId: string }>>
 }
