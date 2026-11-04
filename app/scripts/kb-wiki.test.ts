@@ -1472,6 +1472,34 @@ async function main() {
     }
   })
 
+  await check('#1077 a régi szöveges owner megmarad íráskor (a metaadat-átállás bemenete), az új szöveges owner hiba', async () => {
+    await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc], pages: [page1077('concepts/regi-gazda.md')],
+    })
+    const row = (await wikis.findPage(KB_A, 'concepts/regi-gazda.md'))!
+    wikis.pages.set(row.id, { ...row, frontmatter: { owner: 'Kiss Péter' } } as never)
+    const patched = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, pages: [{ path: 'concepts/regi-gazda.md', action: 'patch', baseVersion: row.contentHash, summary: 'új' }],
+    })
+    assert.equal(patched.status, 'applied', JSON.stringify(patched))
+    const afterPatch = (await wikis.findPage(KB_A, 'concepts/regi-gazda.md'))!
+    assert.deepEqual(afterPatch.frontmatter, { owner: 'Kiss Péter' })
+    const roundTrip = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+      pages: [page1077('concepts/regi-gazda.md', { baseVersion: afterPatch.contentHash, frontmatter: { owner: 'Kiss Péter' } })],
+    })
+    assert.equal(roundTrip.status, 'applied', JSON.stringify(roundTrip))
+    const afterUpsert = (await wikis.findPage(KB_A, 'concepts/regi-gazda.md'))!
+    assert.deepEqual(afterUpsert.frontmatter, { owner: 'Kiss Péter' })
+    assert.equal(afterUpsert.ownerUserId ?? null, null)
+    const changed = await call(OWNER, DEF_A, 'kb_wiki_write', {
+      wikiId: WIKI_A, sourceDocumentIds: [sourceDoc],
+      pages: [page1077('concepts/regi-gazda.md', { baseVersion: afterUpsert.contentHash, frontmatter: { owner: 'Nagy Anna' } })],
+    })
+    assert.equal(changed.code, 'invalid_wiki_change', JSON.stringify(changed))
+    assert.equal(changed.errors[0].code, 'invalid_field')
+  })
+
   await check('#1077 patch: [] nincs művelet: oldal szintű változással lefut, önmagában empty_patch', async () => {
     const created = await call(OWNER, DEF_A, 'kb_wiki_write', {
       wikiId: WIKI_A, sourceDocumentIds: [sourceDoc], pages: [page1077('concepts/ures-patch.md')],
