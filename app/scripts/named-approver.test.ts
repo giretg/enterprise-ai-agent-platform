@@ -6,7 +6,9 @@
  * - a megnevezett a saját kérését is jóváhagyhatja,
  * - más (még approver szerepű) felhasználó approver_not_authorized-ot kap,
  * - admin-helyettes és assumált superadmin dönthet,
- * - az MCP-válasz megnevezi, kire vár a művelet.
+ * - az MCP-válasz megnevezi, kire vár a művelet,
+ * - inaktív/hiányzó megnevezett → approver_unavailable (ne fail-open self-approve).
+ * - idegen megnevezettnél a chat-form helyett Control Plane link megy (nem hazudik Approve gombot).
  */
 import assert from 'node:assert/strict'
 import type { AgentDefinition } from '../src/domain/agent-definition'
@@ -14,13 +16,17 @@ import {
   GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
   type LiveConnectorRow,
   type ToolCallPrincipal,
+  type WriteConfirmInput,
 } from '../src/domain/enterprise-tools'
 import {
   approveGatewayOperation,
   canSeeGatewayOperation,
   enqueueGatewayOperation,
   enqueueResultToMcp,
+  enqueueWriteForMcp,
   listPendingGatewayOperations,
+  resolveDesignatedApproverBinding,
+  type DesignatedApproverResolution,
   type GatewayOperationServiceDeps,
 } from '../src/domain/gateway-operation'
 import { MemoryGatewayOperationStore } from './memory-gateway-operation-store'
@@ -79,11 +85,22 @@ function connector(): LiveConnectorRow {
   }
 }
 
-function deps(designated: { userId: string; name: string } | null = { userId: CSILLA_ID, name: 'Csilla' }) {
+function deps(
+  designated: DesignatedApproverResolution = {
+    kind: 'designated',
+    userId: CSILLA_ID,
+    name: 'Csilla',
+  },
+) {
   const store = new MemoryGatewayOperationStore()
+  const audit: Array<{ action: string; metadata?: unknown }> = []
   const serviceDeps: GatewayOperationServiceDeps = {
     operations: store,
-    audit: { async append() {} },
+    audit: {
+      async append(data) {
+        audit.push({ action: data.action, metadata: data.metadata })
+      },
+    },
     async loadDefinition() {
       return definition()
     },
@@ -120,7 +137,7 @@ function deps(designated: { userId: string; name: string } | null = { userId: CS
       return { file: { id: 'folder-1' } }
     },
   }
-  return { store, deps: serviceDeps }
+  return { store, deps: serviceDeps, audit }
 }
 
 const ARGS = { definitionId: DEFINITION_ID, name: 'Q3 reports', idempotencyKey: 'idem-named-1' }
@@ -145,14 +162,14 @@ async function main() {
   })
 
   await check('megnevezett nélkül nincs designated', async () => {
-    const wired = deps(null)
+    const wired = deps({ kind: 'none' })
     const view = await enqueue(wired, 'idem-named-2')
     assert.equal(view.designatedApproverUserId, null)
     assert.equal(view.designatedApproverName, null)
   })
 
   await check('a megnevezett jóváhagyhatja a saját kérését', async () => {
-    const wired = deps({ userId: REQUESTER_ID, name: 'Kérelmező' })
+    const wired = deps({ kind: 'designated', userId: REQUESTER_ID, name: 'Kérelmező' })
     const view = await enqueue(wired, 'idem-named-3')
     const approved = await approveGatewayOperation(wired.deps, {
       tenantId: TENANT_ID,
@@ -225,6 +242,108 @@ async function main() {
     const payload = JSON.parse(text) as { waitingForApprover?: { name?: string }; message?: string }
     assert.equal(payload.waitingForApprover?.name, 'Csilla')
     assert.ok(payload.message?.includes('Csilla'))
+  })
+
+  await check('inaktív megnevezett → enqueue fail-closed (approver_unavailable)', async () => {
+    const wired = deps({ kind: 'unavailable' })
+    const result = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...ARGS, idempotencyKey: 'idem-named-inactive' },
+    })
+    assert.deepEqual(result, { ok: false, code: 'approver_unavailable' })
+    assert.equal((await wired.store.listAwaitingApproval(TENANT_ID)).length, 0)
+  })
+
+  await check('binding feloldás: aktív → designated, felfüggesztett → unavailable', () => {
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: null,
+        membershipStatus: null,
+        user: null,
+      }),
+      { kind: 'none' },
+    )
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: CSILLA_ID,
+        membershipStatus: 'active',
+        user: { id: CSILLA_ID, name: 'Csilla', email: 'csilla@example.com' },
+      }),
+      { kind: 'designated', userId: CSILLA_ID, name: 'Csilla' },
+    )
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: CSILLA_ID,
+        membershipStatus: 'suspended',
+        user: { id: CSILLA_ID, name: 'Csilla', email: 'csilla@example.com' },
+      }),
+      { kind: 'unavailable' },
+    )
+    assert.deepEqual(
+      resolveDesignatedApproverBinding({
+        approverUserId: CSILLA_ID,
+        membershipStatus: 'active',
+        user: null,
+      }),
+      { kind: 'unavailable' },
+    )
+  })
+
+  await check('idegen megnevezettnél mint ellenére Control Plane link megy, nem form', async () => {
+    const wired = deps()
+    let minted = 0
+    const confirm: WriteConfirmInput = {
+      async mint() {
+        minted += 1
+        return 'state-1'
+      },
+    }
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...ARGS, idempotencyKey: 'idem-named-form-link' },
+      origin: 'https://app.example',
+      confirm,
+    })
+    assert.equal(minted, 0)
+    assert.ok('content' in result, 'expected link tool result, not input_required')
+    const payload = JSON.parse(result.content[0]!.text) as {
+      status?: string
+      approvalUrl?: string
+      waitingForApprover?: { name?: string }
+    }
+    assert.equal(payload.status, 'awaiting_approval')
+    assert.match(String(payload.approvalUrl), /\/control-plane\/operations/)
+    assert.equal(payload.waitingForApprover?.name, 'Csilla')
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'link')
+    assert.equal(meta?.confirmBranchReason, 'designated_approver_other')
+  })
+
+  await check('megnevezett = kérelmező: form továbbra is megy', async () => {
+    const wired = deps({ kind: 'designated', userId: REQUESTER_ID, name: 'Kérelmező' })
+    let minted = 0
+    const confirm: WriteConfirmInput = {
+      async mint() {
+        minted += 1
+        return 'state-self'
+      },
+    }
+    const result = await enqueueWriteForMcp(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...ARGS, idempotencyKey: 'idem-named-form-self' },
+      origin: 'https://app.example',
+      confirm,
+    })
+    assert.equal(minted, 1)
+    assert.equal('resultType' in result && result.resultType, 'input_required')
+    const enqueued = wired.audit.find((row) => row.action === 'gateway.operation.enqueued')
+    const meta = enqueued?.metadata as Record<string, unknown>
+    assert.equal(meta?.confirmBranch, 'form')
+    assert.equal(meta?.confirmBranchReason, 'mrtr_form')
   })
 
   console.log(`\nnamed-approver: ${failures === 0 ? 'ok' : `${failures} failed`}`)

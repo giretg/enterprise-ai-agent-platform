@@ -16,6 +16,10 @@ export type ChatClaims = {
   adminInsight: boolean
   turnId?: string
   agentId?: string
+  /** #1032: csak a platform szerveroldali tokenjében (bejövő levél); a böngésző sosem kapja. */
+  origin?: 'inbound_mail'
+  /** #1032: az elfogadható `instructions` sha256-ja. */
+  ih?: string
   jti: string
   iat: number
   exp: number

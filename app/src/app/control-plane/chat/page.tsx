@@ -12,7 +12,7 @@ import { PlatformChat } from '@/components/platform-chat/platform-chat'
 export default async function PlatformChatPage({
   searchParams,
 }: {
-  searchParams: Promise<{ agent?: string }>
+  searchParams: Promise<{ agent?: string; conversation?: string }>
 }) {
   const ctx = await requireTenantRole('viewer')
   const query = await searchParams
@@ -26,6 +26,7 @@ export default async function PlatformChatPage({
         isAdmin={isAdmin}
         keyMissingForAdmin={keyMissingForAdmin}
         initialAgentId={parsePlatformChatAgentParam(query.agent)}
+        initialConversationId={parsePlatformChatAgentParam(query.conversation)}
       />
     </div>
   )

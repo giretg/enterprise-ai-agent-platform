@@ -27,6 +27,7 @@ import {
 import {
   assembleKbCatalog,
   assembleKbDocument,
+  maskKbSensitiveText,
   assembleKbHits,
   assembleKbIndex,
   assembleKbPage,
@@ -42,7 +43,7 @@ import { renderPdfPages, PdfPageImageError } from '@/lib/kb-pdf-images'
 import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
-export const KB_MAX_FILE_BYTES = 10 * 1024 * 1024
+export const KB_MAX_FILE_BYTES = 25 * 1024 * 1024
 
 export type KnowledgeBaseDeps = {
   documents: DocumentRepository
@@ -616,11 +617,11 @@ export class KnowledgeBaseService {
       memoryContent: '',
       memoryId: null,
       memoryVersion: null,
-      okfChunkHits,
+      okfChunkHits: okfChunkHits.map((hit) => ({ ...hit, text: maskKbSensitiveText(hit.text) })),
       docs: [],
       supersededDocIds: new Set(),
     })
-    return rankKbHits(
+    const ranked = rankKbHits(
       [
         ...okfHits.map((hit, i) => ({
           hit: wikiArtifactIds.has(okfChunkHits[i].artifactId) ? { ...hit, kind: 'wiki_page' as const } : hit,
@@ -642,6 +643,18 @@ export class KnowledgeBaseService {
       ],
       k,
     )
+    // #1077 D6: kártyaszám, PIN és kulcs a találatban maszkolva; a tárolt forrás változatlan.
+    return ranked.map((hit) => ({
+      ...hit,
+      snippet: maskKbSensitiveText(hit.snippet),
+      sourceRef: hit.sourceRef.replace(/^(doc|okf):([^:]*):([\s\S]*)$/, (_all, kind: string, id: string, label: string) => `${kind}:${id}:${maskKbSensitiveText(label)}`),
+      ...(hit.title ? { title: maskKbSensitiveText(hit.title) } : {}),
+      ...(hit.source ? { source: {
+        ...hit.source,
+        ...(hit.source.section ? { section: maskKbSensitiveText(hit.source.section) } : {}),
+        ...(hit.source.filename ? { filename: maskKbSensitiveText(hit.source.filename) } : {}),
+      } } : {}),
+    }))
   }
 
   async listIndex(input: {
@@ -715,6 +728,7 @@ export class KnowledgeBaseService {
 
   async getDocument(input: {
     connectorId: string; documentId: string; section?: string
+    offset?: number; limit?: number
     pageImages?: boolean; pages?: string
     tenantId?: string; userId?: string
   }) {
@@ -761,6 +775,8 @@ export class KnowledgeBaseService {
       purpose: readKbPurpose(document.metadata),
       text: document.extractedText ?? '',
       section: input.section,
+      offset: input.offset,
+      limit: input.limit,
     }) }
   }
 }

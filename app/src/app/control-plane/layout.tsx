@@ -1,7 +1,10 @@
 import { headers } from 'next/headers'
+import { after } from 'next/server'
 import { getTranslations } from 'next-intl/server'
 import { countUrgentCustomerPromisesAction } from '@/app/actions/customer-promise'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
+import { countMyInboundMailAction } from '@/app/actions/inbound-mail'
+import { triggerInboundPoll } from '@/lib/inbound-mail/deps'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
 import { getPlatformChatAvailabilityAction } from '@/app/actions/platform-chat'
 import { getAuthContext } from '@/auth/context'
@@ -23,16 +26,21 @@ export default async function ControlPlaneLayout({ children }: { children: React
   const canSeeTasks = hasMinimumRole(ctx?.activeTenantRole ?? null, 'viewer')
   // ponytail: a badge a teljes inbox-listák hossza, minden control-plane oldalon.
   // Upgrade: count-only query, ha ez a layout-latencyben látszik.
-  const [navVisibility, pendingRes, inboxRes, urgentPromisesCount, chatRes] = await Promise.all([
+  const [navVisibility, pendingRes, inboxRes, urgentPromisesCount, chatRes, newMailCount] = await Promise.all([
     loadTenantNavVisibility(ctx?.activeTenantId ?? null),
     canSeeTasks ? listPendingGatewayOperationsAction() : Promise.resolve(null),
     canSeeTasks ? listHandoffInboxAction() : Promise.resolve(null),
     canSeeTasks ? countUrgentCustomerPromisesAction() : Promise.resolve(0),
     canSeeTasks ? getPlatformChatAvailabilityAction() : Promise.resolve(null),
+    canSeeTasks ? countMyInboundMailAction() : Promise.resolve(0),
   ])
+  // #1032: a push nélküli postafiókok ellenőrzése a platform használata közben, a válasz után (nem lassít).
+  const tenantId = ctx?.activeTenantId
+  if (canSeeTasks && tenantId) after(() => triggerInboundPoll(tenantId))
   const pendingTasksCount =
     (pendingRes?.success ? pendingRes.data.operations.length : 0) +
-    (inboxRes?.success ? inboxRes.data.handoffs.length : 0)
+    (inboxRes?.success ? inboxRes.data.handoffs.length : 0) +
+    newMailCount
   const tNav = await getTranslations('ControlPlane.nav')
   const navItems = localizeControlPlaneNav(
     buildControlPlaneNav({

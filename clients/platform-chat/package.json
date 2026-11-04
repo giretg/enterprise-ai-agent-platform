@@ -10,7 +10,7 @@
     "dev": "PLATFORM_CHAT_QUEUE=inline node --import tsx --watch src/main.ts",
     "migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/attachments.test.ts && tsx test/engine.test.ts && tsx test/auth.test.ts && tsx test/server.test.ts && tsx test/platform-client.test.ts && tsx scripts/check-import-boundary.ts",
+    "test": "tsx test/attachments.test.ts && tsx test/engine.test.ts && tsx test/auth.test.ts && tsx test/server.test.ts && tsx test/inbound-mail.test.ts && tsx test/platform-client.test.ts && tsx scripts/check-import-boundary.ts",
     "test:pg": "tsx test/pg-store.it.ts",
     "test:import-boundary": "tsx scripts/check-import-boundary.ts"
   },

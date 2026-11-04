@@ -16,6 +16,8 @@ import {
   type ChatConversation,
   type ChatFile,
   type ChatMessageView,
+  type ChatPlanItem,
+  type ChatQuestion,
   type ConversationView,
   type WorkerClient,
 } from './worker-client'
@@ -36,8 +38,17 @@ type Live = {
   text: string
   status: string
   approval: { message: string; link?: string } | null
+  /** #1025: a munkatárs kérdése — a forduló a válaszig parkol. */
+  question: ChatQuestion | null
+  /** #1025: a munkaterv élő állapota. */
+  plan: ChatPlanItem[] | null
   error: string | null
+  paused: { message: string; completedOperations: number; files: ChatFile[] } | null
 }
+
+const freshLive = (turnId: string, patch: Partial<Live> = {}): Live => ({
+  turnId, lastId: 0, text: '', status: '', approval: null, question: null, plan: null, error: null, paused: null, ...patch,
+})
 
 const SESSION_ERRORS: Record<string, string> = {
   platform_chat_disabled: 'A beszélgetés a platformon ennél a cégnél most ki van kapcsolva.',
@@ -145,10 +156,22 @@ function AttachmentList({ attachments }: { attachments: ChatAttachment[] }) {
 
 const FILE_BADGES: Record<string, string> = {
   xlsx: 'bg-emerald-600',
+  xls: 'bg-emerald-600',
   csv: 'bg-emerald-700',
   docx: 'bg-sky-700',
+  doc: 'bg-sky-700',
   pdf: 'bg-rose-600',
   md: 'bg-ink-soft',
+}
+
+/** #1070: a letöltés gombja a fájl fajtáját mondja („Excel letöltése”). */
+const DOWNLOAD_LABELS: Record<string, string> = {
+  xlsx: 'Excel letöltése',
+  xls: 'Excel letöltése',
+  csv: 'CSV letöltése',
+  docx: 'Word letöltése',
+  doc: 'Word letöltése',
+  pdf: 'PDF letöltése',
 }
 
 function fileSize(bytes: number | null): string | null {
@@ -207,7 +230,7 @@ function FileCards({ files, onSaveToDrive }: { files: ChatFile[]; onSaveToDrive?
                   download={file.name}
                   className="flex items-center gap-1.5 rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-white transition hover:bg-ink/85"
                 >
-                  <Icon name="download" className="h-3.5 w-3.5" /> Letöltés
+                  <Icon name="download" className="h-3.5 w-3.5" /> {DOWNLOAD_LABELS[ext] ?? 'Letöltés'}
                 </a>
               </div>
             ) : null}
@@ -215,6 +238,128 @@ function FileCards({ files, onSaveToDrive }: { files: ChatFile[]; onSaveToDrive?
         )
       })}
     </ul>
+  )
+}
+
+/**
+ * #1025: a munkatárs munkaterve a válasz fölött, összecsukható listaként („3/6 kész”).
+ * Futás közben nyitva, a kész válasznál csukva.
+ */
+function PlanList({ plan, live = false }: { plan: ChatPlanItem[]; live?: boolean }) {
+  const done = plan.filter((s) => s.status === 'done').length
+  return (
+    <details open={live} className="group/plan mb-3 rounded-2xl border border-line bg-card px-3 py-2 text-sm">
+      <summary
+        className="flex cursor-pointer list-none items-center gap-2 text-ink-soft [&::-webkit-details-marker]:hidden"
+        title="A munkatárs lépésenként frissíti, hol tart a feladattal."
+      >
+        <Icon name="chevron" className="h-3.5 w-3.5 -rotate-90 transition group-open/plan:rotate-0" />
+        <span className="font-medium text-ink">Munkaterv</span>
+        <span>
+          · {done}/{plan.length} kész
+        </span>
+      </summary>
+      <ol className="mt-2 space-y-1.5 pb-1">
+        {plan.map((step, i) => (
+          <li key={`${i}-${step.title}`} className="flex items-start gap-2">
+            {step.status === 'done' ? (
+              <Icon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+            ) : step.status === 'in_progress' ? (
+              <span aria-hidden className="mt-1 h-3 w-3 shrink-0 animate-pulse rounded-full border-2 border-coral bg-coral/30" />
+            ) : (
+              <span aria-hidden className="mt-1 h-3 w-3 shrink-0 rounded-full border-2 border-line" />
+            )}
+            <span className={step.status === 'done' ? 'text-ink-soft line-through decoration-ink-faint/60' : step.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'}>
+              {step.title}
+              <span className="sr-only">{step.status === 'done' ? ' (kész)' : step.status === 'in_progress' ? ' (folyamatban)' : ' (hátra van)'}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  )
+}
+
+/** #1025: kattintható választás. Egyválasztósnál a gomb azonnal küld, többválasztósnál a „Küldés” gomb. */
+function QuestionCard({ question, readOnly, onAnswer }: { question: ChatQuestion; readOnly: boolean; onAnswer: (selected: string[]) => Promise<void> }) {
+  const [picked, setPicked] = useState<string[]>([])
+  const [sending, setSending] = useState(false)
+  async function submit(selected: string[]) {
+    if (sending || !selected.length) return
+    setSending(true)
+    try {
+      await onAnswer(selected)
+    } finally {
+      setSending(false)
+    }
+  }
+  return (
+    <div className="rounded-2xl border border-coral/40 bg-coral/5 p-4 text-sm" role="group" aria-label="A munkatárs kérdése">
+      <p className="font-medium text-ink">{question.question}</p>
+      <div className="mt-3 flex flex-col gap-2">
+        {question.options.map((o) => {
+          const selected = picked.includes(o.label)
+          return (
+            <button
+              key={o.label}
+              type="button"
+              disabled={readOnly || sending}
+              aria-pressed={question.multiSelect ? selected : undefined}
+              onClick={() =>
+                question.multiSelect ? setPicked((p) => (selected ? p.filter((x) => x !== o.label) : [...p, o.label])) : void submit([o.label])
+              }
+              className={`flex items-start gap-2.5 rounded-xl border px-3 py-2 text-left transition disabled:cursor-default disabled:opacity-60 ${selected ? 'border-coral bg-coral/10' : 'border-line bg-card hover:border-coral/50'}`}
+            >
+              {question.multiSelect ? (
+                <span aria-hidden className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border ${selected ? 'border-coral bg-coral text-white' : 'border-line'}`}>
+                  {selected ? <Icon name="check" className="h-3 w-3" /> : null}
+                </span>
+              ) : null}
+              <span className="min-w-0">
+                <span className="block font-medium text-ink">{o.label}</span>
+                {o.description ? <span className="block text-xs text-ink-soft">{o.description}</span> : null}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+      {question.multiSelect && !readOnly ? (
+        <button
+          type="button"
+          disabled={!picked.length || sending}
+          onClick={() => void submit(picked)}
+          className="mt-3 rounded-full bg-coral px-4 py-1.5 font-medium text-white hover:bg-coral-deep disabled:bg-ink/10 disabled:text-ink-faint"
+        >
+          Küldés
+        </button>
+      ) : null}
+      {!readOnly ? (
+        <p className="mt-2 text-xs text-ink-faint">
+          {question.allowOther ? 'Ha egyik sem jó, írd meg a választ lent az üzenetmezőben. ' : ''}
+          Ráérsz: a kérdés akkor is megvár, ha bezárod az oldalt.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/** #1025: a már megválaszolt kérdés a beszélgetésben (a választás kiemelve). */
+function AnsweredQuestion({ question }: { question: NonNullable<ChatMessageView['question']> }) {
+  return (
+    <div className="mt-2 rounded-2xl border border-line bg-card px-3 py-2.5 text-sm">
+      <p className="font-medium text-ink">{question.question}</p>
+      <ul className="mt-1.5 flex flex-wrap gap-1.5">
+        {question.options.map((o) => {
+          const chosen = question.answer.selected.includes(o.label)
+          return (
+            <li key={o.label} className={`flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs ${chosen ? 'border-coral/50 bg-coral/10 text-ink' : 'border-line text-ink-faint'}`}>
+              {chosen ? <Icon name="check" className="h-3 w-3 text-coral" /> : null}
+              {o.label}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }
 
@@ -227,7 +372,7 @@ function Message({
   onEdit,
   onSaveToDrive,
 }: {
-  message: Pick<ChatMessageView, 'id' | 'role' | 'content' | 'attachments' | 'files'>
+  message: Pick<ChatMessageView, 'id' | 'role' | 'content' | 'attachments' | 'files' | 'question' | 'plan'>
   streaming?: boolean
   copied: boolean
   onCopy?: () => void
@@ -250,8 +395,10 @@ function Message({
   }
   return (
     <div className="group">
-      <Markdown text={message.content} />
+      {message.plan?.length ? <PlanList plan={message.plan} /> : null}
+      {message.content ? <Markdown text={message.content} /> : null}
       {streaming ? <span aria-hidden className="ml-0.5 inline-block h-4 w-2 animate-pulse rounded-sm bg-ink/40 align-middle" /> : null}
+      {message.question ? <AnsweredQuestion question={message.question} /> : null}
       <AttachmentList attachments={message.attachments} />
       <FileCards files={message.files ?? []} onSaveToDrive={onSaveToDrive} />
       {!streaming && onCopy ? (
@@ -267,11 +414,14 @@ export function PlatformChat({
   isAdmin,
   keyMissingForAdmin,
   initialAgentId = null,
+  initialConversationId = null,
 }: {
   isAdmin: boolean
   keyMissingForAdmin: boolean
   /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
   initialAgentId?: string | null
+  /** #1032: `?conversation=` — pl. a bejövő levél feldolgozásának beszélgetése a Postaládából. */
+  initialConversationId?: string | null
 }) {
   const [client, setClient] = useState<WorkerClient | null>(null)
   const [fatal, setFatal] = useState<string | null>(null)
@@ -357,18 +507,21 @@ export function PlatformChat({
       streamAbort.current?.abort()
       const abort = new AbortController()
       streamAbort.current = abort
-      setLive((prev) => (prev?.turnId === turnId ? prev : { turnId, lastId: 0, text: '', status: 'Gondolkodom…', approval: null, error: null }))
+      setLive((prev) => (prev?.turnId === turnId ? prev : freshLive(turnId, { status: 'Gondolkodom…' })))
       const coldStart = setTimeout(() => setLive((p) => (p && !p.text && p.turnId === turnId ? { ...p, status: 'Ébresztem a munkatársat…' } : p)), COLD_START_MS)
       try {
         await c.stream(
           turnId,
           (e) => {
             clearTimeout(coldStart)
+            // A megválaszolt kérdés és a válasz üzenetként bekerült: a nézet frissül, az élő szöveg innen újraindul.
+            if (e.type === 'question' && e.data.phase === 'answered') void c.conversation(conversationId).then(setView).catch(() => {})
             setLive((prev) => {
               if (!prev || prev.turnId !== turnId) return prev
               const p = { ...prev, lastId: Math.max(prev.lastId, e.id) }
               if (e.type === 'delta') return { ...p, text: p.text + String(e.data.text ?? ''), status: '' }
-              if (e.type === 'status') return { ...p, status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
+              if (e.type === 'status') return { ...p, ...(e.data.phase === 'resumed' ? { paused: null } : {}), status: e.data.phase === 'thinking' ? (p.text ? '' : 'Gondolkodom…') : p.status }
+              if (e.type === 'pause') return { ...p, status: '', text: String(e.data.text ?? p.text), paused: { message: String(e.data.message ?? ''), completedOperations: Number(e.data.completedOperations ?? 0), files: (e.data.files as ChatFile[]) ?? [] } }
               if (e.type === 'tool') {
                 return { ...p, text: p.text && !p.text.endsWith('\n\n') ? `${p.text}\n\n` : p.text, status: e.data.phase === 'start' ? toolStatus(String(e.data.name ?? ''), e.data.detail) : 'Gondolkodom…' }
               }
@@ -376,6 +529,14 @@ export function PlatformChat({
                 if (e.data.phase === 'requested') return { ...p, status: '', approval: { message: String(e.data.message ?? ''), link: e.data.link as string | undefined } }
                 return { ...p, approval: null, status: 'Gondolkodom…' }
               }
+              if (e.type === 'question') {
+                if (e.data.phase === 'requested') {
+                  const { question, options, allowOther, multiSelect } = e.data as unknown as ChatQuestion
+                  return { ...p, status: '', question: { question, options, allowOther, multiSelect } }
+                }
+                return { ...p, text: '', question: null, status: 'Gondolkodom…' }
+              }
+              if (e.type === 'plan') return { ...p, plan: (e.data.steps as ChatPlanItem[] | undefined) ?? p.plan }
               if (e.type === 'error') return { ...p, status: '', error: String(e.data.message ?? 'Most nem sikerült válaszolni.') }
               return p
             })
@@ -392,7 +553,7 @@ export function PlatformChat({
       if (abort.signal.aborted) return
       const fresh = await c.conversation(conversationId)
       setView(fresh)
-      setLive((p) => (p && (p.approval || p.error) ? p : null))
+      setLive((p) => (p && (p.approval || p.question || p.error || p.paused) ? p : null))
       // Az első válasz után a beszélgetés címet kap — frissül az előzménylista.
       refreshListRef.current()
     },
@@ -410,13 +571,20 @@ export function PlatformChat({
       if (!adminMode) setAgentId(v.conversation.agentId)
       atBottomRef.current = true
       setAtBottom(true)
-      if (v.activeTurn?.pendingApproval) {
-        setLive({ turnId: v.activeTurn.id, lastId: 0, text: '', status: '', approval: { message: v.activeTurn.pendingApproval.message }, error: null })
+      const plan = v.activeTurn?.plan ?? null
+      if (v.activeTurn?.paused) {
+        const { text, lastId, ...paused } = v.activeTurn.paused
+        setLive(freshLive(v.activeTurn.id, { text, lastId, paused, plan }))
+      } else if (v.activeTurn?.pendingApproval) {
+        setLive(freshLive(v.activeTurn.id, { approval: { message: v.activeTurn.pendingApproval.message }, plan }))
+      } else if (v.activeTurn?.pendingInput) {
+        const { question, options, allowOther, multiSelect } = v.activeTurn.pendingInput
+        setLive(freshLive(v.activeTurn.id, { question: { question, options, allowOther, multiSelect }, plan }))
       } else if (v.activeTurn) {
         // §2/5: visszatéréskor a beszélgetés ott folytatódik, ahol tart.
         void follow(c, conversationId, v.activeTurn.id)
       } else if (v.lastError) {
-        setLive({ turnId: v.lastError.turnId, lastId: 0, text: '', status: '', approval: null, error: v.lastError.message ?? 'Most nem sikerült válaszolni.' })
+        setLive(freshLive(v.lastError.turnId, { error: v.lastError.message ?? 'Most nem sikerült válaszolni.' }))
       }
     },
     [adminMode, follow],
@@ -455,7 +623,7 @@ export function PlatformChat({
 
   useLayoutEffect(() => {
     if (atBottomRef.current) scrollToBottom()
-  }, [view?.messages.length, view?.conversation.id, live?.text, live?.status, live?.approval, live?.error, scrollToBottom])
+  }, [view?.messages.length, view?.conversation.id, live?.text, live?.status, live?.approval, live?.question, live?.plan, live?.error, scrollToBottom])
 
   // A szövegmező a tartalommal együtt nő (max. ~8 sor), mint a chat-appokban.
   useLayoutEffect(() => {
@@ -537,15 +705,22 @@ export function PlatformChat({
     if (!content && files.length === 0) return
     setBusy(true)
     setNotice(null)
+    // #1025: nyitott kérdésnél a beírt szöveg a válasz — ugyanaz a forduló folytatódik.
+    const answering = live?.question ? live : null
     try {
       const id = await ensureConversation(client, forAgent)
       const { turnId } = await client.send(id, content, files.map((f) => f.id))
-      setView((v) => (v ? { ...v, messages: [...v.messages, { id: `local-${turnId}`, role: 'user', content, attachments: files, createdAt: new Date().toISOString() }] } : v))
       setDraft('')
       setFiles([])
       atBottomRef.current = true
       setAtBottom(true)
-      setLive({ turnId, lastId: 0, text: '', status: 'Gondolkodom…', approval: null, error: null })
+      if (answering && answering.turnId === turnId) {
+        setLive({ ...answering, question: null, status: 'Gondolkodom…' })
+        void follow(client, id, turnId, answering.lastId)
+        return
+      }
+      setView((v) => (v ? { ...v, messages: [...v.messages, { id: `local-${turnId}`, role: 'user', content, attachments: files, createdAt: new Date().toISOString() }] } : v))
+      setLive(freshLive(turnId, { status: 'Gondolkodom…' }))
       void follow(client, id, turnId)
       refreshListRef.current()
     } catch (e) {
@@ -564,6 +739,10 @@ export function PlatformChat({
     if (pending) {
       pendingPrompt.current = null
       void send(pending.text, pending.agentId)
+      return
+    }
+    if (initialConversationId) {
+      void open(client, initialConversationId).catch(() => setNotice('Ezt a beszélgetést nem tudod megnyitni — lehet, hogy egy kollégád nevében futott.'))
       return
     }
     if (initialAgentId && agents.some((a) => a.agentId === initialAgentId)) {
@@ -612,12 +791,44 @@ export function PlatformChat({
     }
   }
 
+  async function answer(selected: string[]) {
+    if (!client || !live || !view) return
+    try {
+      await client.answer(live.turnId, { selected })
+      setLive({ ...live, question: null, status: 'Gondolkodom…' })
+      void follow(client, view.conversation.id, live.turnId, live.lastId)
+    } catch (e) {
+      if (e instanceof ChatApiError && e.status === 409) {
+        // Másik lapon már válaszoltak: a beszélgetés friss állapotát mutatjuk.
+        void open(client, view.conversation.id)
+        return
+      }
+      setNotice('A választ most nem sikerült elküldeni. Próbáld újra.')
+    }
+  }
+
   async function stop() {
     if (!client || !live) return
     await client.cancel(live.turnId).catch(() => {})
     streamAbort.current?.abort()
     setLive(null)
     if (view) setView(await client.conversation(view.conversation.id))
+  }
+
+  async function resume() {
+    if (!client || !live?.paused || !view || busy) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      await client.resume(live.turnId)
+      setLive({ ...live, paused: null, status: 'Folytatom a munkát…' })
+      void follow(client, view.conversation.id, live.turnId, live.lastId)
+    } catch (e) {
+      if (e instanceof ChatApiError && e.status === 409) void open(client, view.conversation.id)
+      else setNotice('A folytatást most nem sikerült elindítani. Próbáld újra; az eddigi eredmények megmaradtak.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function rename(c: ChatConversation, title: string) {
@@ -683,7 +894,7 @@ export function PlatformChat({
   }
 
   const readOnly = adminMode
-  const working = !!live && !live.approval && !live.error
+  const working = !!live && !live.approval && !live.question && !live.error && !live.paused
   const empty = !view?.messages.length && !live
   const now = new Date()
 
@@ -771,7 +982,14 @@ export function PlatformChat({
                 ) : (
                   <button type="button" className="min-w-0 flex-1 px-3 py-2 text-left" onClick={() => client && void open(client, c.id)}>
                     <span className="block truncate text-sm text-ink">{c.title}</span>
-                    <span className="block truncate text-[11px] text-ink-faint">{c.agentName}</span>
+                    <span className="block truncate text-[11px] text-ink-faint">
+                      {c.origin === 'inbound_mail' ? (
+                        <span title="A munkatárs egy beérkezett levél miatt kezdte, a beállított feldolgozási utasítás szerint." className="mr-1 rounded bg-honey/15 px-1 font-semibold text-honey">
+                          Bejövő levél
+                        </span>
+                      ) : null}
+                      {c.agentName}
+                    </span>
                   </button>
                 )}
                 {!adminMode && renaming !== c.id ? (
@@ -863,7 +1081,7 @@ export function PlatformChat({
         }}
         rows={1}
         aria-label="Üzenet"
-        placeholder={agent ? `Kérdezd ${agent.name} munkatársat…` : 'Írd ide a kérdésed…'}
+        placeholder={live?.question ? 'Válassz fent, vagy írd meg a válaszod…' : agent ? `Kérdezd ${agent.name} munkatársat…` : 'Írd ide a kérdésed…'}
         className="block max-h-[220px] w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 text-ink outline-none placeholder:text-ink-faint sm:px-5"
       />
       <div className="flex items-center gap-1.5 px-2 pb-2 pt-1 sm:px-3">
@@ -929,7 +1147,7 @@ export function PlatformChat({
           ) : null}
         </div>
         <span className="flex-1" />
-        {working ? (
+        {working || live?.paused ? (
           <button
             type="button"
             onClick={() => void stop()}
@@ -1088,11 +1306,12 @@ export function PlatformChat({
                             }
                           : undefined
                       }
-                      onSaveToDrive={readOnly || working ? undefined : (file) => void send(`Mentsd el a(z) „${file.name}” fájlt a Google Drive-ra (exportId: ${file.exportId}).`)}
+                      onSaveToDrive={readOnly || working || live?.question ? undefined : (file) => void send(`Mentsd el a(z) „${file.name}” fájlt a Google Drive-ra (exportId: ${file.exportId}).`)}
                     />
                   ))}
                   {live ? (
                     <div className="space-y-3">
+                      {live.plan?.length ? <PlanList plan={live.plan} live /> : null}
                       {live.text ? <Message message={{ id: 'live', role: 'assistant', content: live.text, attachments: [] }} streaming={working} copied={false} /> : null}
                       {live.status ? (
                         <p className="flex items-center gap-2 text-sm text-ink-soft">
@@ -1118,6 +1337,16 @@ export function PlatformChat({
                             15 percen belül dönthetsz itt; utána a kérés a{' '}
                             <Link href="/control-plane/operations" className="underline">jóváhagyási listára</Link> kerül.
                           </p>
+                        </div>
+                      ) : null}
+                      {live.question ? <QuestionCard key={`${live.turnId}-${live.lastId}`} question={live.question} readOnly={readOnly} onAnswer={answer} /> : null}
+                      {live.paused ? (
+                        <div className="rounded-2xl border border-line bg-card p-4 text-sm" role="status">
+                          <p className="font-medium">A munka szünetel</p>
+                          <p className="mt-1">{live.paused.message}</p>
+                          <p className="mt-2 text-ink-soft">{live.paused.completedOperations} művelet elkészült. Folytatáskor az elkészült műveleteket nem ismétli meg.</p>
+                          <FileCards files={live.paused.files} />
+                          {!readOnly ? <button type="button" disabled={busy} onClick={() => void resume()} className="mt-3 rounded-full border border-coral/40 px-3 py-1 font-medium hover:bg-coral/10 disabled:opacity-50">Folytatás</button> : null}
                         </div>
                       ) : null}
                       {live.error ? (

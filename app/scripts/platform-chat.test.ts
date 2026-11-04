@@ -4,6 +4,7 @@
  * Futtatás: npm run test:platform-chat
  */
 import assert from 'node:assert/strict'
+import { createWorkerClient } from '../src/components/platform-chat/worker-client'
 import {
   CHAT_TOKEN_AUDIENCE,
   CHAT_TURN_TOKEN_AUDIENCE,
@@ -120,6 +121,35 @@ const ctx = (over: Partial<GatewayCallContext> = {}): GatewayCallContext => ({
 })
 
 async function main() {
+  await check('worker kliens: a szünet lezárja a streamet, a Folytatás ugyanazt a fordulót viszi tovább', async () => {
+    const original = globalThis.fetch
+    const calls: string[] = []
+    const event = (id: number, type: string, data: object) => `id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`
+    try {
+      globalThis.fetch = async (url, init) => {
+        calls.push(String(url))
+        if (String(url).endsWith('/resume')) {
+          assert.equal(init?.method, 'POST')
+          return Response.json({ turnId: 'same-turn' })
+        }
+        assert.equal((init?.headers as Record<string, string>)['last-event-id'], calls.length === 1 ? '0' : '1')
+        if (calls.length > 3) throw new Error('a szünet nem zárta le a streamet')
+        return new Response(calls.length === 1 ? event(1, 'pause', { message: 'Keretelfogyás' }) : event(2, 'status', { phase: 'resumed' }) + event(3, 'done', { content: 'Kész' }))
+      }
+      const client = createWorkerClient({ token: 'session', expiresAt: new Date(Date.now() + 600_000).toISOString(), workerUrl: 'https://worker.example', tenantSlug: 'acme', adminInsight: false })
+      const seen: string[] = []
+      const last = await client.stream('same-turn', (e) => seen.push(e.type), AbortSignal.timeout(1000))
+      assert.equal(last, 1)
+      assert.equal(calls.length, 1)
+      await client.resume('same-turn')
+      await client.stream('same-turn', (e) => seen.push(e.type), AbortSignal.timeout(1000), last)
+      assert.deepEqual(seen, ['pause', 'status', 'done'])
+      assert.ok(calls.every((url) => url.includes('/turns/same-turn/')))
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   await check('beállítás: keret nélkül nincs bekapcsolt állapot; adminInsight alapból tiltva', () => {
     assert.deepEqual(readPlatformChatSettings({}), { enabled: false, dailyBudgetUsd: null, adminInsight: false })
     assert.equal(readPlatformChatSettings({ platformChat: { enabled: true } }).enabled, false)
@@ -185,7 +215,15 @@ async function main() {
     assert.equal(claims?.aud, CHAT_TURN_TOKEN_AUDIENCE)
     assert.equal(claims?.agentId, AGENT)
     assert.equal(claims?.turnId, 'turn-1')
+    assert.equal(claims?.bg, undefined)
     assert.ok(audits.includes('platform_chat.continuation_issued'))
+    // Levélből indult forduló folytatása (Folytatás / kérdésre válasz a böngészőből): háttérfutás marad.
+    const resumed = await issueContinuationToken(deps as never, {
+      authorizationHeader: `Bearer ${chatToken()}`,
+      body: { turnId: 'turn-1', agentId: AGENT, background: true },
+    })
+    assert.ok(resumed.ok)
+    assert.equal(verifyChatToken(resumed.token, KEY, nowS)?.bg, true)
     const chained = await issueContinuationToken(deps as never, {
       authorizationHeader: `Bearer ${r.token}`,
       body: { turnId: 'turn-1', agentId: AGENT },
@@ -202,6 +240,32 @@ async function main() {
     assert.equal(r.principal.userId, USER)
     assert.equal(r.principal.role, 'operator')
     assert.equal(r.principal.client, 'platform_chat')
+  })
+
+  await check('MCP principal: bejövő levél háttérfutása alapból kötelező jóváhagyással ír; a szabály engedheti', async () => {
+    const bgToken = signChatToken(
+      { aud: CHAT_TOKEN_AUDIENCE, sub: USER, tenant: 'acme', tid: TENANT, role: 'operator', adminInsight: false, agentId: AGENT, bg: true },
+      KEY,
+      NOW,
+    ).token
+    const resolve = (over: Partial<McpPrincipalDeps> = {}) =>
+      resolveMcpPrincipal(
+        { authorizationHeader: `Bearer ${bgToken}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' },
+        principalDeps(over),
+      )
+    const missing = await resolve()
+    assert.ok(missing.ok && missing.principal.background && missing.principal.forceWriteApproval)
+    const denied = await resolve({ inboundMailAllowsDirectWrites: async () => false })
+    assert.ok(denied.ok && denied.principal.forceWriteApproval)
+    const failing = await resolve({ inboundMailAllowsDirectWrites: async () => { throw new Error('db') } })
+    assert.ok(failing.ok && failing.principal.forceWriteApproval)
+    const allowed = await resolve({ inboundMailAllowsDirectWrites: async ({ agentId }) => agentId === AGENT })
+    assert.ok(allowed.ok && allowed.principal.background && !allowed.principal.forceWriteApproval)
+    const interactive = await resolveMcpPrincipal(
+      { authorizationHeader: `Bearer ${chatToken()}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' },
+      principalDeps(),
+    )
+    assert.ok(interactive.ok && !interactive.principal.forceWriteApproval)
   })
 
   await check('MCP principal: más tenant URL-jén a chat-token érvénytelen', async () => {

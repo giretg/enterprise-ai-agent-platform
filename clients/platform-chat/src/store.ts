@@ -1,7 +1,15 @@
 /** A worker adatmodellje (§5.1) — a motor ezen az interfészen át dolgozik, így tesztben memóriában fut. */
 
-export type TurnStatus = 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'failed' | 'cancelled'
-export const ACTIVE_TURN_STATUSES: readonly TurnStatus[] = ['queued', 'running', 'awaiting_approval']
+export type TurnStatus = 'queued' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
+export const ACTIVE_TURN_STATUSES: readonly TurnStatus[] = ['queued', 'running', 'awaiting_approval', 'awaiting_input', 'paused']
+/** A user döntésére váró, parkolt forduló: nincs futó feladat, a stream lezár. */
+export const PARKED_TURN_STATUSES: readonly TurnStatus[] = ['awaiting_approval', 'awaiting_input', 'paused']
+
+export type TurnPause = { reason: 'steps' | 'time' | 'budget' | 'credit'; message: string; createdAt: string }
+export type RunLimits = { maxSteps: number; maxActiveSeconds: number }
+
+/** #1032: `inbound_mail` = a platform indította egy beérkezett levél feldolgozására. */
+export type ConversationOrigin = 'user' | 'inbound_mail'
 
 export type Conversation = {
   id: string
@@ -12,6 +20,9 @@ export type Conversation = {
   agentName: string
   title: string
   titleSetByUser: boolean
+  origin: ConversationOrigin
+  /** #1032: az admin feldolgozási utasítása (system prompt); csak `inbound_mail` eredetnél. */
+  instructions: string | null
   createdAt: Date
   lastActivityAt: Date
 }
@@ -35,6 +46,18 @@ export type FileCard = {
   canSaveToDrive?: boolean
 }
 
+/** #1025: munkaterv-lépés (`update_plan`). */
+export type PlanItem = { title: string; status: 'pending' | 'in_progress' | 'done' }
+
+/** #1025: a munkatárs kérdése (`ask_user`) — a válasz a forduló folytatásakor kerül bele. */
+export type Question = {
+  question: string
+  options: Array<{ label: string; description?: string }>
+  allowOther: boolean
+  multiSelect: boolean
+}
+export type QuestionAnswer = { selected: string[]; text?: string; attachmentIds?: string[] }
+
 export type Message = {
   id: string
   conversationId: string
@@ -43,6 +66,10 @@ export type Message = {
   content: string
   attachments: AttachmentRef[]
   files: FileCard[]
+  /** #1025: a megválaszolt kérdés-kártya (a kérdést feltevő assistant-üzeneten). */
+  question?: (Question & { answer: QuestionAnswer }) | null
+  /** #1025: a forduló utolsó munkaterve (a záró assistant-üzeneten). */
+  plan?: PlanItem[] | null
   createdAt: Date
 }
 
@@ -53,6 +80,14 @@ export type PendingApproval = {
   message: string
   createdAt: string
   decision?: 'approve' | 'reject'
+}
+
+/** #1025: `ask_user`-re váró forduló. A `seq` lépés a válasz után fut le helyben. */
+export type PendingInput = Question & {
+  seq: number
+  callId: string
+  createdAt: string
+  answer?: QuestionAnswer
 }
 
 export type TurnContext = {
@@ -77,6 +112,11 @@ export type Turn = {
   continuationToken: string | null
   context: TurnContext | null
   pendingApproval: PendingApproval | null
+  pendingInput: PendingInput | null
+  /** #1025: a user válaszára várással töltött idő — nem számít a forduló időkorlátjába. */
+  pausedSeconds: number
+  pause: TurnPause | null
+  runLimits: RunLimits | null
   createdAt: Date
   finishedAt: Date | null
 }
@@ -86,6 +126,8 @@ export type StepStatus = 'running' | 'done' | 'awaiting_approval'
 
 export type LlmStepOutput = {
   content: string
+  /** A keret miatti elutasítás nem modellválasz; folytatáskor kihagyjuk a kontextusból. */
+  blocked?: boolean
   toolCalls: Array<{ id: string; name: string; arguments: string }>
 }
 export type ToolStepOutput = {
@@ -95,6 +137,8 @@ export type ToolStepOutput = {
   isError: boolean
   files?: FileCard[]
   image?: { attachmentId: string; page: number }
+  /** #1025: `update_plan` lépés munkaterve. */
+  plan?: PlanItem[]
 }
 
 export type Step = {
@@ -108,7 +152,7 @@ export type Step = {
   idempotencyKey: string | null
 }
 
-export type EventType = 'delta' | 'status' | 'tool' | 'approval' | 'done' | 'error'
+export type EventType = 'delta' | 'status' | 'tool' | 'approval' | 'question' | 'plan' | 'pause' | 'done' | 'error'
 export type TurnEvent = { turnId: string; seq: number; type: EventType; payload: Record<string, unknown>; createdAt: Date }
 
 export type Attachment = AttachmentRef & {
@@ -119,7 +163,10 @@ export type Attachment = AttachmentRef & {
 
 export interface Store {
   // beszélgetések
-  createConversation(input: Omit<Conversation, 'id' | 'createdAt' | 'lastActivityAt' | 'title' | 'titleSetByUser'>): Promise<Conversation>
+  createConversation(
+    input: Omit<Conversation, 'id' | 'createdAt' | 'lastActivityAt' | 'title' | 'titleSetByUser' | 'origin' | 'instructions'> &
+      Partial<Pick<Conversation, 'origin' | 'instructions' | 'title'>>,
+  ): Promise<Conversation>
   getConversation(id: string): Promise<Conversation | null>
   listConversations(input: {
     tenantId: string
@@ -143,9 +190,18 @@ export interface Store {
   /** A beszélgetés legutóbbi, kontextussal rendelkező korábbi fordulójának kontextusa (#1022 ragadós betöltés). */
   lastTurnContext(conversationId: string, excludeTurnId: string): Promise<TurnContext | null>
   activeTurn(conversationId: string): Promise<Turn | null>
-  updateTurn(id: string, patch: Partial<Pick<Turn, 'status' | 'stepCount' | 'tokenUsage' | 'error' | 'continuationToken' | 'context' | 'pendingApproval' | 'finishedAt'>>): Promise<void>
+  updateTurn(id: string, patch: Partial<Pick<Turn, 'status' | 'stepCount' | 'tokenUsage' | 'error' | 'continuationToken' | 'context' | 'pendingApproval' | 'pendingInput' | 'finishedAt'>>): Promise<void>
   /** Feltételes állapotváltás (pl. cancel csak aktív fordulón). */
-  transitionTurn(id: string, from: readonly TurnStatus[], to: TurnStatus, patch?: Partial<Pick<Turn, 'error' | 'finishedAt' | 'pendingApproval' | 'continuationToken'>>): Promise<boolean>
+  transitionTurn(id: string, from: readonly TurnStatus[], to: TurnStatus, patch?: Partial<Pick<Turn, 'error' | 'finishedAt' | 'pendingApproval' | 'pendingInput' | 'pausedSeconds' | 'continuationToken' | 'pause' | 'runLimits'>>): Promise<boolean>
+  /** A válasz, üzenetek és esemény egyetlen atomi mentése; a sorbaállítás ismételhető. */
+  saveQuestionAnswer(input: {
+    turnId: string
+    pendingInput: PendingInput
+    continuationToken: string
+    pausedSeconds: number
+    messages: [Parameters<Store['addMessage']>[0], Parameters<Store['addMessage']>[0]]
+    display: string
+  }): Promise<boolean>
   /** Rövid bérlet a lépés futtatására; false = valaki más dolgozik rajta. */
   claimTurn(id: string, leaseSeconds: number): Promise<boolean>
   releaseTurn(id: string): Promise<void>
@@ -159,6 +215,7 @@ export interface Store {
   // események
   appendEvent(turnId: string, type: EventType, payload: Record<string, unknown>): Promise<number>
   eventsAfter(turnId: string, afterSeq: number, limit?: number): Promise<TurnEvent[]>
+  lastEventId(turnId: string): Promise<number>
   pruneOldEvents(olderThanDays: number): Promise<void>
 
   // csatolmányok

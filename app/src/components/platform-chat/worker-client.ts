@@ -5,7 +5,8 @@
 
 export type ChatSession = { token: string; expiresAt: string; workerUrl: string; tenantSlug: string; adminInsight: boolean }
 export type ChatAgent = { agentId: string; name: string; description: string | null }
-export type ChatConversation = { id: string; agentId: string; agentName: string; title: string; createdAt: string; lastActivityAt: string; userId?: string }
+/** `origin: 'inbound_mail'` (#1032): a platform indította egy beérkezett levél feldolgozására. */
+export type ChatConversation = { id: string; agentId: string; agentName: string; title: string; origin?: 'user' | 'inbound_mail'; createdAt: string; lastActivityAt: string; userId?: string }
 export type ChatAttachment = { id: string; name: string; mime: string; size: number }
 /** #1024: a munkatárs által készített letölthető fájl (fájl-kártya). */
 export type ChatFile = {
@@ -17,21 +18,40 @@ export type ChatFile = {
   exportId: string | null
   canSaveToDrive?: boolean
 }
+/** #1025: munkaterv-lépés és a munkatárs kérdés-kártyája. */
+export type ChatPlanItem = { title: string; status: 'pending' | 'in_progress' | 'done' }
+export type ChatQuestion = {
+  question: string
+  options: Array<{ label: string; description?: string }>
+  allowOther: boolean
+  multiSelect: boolean
+}
 export type ChatMessageView = {
   id: string
   role: 'user' | 'assistant'
   content: string
   attachments: ChatAttachment[]
   files?: ChatFile[]
+  /** A megválaszolt kérdés (a kérdező üzeneten). */
+  question?: ChatQuestion & { answer: { selected: string[]; text?: string } }
+  /** A forduló munkaterve (a záró üzeneten). */
+  plan?: ChatPlanItem[]
   createdAt: string
 }
 export type ConversationView = {
   conversation: ChatConversation
   messages: ChatMessageView[]
-  activeTurn: { id: string; status: string; pendingApproval: { message: string; createdAt: string } | null } | null
+  activeTurn: {
+    id: string
+    status: string
+    pendingApproval: { message: string; createdAt: string } | null
+    pendingInput?: (ChatQuestion & { createdAt: string }) | null
+    plan?: ChatPlanItem[] | null
+    paused?: { message: string; completedOperations: number; text: string; files: ChatFile[]; lastId: number } | null
+  } | null
   lastError: { turnId: string; message: string | null } | null
 }
-export type TurnEvent = { id: number; type: 'delta' | 'status' | 'tool' | 'approval' | 'done' | 'error'; data: Record<string, unknown> }
+export type TurnEvent = { id: number; type: 'delta' | 'status' | 'tool' | 'approval' | 'question' | 'plan' | 'pause' | 'done' | 'error'; data: Record<string, unknown> }
 
 export class ChatApiError extends Error {
   constructor(
@@ -99,8 +119,11 @@ export function createWorkerClient(initial: ChatSession) {
     send: (id: string, content: string, attachmentIds: string[]) =>
       call<{ turnId: string }>(`/conversations/${id}/turns`, { method: 'POST', body: JSON.stringify({ content, attachmentIds }) }),
     cancel: (turnId: string) => call(`/turns/${turnId}/cancel`, { method: 'POST', body: '{}' }),
+    resume: (turnId: string) => call<{ turnId: string }>(`/turns/${turnId}/resume`, { method: 'POST', body: '{}' }),
     approve: (turnId: string, decision: 'approve' | 'reject') =>
       call<{ outcome: string }>(`/turns/${turnId}/approval`, { method: 'POST', body: JSON.stringify({ decision }) }),
+    answer: (turnId: string, answer: { selected: string[]; text?: string }) =>
+      call<{ outcome: string }>(`/turns/${turnId}/answer`, { method: 'POST', body: JSON.stringify(answer) }),
     upload: (id: string, file: File) =>
       call<{ attachment: ChatAttachment }>(`/conversations/${id}/attachments`, {
         method: 'POST',
@@ -118,8 +141,8 @@ export function createWorkerClient(initial: ChatSession) {
     async stream(turnId: string, onEvent: (e: TurnEvent) => void, signal: AbortSignal, after = 0): Promise<number> {
       let lastId = after
       let finished = false
-      // Jóváhagyásra váró forduló: a szerver zár, és a kártya gombja indít új streamet.
-      let awaitingApproval = false
+      // Jóváhagyásra vagy válaszra váró forduló: a szerver zár, és a kártya gombja indít új streamet.
+      let parked = false
       while (!finished && !signal.aborted) {
         const s = await current()
         const res = await fetch(`${s.workerUrl}/turns/${turnId}/events`, {
@@ -146,12 +169,14 @@ export function createWorkerClient(initial: ChatSession) {
             sawEvent = true
             lastId = Math.max(lastId, id)
             const event = { id, type, data: JSON.parse(data) as Record<string, unknown> }
-            if (type === 'approval') awaitingApproval = event.data.phase === 'requested'
+            if (type === 'approval' || type === 'question') parked = event.data.phase === 'requested'
+            if (type === 'pause') parked = true
+            if (type === 'status' && event.data.phase === 'resumed') parked = false
             onEvent(event)
             if (type === 'done' || type === 'error') finished = true
           }
         }
-        if (awaitingApproval) break
+        if (parked) break
         // Csend miatti zárás (2 perc): újracsatlakozás; ne pörögjön, ha a szerver azonnal zár.
         if (!finished && !sawEvent) await new Promise((r) => setTimeout(r, 1500))
       }

@@ -445,7 +445,11 @@
           "path": "Path",
           "status": "Status",
           "category": "Category",
-          "sources": "Sources"
+          "sources": "Sources",
+          "docStatus": "Document status",
+          "owner": "Owner",
+          "reviewed": "Last review",
+          "reviewCycle": "Review cycle (days)"
         },
         "actions": {
           "created": "New",
@@ -619,17 +623,140 @@
       },
       "tabs": {
         "wiki": "Wiki",
+        "views": "Views",
         "changes": "Changes",
         "inbox": "Inbox",
         "log": "Log",
         "access": "Who has access",
+        "proposals": "Proposals",
         "settings": "Settings"
       },
+        "proposals": {
+          "settingTitle": "Proposals from AI teammates",
+          "intro": "An AI teammate can design this wiki's configuration (categories, fields, templates, rules file, name) and send it to you in one go. Nothing changes until you approve it here. Only a teammate with write access to this wiki can propose.",
+          "off": "Off",
+          "on": "Can propose",
+          "offHelp": "While off, teammates cannot send proposals. They can still read the configuration, and you can still edit it.",
+          "onHelp": "While on, a teammate can send a proposal but still cannot change anything directly. You can still decide proposals already sent after switching this off.",
+          "collectTitle": "What this wiki should collect",
+          "collectHelp": "Every teammate writing here sees this, and it applies immediately, without republishing. A teammate's own focus (Who has access tab) follows it and applies after publishing.",
+          "collectEmpty": "Not set: teammates follow only their own focus.",
+          "collectSave": "Save",
+          "listTitle": "Proposals waiting for a decision",
+          "emptyOn": "No proposals are waiting. When a teammate sends one it appears here, and the teammate gives you a link to it.",
+          "emptyOff": "No proposals, and teammates cannot send any right now. You can switch this on above.",
+          "rowTitle": "{agent}: {count} changes",
+          "unknownAgent": "Unknown teammate",
+          "historyTitle": "Earlier proposals",
+          "status": {
+            "pending": "waiting for a decision",
+            "applied": "approved",
+            "rejected": "rejected",
+            "withdrawn": "withdrawn"
+          },
+          "reviewTitle": "Proposal from {agent}",
+          "decisionComment": "Message to the teammate: {comment}",
+          "causes": {
+            "config_conflict": "Rejected automatically: the configuration changed in the meantime.",
+            "invalid_config_change": "Rejected automatically: the proposal was no longer valid.",
+            "proposal_not_pending": "Already decided.",
+            "conflict": "A page changed in the meantime.",
+            "forbidden": "No permission.",
+            "not_found": "Not found.",
+            "generic": "Closed automatically."
+          },
+          "stale": "The configuration changed after this proposal was made, so it cannot be approved as it is. Reject it and ask the teammate to make a new one from the current state.",
+          "invalidNow": "This proposal no longer applies to the current state:",
+          "warnings": {
+            "managed_categories_off": "Managed categories are switched off for this wiki. The categories are saved but only take effect once you switch them on (Settings tab).",
+            "managed_fields_off": "Metadata fields are switched off for this wiki. The fields are saved but only take effect once you switch them on (Settings tab)."
+          },
+          "destructive": {
+            "merge": "Merge: category {from} goes away and its {count} pages move to {to}.",
+            "rename": "Rename: value \"{from}\" of field {field} becomes \"{to}\", rewritten on {count} pages.",
+            "remove": "Remove: value \"{option}\" of field {field} goes away, replaced on {count} pages with: {to}."
+          },
+          "sections": {
+            "nameFocus": "Name and focus",
+            "wikiMd": "Rules file (WIKI.md)",
+            "groups": "Groups",
+            "categories": "Categories",
+            "fields": "Fields",
+            "templates": "Templates",
+            "pages": "Affected pages"
+          },
+          "name": "Name",
+          "collect": "Focus",
+          "noChange": "No change.",
+          "added": "New",
+          "changed": "Changes",
+          "removed": "Goes away",
+          "fieldsRewritten": "field value rewritten",
+            "yes": "yes",
+            "no": "no",
+            "noValues": "No values set.",
+            "props": {
+              "name": "Name",
+              "description": "Description",
+              "sortOrder": "Menu order",
+              "approval": "Approval",
+              "pageSort": "Page order",
+              "pinnedPages": "Pinned pages",
+              "pageOrder": "Manual page order",
+              "collapsed": "Collapsed by default",
+              "reviewCycleDays": "Review cycle (days)",
+              "requiredFields": "Required fields",
+              "requiredSections": "Required sections",
+              "sectionRule": "When a section is missing",
+              "templateMd": "Starting page outline",
+              "templateKey": "Template",
+              "linkedConnectorId": "Linked wiki",
+              "type": "Type",
+              "options": "Options",
+              "help": "Help text"
+            },
+            "values": {
+              "pageSort": {
+                "title": "by title",
+                "updated_desc": "recently updated first",
+                "date_desc": "newest first",
+                "manual": "manual order"
+              },
+              "approval": {
+                "inherit": "follows the wiki's rule",
+                "always": "always needs approval"
+              },
+              "sectionRule": {
+                "warn": "only warns",
+                "error": "blocks saving"
+              },
+              "type": {
+                "text": "text",
+                "select": "one value",
+                "multi_select": "several values",
+                "date": "date"
+              }
+            },
+          "commentLabel": "Message to the teammate (when rejecting, optional)",
+          "approve": "Approve all",
+          "reject": "Reject",
+          "approveHelp": "On approval everything goes live together and applies immediately. If something changed in the meantime, nothing is written.",
+          "errors": {
+            "config_conflict": "The configuration changed in the meantime, so nothing was written and the proposal was rejected. Ask the teammate to make a new one.",
+            "invalid_config_change": "The proposal is no longer valid, so nothing was written and it was rejected.",
+            "proposal_not_pending": "This proposal has already been decided or withdrawn.",
+            "conflict": "An affected page changed in the meantime and nothing was written. Try again.",
+            "forbidden": "You don't have permission for this.",
+            "not_found": "This proposal was not found.",
+            "generic": "Something went wrong. Please try again a little later."
+          }
+        },
       "kind": {
         "catalog": "Shared catalog",
         "agent": "Teammate's own",
         "shared": "Shared",
-        "private": "Private"
+        "private": "Private",
+        "members": "Members only"
       },
       "levels": {
         "none": "No access",
@@ -651,12 +778,13 @@
         "not_found": "This knowledge base was not found, or you don't have access to it.",
         "forbidden": "You don't have permission for this. Shared knowledge bases are managed by your organization's admin.",
         "invalid_args": "Missing or invalid data. Check the fields and try again.",
-        "too_large": "The file is larger than 10 MB. Split it into smaller parts and upload those.",
+        "too_large": "The file is larger than 25 MB. Split it into smaller parts and upload those.",
         "generic": "Something went wrong. Please try again a little later."
       },
       "header": {
         "body": "AI teammates work from this knowledge base. The wiki is built from the material uploaded here: a teammate with write access organizes it into linked pages.",
-        "privateBody": "Only you can see this knowledge base. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI)."
+        "privateBody": "Only you can see this knowledge base. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI).",
+        "membersBody": "Only the people on the list can see this knowledge base. An AI teammate can only reach it while working with someone on the list."
       },
       "list": {
         "title": "Knowledge bases and wikis",
@@ -665,7 +793,9 @@
         "stats": "{sources} sources · {pages} pages · {size}",
         "inboxBadge": "{count} waiting in inbox",
         "unknownOwner": "unknown owner",
-        "privateMetaHelp": "This is someone else's private knowledge base. As an admin you only see that it exists and how big it is — you cannot open its content."
+        "privateMetaHelp": "This is someone else's private knowledge base. As an admin you only see that it exists and how big it is — you cannot open its content.",
+        "membersMetaHelp": "Only the people on its list can see this knowledge base. As an admin you can open its content only after adding yourself to the list — this is logged.",
+        "joinMembers": "Add me"
       },
       "create": {
         "open": "New knowledge base",
@@ -691,10 +821,17 @@
         }
       },
       "toc": {
+        "dateUnknown": "date unknown",
         "title": "Contents",
         "help": "The wiki's pages by category. AI teammates write them from the material in the inbox.",
         "empty": "The wiki is empty. Upload material on the Inbox tab, then ask a teammate with write access to process it (e.g. \"Process the inbox\").",
-        "uncategorized": "Other"
+        "uncategorized": "Other",
+        "protected": "Every change in this category needs approval.",
+        "protectedShort": "approval",
+        "emptyCategory": "No pages in this category yet.",
+        "linkedWiki": "Linked wiki: opens another knowledge base",
+        "linkedWikiShort": "other wiki",
+        "pinned": "Pinned page"
       },
       "overview": {
         "title": "Overview",
@@ -712,7 +849,14 @@
         "pageN": "page {n}",
         "sourceMissing": "source no longer available",
         "notFound": "This page was not found. It may have been moved or is still waiting for approval.",
-        "missingLink": "{path} — no such page yet"
+        "missingLink": "{path} — no such page yet",
+        "category": "Category: {name}",
+        "sourceRestricted": "Source in another knowledge base – you have no access",
+        "humanNote": "Human note",
+        "unknownRecorder": "unknown recorder",
+        "participants": "present: {names}",
+        "sourceOtherWiki": "from another knowledge base",
+        "crossLinkNoAccess": "in another wiki – you have no access"
       },
       "source": {
         "eyebrow": "Original source",
@@ -726,14 +870,14 @@
         "help": "Material uploaded here is processed by an AI teammate with write access when you ask it to (e.g. \"Process the inbox\").",
         "intro": "Collect the material you want turned into wiki pages here. One upload is one batch; the bar below shows how far processing has got.",
         "dropHere": "Drop files or a whole folder here",
-        "limit": "Many files at once are fine; at most 10 MB per file. The same file is never added twice.",
+        "limit": "Many files at once are fine; at most 25 MB per file. The same file is never added twice.",
         "pickFiles": "Choose files",
         "pickFolder": "Choose folder",
         "readOnly": "You can't upload to this inbox. This needs at least operator access.",
         "uploading": "Uploading: {done}/{total}…",
         "uploaded": "{total} new files in the inbox.",
         "duplicates": "{count} files were already in this knowledge base and were skipped: {names}",
-        "tooLarge": "{count} files are larger than 10 MB and were skipped: {names}",
+        "tooLarge": "{count} files are larger than 25 MB and were skipped: {names}",
         "failed": "{count} files could not be uploaded: {names}",
         "statusTitle": "Processing status",
         "autoRefresh": "refreshes automatically",
@@ -743,6 +887,8 @@
         "empty": "Nothing is waiting. Material placed here is processed by a teammate with write access.",
         "stale": "waiting 3+ days",
         "byAgent": "sent by {name} (AI teammate)",
+        "partlyWritten": "partly written",
+        "partlyWrittenPages": "These pages already exist from this source, but processing is not finished ({count} pages):",
         "waitingSince": "submitted {when}",
         "skip": "Skip",
         "doneList": "Processed and skipped items ({count})",
@@ -788,7 +934,8 @@
         "change": "change",
         "humansBy": {
           "private": "only you (not even the admin)",
-          "shared": "the organization's operators and admins, plus anyone using a teammate linked to it"
+          "shared": "the organization's operators and admins, plus anyone using a teammate linked to it",
+          "members": "only the people on the list (the admin too, only after adding themselves)"
         }
       },
       "owner": {
@@ -832,8 +979,10 @@
           "agent": "Another teammate's own knowledge base. Operators, admins and anyone who can use that teammate see it.",
           "catalog": "The organization's shared catalog. Operators, admins and users of the teammates linked to it see it.",
           "shared": "Shared knowledge base: operators, admins and users of the teammates linked to it see it. An admin can make it private on the wiki's Settings tab.",
-          "private": "Private: only you see it, not even the admin. The teammate can only reach it when you are using it."
-        }
+          "private": "Private: only you see it, not even the admin. The teammate can only reach it when you are using it.",
+          "members": "Members only: the teammate can only reach it while working with someone on the list."
+        },
+        "membersOwnerOnly": "This is a members-only knowledge base; its owner or an admin on its list can link it."
       },
       "settings": {
         "visibilityTitle": "Who can see it?",
@@ -853,7 +1002,10 @@
           "private3": "Anything that already left it (earlier answers, teammate memory, logs) stays there. The change only protects from now on.",
           "shared1": "The organization's operators and admins will see the full content, including the sources.",
           "shared2": "Other users reach it after the teammates are published again. From then on the admin manages access.",
-          "shared3": "Pending wiki changes are rejected and their inbox items wait again."
+          "shared3": "Pending wiki changes are rejected and their inbox items wait again.",
+          "members1": "Only the people on the list see the content — not even the admin until they add themselves. At first only you are on the list; then you can add anyone.",
+          "members2": "Teammates linked here can only reach it while working with someone on the list. For anyone else they act as if it did not exist.",
+          "members3": "Pending wiki changes are rejected. Whatever already left (earlier answers, the log) stays there. The switch only protects from now on."
         },
         "understood": "I understand and want this.",
         "confirmPrivate": "Yes, make it private",
@@ -869,7 +1021,29 @@
         "templateApplied": "Template applied.",
         "editorLabel": "Rules text",
         "customized": "with your edits",
-        "rulesSaved": "Saved. Teammates follow it from their next wiki write."
+        "rulesSaved": "Saved. Teammates follow it from their next wiki write.",
+        "nowMembers": "Members only: only the people on the list below see it. The admin too, only after adding themselves. AI teammates can only reach it while working with someone on the list.",
+        "makeMembers": "Members only",
+        "confirmMembers": "Yes, make it members only",
+        "preview": {
+          "loading": "Checking who is affected…",
+          "losing": "Loses access: {count} people ({names}).",
+          "losingNone": "Nobody loses access.",
+          "agents": "From now on these teammates only reach it while working with someone who has access: {names}.",
+          "rejected": "{count} pending wiki changes will be rejected."
+        },
+        "members": {
+          "title": "Members: who can see it?",
+          "intro": "Only the people on this list can open this knowledge base, and an AI teammate can only reach it while working with them. The owner is always on it. The owner or an admin can add and remove members.",
+          "loading": "Loading members…",
+          "owner": "owner",
+          "remove": "Remove",
+          "add": "Add",
+          "pickPlaceholder": "Choose a user…",
+          "noCandidates": "Everyone in the organization is already on the list.",
+          "readOnly": "The owner or an admin can change the list.",
+          "unknownUser": "unknown user"
+        }
       },
       "review": {
         "loading": "Loading the wiki change…",
@@ -907,7 +1081,8 @@
           "page_not_found": "The page to change does not exist.",
           "path_taken": "There is already a page at the new location.",
           "section_not_found": "The section to change was not found on the page.",
-          "empty_patch": "The change contains no edits."
+          "empty_patch": "The change contains no edits.",
+          "unknown_category": "The page uses a category that is not one of the wiki categories."
         },
         "approve": "Approve",
         "reject": "Reject",
@@ -916,6 +1091,318 @@
           "modified": "changed",
           "archived": "archived",
           "moved": "moved"
+        },
+        "protectedCategory": "Category that needs approval",
+        "protectedCategoryNote": "Highlighted: a page in a category where every change needs approval (new page, edit, moving in or out, archiving).",
+        "docStatusApproved": "Asks to mark it approved",
+        "docStatusApprovedNote": "Highlighted: the AI colleague asks to mark the page “approved”. If you accept, your decision sets the status."
+      },
+      "backlinks": {
+        "title": "Pages linking here ({count})",
+        "help": "Wiki pages that link to this page. Archived pages and pages waiting for approval are not counted.",
+        "empty": "No page links here yet.",
+        "more": "and {count} more pages",
+        "otherWikis": "Linked from other wikis ({count})"
+      },
+      "views": {
+        "title": "Views",
+        "intro": "Wiki pages by their metadata: what still waits for approval, which reviews are overdue, who owns which page. The list always shows the current state.",
+        "off": "Views need the metadata fields to be turned on (Settings → Metadata fields).",
+        "tabs": {
+          "drafts": "Drafts",
+          "overdue": "Overdue reviews",
+          "mine": "My pages",
+          "owner": "By owner",
+          "orphans": "Orphan pages",
+          "field": "By field"
+        },
+        "help": {
+          "drafts": "Pages whose status is “draft”. Nobody has approved them yet.",
+          "overdue": "Pages whose review cycle has passed since the last review. The longest overdue come first.",
+          "mine": "Pages you own.",
+          "owner": "Pages grouped by owner. Pages without an owner are at the end.",
+          "orphans": "Pages no other page links to. Overview pages are not counted.",
+          "field": "Pick a field and a value, e.g. country = HU."
+        },
+        "empty": {
+          "drafts": "No draft pages.",
+          "overdue": "No overdue reviews.",
+          "mine": "You do not own any page.",
+          "owner": "No page has an owner yet.",
+          "orphans": "Every page is linked from at least one other page.",
+          "field": "No page has this value."
+        },
+        "count": "{count, plural, =1 {1 page} other {# pages}}",
+        "noOwner": "No owner",
+        "overdueBy": "{days, plural, =0 {due today} =1 {1 day overdue} other {# days overdue}}",
+        "due": "review: {date}",
+        "lastReviewed": "last reviewed: {date}",
+        "field": "Field",
+        "value": "Value",
+        "apply": "Filter",
+        "pickField": "Pick a field and a value to filter.",
+        "noFields": "This wiki has no custom field yet. Add one under Settings → Metadata fields."
+      },
+      "pageMeta": {
+        "status": "Status",
+        "statusNone": "not set",
+        "statusHelp": "A draft is not approved yet. Only a person can mark a page approved: when an AI colleague asks for it, it always goes to the approver.",
+        "statuses": {
+          "draft": "Draft",
+          "approved": "Approved"
+        },
+        "owner": "Owner",
+        "ownerNone": "no owner",
+        "lastReviewed": "Last review",
+        "neverReviewed": "nobody has reviewed it yet",
+        "reviewedImported": "from an earlier entry",
+        "nextReview": "Next review",
+        "nextReviewHelp": "The day of the last review (or of creation, if never reviewed) plus the review cycle. Once it has passed, the page shows up under “Overdue reviews”.",
+        "overdue": "overdue",
+        "cycle": "{days, plural, =1 {every day} other {every # days}}",
+        "noCycle": "no review cycle",
+        "missingFields": "Missing required field: {fields}. The AI colleague gets a warning on the next write.",
+        "review": "Reviewed, all good",
+        "reviewHelp": "Confirms that you read the page and it is still correct. Your name and today's date are recorded.",
+        "reviewed": "Recorded: you reviewed the page.",
+        "edit": "Status, owner, cycle",
+        "fieldsOff": "Metadata fields are turned off; existing values are read-only.",
+        "cycleLabel": "Review cycle (days)",
+        "cycleHelp": "How often this page must be reviewed. Leave empty to use the category's cycle.",
+        "cycleFromCategory": "category: {days} days",
+        "cycleNone": "none",
+        "roleLabel": "Role",
+        "rolePlaceholder": "e.g. Head of Sales",
+        "approvePreview": "After saving, the page is approved in your name. Its content does not change.",
+        "saved": "Saved.",
+        "errors": {
+          "conflict": "Someone changed the page in the meantime, so nothing changed. Reload the page and try again.",
+          "forbidden": "Only the wiki manager or the page owner can change this.",
+          "generic": "Something went wrong. Please try again a little later."
+        }
+      },
+      "metadata": {
+        "title": "Metadata fields",
+        "intro": "Metadata fields show what is fresh in the wiki: who owns a page, whether it is approved, when somebody last reviewed it. Turning them on takes effect immediately: the “Views” tab appears and AI colleagues see the fields too.",
+        "introBuiltins": "Built-in fields: status (draft / approved), owner and role, last review, review cycle. You can add your own fields as well, e.g. product or country.",
+        "off": "No metadata fields – page status, owner and review are not tracked.",
+        "on": "On: pages show their status, owner and review.",
+        "enable": "Turn on metadata fields",
+        "enableConfirm": "Turn on",
+        "previewNone": "No page has an old status, owner or review entry to take over.",
+        "previewTitle": "On {count, plural, =1 {1 page} other {# pages}} the old entries move into the built-in fields:",
+        "previewStatus": "status: {count, plural, =1 {1 page} other {# pages}}",
+        "previewOwner": "owner: {count, plural, =1 {1 page} other {# pages}}",
+        "previewReviewed": "last review: {count, plural, =1 {1 page} other {# pages}}",
+        "previewUnmatched": "On {count, plural, =1 {1 page} other {# pages}} the owner matches no user. Those stay in the old entry; you can set the owner by hand later.",
+        "previewAfter": "The takeover is recorded as a new version in the page history. Values written in the page text can be moved over later by the AI colleague with a proposed change.",
+        "enabled": "Turned on.",
+        "disable": "Turn off",
+        "disableWarning": "When off, views and field checks stop. Values recorded so far are kept.",
+        "disableConfirm": "Turn off",
+        "disabled": "Turned off. The values are kept.",
+        "rulesHint": "Set the review cycle and required fields per category under Categories.",
+        "fieldsTitle": "Custom fields",
+        "fieldsHelp": "The AI colleague fills them in when writing a page. Values outside the list are rejected; fields not listed here stay free.",
+        "fieldsEmpty": "No custom field yet. Only the built-in fields are available.",
+        "add": "New field",
+        "create": "Create field",
+        "created": "The field was created.",
+        "saved": "Saved.",
+        "deleted": "The field was deleted.",
+        "edit": "Edit",
+        "delete": "Delete",
+        "deleteWarning": "Values on pages are kept, but they are no longer checked.",
+        "deleteConfirm": "Delete",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Country",
+        "keyLabel": "Key",
+        "keyHelp": "The value is stored on the page under this name (lowercase letters, digits, underscore). It cannot be changed later.",
+        "typeLabel": "Type",
+        "typeHelp": "Text: any short text. Pick one: one value from the list. Pick many: several values from the list. Date: YYYY-MM-DD.",
+        "types": {
+          "text": "Text",
+          "select": "Pick one",
+          "multi_select": "Pick many",
+          "date": "Date"
+        },
+        "helpLabel": "Help text",
+        "helpPlaceholder": "e.g. Country of the partner's seat",
+        "optionsLabel": "Allowed values",
+        "optionsHelp": "One value per line. The AI colleague can only choose from these.",
+        "optionsPlaceholder": "HU\nSK\nRO",
+        "optionsRemovedPreview": "You remove these values from the list: {values}. Pages that already have them keep them, but the colleague gets a warning on the next write.",
+        "newPreview": "The AI colleague fills this field in as “{key}”.",
+        "reviewedOn": "reviewed: {date}",
+        "status": {
+          "draft": "draft",
+          "approved": "approved"
+        },
+        "errors": {
+          "not_found": "This field or knowledge base was not found.",
+          "forbidden": "Only the knowledge base manager can set metadata fields.",
+          "invalid_args": "Missing or invalid data. A pick list needs at least one value.",
+          "key_taken": "A field with this key already exists in this wiki.",
+          "invalid_key": "The key must start with a lowercase letter and contain only lowercase letters, digits and underscores. Built-in names (status, owner, last_reviewed…) are taken.",
+          "too_many": "This wiki has reached the maximum number of fields.",
+          "conflict": "A colleague changed an affected page in the meantime, so nothing changed. Try again.",
+          "generic": "Something went wrong. Please try again a little later."
+        }
+      },
+      "categories": {
+        "rules": {
+          "title": "Rules for pages",
+          "intro": "These rules apply to every page in this category and its subcategories. They take effect as soon as you save.",
+          "introChild": "The rules of “{parent}” apply here too; what you set here is added to them (the cycle overrides the parent's).",
+          "cycleLabel": "Review cycle (days)",
+          "cycleHelp": "How often pages here must be reviewed. Leave empty for no review schedule (a subcategory then uses its parent's).",
+          "cyclePlaceholder": "e.g. 90",
+          "requiredLabel": "Required fields",
+          "requiredHelp": "A new page, or a page moved here, can only be saved with these. Writing an older, incomplete page only gives a warning.",
+          "requiredNoFields": "No custom field yet; you can make the owner required.",
+          "ownerField": "Owner",
+          "fieldsOff": "Review cycle and required fields can be set once metadata fields are turned on.",
+          "sectionsLabel": "Required sections (page template)",
+          "sectionsHelp": "One section title per line, e.g. Summary. Pages here must have these as headings.",
+          "sectionsPlaceholder": "Summary\nContacts",
+          "sectionRuleLabel": "When a section is missing",
+          "sectionRuleWarn": "Warning (the page is saved)",
+          "sectionRuleError": "Error (the page is not saved)",
+          "templateLabel": "Starting skeleton",
+          "templateHelp": "The AI colleague starts from this when writing a new page in this category. Left empty, it is built from the required sections.",
+          "templatePlaceholder": "## Summary",
+          "sectionsPreviewWarn": "After saving, the colleague gets a warning for {count, plural, =0 {new pages in this category} other {# pages in this category and new ones}} when one of these is missing: {sections}.",
+          "sectionsPreviewError": "After saving, {count, plural, =0 {new pages in this category} other {the # pages in this category and new ones}} can only be saved with these sections: {sections}.",
+          "requiredPreview": "After saving, new pages and pages moved here can only be saved with the required fields. For the existing {count, plural, =0 {pages} other {# pages}} a gap only gives a warning.",
+          "cycleBadge": "review every {days} days",
+          "fieldsBadge": "{count, plural, =1 {1 required field} other {# required fields}}",
+          "templateBadge": "{count, plural, =0 {template} =1 {template · 1 section} other {template · # sections}}"
+        },
+        "title": "Categories",
+        "intro": "Choose the categories the AI coworkers may file wiki pages under. When on, they can only pick from this list, and the wiki menu on the left shows these two levels. Every change applies at once.",
+        "introApproval": "Per category you can also require approval for every change to its pages — even if the coworker may otherwise write to the wiki directly.",
+        "off": "No managed categories – the AI coworkers name categories freely.",
+        "enable": "Turn on managed categories…",
+        "previewTitle": "Turning this on creates these {count} categories from the current pages:",
+        "previewNone": "No page has a category yet, so no category is created now. You can add them after turning this on.",
+        "previewExists": "already exists",
+        "previewAfter": "Every page keeps its category; none is lost. From then on the AI coworkers can only use the categories in the list; anything else is rejected.",
+        "enableConfirm": "Yes, turn it on",
+        "enabled": "Managed categories are on.",
+        "on": "On: the AI coworkers can only pick from these categories.",
+        "disable": "Turn off",
+        "disableWarning": "When off, coworkers name categories freely again. The list and the page filing are kept.",
+        "disableConfirm": "Yes, turn it off",
+        "disabled": "Managed categories are off.",
+        "outsideTree": "{count, plural, one {# page is} other {# pages are}} not in any category — they show under “Other” in the menu.",
+        "emptyTree": "No categories yet. Add one so coworkers know where to write.",
+        "pages": "{count, plural, =0 {no pages} one {# page} other {# pages}}",
+        "archivedPages": "+ {count} archived",
+        "ruleAlways": "always needs approval",
+        "ruleInherited": "needs approval (from the parent category)",
+        "edit": "Edit",
+        "delete": "Delete",
+        "deleteConfirm": "Yes, delete",
+        "deleteBlocked": "Only an empty category can be deleted. Move its pages (and subcategories) first.",
+        "add": "+ New category",
+        "create": "Create",
+        "created": "Category created.",
+        "saved": "Saved.",
+        "deleted": "Category deleted.",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Payment partners",
+        "keyLabel": "Key",
+        "keyHelp": "A short ID in lowercase letters and hyphens. Pages and coworkers use it, so it cannot be changed later — the name can.",
+        "keyPreview": "Pages will show: {path}",
+        "parentLabel": "Where does it belong?",
+        "parentHelp": "A top-level category or a subcategory of another one. At most two levels. If you move it, its pages move with it, and this is kept in the history.",
+        "topLevel": "Top level",
+        "descriptionLabel": "What goes here?",
+        "descriptionHelp": "One or two sentences for the AI coworkers: this is how they know which pages belong here.",
+        "descriptionPlaceholder": "e.g. Payment providers and banks: contract partners, contacts, fees.",
+        "approvalLabel": "Approval",
+        "approvalHelp": "“As the coworker is set up”: the coworker’s write mode decides. “Always with approval”: new pages, edits, moving in or out and archiving all wait for approval. This also applies to subcategories.",
+        "approvalInherit": "As the coworker is set up",
+        "approvalAlways": "Always with approval",
+        "orderLabel": "Order",
+        "orderHelp": "Smaller numbers come first in the menu. Number in steps of 10 (10, 20, 30…) so you can insert a new category between two without renumbering (e.g. 25). Leave it empty to list the category after the ordered ones, by name. You can also drag to reorder in the list.",
+        "order": {
+          "badge": "order: {order}",
+          "unset": "no order",
+          "placeholder": "not set",
+          "saved": "New order saved. The menu and the AI colleagues now see it this way.",
+          "treeHint": "Change the order by dragging (⋮⋮) or with the ↑/↓ buttons. Top-level categories are ordered among themselves, subcategories within their own parent.",
+          "dragHint": "Drag to change the order",
+          "moveUp": "Move up",
+          "moveDown": "Move down"
+        },
+        "menu": {
+          "title": "How it appears in the menu",
+          "sortLabel": "Page order",
+          "sortHelp": "Pages in this category are ordered this way in the menu and in the AI colleagues’ table of contents.",
+          "sort": {
+            "title": "By title (A–Z)",
+            "updated_desc": "Most recently updated first",
+            "date_desc": "Newest date first (e.g. decision log)",
+            "manual": "Manual order"
+          },
+          "sortBadge": {
+            "title": "by title",
+            "updated_desc": "by update",
+            "date_desc": "by date",
+            "manual": "manual order"
+          },
+          "collapsedLabel": "Collapsed by default",
+          "collapsedHelp": "Only the group name shows in the menu until someone clicks it. When someone opens a page in this group, the group opens.",
+          "collapsedBadge": "collapsed",
+          "pinnedLabel": "Pinned pages (up to {max})",
+          "pinnedHelp": "Pinned pages stay at the top of the category regardless of the page order, in the order you ticked them. Good for a “How to use this wiki” or an overview page.",
+          "pinnedBadge": "{count, plural, other {# pinned}}",
+          "pinnedShort": "pinned",
+          "noPages": "No pages in this category yet.",
+          "manualLabel": "Manual order: drag the pages where you want them",
+          "previewOrder": "After saving, the category’s order is {order}: after siblings with a smaller value, before those with a larger one.",
+          "previewNoOrder": "After saving, the category is listed after the ordered categories, by name.",
+          "previewPinned": "At the top: {titles}.",
+          "preview": {
+            "title": "Pages follow each other by title, A–Z.",
+            "updated_desc": "The most recently updated page comes first.",
+            "date_desc": "The page with the newest date comes first (the page’s “date” or “source_date” field, otherwise the day it was created).",
+            "manual": "Pages follow the manual order above. New pages go to the end, by title."
+          },
+          "previewCollapsed": "The group appears collapsed in the menu by default."
+        },
+        "rulePreview": "After saving, {count, plural, =0 {new pages} other {the # pages and new pages}} in “{name}” need approval, even if the coworker may write directly.",
+        "ruleRelax": "After saving, the coworkers’ write mode decides again. Where a coworker already writes with approval, nothing changes.",
+        "ruleRelaxParent": "Because of the parent category’s rule, this subcategory still needs approval.",
+        "movePreview": "{count, plural, one {# page moves} other {# pages move}} to {path}. This is kept in the wiki history.",
+        "errors": {
+          "not_found": "This category or knowledge base was not found.",
+          "forbidden": "Only the knowledge base manager can set categories.",
+          "invalid_args": "Missing or invalid data. Check the fields.",
+          "key_taken": "A category with this key already exists in this wiki. Choose another key.",
+          "invalid_key": "The key may contain only lowercase letters, digits and hyphens (e.g. payment-partners).",
+          "too_deep": "At most two levels: no category under a subcategory, and a category with subcategories cannot be moved under another one.",
+          "not_empty": "Only an empty category can be deleted. Move its pages and subcategories first.",
+          "too_many": "This wiki has reached the maximum number of categories.",
+          "conflict": "A coworker changed one of the affected pages meanwhile, so nothing changed. Try again.",
+          "generic": "Something went wrong. Try again a bit later."
+        },
+        "linked": {
+          "title": "Linked wikis in the menu",
+          "intro": "Add another knowledge base (e.g. the members-only Contracts wiki) as a menu item here. Only people who can see that wiki see the item. Its content does not become part of this wiki, and no page can be filed under it.",
+          "empty": "No linked wiki yet – the menu shows only this wiki's categories.",
+          "hiddenTarget": "a wiki you cannot see",
+          "under": "under {parent}",
+          "remove": "Remove from menu",
+          "noTargets": "There is no other wiki you can see – you can only link a wiki you have access to.",
+          "target": "Which wiki?",
+          "targetPlaceholder": "Choose a wiki…",
+          "name": "Menu item name",
+          "parent": "Where?",
+          "topLevel": "Top level",
+          "add": "Add to menu",
+          "created": "The linked wiki is now in the menu."
         }
       }
     },
@@ -2924,6 +3411,19 @@
     "googleBindingSave": "Save",
     "googleBindingCancel": "Cancel",
     "googleBindingSaved": "Saved: the connector now only reaches the given account.",
+    "githubReposTitle": "Available repositories",
+    "githubReposHint": "Teammates can reach these GitHub repositories through this connection. If the GitHub token sees fewer, the narrower one applies.",
+    "githubReposAny": "Every repository the GitHub token can reach.",
+    "githubReposEdit": "Change repositories",
+    "githubReposModeSelected": "Only the listed repositories",
+    "githubReposModeAny": "Every repository the token sees",
+    "githubReposListLabel": "Repositories — one per line, as owner/repo",
+    "githubReposListHelp": "For example acme/crm. A link copied from GitHub also works (https://github.com/acme/crm). You can separate them with commas too.",
+    "githubReposInvalid": "Not in owner/repo form: {items}",
+    "githubReposTooMany": "You can list at most {max} repositories.",
+    "githubReposAnyWarn": "Teammates can reach every repository the token sees. If you only need one or two, list them instead.",
+    "githubReposSaved": "Saved: the GitHub connection now only reaches the listed repositories.",
+    "githubReposSavedAny": "Saved: the GitHub connection reaches every repository the token sees.",
     "googleBindingAccountsLabel_google-ads": "Google Ads customer ID(s), e.g. 123-456-7890",
     "googleBindingAccountsLabel_google-analytics": "GA4 property ID(s), e.g. 123456789",
     "googleBindingAccountsLabel_google-search-console": "Search Console properties, e.g. https://www.example.com/ or sc-domain:example.com",

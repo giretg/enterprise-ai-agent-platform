@@ -680,6 +680,23 @@ export async function updateGoogleAccountBinding(input: unknown) {
   }
 }
 
+const githubRepositoryAccessSchema = z.object({
+  draftId: z.string().min(1),
+  repositoryAccess: z.string().trim().min(1).max(10_000),
+})
+
+/** Tenant-admin: mely GitHub-kódtárakat érheti el a konnektor. */
+export async function updateGitHubRepositoryAccess(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = githubRepositoryAccessSchema.parse(input)
+    const res = await services.provisioning.updateGitHubRepositoryAccess(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült menteni, mely kódtárakat érheti el a GitHub-kapcsolat')
+  }
+}
+
 export async function reopenConnector(input: unknown) {
   try {
     const user = await requireTenantRole('admin')

@@ -32,7 +32,7 @@ import {
 } from './project-work-repository'
 import { PostgresContactInquiryRepository } from './contact-inquiry-repository'
 import { PostgresMiniAppRepository } from './mini-app-repository'
-import { PostgresPrivateKnowledgeBaseStore, PostgresWikiRepository } from './wiki-repository'
+import { PostgresPrivateKnowledgeBaseStore, PostgresWikiConfigRepository, PostgresWikiRepository, PostgresWikiStructureRepository } from './wiki-repository'
 import { PostgresWikiHistoryRepository } from './wiki-history-repository'
 
 export const repositories = {
@@ -59,6 +59,8 @@ export const repositories = {
   knowledgeChunks: new PostgresKnowledgeChunkRepository(),
   wikis: new PostgresWikiRepository(),
   wikiHistory: new PostgresWikiHistoryRepository(),
+  wikiStructure: new PostgresWikiStructureRepository(),
+  wikiConfig: new PostgresWikiConfigRepository(),
   privateKnowledgeBases: new PostgresPrivateKnowledgeBaseStore(),
   workProjects: new PostgresWorkProjectRepository(),
   workFiles: new PostgresWorkFileRepository(),

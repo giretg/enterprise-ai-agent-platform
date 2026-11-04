@@ -8,6 +8,7 @@ import {
   GMAIL_MODIFY_LABELS_TOOL,
   GMAIL_SEND_TOOL,
   GMAIL_TRASH_TOOL,
+  MAIL_SEND_TOOL,
   schemaForEnterpriseTool,
   type LiveGrantRow,
   type ToolCallPrincipal,
@@ -106,6 +107,28 @@ async function main() {
     assert.equal(schema.safeParse({ ...base, to: 'a@b.hu', body: 'x' }).success, false)
     assert.equal(schema.safeParse({ ...base, to: 'a@b.hu', subject: 's', body: 'x' }).success, true)
     assert.equal(schema.safeParse({ ...base, draftId: 'd1' }).success, true)
+  })
+
+  await check('send schema: draftId cannot be combined with compose fields (no decoy on the confirm card)', () => {
+    for (const tool of [GMAIL_SEND_TOOL, MAIL_SEND_TOOL]) {
+      const schema = schemaForEnterpriseTool(tool)!
+      const base = { definitionId: DEFINITION_ID, idempotencyKey: 'k', draftId: 'd1' }
+      for (const extra of [
+        { body: 'Harmless note to Bob' },
+        { to: 'bob@example.com' },
+        { subject: 'OK' },
+        { cc: 'cc@x.hu' },
+        { bcc: 'bcc@x.hu' },
+        { replyToMessageId: 'm1' },
+        { replyAll: true },
+      ]) {
+        const parsed = schema.safeParse({ ...base, ...extra })
+        assert.equal(parsed.success, false, `${tool}: expected reject for ${JSON.stringify(extra)}`)
+        if (!parsed.success) assert.match(parsed.error.issues[0]?.message ?? '', /draftId cannot be combined/)
+      }
+      // Üres/hamis értékek nem számítanak csalinak — a régi kliensek így küldhetik.
+      assert.equal(schema.safeParse({ ...base, body: '', replyAll: false }).success, true, tool)
+    }
   })
 
   await check('modify/trash schema: exactly one of messageId/threadId', () => {

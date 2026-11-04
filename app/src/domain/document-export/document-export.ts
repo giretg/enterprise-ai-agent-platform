@@ -77,6 +77,11 @@ export function parseSheets(raw: string): SheetInput[] {
     throw invalid('sheets: nem érvényes JSON')
   }
   const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' && Array.isArray((parsed as { sheets?: unknown }).sheets) ? (parsed as { sheets: unknown[] }).sheets : [parsed]
+  return validateSheets(list)
+}
+
+/** Munkalapok ellenőrzése (a modell JSON-jából vagy a mentett válaszból, #1071) — ugyanazok a korlátok. */
+export function validateSheets(list: unknown[]): SheetInput[] {
   if (list.length === 0) throw invalid('sheets: legalább egy munkalap kell')
   if (list.length > MAX_SHEETS) throw invalid(`sheets: legfeljebb ${MAX_SHEETS} munkalap`)
   let totalRows = 0
@@ -109,6 +114,8 @@ export type DocumentExportInput = {
   fileName?: string
   title?: string
   sheets?: string
+  /** #1071: már összerakott munkalapok (a mentett http_api válaszból) a `sheets` JSON helyett. */
+  sheetList?: unknown[]
   markdown?: string
 }
 
@@ -128,8 +135,8 @@ export async function renderDocument(input: DocumentExportInput): Promise<Render
   let bytes: Buffer
   let rowCount: number | null = null
   if (format === 'xlsx' || format === 'csv') {
-    if (!input.sheets) throw invalid('xlsx/csv: a sheets mező kötelező')
-    const sheets = parseSheets(input.sheets)
+    if (!input.sheets && !input.sheetList) throw invalid('xlsx/csv: a sheets mező kötelező')
+    const sheets = input.sheetList ? validateSheets(input.sheetList) : parseSheets(input.sheets!)
     if (format === 'csv' && sheets.length > 1) throw invalid('csv: csak egy munkalap lehet — több munkalaphoz válaszd az xlsx-et')
     rowCount = sheets.reduce((n, s) => n + s.rows.length, 0)
     bytes = format === 'csv' ? renderCsv(sheets[0]) : await renderXlsx(sheets, { title })

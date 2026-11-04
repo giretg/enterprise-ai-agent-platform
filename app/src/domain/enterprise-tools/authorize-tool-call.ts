@@ -53,6 +53,11 @@ export type ToolCallPrincipal = {
   tenantId: string
   role: string
   assumed: boolean
+  /**
+   * Bejövő levél feldolgozása: minden írás jóváhagyásra vár, az agent írási módjától
+   * függetlenül (a feladó hamisítható). Csak a platform állítja (`McpPrincipal`).
+   */
+  forceWriteApproval?: true
 }
 
 export type AuthorizeToolCallInput = {
@@ -74,6 +79,8 @@ export type LiveConnectorRow = {
   /** #942 D13: knowledge_base láthatóság (`shared` | `private_to_user`). */
   visibility?: unknown
   ownerUserId?: string | null
+  /** #1061 F2: `members` névsor — az élő Prisma-sor hozza. */
+  kbMemberUserIds?: readonly string[] | null
 }
 
 export type HttpApiConnectorChoice = {

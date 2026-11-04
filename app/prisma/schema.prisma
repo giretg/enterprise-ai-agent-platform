@@ -237,9 +237,57 @@ enum WikiChangeSetStatus {
 /**
  * D13: `private_to_user` tartalmát csak `Connector.ownerUserId` éri el.
  */
+/**
+ * #1061 F1: kategória-szabály — csak szigoríthat (D4): `always` = minden oldalművelet jóváhagyással.
+ */
+enum WikiCategoryApproval {
+  inherit
+  always
+}
+
+/// #1075: agent konfig-javaslatának állapota.
+enum WikiConfigProposalStatus {
+  pending
+  applied
+  rejected
+  withdrawn
+}
+
+/// Oldalak sorrendje egy kategórián belül a menüben és a `kb_list_index`-ben.
+enum WikiPageSort {
+  title
+  updated_desc
+  date_desc
+  manual
+}
+
+/// #1061 F3: az oldal dokumentum-állapota (külön a technikai `WikiPageStatus`-tól).
+enum WikiDocStatus {
+  draft
+  approved
+}
+
+/// #1061 F3: wikinként definiált egyedi metaadat-mező típusa.
+enum WikiFieldType {
+  text
+  select
+  multi_select
+  date
+}
+
+/// #1061 F4: hiányzó kötelező fejezet — figyelmeztetés vagy hiba.
+enum WikiSectionRule {
+  warn
+  error
+}
+
 enum KnowledgeBaseVisibility {
   shared
   private_to_user
+  /**
+   * #1061 F2 D1: „csak a kijelöltek” — a tartalmat csak a `Connector.kbMemberUserIds` névsor éri el.
+   */
+  members
 }
 
 enum ConnectorAuthMode {
@@ -527,6 +575,9 @@ model Tenant {
   publicChatSessions         PublicChatSession[]
   publicChatDailyUsage       PublicChatDailyUsage[]
   documentExports            DocumentExport[]
+  inboundMailEvents          InboundMailEvent[]
+  inboundMailRules           AgentInboundMailRule[]
+  mailWatchSubscriptions     MailWatchSubscription[]
 
   @@index([status])
   @@index([createdById, selfService])
@@ -684,6 +735,8 @@ model Agent {
   miniApps                   MiniApp[]
   miniAppShares              MiniAppShare[]
   publicAssistant            PublicAssistant?
+  inboundMailRule            AgentInboundMailRule?
+  inboundMailEvents          InboundMailEvent[]
 
   @@index([tenantId, status])
   @@map("agents")
@@ -822,6 +875,11 @@ model Connector {
   visibility        KnowledgeBaseVisibility @default(shared)
   ownerUserId       String?                 @map("owner_user_id") @db.Uuid
   ownerMissingSince DateTime?               @map("owner_missing_since") @db.Timestamptz
+  /**
+   * #1061 F2: `members` láthatóságnál a névsor (felhasználó-azonosítók). Hatásos hozzáférés =
+   * agent-kötés ÉS tagság; a tulajdonos is a listán van. Más láthatóságnál üres.
+   */
+  kbMemberUserIds   String[]                @default([]) @map("kb_member_user_ids") @db.Uuid
   /// #1016 D4: nyilvános tudásbázis („ami ide kerül, az nyilvános”) — csak ilyen köthető nyilvános asszisztenshez.
   publicKb          Boolean                 @default(false) @map("public_kb")
   createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz
@@ -830,20 +888,23 @@ model Connector {
   activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
   activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
 
-  tenant             Tenant                 @relation(fields: [tenantId], references: [id])
-  agentConnectors    AgentConnector[]
-  primaryForAgents   Agent[]                @relation("AgentPrimaryMailbox")
-  grants             ConnectorGrant[]
-  draft              ConnectorDraft?
-  gatewayOperations  GatewayOperation[]
-  specSource         ConnectorSpecSource?
-  specVersions       ConnectorSpecVersion[] @relation("SpecVersions")
-  documents          Document[]
-  knowledgeArtifacts KnowledgeArtifact[]
-  knowledgeChunks    KnowledgeChunk[]
-  wiki               AgentWiki?
-  wikiPages          WikiPage[]
-  wikiChangeSets     WikiChangeSet[]
+  tenant                   Tenant                 @relation(fields: [tenantId], references: [id])
+  agentConnectors          AgentConnector[]
+  primaryForAgents         Agent[]                @relation("AgentPrimaryMailbox")
+  linkedFromWikiCategories WikiCategory[]         @relation("WikiCategoryLinkedWiki")
+  grants                   ConnectorGrant[]
+  draft                    ConnectorDraft?
+  gatewayOperations        GatewayOperation[]
+  specSource               ConnectorSpecSource?
+  specVersions             ConnectorSpecVersion[] @relation("SpecVersions")
+  documents                Document[]
+  knowledgeArtifacts       KnowledgeArtifact[]
+  knowledgeChunks          KnowledgeChunk[]
+  wiki                     AgentWiki?
+  wikiPages                WikiPage[]
+  wikiChangeSets           WikiChangeSet[]
+  inboundMailEvents        InboundMailEvent[]
+  mailWatch                MailWatchSubscription?
 
   @@unique([tenantId, type, name])
   @@index([tenantId, visibility, ownerUserId])
@@ -941,22 +1002,22 @@ model ConnectorSpecVersion {
 }
 
 model ConnectorGrant {
-  id              String               @id @default(uuid()) @db.Uuid
-  tenantId        String               @map("tenant_id") @db.Uuid
-  connectorId     String               @map("connector_id") @db.Uuid
+  id              String                  @id @default(uuid()) @db.Uuid
+  tenantId        String                  @map("tenant_id") @db.Uuid
+  connectorId     String                  @map("connector_id") @db.Uuid
   /// #1028: `ownerType = tenant` esetén kötelezően NULL (DB check constraint).
   userId          String?                 @map("user_id") @db.Uuid
   ownerType       ConnectorGrantOwnerType @default(user) @map("owner_type")
-  status          ConnectorGrantStatus @default(active)
-  scopes          Json                 @default("[]")
-  tokenRef        String               @unique @map("token_ref")
-  accountLabel    String?              @map("account_label")
-  nickname        String?              @map("nickname")
-  grantedAt       DateTime             @default(now()) @map("granted_at") @db.Timestamptz
-  expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
-  lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
-  revokedAt       DateTime?            @map("revoked_at") @db.Timestamptz
-  metadata        Json                 @default("{}")
+  status          ConnectorGrantStatus    @default(active)
+  scopes          Json                    @default("[]")
+  tokenRef        String                  @unique @map("token_ref")
+  accountLabel    String?                 @map("account_label")
+  nickname        String?                 @map("nickname")
+  grantedAt       DateTime                @default(now()) @map("granted_at") @db.Timestamptz
+  expiresAt       DateTime?               @map("expires_at") @db.Timestamptz
+  lastRefreshedAt DateTime?               @map("last_refreshed_at") @db.Timestamptz
+  revokedAt       DateTime?               @map("revoked_at") @db.Timestamptz
+  metadata        Json                    @default("{}")
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id])
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
@@ -1120,10 +1181,29 @@ model AgentWiki {
    * #978 D1: ennyi nap után a régi verziók törlődnek; null = soha.
    */
   retentionDeleteDays Int?     @default(365) @map("retention_delete_days")
+  /**
+   * #1061 F1: kezelt kategória-fa — bekapcsolva csak a `WikiCategory` kulcsai használhatók.
+   */
+  managedCategories   Boolean  @default(false) @map("managed_categories")
+  /**
+   * #1061 F3: metaadat-mezők (állapot, gazda, átnézés + egyedi mezők) — kikapcsolva minden a régi.
+   */
+  managedFields       Boolean  @default(false) @map("managed_fields")
+  /**
+   * #1075: wiki-szintű gyűjtési fókusz, élőben olvasva (az agent-kötés saját fókusza mellé).
+   */
+  collectFocus        String?  @map("collect_focus") @db.Text
+  /**
+   * #1075: a munkatársak javasolhatnak-e beállítás-változást (alapból nem).
+   */
+  agentConfigChanges  Boolean  @default(false) @map("agent_config_changes")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   connector   Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  categories  WikiCategory[]
+  fields      WikiField[]
+  configProposals WikiConfigProposal[]
   pages       WikiPage[]
   changeSets  WikiChangeSet[]
   logEntries  WikiLogEntry[]
@@ -1162,6 +1242,19 @@ model WikiPage {
   createdByAgentId String?        @map("created_by_agent_id") @db.Uuid
   createdByUserId  String?        @map("created_by_user_id") @db.Uuid
   updatedByAgentId String?        @map("updated_by_agent_id") @db.Uuid
+  /**
+   * #1061 F3 beépített mezők (saját oszlopok, nem a `frontmatter`). A `docStatus`
+   * `approved` értékét agent csak jóváhagyással kaphatja (D5); az átnézés csak emberi.
+   */
+  docStatus        WikiDocStatus? @map("doc_status")
+  ownerUserId      String?        @map("owner_user_id") @db.Uuid
+  ownerRole        String?        @map("owner_role")
+  reviewedAt       DateTime?      @map("reviewed_at") @db.Timestamptz
+  reviewedByUserId String?        @map("reviewed_by_user_id") @db.Uuid
+  /**
+   * Oldalszintű felülírás; hiánya = a kategória ciklusa.
+   */
+  reviewCycleDays  Int?           @map("review_cycle_days")
   createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -1171,7 +1264,131 @@ model WikiPage {
 
   @@unique([connectorId, path])
   @@index([wikiId, status])
+  /**
+   * #1061 F3: nézetek (tervezetek, gazdánként, egyedi mező szerint).
+   */
+  @@index([connectorId, docStatus])
+  @@index([connectorId, ownerUserId])
+  @@index([frontmatter(ops: JsonbPathOps)], type: Gin)
+  /**
+   * #1061 F1: „Mi hivatkozik erre?” — `out_links @> ARRAY[path]`.
+   */
+  @@index([outLinks], type: Gin)
   @@map("wiki_pages")
+}
+
+/**
+ * #1061 F1: kezelt kategória (legfeljebb 2 szint). Az oldal `category` mezője a
+ * kulcsút (`partners/payment`); a kulcs wikin belül egyedi és nem változtatható (D10).
+ */
+model WikiCategory {
+  id                String               @id @default(uuid()) @db.Uuid
+  wikiId            String               @map("wiki_id") @db.Uuid
+  key               String
+  parentId          String?              @map("parent_id") @db.Uuid
+  name              String
+  /**
+   * Az agent ebből tudja, mi kerül ide (briefing, `kb_list_index`).
+   */
+  description       String?
+  /**
+   * Menüsorrend a testvérek között (10-es lépésköz); `null` = nincs megadva → a
+   * sorrendezettek után, név szerint.
+   */
+  sortOrder         Int?                 @map("sort_order")
+  approval          WikiCategoryApproval @default(inherit)
+  /**
+   * Oldalak sorrendje a kategórián belül; `manual`-nál a `pageOrder` path-listája.
+   * A `pinnedPages` a rendezéstől függetlenül felülre kerül. Áthelyezéskor a path a listákban is cserélődik.
+   */
+  pageSort          WikiPageSort         @default(title) @map("page_sort")
+  pinnedPages       String[]             @default([]) @map("pinned_pages")
+  pageOrder         String[]             @default([]) @map("page_order")
+  /** Alapból becsukott csoport a menüben (a nyitott oldal csoportja ettől még kinyílik). */
+  collapsed         Boolean              @default(false)
+  /**
+   * #1061 F2: „kapcsolt wiki” menüpont — egy másik tudástárra mutat, oldal nem kerülhet bele.
+   * Csak annak látszik, aki a kapcsolt wikit is látja; az `index.md`-be nem kerül.
+   */
+  linkedConnectorId String?              @map("linked_connector_id") @db.Uuid
+  /**
+   * #1061 F3: alapértelmezett átnézési ciklus (nap) és a kötelező mezők kulcsai.
+   */
+  reviewCycleDays   Int?                 @map("review_cycle_days")
+  requiredFields    String[]             @default([]) @map("required_fields")
+  /**
+   * #1061 F4: oldalsablon — kötelező fejezetek, a hiányuk súlya, induló váz.
+   */
+  requiredSections  String[]             @default([]) @map("required_sections")
+  sectionRule       WikiSectionRule      @default(warn) @map("section_rule")
+  templateMd        String?              @map("template_md") @db.Text
+  /**
+   * #1075: a névvel ellátott sablon, amelyből a szabályok jöttek; felületi szerkesztés után `null`.
+   */
+  templateKey       String?              @map("template_key")
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz
+
+  wiki            AgentWiki      @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+  linkedConnector Connector?     @relation("WikiCategoryLinkedWiki", fields: [linkedConnectorId], references: [id], onDelete: Cascade)
+  parent          WikiCategory?  @relation("WikiCategoryTree", fields: [parentId], references: [id], onDelete: NoAction)
+  children        WikiCategory[] @relation("WikiCategoryTree")
+
+  @@unique([wikiId, key])
+  @@index([wikiId, parentId])
+  @@map("wiki_categories")
+}
+
+/**
+ * #1061 F3: wikinként definiált egyedi metaadat-mező (pl. termék, ország). Az érték
+ * az oldal `frontmatter`-ében él (OKF-export); a nem definiált kulcsok szabadok maradnak.
+ */
+model WikiField {
+  id        String        @id @default(uuid()) @db.Uuid
+  wikiId    String        @map("wiki_id") @db.Uuid
+  key       String
+  name      String
+  type      WikiFieldType
+  options   String[]      @default([])
+  help      String?
+  sortOrder Int           @default(0) @map("sort_order")
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  wiki AgentWiki @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+
+  @@unique([wikiId, key])
+  @@map("wiki_fields")
+}
+
+/**
+ * #1075: agent által javasolt beállítás-változás — jóváhagyásig semmi nem változik.
+ * Agentenként és wikinként egy nyitott lehet (részleges egyedi index a migrációban).
+ */
+model WikiConfigProposal {
+  id                String                   @id @default(uuid()) @db.Uuid
+  wikiId            String                   @map("wiki_id") @db.Uuid
+  connectorId       String                   @map("connector_id") @db.Uuid
+  agentId           String                   @map("agent_id") @db.Uuid
+  /** A hívó ember, akinek a munkamenetéből a javaslat jött. */
+  userId            String                   @map("user_id") @db.Uuid
+  status            WikiConfigProposalStatus @default(pending)
+  baseConfigVersion String                   @map("base_config_version")
+  operations        Json
+  note              String
+  decidedByUserId   String?                  @map("decided_by_user_id") @db.Uuid
+  decidedAt         DateTime?                @map("decided_at") @db.Timestamptz
+  /** A jóváhagyó üzenete az agentnek. */
+  decisionComment   String?                  @map("decision_comment")
+  /** Gépi ok, pl. `config_conflict`. */
+  decisionReason    String?                  @map("decision_reason")
+  changeSetId       String?                  @map("change_set_id") @db.Uuid
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+
+  wiki AgentWiki @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+
+  @@index([wikiId, status, createdAt])
+  @@map("wiki_config_proposals")
 }
 
 /**
@@ -1251,6 +1468,10 @@ model WikiPageRevision {
   type             WikiPageType?
   category         String?
   sourceRefs       Json?           @map("source_refs")
+  /**
+   * #1061 F3: a beépített mezők pillanatképe (NFR-4); NULL = a bevezetés előtti revízió.
+   */
+  meta             Json?
   createdByAgentId String?         @map("created_by_agent_id") @db.Uuid
   createdByUserId  String?         @map("created_by_user_id") @db.Uuid
   /**
@@ -1960,25 +2181,25 @@ model PublicAssistant {
 
 /// #1016 D11/D17: egy névtelen látogató egy beszélgetése (`public_web` csatorna). 30 nap után törlődik.
 model PublicChatSession {
-  id             String    @id @default(uuid()) @db.Uuid
-  tenantId       String    @map("tenant_id") @db.Uuid
-  agentId        String    @map("agent_id") @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  agentId        String   @map("agent_id") @db.Uuid
   /// A böngészőben tárolt névtelen látogató-azonosító (véletlen, ≥ 32 karakter) — a beszélgetés kulcsa is.
-  visitorId      String    @map("visitor_id")
+  visitorId      String   @map("visitor_id")
   /// D22: „Kipróbálás látogatóként” — az analitikán kívül.
-  isTest         Boolean   @default(false) @map("is_test")
+  isTest         Boolean  @default(false) @map("is_test")
   /// D2/D3: a widget által átadott, MEGBÍZHATATLAN kontextus (≤ 8 kB).
   context        Json?
   /// [{ role: 'user' | 'assistant', content, at }]
-  messages       Json      @default("[]")
-  messageCount   Int       @default(0) @map("message_count")
+  messages       Json     @default("[]")
+  messageCount   Int      @default(0) @map("message_count")
   /// none | forwarded | callback_requested
-  handoff        String    @default("none")
-  handoffContact String?   @map("handoff_contact")
-  handoffSummary String?   @map("handoff_summary")
-  ipHash         String?   @map("ip_hash")
-  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  lastActivityAt DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
+  handoff        String   @default("none")
+  handoffContact String?  @map("handoff_contact")
+  handoffSummary String?  @map("handoff_summary")
+  ipHash         String?  @map("ip_hash")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  lastActivityAt DateTime @default(now()) @map("last_activity_at") @db.Timestamptz
 
   tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   assistant PublicAssistant    @relation(fields: [agentId], references: [agentId], onDelete: Cascade)
@@ -2052,4 +2273,113 @@ model DocumentExport {
   @@index([tenantId, userId])
   @@index([expiresAt])
   @@map("document_exports")
+}
+
+/// #1032 bejövő levél: mi történjen az agent saját címére érkező levéllel.
+enum InboundMailMode {
+  notify
+  process
+  handoff
+
+  @@map("inbound_mail_mode")
+}
+
+enum InboundMailEventStatus {
+  new
+  claimed
+  processed
+  ignored
+  failed
+
+  @@map("inbound_mail_event_status")
+}
+
+/// #1032: agentenkénti szabály (Beállítások → E-mail → Bejövő levelek). Hiánya = „Csak jelezze”.
+model AgentInboundMailRule {
+  agentId           String          @id @map("agent_id") @db.Uuid
+  tenantId          String          @map("tenant_id") @db.Uuid
+  mode              InboundMailMode @default(notify)
+  /// Az admin feldolgozási utasítása — a futás system promptjába kerül, sosem a levélből.
+  instructions      String          @default("")
+  /// Ő kap értesítést, és az ő nevében (jogaival, keretével) fut a feldolgozás.
+  responsibleUserId String?         @map("responsible_user_id") @db.Uuid
+  handoffToUserId   String?         @map("handoff_to_user_id") @db.Uuid
+  handoffToAgentId  String?         @map("handoff_to_agent_id") @db.Uuid
+  /// Csak innen érkező levél indít feldolgozást/átadást (domain vagy cím); üres = bárki.
+  senderAllowlist   String[]        @default([]) @map("sender_allowlist")
+  dailyRunLimit     Int             @default(20) @map("daily_run_limit")
+  /// Feldolgozáskor is mehet jóváhagyás nélküli írás (az agent írási módja szerint). Alap: nem.
+  allowDirectWrites Boolean         @default(false) @map("allow_direct_writes")
+  updatedById       String?         @map("updated_by_id") @db.Uuid
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("agent_inbound_mail_rules")
+}
+
+/// #1032: beérkezett levél eseménye — csak fejléc-adat, a tartalmat az agent a mail_get_message-dzsel olvassa.
+model InboundMailEvent {
+  id                String                 @id @default(uuid()) @db.Uuid
+  tenantId          String                 @map("tenant_id") @db.Uuid
+  connectorId       String                 @map("connector_id") @db.Uuid
+  agentId           String?                @map("agent_id") @db.Uuid
+  messageId         String                 @map("message_id")
+  threadId          String?                @map("thread_id")
+  fromAddress       String                 @default("") @map("from_address")
+  subject           String                 @default("")
+  receivedAt        DateTime               @map("received_at") @db.Timestamptz
+  status            InboundMailEventStatus @default(new)
+  /// A döntés: notify | process | handoff (a szabály és a védelmek alapján).
+  action            String                 @default("notify")
+  /// Miért nem az lett, amit a szabály kér (pl. loop_guard, sender_filtered, daily_limit).
+  reason            String?
+  /// Ki/mi zárta le: agent_run | handoff | user:<id> | system.
+  processedBy       String?                @map("processed_by")
+  responsibleUserId String?                @map("responsible_user_id") @db.Uuid
+  conversationId    String?                @map("conversation_id") @db.Uuid
+  handoffId         String?                @map("handoff_id") @db.Uuid
+  source            String                 @default("poll")
+  error             String?
+  runStartedAt      DateTime?              @map("run_started_at") @db.Timestamptz
+  createdAt         DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@unique([connectorId, messageId])
+  @@index([agentId, runStartedAt])
+  @@index([tenantId, agentId, receivedAt])
+  @@index([tenantId, responsibleUserId, status])
+  @@index([status, updatedAt])
+  @@map("inbound_mail_events")
+}
+
+/// #1032: push-feliratkozás postafiókonként (AgentMail webhook, Gmail watch, Graph subscription) + tartalék polling állapota.
+model MailWatchSubscription {
+  id           String    @id @default(uuid()) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  connectorId  String    @unique @map("connector_id") @db.Uuid
+  provider     String
+  /// A szolgáltató azonosítója (webhook_id / subscription id); NULL = csak polling.
+  externalId   String?   @map("external_id")
+  /// Gmail historyId, illetve a polling utolsó látott időpontja (ISO).
+  cursor       String?
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz
+  lastPolledAt DateTime? @map("last_polled_at") @db.Timestamptz
+  lastEventAt  DateTime? @map("last_event_at") @db.Timestamptz
+  lastError    String?   @map("last_error")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@index([provider, externalId])
+  @@map("mail_watch_subscriptions")
 }

@@ -6,13 +6,18 @@ import type {
   WikiWriteInput,
   WikiWriteOutcome,
 } from '@/domain/knowledge-base/wiki-service'
+import type { WikiConfigService } from '@/domain/knowledge-base/wiki-config-service'
 import type { WikiSnapshotConnector } from '@/lib/wiki-access'
+import { parseWikiViewFilter } from '@/lib/wiki-metadata'
 import {
   KB_GET_DOCUMENT_TOOL,
   KB_GET_PAGE_TOOL,
   KB_INGEST_TOOL,
   KB_LIST_INDEX_TOOL,
   KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
   KB_WIKI_REVERT_TOOL,
   KB_WIKI_WRITE_TOOL,
   type EnterpriseKbTool,
@@ -27,6 +32,8 @@ export type KbToolContext = {
   userId: string
   /** #943: a hívóra szűkített snapshot-kötések (wiki-jog feloldásához). */
   snapshot?: { connectors: WikiSnapshotConnector[] }
+  /** #1061 F2: interaktív emberi munkamenet (nem ütemezett futás) — `human_note` csak így. */
+  interactive?: boolean
 }
 
 /** Hibakód + javítható részletek a modellnek (pl. `already_claimed`). */
@@ -59,15 +66,45 @@ function decodeIngestBuffer(args: Record<string, unknown>): Buffer {
 
 function wikiCaller(ctx: KbToolContext): WikiCaller | null {
   if (!ctx.snapshot) return null
-  return { tenantId: ctx.tenantId, userId: ctx.userId, agentId: ctx.agentId, snapshot: ctx.snapshot }
+  return {
+    tenantId: ctx.tenantId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    snapshot: ctx.snapshot,
+    ...(ctx.interactive ? { interactive: true } : {}),
+  }
 }
 
 /** A wiki-útvonalak (beküldés, írás, tálca), amelyek nem egyetlen kiválasztott KB-kötésen futnak. */
 export function isWikiToolCall(toolName: string, args: Record<string, unknown>): boolean {
   if (toolName === KB_WIKI_WRITE_TOOL || toolName === KB_WIKI_CHANGES_TOOL || toolName === KB_WIKI_REVERT_TOOL) return true
+  if (isWikiConfigTool(toolName)) return true
   if (toolName === KB_INGEST_TOOL) return args.processingMode === 'wiki'
   if (toolName === KB_LIST_INDEX_TOOL) return args.inbox === true
   return false
+}
+
+export function isWikiConfigTool(toolName: string): boolean {
+  return toolName === KB_WIKI_CONFIG_GET_TOOL || toolName === KB_WIKI_CONFIG_PROPOSE_TOOL || toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL
+}
+
+/** #1075: a beállítás-eszközök; az érvényesítés és a jog a `WikiConfigService`-ben. */
+export function executeWikiConfigTool(
+  config: WikiConfigService,
+  toolName: EnterpriseKbTool,
+  args: Record<string, unknown>,
+  caller: WikiCaller,
+): Promise<WikiOutcome> {
+  const wikiId = typeof args.wikiId === 'string' ? args.wikiId : undefined
+  if (toolName === KB_WIKI_CONFIG_GET_TOOL) return config.get(caller, { wikiId })
+  if (toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL) return config.withdraw(caller, { wikiId, proposalId: String(args.proposalId) })
+  return config.propose(caller, {
+    wikiId,
+    baseConfigVersion: String(args.baseConfigVersion),
+    operations: args.operations as unknown[],
+    note: String(args.note),
+    validateOnly: args.validateOnly === true,
+  })
 }
 
 export async function executeWikiTool(
@@ -152,6 +189,13 @@ export async function executeKnowledgeBaseTool(
   if (toolName === KB_LIST_INDEX_TOOL) {
     const pathPrefix = typeof args.pathPrefix === 'string' ? args.pathPrefix : undefined
     const artifactId = typeof args.artifactId === 'string' ? args.artifactId : undefined
+    // #1061 F3: szűrő-paraméterekkel a generált nézet (tervezetek, lejárt átnézés, gazdánként…).
+    const filter = wiki && caller && !pathPrefix && !artifactId ? parseWikiViewFilter(args) : null
+    if (filter && wiki && caller) {
+      const view = await wiki.viewFor(ctx.tenantId, ctx.connectorId, caller, filter)
+      if (!view.ok) throw new KbToolError(view.code, view.details)
+      return { wikiView: view.result }
+    }
     const listing = await service.listIndex({
       connectorId: ctx.connectorId,
       pathPrefix,
@@ -166,6 +210,10 @@ export async function executeKnowledgeBaseTool(
   }
   if (toolName === KB_GET_DOCUMENT_TOOL) {
     const documentId = String(args.documentId)
+    const paging = {
+      offset: typeof args.offset === 'number' ? args.offset : undefined,
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+    }
     if (args.claimForWiki === true) {
       if (!wiki || !caller) throw new KbToolError('tool_not_configured')
       const claim = await wiki.claim(caller, { connectorId: ctx.connectorId, documentId })
@@ -174,6 +222,7 @@ export async function executeKnowledgeBaseTool(
         connectorId: ctx.connectorId,
         documentId,
         section: typeof args.section === 'string' ? args.section : undefined,
+        ...paging,
       })
       // A szkennelt / rossz szövegű oldalak `pageImages`-tippje a foglalásnál se vesszen el (#947).
       const pdfHint = 'nextStep' in document && document.nextStep ? `${document.nextStep} ` : ''
@@ -194,6 +243,7 @@ export async function executeKnowledgeBaseTool(
       tenantId: ctx.tenantId,
       userId: ctx.userId,
       section: typeof args.section === 'string' ? args.section : undefined,
+      ...paging,
     })
   }
   if (toolName === KB_GET_PAGE_TOOL) {
@@ -205,6 +255,7 @@ export async function executeKnowledgeBaseTool(
         path: String(args.path),
         explicitWiki: typeof args.wikiId === 'string',
         asOf: typeof args.asOf === 'string' || typeof args.asOf === 'number' ? args.asOf : undefined,
+        reader: { tenantId: ctx.tenantId, userId: ctx.userId, snapshot: ctx.snapshot },
       })
       if (page) return page
     }

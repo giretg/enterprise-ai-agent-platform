@@ -11,9 +11,16 @@ import type {
   WikiApplyChangeSetResult,
   WikiApplyPageOp,
   WikiChangeSetPageSummary,
+  WikiConfigApplyPlan,
+  WikiConfigRepository,
   WikiInboxSummary,
   WikiRepository,
+  WikiStructureRepository,
 } from '../interfaces'
+import type { WikiCategoryRow } from '@/lib/wiki-categories'
+import { configVersionOf, configPagesVersionOf, type WikiConfigState } from '@/lib/wiki-config'
+import { metaFromColumns, type WikiFieldDef } from '@/lib/wiki-metadata'
+import type { WikiPageMetaQuery, WikiPageMetaRow } from '../interfaces'
 
 /** Tranzakció-megszakítás eredménnyel (a rollback után ezt adjuk vissza). */
 class ApplyAborted extends Error {
@@ -21,6 +28,24 @@ class ApplyAborted extends Error {
     super('wiki_apply_aborted')
   }
 }
+
+/**
+ * Áthelyezett (vagy törléskor átnevezett) oldal: a kategóriák kiemelt és kézi sorrendű
+ * listájában is az új path álljon, ugyanabban a tranzakcióban.
+ */
+export async function replaceCategoryPagePath(tx: Prisma.TransactionClient, wikiId: string, from: string, to: string) {
+  if (from === to) return
+  await tx.$executeRaw`
+    UPDATE wiki_categories
+    SET pinned_pages = array_replace(pinned_pages, ${from}, ${to}),
+        page_order = array_replace(page_order, ${from}, ${to}),
+        updated_at = now()
+    WHERE wiki_id = ${wikiId}::uuid
+      AND (pinned_pages @> ARRAY[${from}]::text[] OR page_order @> ARRAY[${from}]::text[])`
+}
+
+/** A kategória-átrendezés közben eltűnt sor: az egész sorrend visszagörgetődik. */
+class ReorderAborted extends Error {}
 
 function pageData(page: WikiApplyPageOp['page']) {
   return {
@@ -35,6 +60,17 @@ function pageData(page: WikiApplyPageOp['page']) {
     outLinks: page.outLinks ?? [],
     status: page.status ?? 'published',
     contentHash: page.contentHash,
+    // #1061 F3: a beépített mezők csak akkor íródnak, ha a tervezés adta őket.
+    ...(page.meta
+      ? {
+          docStatus: page.meta.docStatus,
+          ownerUserId: page.meta.ownerUserId,
+          ownerRole: page.meta.ownerRole,
+          reviewedAt: page.meta.reviewedAt,
+          reviewedByUserId: page.meta.reviewedByUserId,
+          reviewCycleDays: page.meta.reviewCycleDays,
+        }
+      : {}),
   }
 }
 
@@ -58,6 +94,8 @@ export function revisionData(
     type: page.type,
     category: page.category,
     sourceRefs: page.sourceRefs ?? [],
+    // #1061 F3 NFR-4: a beépített mezők is a revízió részei (diff, visszaállítás, időutazás).
+    meta: metaFromColumns(page) as unknown as Prisma.InputJsonValue,
     createdByAgentId: author.actorAgentId ?? null,
     createdByUserId: author.actorUserId ?? null,
   }
@@ -274,6 +312,23 @@ export class PostgresWikiRepository implements WikiRepository {
     return rows.reverse()
   }
 
+  async listPagesCitingDocuments(connectorIds: string[], documentIds: string[]) {
+    if (connectorIds.length === 0 || documentIds.length === 0) return []
+    const rows = await prisma.$queryRaw<Array<{ document_id: string; path: string; title: string }>>(Prisma.sql`
+      SELECT DISTINCT ref->>'documentId' AS document_id, p.path, p.title
+      FROM wiki_pages p
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE WHEN jsonb_typeof(p.source_refs) = 'array' THEN p.source_refs ELSE '[]'::jsonb END
+      ) AS ref
+      WHERE p.connector_id = ANY(${connectorIds}::uuid[])
+        AND p.status = CAST('published' AS "WikiPageStatus")
+        AND ref->>'documentId' = ANY(${documentIds}::text[])
+        AND (ref->>'connectorId' IS NULL OR ref->>'connectorId' = p.connector_id::text)
+      ORDER BY p.path
+    `)
+    return rows.map((row) => ({ documentId: row.document_id, path: row.path, title: row.title }))
+  }
+
   async listInbox(
     connectorIds: string[],
     input: { now: Date; batchId?: string; limit?: number },
@@ -458,6 +513,12 @@ export class PostgresWikiRepository implements WikiRepository {
         // Egy wikin az írások sorban futnak: a konténer-artifact egyszer jön létre,
         // és két change-set chunk-cseréje nem keveredik.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.connectorId}))`
+        if (input.configPlan) await applyConfigPlan(tx, input.wikiId, input.connectorId, input.configPlan)
+        if (input.categoryUpdate) {
+          const { id, expectedParentId, patch } = input.categoryUpdate
+          const changed = await tx.wikiCategory.updateMany({ where: { id, wikiId: input.wikiId, parentId: expectedParentId }, data: patch })
+          if (changed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'conflict', path: null })
+        }
         // #978 D6: a sorszám az alkalmazáskor születik; a sor-zár miatt két párhuzamos
         // alkalmazás nem kaphatja ugyanazt (a rollback a számot is visszaadja).
         const [allocated] = await tx.$queryRaw<Array<{ seq: number }>>`
@@ -571,6 +632,7 @@ export class PostgresWikiRepository implements WikiRepository {
               })),
             })
           }
+          if (op.kind === 'update') await replaceCategoryPagePath(tx, input.wikiId, op.previousPath, page.path)
           await tx.wikiPageRevision.create({ data: revisionData(page, changeSetId, input.log) })
           pages.push(page)
         }
@@ -584,6 +646,10 @@ export class PostgresWikiRepository implements WikiRepository {
             where: { id: changeSetId },
             data: { pageSummary: summary as unknown as Prisma.InputJsonValue },
           })
+        }
+
+        if (input.configPlan) {
+          await tx.wikiConfigProposal.update({ where: { id: input.configPlan.proposalId }, data: { changeSetId } })
         }
 
         await tx.wikiLogEntry.create({
@@ -654,6 +720,425 @@ export class PostgresWikiRepository implements WikiRepository {
       select: { id: true },
       orderBy: { createdAt: 'asc' },
     })
+  }
+}
+
+const categorySelect = {
+  id: true,
+  key: true,
+  parentId: true,
+  name: true,
+  description: true,
+  sortOrder: true,
+  approval: true,
+  linkedConnectorId: true,
+  reviewCycleDays: true,
+  requiredFields: true,
+  requiredSections: true,
+  sectionRule: true,
+  templateMd: true,
+  pageSort: true,
+  pinnedPages: true,
+  pageOrder: true,
+  collapsed: true,
+  templateKey: true,
+} as const
+
+const fieldSelect = { id: true, key: true, name: true, type: true, options: true, help: true, sortOrder: true } as const
+
+async function loadConfigState(client: Prisma.TransactionClient, wikiId: string): Promise<WikiConfigState | null> {
+  const wiki = await client.agentWiki.findUnique({
+    where: { id: wikiId },
+    select: {
+      schemaMd: true,
+      collectFocus: true,
+      managedCategories: true,
+      managedFields: true,
+      connector: { select: { config: true } },
+      categories: { select: { ...categorySelect, parent: { select: { key: true } } } },
+      fields: { select: fieldSelect },
+    },
+  })
+  if (!wiki) return null
+  const config = wiki.connector.config && typeof wiki.connector.config === 'object' && !Array.isArray(wiki.connector.config)
+    ? (wiki.connector.config as Record<string, unknown>)
+    : {}
+  return {
+    name: typeof config.displayName === 'string' && config.displayName.trim() ? config.displayName.trim() : null,
+    collect: wiki.collectFocus,
+    wikiMd: wiki.schemaMd,
+    managedCategories: wiki.managedCategories,
+    managedFields: wiki.managedFields,
+    categories: wiki.categories.map((row) => ({
+      key: row.key,
+      parentKey: row.parent?.key ?? null,
+      name: row.name,
+      description: row.description,
+      sortOrder: row.sortOrder,
+      approval: row.approval,
+      pageSort: row.pageSort,
+      pinnedPages: row.pinnedPages,
+      pageOrder: row.pageOrder,
+      collapsed: row.collapsed,
+      reviewCycleDays: row.reviewCycleDays,
+      requiredFields: row.requiredFields,
+      requiredSections: row.requiredSections,
+      sectionRule: row.sectionRule,
+      templateMd: row.templateMd,
+      templateKey: row.templateKey,
+      linkedConnectorId: row.linkedConnectorId,
+    })),
+    fields: wiki.fields.map((row) => ({
+      key: row.key,
+      name: row.name,
+      type: row.type,
+      options: row.options,
+      help: row.help,
+      sortOrder: row.sortOrder,
+    })),
+  }
+}
+
+/**
+ * #1075: a jóváhagyott állapot kiírása a change-set tranzakciójában. Itt, a zár alatt
+ * dől el véglegesen, hogy a beállítás azóta nem változott, és a javaslat még függőben van.
+ */
+async function applyConfigPlan(tx: Prisma.TransactionClient, wikiId: string, connectorId: string, plan: WikiConfigApplyPlan) {
+  const claimed = await tx.wikiConfigProposal.updateMany({
+    where: { id: plan.proposalId, wikiId, connectorId, status: 'pending' },
+    data: { status: 'applied', decidedByUserId: plan.decidedByUserId, decidedAt: new Date() },
+  })
+  if (claimed.count !== 1) throw new ApplyAborted({ ok: false, reason: 'proposal_not_pending' })
+  // A felületi írások nem veszik fel a change-set zárát: a sor-zárak miatt a lenyomat után már nem
+  // csúszhat be mentés, amit a kiírás felülírna. A wiki-sor FOR UPDATE-je az új kategória / mező
+  // beszúrását is megvárja (idegen kulcs); a connectornál elég a gyengébb, más táblákat nem fogó zár.
+  await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${connectorId}::uuid FOR NO KEY UPDATE`
+  await tx.$queryRaw`SELECT id FROM agent_wikis WHERE id = ${wikiId}::uuid FOR UPDATE`
+  await tx.$queryRaw`SELECT id FROM wiki_categories WHERE wiki_id = ${wikiId}::uuid ORDER BY id FOR UPDATE`
+  await tx.$queryRaw`SELECT id FROM wiki_fields WHERE wiki_id = ${wikiId}::uuid ORDER BY id FOR UPDATE`
+  const current = await loadConfigState(tx, wikiId)
+  if (!current || configVersionOf(current) !== plan.expectedVersion) throw new ApplyAborted({ ok: false, reason: 'config_conflict' })
+  const pages = await tx.wikiPage.findMany({ where: { wikiId, connectorId }, select: { id: true, version: true } })
+  if (configPagesVersionOf(pages) !== plan.expectedPagesVersion) throw new ApplyAborted({ ok: false, reason: 'conflict', path: null })
+  const { next } = plan
+
+  // A fa kulcsokkal jön; előbb a felső szint, hogy a gyerek megtalálja a szülőjét.
+  const wanted = new Set(next.categories.map((row) => row.key))
+  const removed = current.categories.filter((row) => !wanted.has(row.key))
+  const before = new Map(current.categories.map((row) => [row.key, JSON.stringify(row)]))
+  for (const row of [...next.categories].sort((a, b) => Number(!!a.parentKey) - Number(!!b.parentKey))) {
+    if (before.get(row.key) === JSON.stringify(row)) continue
+    const parentId = row.parentKey
+      ? (await tx.wikiCategory.findUniqueOrThrow({ where: { wikiId_key: { wikiId, key: row.parentKey } }, select: { id: true } })).id
+      : null
+    const data = {
+      name: row.name,
+      description: row.description,
+      sortOrder: row.sortOrder,
+      approval: row.approval,
+      pageSort: row.pageSort,
+      pinnedPages: row.pinnedPages,
+      pageOrder: row.pageOrder,
+      collapsed: row.collapsed,
+      reviewCycleDays: row.reviewCycleDays,
+      requiredFields: row.requiredFields,
+      requiredSections: row.requiredSections,
+      sectionRule: row.sectionRule,
+      templateMd: row.templateMd,
+      templateKey: row.templateKey,
+      parentId,
+    }
+    await tx.wikiCategory.upsert({
+      where: { wikiId_key: { wikiId, key: row.key } },
+      create: { ...data, key: row.key, wikiId },
+      update: data,
+    })
+  }
+  // Előbb a megmaradó gyerekek kapják meg az új szülőt, csak utána törölhető a régi.
+  for (const row of [...removed].sort((a, b) => Number(!!b.parentKey) - Number(!!a.parentKey))) {
+    await tx.wikiCategory.deleteMany({ where: { wikiId, key: row.key } })
+  }
+  for (const row of next.fields) {
+    const { key, ...data } = row
+    await tx.wikiField.upsert({ where: { wikiId_key: { wikiId, key } }, create: { ...row, wikiId }, update: data })
+  }
+  await tx.agentWiki.update({ where: { id: wikiId }, data: { schemaMd: next.wikiMd, collectFocus: next.collect } })
+  if (next.name !== current.name && next.name) {
+    const connector = await tx.connector.findUniqueOrThrow({ where: { id: connectorId }, select: { config: true } })
+    const config = connector.config && typeof connector.config === 'object' && !Array.isArray(connector.config) ? connector.config : {}
+    await tx.connector.update({ where: { id: connectorId }, data: { config: { ...config, displayName: next.name } } })
+  }
+}
+
+/** #1075: agent-javaslatok és a javasolható beállítások élő állapota. */
+export class PostgresWikiConfigRepository implements WikiConfigRepository {
+  readState(wikiId: string) {
+    return loadConfigState(prisma, wikiId)
+  }
+
+  async createProposal(input: Parameters<WikiConfigRepository['createProposal']>[0]) {
+    try {
+      return await prisma.wikiConfigProposal.create({ data: input })
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return null
+      throw error
+    }
+  }
+
+  findProposal(id: string) {
+    return prisma.wikiConfigProposal.findUnique({ where: { id } })
+  }
+
+  findPendingForAgent(wikiId: string, agentId: string) {
+    return prisma.wikiConfigProposal.findFirst({ where: { wikiId, agentId, status: 'pending' } })
+  }
+
+  listProposals(wikiId: string, filter: { pending: boolean; agentId?: string; limit: number }) {
+    return prisma.wikiConfigProposal.findMany({
+      where: {
+        wikiId,
+        ...(filter.agentId ? { agentId: filter.agentId } : {}),
+        status: filter.pending ? 'pending' : { not: 'pending' },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: filter.limit,
+    })
+  }
+
+  async closeProposal(id: string, to: 'rejected' | 'withdrawn', extra: Parameters<WikiConfigRepository['closeProposal']>[2]) {
+    const closed = await prisma.wikiConfigProposal.updateMany({ where: { id, status: 'pending' }, data: { status: to, ...extra } })
+    return closed.count === 1 ? prisma.wikiConfigProposal.findUnique({ where: { id } }) : null
+  }
+
+  async agentConfigChanges(wikiId: string) {
+    const row = await prisma.agentWiki.findUnique({ where: { id: wikiId }, select: { agentConfigChanges: true } })
+    return row?.agentConfigChanges ?? false
+  }
+
+  async setAgentConfigChanges(wikiId: string, on: boolean) {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { agentConfigChanges: on } })
+  }
+
+  async setCollectFocus(wikiId: string, collect: string | null) {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { collectFocus: collect } })
+  }
+}
+
+/** #1061 F1: kezelt kategória-fa és visszahivatkozások. */
+export class PostgresWikiStructureRepository implements WikiStructureRepository {
+  async isManaged(wikiId: string): Promise<boolean> {
+    const row = await prisma.agentWiki.findUnique({ where: { id: wikiId }, select: { managedCategories: true } })
+    return row?.managedCategories ?? false
+  }
+
+  async setManaged(wikiId: string, managed: boolean): Promise<void> {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { managedCategories: managed } })
+  }
+
+  listCategories(wikiId: string): Promise<WikiCategoryRow[]> {
+    return prisma.wikiCategory.findMany({
+      where: { wikiId },
+      select: categorySelect,
+      orderBy: [{ sortOrder: { sort: 'asc', nulls: 'last' } }, { name: 'asc' }],
+    })
+  }
+
+  createCategory(input: Omit<WikiCategoryRow, 'id'> & { wikiId: string }): Promise<WikiCategoryRow> {
+    return prisma.wikiCategory.create({ data: input, select: categorySelect })
+  }
+
+  async updateCategory(
+    wikiId: string,
+    id: string,
+    patch: Parameters<WikiStructureRepository['updateCategory']>[2],
+  ): Promise<WikiCategoryRow | null> {
+    const result = await prisma.wikiCategory.updateMany({ where: { id, wikiId }, data: patch })
+    if (result.count === 0) return null
+    return prisma.wikiCategory.findUnique({ where: { id }, select: categorySelect })
+  }
+
+  async reorderCategories(wikiId: string, parentId: string | null, orders: Array<{ id: string; sortOrder: number }>): Promise<boolean> {
+    return prisma.$transaction(async (tx) => {
+      const siblings = await tx.wikiCategory.findMany({
+        where: { wikiId, parentId, linkedConnectorId: null },
+        select: { id: true, sortOrder: true },
+      })
+      const ids = new Set(orders.map((row) => row.id))
+      if (ids.size !== orders.length || siblings.length !== ids.size || siblings.some((row) => !ids.has(row.id))) {
+        throw new ReorderAborted()
+      }
+      for (const row of orders) {
+        if (siblings.find((sibling) => sibling.id === row.id)!.sortOrder === row.sortOrder) continue
+        const result = await tx.wikiCategory.updateMany({ where: { id: row.id, wikiId }, data: { sortOrder: row.sortOrder } })
+        if (result.count === 0) throw new ReorderAborted()
+      }
+      return true
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }).catch((error) => {
+      if (error instanceof ReorderAborted || (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034')) return false
+      throw error
+    })
+  }
+
+  async deleteCategory(wikiId: string, id: string): Promise<boolean> {
+    const result = await prisma.wikiCategory.deleteMany({ where: { id, wikiId, children: { none: {} } } })
+    return result.count > 0
+  }
+
+  async listBacklinks(connectorId: string, path: string, limit: number) {
+    const rows = await prisma.$queryRaw<Array<{ path: string; title: string; category: string | null; total: bigint }>>`
+      SELECT path, title, category, count(*) OVER () AS total
+      FROM wiki_pages
+      WHERE connector_id = ${connectorId}::uuid
+        AND status = 'published'
+        AND out_links @> ARRAY[${path}]::text[]
+        AND path <> ${path}
+      ORDER BY category NULLS LAST, path
+      LIMIT ${limit}`
+    return {
+      count: rows.length ? Number(rows[0].total) : 0,
+      pages: rows.map(({ path: pagePath, title, category }) => ({ path: pagePath, title, category })),
+    }
+  }
+
+  async listCrossBacklinks(tenantId: string, outLink: string, limit: number) {
+    const rows = await prisma.$queryRaw<
+      Array<{ wiki_id: string; connector_id: string; path: string; title: string; category: string | null }>
+    >`
+      SELECT p.wiki_id, p.connector_id, p.path, p.title, p.category
+      FROM wiki_pages p
+      JOIN connectors c ON c.id = p.connector_id
+      WHERE c.tenant_id = ${tenantId}::uuid
+        AND p.status = 'published'
+        AND p.out_links @> ARRAY[${outLink}]::text[]
+      ORDER BY p.connector_id, p.category NULLS LAST, p.path
+      LIMIT ${limit}`
+    return rows.map((row) => ({
+      wikiId: row.wiki_id,
+      connectorId: row.connector_id,
+      path: row.path,
+      title: row.title,
+      category: row.category,
+    }))
+  }
+
+  // #1061 F3: metaadat-mezők és nézetek ------------------------------------
+
+  async fieldSettings(wikiId: string): Promise<{ managed: boolean; fields: WikiFieldDef[] }> {
+    const [wiki, fields] = await Promise.all([
+      prisma.agentWiki.findUnique({ where: { id: wikiId }, select: { managedFields: true } }),
+      prisma.wikiField.findMany({ where: { wikiId }, select: fieldSelect, orderBy: [{ sortOrder: 'asc' }, { key: 'asc' }] }),
+    ])
+    return { managed: wiki?.managedFields ?? false, fields }
+  }
+
+  async setFieldsManaged(wikiId: string, managed: boolean): Promise<void> {
+    await prisma.agentWiki.update({ where: { id: wikiId }, data: { managedFields: managed } })
+  }
+
+  createField(input: Omit<WikiFieldDef, 'id'> & { wikiId: string }): Promise<WikiFieldDef> {
+    return prisma.wikiField.create({ data: input, select: fieldSelect })
+  }
+
+  async updateField(
+    wikiId: string,
+    id: string,
+    patch: Partial<Pick<WikiFieldDef, 'name' | 'options' | 'help' | 'sortOrder'>>,
+  ): Promise<WikiFieldDef | null> {
+    const result = await prisma.wikiField.updateMany({ where: { id, wikiId }, data: patch })
+    if (result.count === 0) return null
+    return prisma.wikiField.findUnique({ where: { id }, select: fieldSelect })
+  }
+
+  async deleteField(wikiId: string, id: string): Promise<boolean> {
+    return prisma.$transaction(async (tx) => {
+      const field = await tx.wikiField.findFirst({ where: { id, wikiId }, select: { key: true } })
+      if (!field) return false
+      await tx.wikiField.delete({ where: { id } })
+      // A törölt mező kötelezősége se maradjon a kategóriákon (az értékek szabad kulcsként maradnak).
+      await tx.$executeRaw`
+        UPDATE wiki_categories SET required_fields = array_remove(required_fields, ${field.key}), updated_at = now()
+        WHERE wiki_id = ${wikiId}::uuid AND ${field.key} = ANY(required_fields)`
+      return true
+    })
+  }
+
+  async listPageMeta(connectorId: string, filter: WikiPageMetaQuery): Promise<WikiPageMetaRow[]> {
+    const conditions: Prisma.Sql[] = [Prisma.sql`p.connector_id = ${connectorId}::uuid`, Prisma.sql`p.status = 'published'`]
+    if (filter.docStatus?.length) {
+      const values = filter.docStatus.filter((value) => value !== 'none')
+      const none = filter.docStatus.includes('none')
+      const parts = [
+        ...(values.length ? [Prisma.sql`p.doc_status::text = ANY(${values}::text[])`] : []),
+        ...(none ? [Prisma.sql`p.doc_status IS NULL`] : []),
+      ]
+      conditions.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`)
+    }
+    if (filter.ownerUserIds) {
+      conditions.push(
+        filter.ownerUserIds.length ? Prisma.sql`p.owner_user_id = ANY(${filter.ownerUserIds}::uuid[])` : Prisma.sql`false`,
+      )
+    }
+    if (filter.categories?.length) {
+      const parts = filter.categories.map(
+        (path) => Prisma.sql`(lower(p.category) = ${path} OR lower(p.category) LIKE ${`${path.replace(/[\\%_]/g, '\\$&')}/%`})`,
+      )
+      conditions.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`)
+    }
+    for (const field of filter.fields ?? []) {
+      // `@>` a GIN (jsonb_path_ops) indexen: egyértékű és több-választós (tömb) mezőre is.
+      const parts = field.values.flatMap((value) => [
+        Prisma.sql`p.frontmatter @> ${JSON.stringify({ [field.key]: value })}::jsonb`,
+        Prisma.sql`p.frontmatter @> ${JSON.stringify({ [field.key]: [value] })}::jsonb`,
+      ])
+      conditions.push(Prisma.sql`(${Prisma.join(parts, ' OR ')})`)
+    }
+    if (filter.orphansOnly) {
+      conditions.push(Prisma.sql`p.type <> 'overview'`)
+      conditions.push(Prisma.sql`NOT EXISTS (
+        SELECT 1 FROM wiki_pages q
+        WHERE q.connector_id = p.connector_id AND q.status = 'published'
+          AND q.out_links @> ARRAY[p.path]::text[] AND q.path <> p.path)`)
+    }
+    const rows = await prisma.$queryRaw<
+      Array<{
+        path: string
+        title: string
+        summary: string
+        type: string
+        category: string | null
+        frontmatter: unknown
+        doc_status: 'draft' | 'approved' | null
+        owner_user_id: string | null
+        owner_role: string | null
+        reviewed_at: Date | null
+        reviewed_by_user_id: string | null
+        review_cycle_days: number | null
+        created_at: Date
+        updated_at: Date
+      }>
+    >(Prisma.sql`
+      SELECT p.path, p.title, p.summary, p.type::text AS type, p.category, p.frontmatter, p.doc_status::text AS doc_status,
+             p.owner_user_id, p.owner_role, p.reviewed_at, p.reviewed_by_user_id, p.review_cycle_days,
+             p.created_at, p.updated_at
+      FROM wiki_pages p
+      WHERE ${Prisma.join(conditions, ' AND ')}
+      ORDER BY p.category NULLS LAST, p.path`)
+    return rows.map((row) => ({
+      path: row.path,
+      title: row.title,
+      summary: row.summary,
+      type: row.type,
+      category: row.category,
+      frontmatter: row.frontmatter,
+      docStatus: row.doc_status,
+      ownerUserId: row.owner_user_id,
+      ownerRole: row.owner_role,
+      reviewedAt: row.reviewed_at,
+      reviewedByUserId: row.reviewed_by_user_id,
+      reviewCycleDays: row.review_cycle_days,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }))
   }
 }
 

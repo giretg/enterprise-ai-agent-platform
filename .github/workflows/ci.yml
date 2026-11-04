@@ -125,6 +125,8 @@ jobs:
           npm run test:document-export
           npm run test:tenant-mailbox
           npm run test:http-api
+          npm run test:http-api-file-response
+          npm run test:http-api-saved-result
           npm run test:write-approval-modes
           npm run test:write-approval-ui
           npm run test:pending-args-summary
@@ -141,11 +143,16 @@ jobs:
           npm run test:agentmail-connector
           npm run test:agent-mailbox
           npm run test:mail-tools
+          npm run test:inbound-mail
           npm run test:kb-gate
           npm run test:kb-retrieval
           npm run test:wiki-foundation
           npm run test:kb-wiki
           npm run test:wiki-console
+          npm run test:wiki-categories
+          npm run test:wiki-sources
+          npm run test:wiki-metadata
+          npm run test:wiki-config
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -167,6 +174,7 @@ jobs:
           npm run test:iam-token-redeem-escalation
           npm run test:tenant-management
           npm run test:self-service-tenant
+          npm run test:platform-registration-approve
 
   platform-chat-worker:
     # #1004: a beépített platform-chat worker (külön csomag). Elfogadási feltétel 7: a CI elbukik,
@@ -283,6 +291,9 @@ jobs:
       # #1028: tenant-postafiók grant (tulajdonos-típus CHECK, egyedi index, újracsatlakoztatás).
       - name: Tenant mailbox grants (Postgres)
         run: npm run test:tenant-mailbox-db
+      # #1032: bejövő levél esemény (idempotens webhook, átadás-sor, értesítés-lista).
+      - name: Inbound mail events (Postgres)
+        run: npm run test:inbound-mail-db
 
       - name: AI-adattárház (#984) valódi Postgresen
         run: npm run test:warehouse-db
@@ -300,6 +311,18 @@ jobs:
       # #978: wiki-előzmények (visszavonás, sorszám, időutazás, megőrzés, GDPR-törlés) valódi Postgresen.
       - name: Wiki history (Postgres)
         run: npm run test:wiki-history-db
+      # #1061: kezelt kategória-fa (bekapcsolás, áthelyezés, törlés) és visszahivatkozások valódi Postgresen.
+      - name: Wiki structure (Postgres)
+        run: npm run test:wiki-structure-db
+      # #1061 F2: emberi rögzítés, másik tudástár forrása, „csak a kijelöltek” wiki, kapcsolt wiki.
+      - name: Wiki sources and members-only wikis (Postgres)
+        run: npm run test:wiki-sources-members-db
+      # #1061 F3/F4: metaadat-mezők, nézetek, „Átnéztem”, kategória-sablon.
+      - name: Wiki metadata fields, views and templates (Postgres)
+        run: npm run test:wiki-metadata-db
+      # #1075: agent által javasolt wiki-beállítás (javaslat, jóváhagyás, ütközés, oldalmozgatás).
+      - name: Wiki config proposals (Postgres)
+        run: npm run test:wiki-config-db
 
       # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
       - name: Wiki console queries (Postgres)

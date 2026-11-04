@@ -53,6 +53,20 @@ A modell nem kapja meg minden lépésben az összes MCP-eszköz teljes sémájá
 A stream (`GET /turns/:id/events`) a `turn_events` táblát pollozza, `Last-Event-ID`-vel folytatható,
 és a forduló végén vagy 2 perc csend után zár (nyitva felejtett kapcsolat nem számlázódik).
 
+## Kérdés-kártya és munkaterv (#1025)
+
+Mindkettő harness-eszköz, a worker helyben válaszol (nem MCP-hívás); minden fordulóban a `tools[]` része.
+
+- **`ask_user`** (`question`, 2–5 `options` {`label`, `description?`}, `allowOther`, `multiSelect`): a forduló
+  `awaiting_input`-ra áll és leáll (nincs futó feladat, nincs lépés-sor), a `turns.pending_input` tartja a kérdést.
+  A válasz (`POST /turns/:id/answer` {`selected`, `text?`}, vagy a kártya helyett írt üzenet a `POST …/turns`-ön)
+  friss folytatási tokent kér, és ugyanazt a lépést indítja; a modell tool-eredményként kapja. Időkorlát nincs,
+  a várakozás (`paused_seconds`) nem számít a 40 percbe. A kérdés a kérdező assistant-üzenet `question` mezőjébe,
+  a válasz user-üzenetként kerül; a jelen forduló előzményében ezek nem duplázódnak. Fordulónként legfeljebb 3 kérdés.
+- **`update_plan`** (`steps[]` {`title`, `status`: `pending`|`in_progress`|`done`}): `plan` eseményt ír, a chat élőben
+  mutatja (`Last-Event-ID`-vel visszajátszható), a záró üzenet `plan` mezőjén megmarad. Nem fogyasztja a 25 lépéses keretet.
+- Ütemezett futás és ticket: nem érinti (ott a #471 a kérdés-kártya megfelelője).
+
 ## Csatolmányok (#1023)
 
 A promptba fájlleírás és az első kérésnél legfeljebb 3000 karakter / 20 táblázatsor kerül.
@@ -72,6 +86,14 @@ A cél jelenlegi méretkorlátja érvényes: Drive/adattárház 10 MB, tudástá
 sandbox fájlonként 5 MB. A mérethatárt meghaladó fájlhoz az eszköz saját feltöltőoldalát kell használni.
 A jogosultság, az MRTR-jóváhagyás és az idempotencia változatlan; base64 nem kerül a modellkontextusba.
 A meglévő `extracted_text` mező csak a manifestet és a kezdőrészletet tárolja, migráció nem szükséges.
+
+## Bejövő levél feldolgozása (#1032)
+
+A platform szerveroldalon indít beszélgetést egy beérkezett levélre (`origin: 'inbound_mail'`), a felelős
+user nevében. A feldolgozási utasítás (`instructions`) a system promptba kerül; a worker csak akkor
+fogadja el, ha a chat-token a platform szerveroldali tokenje (`origin` claim) és az `ih` claim az utasítás
+sha256-ja — böngésző-tokennel 403. A levél tartalma csak tool-eredményként (`mail_get_message`, megbízhatatlan
+jelöléssel) jut a modellhez. Migráció: `003_conversation_origin.sql`.
 
 ## Helyi futtatás
 

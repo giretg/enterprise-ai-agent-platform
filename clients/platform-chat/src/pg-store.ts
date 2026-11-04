@@ -1,5 +1,6 @@
 /** A `Store` Postgres-implementációja — csak a `platform_chat` sémát éri el (D8, külön DB-szerep). */
 import pg from 'pg'
+import { ACTIVE_TURN_STATUSES } from './store.ts'
 import type {
   Attachment,
   Conversation,
@@ -23,6 +24,8 @@ const conv = (r: Row): Conversation => ({
   agentName: r.agent_name as string,
   title: r.title as string,
   titleSetByUser: r.title_set_by_user as boolean,
+  origin: r.origin === 'inbound_mail' ? 'inbound_mail' : 'user',
+  instructions: (r.instructions as string | null) ?? null,
   createdAt: r.created_at as Date,
   lastActivityAt: r.last_activity_at as Date,
 })
@@ -35,6 +38,8 @@ const msg = (r: Row): Message => ({
   content: r.content as string,
   attachments: (r.attachments as Message['attachments']) ?? [],
   files: (r.files as Message['files']) ?? [],
+  question: (r.question as Message['question']) ?? null,
+  plan: (r.plan as Message['plan']) ?? null,
   createdAt: r.created_at as Date,
 })
 
@@ -51,6 +56,10 @@ const turnOf = (r: Row): Turn => ({
   continuationToken: (r.continuation_token as string | null) ?? null,
   context: (r.context as Turn['context']) ?? null,
   pendingApproval: (r.pending_approval as Turn['pendingApproval']) ?? null,
+  pendingInput: (r.pending_input as Turn['pendingInput']) ?? null,
+  pausedSeconds: (r.paused_seconds as number | null) ?? 0,
+  pause: (r.pause as Turn['pause']) ?? null,
+  runLimits: (r.run_limits as Turn['runLimits']) ?? null,
   createdAt: r.created_at as Date,
   finishedAt: (r.finished_at as Date | null) ?? null,
 })
@@ -84,9 +93,13 @@ const TURN_COLUMNS: Record<string, string> = {
   continuationToken: 'continuation_token',
   context: 'context',
   pendingApproval: 'pending_approval',
+  pendingInput: 'pending_input',
+  pausedSeconds: 'paused_seconds',
+  pause: 'pause',
+  runLimits: 'run_limits',
   finishedAt: 'finished_at',
 }
-const JSON_COLUMNS = new Set(['token_usage', 'context', 'pending_approval'])
+const JSON_COLUMNS = new Set(['token_usage', 'context', 'pending_approval', 'pending_input', 'pause', 'run_limits'])
 
 function setClause(patch: Record<string, unknown>, offset: number): { sql: string; values: unknown[] } {
   const parts: string[] = []
@@ -100,16 +113,16 @@ function setClause(patch: Record<string, unknown>, offset: number): { sql: strin
   return { sql: parts.join(', '), values }
 }
 
-export function createPgStore(pool: pg.Pool): Store {
-  const q = async (sql: string, values: unknown[] = []) => (await pool.query(sql, values)).rows as Row[]
+export function createPgStore(pool: pg.Pool, connection: Pick<pg.Pool, 'query'> = pool): Store {
+  const q = async (sql: string, values: unknown[] = []) => (await connection.query(sql, values)).rows as Row[]
   const one = async (sql: string, values: unknown[] = []) => (await q(sql, values))[0] ?? null
 
   return {
     async createConversation(input) {
       const r = await one(
-        `INSERT INTO platform_chat.conversations (tenant_id, tenant_slug, user_id, agent_id, agent_name)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [input.tenantId, input.tenantSlug, input.userId, input.agentId, input.agentName],
+        `INSERT INTO platform_chat.conversations (tenant_id, tenant_slug, user_id, agent_id, agent_name, origin, instructions, title)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, '')) RETURNING *`,
+        [input.tenantId, input.tenantSlug, input.userId, input.agentId, input.agentName, input.origin ?? 'user', input.instructions ?? null, input.title ?? null],
       )
       return conv(r!)
     },
@@ -161,9 +174,12 @@ export function createPgStore(pool: pg.Pool): Store {
 
     async addMessage(input) {
       const r = await one(
-        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments), JSON.stringify(input.files ?? [])],
+        `INSERT INTO platform_chat.messages (conversation_id, turn_id, role, content, attachments, files, question, plan, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp()) RETURNING *`,
+        [
+          input.conversationId, input.turnId, input.role, input.content, JSON.stringify(input.attachments), JSON.stringify(input.files ?? []),
+          input.question ? JSON.stringify(input.question) : null, input.plan?.length ? JSON.stringify(input.plan) : null,
+        ],
       )
       return msg(r!)
     },
@@ -204,8 +220,8 @@ export function createPgStore(pool: pg.Pool): Store {
     },
     async activeTurn(conversationId) {
       const r = await one(
-        `SELECT * FROM platform_chat.turns WHERE conversation_id = $1 AND status IN ('queued','running','awaiting_approval') LIMIT 1`,
-        [conversationId],
+        `SELECT * FROM platform_chat.turns WHERE conversation_id = $1 AND status = ANY($2::text[]) LIMIT 1`,
+        [conversationId, [...ACTIVE_TURN_STATUSES]],
       )
       return r ? turnOf(r) : null
     },
@@ -224,6 +240,29 @@ export function createPgStore(pool: pg.Pool): Store {
       )
       return rows.length > 0
     },
+    async saveQuestionAnswer(input) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const tx = createPgStore(pool, client)
+        const locked = await client.query('SELECT pending_input FROM platform_chat.turns WHERE id = $1 FOR UPDATE', [input.turnId])
+        const ok = locked.rows[0]?.pending_input?.seq === input.pendingInput.seq && await tx.transitionTurn(input.turnId, ['awaiting_input'], 'running', {
+          pendingInput: input.pendingInput, continuationToken: input.continuationToken, pausedSeconds: input.pausedSeconds,
+        })
+        if (ok) {
+          for (const message of input.messages) await tx.addMessage(message)
+          await tx.appendEvent(input.turnId, 'question', { phase: 'answered', answer: input.display })
+          await tx.touchConversation(input.messages[0].conversationId)
+        }
+        await client.query('COMMIT')
+        return ok
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    },
     async claimTurn(id, leaseSeconds) {
       const rows = await q(
         `UPDATE platform_chat.turns SET lease_until = now() + make_interval(secs => $2::int)
@@ -231,6 +270,9 @@ export function createPgStore(pool: pg.Pool): Store {
         [id, leaseSeconds],
       )
       return rows.length > 0
+    },
+    async lastEventId(turnId) {
+      return Number((await one('SELECT COALESCE(MAX(seq), 0) AS seq FROM platform_chat.turn_events WHERE turn_id = $1', [turnId]))?.seq ?? 0)
     },
     async releaseTurn(id) {
       await q(`UPDATE platform_chat.turns SET lease_until = NULL WHERE id = $1`, [id])

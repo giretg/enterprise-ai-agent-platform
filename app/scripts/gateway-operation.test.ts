@@ -214,6 +214,40 @@ async function main() {
     assert.deepEqual(result, { ok: false, code: 'agent_stale' })
   })
 
+  await check('idempotent replay survives republish with stale or new pin', async () => {
+    const wired = deps({ currentDefinitionId: STALE_DEFINITION_ID })
+    const created = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: STALE_DEFINITION_ID, idempotencyKey: 'idem-stale' },
+    })
+    assert.equal(created.ok, true)
+    if (!created.ok) return
+
+    // Republish: current pin moves to DEFINITION_ID; retry with old pin + same key.
+    wired.deps.findCurrentDefinitionId = async () => DEFINITION_ID
+    const replayStale = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: STALE_DEFINITION_ID, idempotencyKey: 'idem-stale' },
+    })
+    assert.equal(replayStale.ok, true)
+    if (!replayStale.ok) return
+    assert.equal(replayStale.view.operationId, created.view.operationId)
+    assert.equal(replayStale.created, false)
+
+    // Checkout retry: new definitionId, same key and write args → same op (no duplicate).
+    const replayCurrent = await enqueueGatewayOperation(wired.deps, {
+      principal: principal(),
+      toolName: GOOGLE_DRIVE_CREATE_FOLDER_TOOL,
+      args: { ...FOLDER_ARGS, definitionId: DEFINITION_ID, idempotencyKey: 'idem-stale' },
+    })
+    assert.equal(replayCurrent.ok, true)
+    if (!replayCurrent.ok) return
+    assert.equal(replayCurrent.view.operationId, created.view.operationId)
+    assert.equal(replayCurrent.created, false)
+  })
+
   await check('enqueue create_folder is awaiting_approval and does not call Drive', async () => {
     const driveCalls: unknown[] = []
     const logs = captureInfo()
@@ -755,6 +789,121 @@ async function main() {
     const message = (result.inputRequests.confirm_write as { params: { message: string } }).params.message
     assert.match(message, /POST \/v1\/users\?admin=true&role=owner/)
     assert.match(message, /"name":"Bob"/)
+  })
+
+  await check('jóváhagyott HTTP-fájl a kérőhöz kerül, linkkel és audittal', async () => {
+    const bytes = Buffer.from('%PDF-file')
+    const hash = 'file-sha256'
+    const wired = deps({
+      executeHttpApiTool: async (...args) => {
+        const save = args[8]
+        assert.ok(save)
+        const saved = await save({ bytes, fileName: 'invoice.pdf', mimeType: 'application/pdf', format: 'pdf', sha256: hash })
+        return { ok: true, ...saved, expiresAt: saved.expiresAt.toISOString(), fileName: 'invoice.pdf', mimeType: 'application/pdf', sizeBytes: bytes.length, sha256: hash }
+      },
+    })
+    const withHttp: GatewayOperationServiceDeps = {
+      ...wired.deps,
+      now: () => new Date('2026-11-03T10:00:00Z'),
+      saveDocumentExport: async (input) => {
+        assert.equal(input.userId, USER_ID)
+        assert.equal(input.tenantId, TENANT_ID)
+        assert.equal(input.definitionId, DEFINITION_ID)
+        assert.equal(input.expiresAt.toISOString(), '2026-11-10T10:00:00.000Z')
+        assert.deepEqual(input.document.bytes, bytes)
+        return { id: 'export-approved' }
+      },
+      documentExportUrl: (id) => `https://app.example/exports/${id}`,
+      async loadDefinition() {
+        const base = definition()
+        return {
+          ...base,
+          snapshot: {
+            ...base.snapshot,
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write', name: 'CRM' }],
+            capabilities: [
+              ...base.snapshot.capabilities,
+              { toolName: HTTP_API_REQUEST_TOOL, allowed: true },
+            ],
+          },
+        }
+      },
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'api_key' })
+      },
+    }
+    const enqueued = await enqueueGatewayOperation(withHttp, {
+      principal: principal(), toolName: HTTP_API_REQUEST_TOOL,
+      args: { definitionId: DEFINITION_ID, method: 'POST', path: '/reports', body: '{}', idempotencyKey: 'approved-file' },
+    })
+    assert.ok(enqueued.ok)
+    const approved = await approveGatewayOperation(withHttp, {
+      tenantId: TENANT_ID, operationId: enqueued.view.operationId, actor: principal({ userId: APPROVER_ID }),
+    })
+    assert.ok(approved.ok)
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal((approved.view.result as { downloadUrl: string }).downloadUrl, 'https://app.example/exports/export-approved')
+    const audit = wired.audit.find(row => row.action === 'gateway.operation.succeeded')
+    assert.deepEqual((audit?.metadata as { file: unknown }).file, {
+      exportId: 'export-approved', fileName: 'invoice.pdf', mimeType: 'application/pdf', byteSize: bytes.length, sha256: hash,
+    })
+  })
+
+  await check('jóváhagyott HTTP-riport a kérőhöz és munkatárshoz mentődik', async () => {
+    const bytes = Buffer.from('{"rows":[{"net":123}]}')
+    const wired = deps({
+      executeHttpApiTool: async (...args) => {
+        const save = args[9]?.saveOversized
+        assert.ok(save)
+        const saved = await save({ data: bytes, path: '/reports', toolName: HTTP_API_REQUEST_TOOL })
+        assert.ok(saved)
+        return { ok: true, savedResult: { savedResultId: saved.id } }
+      },
+    })
+    const withHttp: GatewayOperationServiceDeps = {
+      ...wired.deps,
+      now: () => new Date('2026-11-03T10:00:00Z'),
+      saveHttpResult: async (input) => {
+        assert.equal(input.userId, USER_ID)
+        assert.equal(input.tenantId, TENANT_ID)
+        assert.equal(input.definitionId, DEFINITION_ID)
+        assert.equal(input.agentId, AGENT_ID)
+        assert.equal(input.expiresAt.toISOString(), '2026-11-10T10:00:00.000Z')
+        assert.deepEqual(input.data, bytes)
+        return { id: 'saved-approved' }
+      },
+      documentExportUrl: (id) => `https://app.example/exports/${id}`,
+      async loadDefinition() {
+        const base = definition()
+        return {
+          ...base,
+          snapshot: {
+            ...base.snapshot,
+            connectors: [{ connectorId: CONNECTOR_ID, type: 'http_api', accessMode: 'write', name: 'CRM' }],
+            capabilities: [
+              ...base.snapshot.capabilities,
+              { toolName: HTTP_API_REQUEST_TOOL, allowed: true },
+            ],
+          },
+        }
+      },
+      async findConnector() {
+        return connector({ type: 'http_api', authMode: 'api_key' })
+      },
+    }
+    const enqueued = await enqueueGatewayOperation(withHttp, {
+      principal: principal(), toolName: HTTP_API_REQUEST_TOOL,
+      args: { definitionId: DEFINITION_ID, method: 'POST', path: '/reports', body: '{}', idempotencyKey: 'approved-report' },
+    })
+    assert.ok(enqueued.ok)
+    const approved = await approveGatewayOperation(withHttp, {
+      tenantId: TENANT_ID, operationId: enqueued.view.operationId, actor: principal({ userId: APPROVER_ID }),
+    })
+    assert.ok(approved.ok)
+    assert.equal(approved.view.status, 'succeeded')
+    assert.equal((approved.view.result as { savedResult: { savedResultId: string } }).savedResult.savedResultId, 'saved-approved')
+    const audit = wired.audit.find(row => row.action === 'gateway.operation.succeeded')
+    assert.equal((audit?.metadata as { savedResultId: string }).savedResultId, 'saved-approved')
   })
 
   await check('http_api_request If-Match 412 is failed, not succeeded', async () => {

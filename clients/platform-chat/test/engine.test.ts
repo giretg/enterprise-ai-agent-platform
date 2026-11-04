@@ -4,18 +4,22 @@
  */
 import assert from 'node:assert/strict'
 import {
+  answerQuestion,
   APPROVAL_TTL_MS,
   cancelTurn,
   decideApproval,
   MESSAGES,
   planNext,
   runStep,
+  resumeTurn,
   startTurn,
   toFunctionName,
   toolDefinitions,
   type EngineDeps,
 } from '../src/engine.ts'
+import { DEFAULT_MAX_STEPS, loadConfig } from '../src/config.ts'
 import { summary, toolGroup } from '../src/tool-loading.ts'
+import { normalizeAnswer, INTERACTION_TOOLS } from '../src/interaction-tools.ts'
 import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient } from '../src/platform.ts'
 import type { Conversation } from '../src/store.ts'
 import { MemoryStore } from './memory-store.ts'
@@ -78,7 +82,7 @@ function harness(script: Script, opts: { now?: () => Date; maxSteps?: number; to
     store,
     platform,
     queue: { enqueue: async (t) => void queued.push(t) },
-    limits: { maxSteps: opts.maxSteps ?? 25, maxTurnSeconds: 2400, maxAttemptsPerStep: 3, historyMessages: 30, toolResultChars: 1000 },
+    limits: { maxSteps: opts.maxSteps ?? DEFAULT_MAX_STEPS, maxTurnSeconds: 2400, maxAttemptsPerStep: 3, historyMessages: 30, toolResultChars: 1000 },
     platformOrigin: 'https://app.example.com',
     coreTools: opts.coreTools ?? ['google_drive.search', 'google_drive_create_folder'],
     ...(opts.now ? { now: opts.now } : {}),
@@ -100,6 +104,109 @@ const callTool = (name: string, args: Record<string, unknown>, id = 'c1'): Parti
 const done = (text: string): McpCallResult => ({ kind: 'complete', text, isError: false })
 
 async function main() {
+  await check('top 20 riport: 25-nél több sikeres lépés után is elkészül az export', async () => {
+    assert.equal(loadConfig({ PLATFORM_CHAT_TOKEN_SECRET: 's'.repeat(32), PLATFORM_ORIGIN: 'https://app.example', PLATFORM_CHAT_SELF_URL: 'https://worker.example', PLATFORM_CHAT_DATABASE_URL: 'unused', PLATFORM_CHAT_QUEUE: 'inline' }).limits.maxSteps, DEFAULT_MAX_STEPS)
+    const batch = (count: number, prefix: string) => ({ toolCalls: Array.from({ length: count }, (_, i) => ({
+      id: `${prefix}-${i}`, name: 'google_drive__search', arguments: JSON.stringify({ q: `${prefix}-${i}` }),
+    })) })
+    const h = harness({ llm: [batch(4, 'előkészítés'), batch(20, 'ügyfél'), callTool('google_drive_create_folder', { name: 'export' }), say('Kész a riport.')],
+      tool: Array.from({ length: 25 }, () => done('{}')) })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Top 20 ügyfél riport', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 25)
+    assert.equal((await h.store.listSteps(r.turn.id)).length, 29)
+  })
+
+  await check('szünet és folytatás: kész írás nem ismétlődik, sorhiba után ugyanott folytat', async () => {
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{"id":"export"}')] }, { maxSteps: 2 })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const before = (await h.store.getTurn(r.turn.id))!
+    assert.equal(before.status, 'paused')
+    assert.equal(before.continuationToken, null)
+    assert.equal(h.toolCalls.length, 1)
+    assert.equal((await h.store.activeTurn(c.id))?.id, r.turn.id)
+    assert.equal((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'másik', attachments: [] })).ok, false)
+    assert.equal(await runStep(h.deps, { turnId: r.turn.id, seq: 2 }), 'skip')
+    let renewals = 0
+    h.deps.platform.continuationToken = async () => { renewals++; return 'fresh-token' }
+    const enqueue = h.deps.queue.enqueue
+    h.deps.queue.enqueue = async () => { throw new Error('queue unavailable') }
+    const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
+    await assert.rejects(resumeTurn(h.deps, input), /queue unavailable/)
+    h.deps.queue.enqueue = enqueue
+    assert.equal(await resumeTurn(h.deps, input), 'ok')
+    assert.equal(renewals, 1)
+    assert.deepEqual((await h.store.getTurn(r.turn.id))?.tokenUsage, before.tokenUsage)
+    await h.drain()
+    const after = (await h.store.getTurn(r.turn.id))!
+    assert.equal(after.status, 'succeeded')
+    assert.equal(after.runLimits?.maxSteps, 4)
+    assert.equal(after.createdAt.getTime(), before.createdAt.getTime())
+    assert.equal(after.tokenUsage.costUsd, 0.02)
+    assert.equal(h.toolCalls.length, 1)
+    assert.equal(h.store.messages.filter((m) => m.role === 'user').length, 1)
+    assert.equal(await resumeTurn(h.deps, input), 'not_waiting')
+  })
+
+  await check('időkeret: folytatás csak tulajdonossal és friss hozzáféréssel, az eltelt munkaidő megmarad', async () => {
+    let now = new Date()
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{}')] }, { now: () => now })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r.ok)
+    await runStep(h.deps, h.queued.shift()!)
+    const created = (await h.store.getTurn(r.turn.id))!.createdAt
+    now = new Date(created.getTime() + 2401_000)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'time')
+    const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
+    assert.equal(await resumeTurn(h.deps, { ...input, userId: AGENT }), 'not_found')
+    assert.equal(await resumeTurn(h.deps, { ...input, tenantId: AGENT }), 'not_found')
+    h.deps.platform.continuationToken = async () => { throw new Error('revoked') }
+    assert.equal(await resumeTurn(h.deps, input), 'no_access')
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    h.deps.platform.continuationToken = async () => 'renewed'
+    now = new Date(now.getTime() + 86_400_000)
+    assert.equal(await resumeTurn(h.deps, input), 'ok')
+    const resumed = (await h.store.getTurn(r.turn.id))!
+    assert.equal(resumed.runLimits?.maxActiveSeconds, 4800)
+    assert.equal(resumed.pausedSeconds, 86400)
+    assert.equal(resumed.createdAt.getTime(), created.getTime())
+    now = new Date(now.getTime() + 2400_000)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'time') // az előző 40 perc is számít
+    assert.equal(h.toolCalls.length, 0)
+    assert.equal(await cancelTurn(h.deps, r.turn.id, USER), true)
+    assert.equal((await h.store.activeTurn(c.id)), null)
+  })
+
+  await check('napi keret: a Folytatás nem kerüli meg a kaput, az elutasítás nem lesz modellválasz', async () => {
+    const blocked = { content: 'Mai keret elfogyott.', blockReason: BUDGET_BLOCK_REASON }
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), blocked, blocked, say('Kész.')], tool: [done('{}')] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r.ok)
+    const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'budget')
+    await resumeTurn(h.deps, input)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    await resumeTurn(h.deps, input)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 1)
+    assert.ok(!JSON.stringify(h.llmMessages.at(-1)).includes('Mai keret elfogyott.'))
+    assert.equal(h.store.messages.at(-1)?.content, 'Kész.')
+    assert.equal((await h.store.getTurn(r.turn.id))?.tokenUsage.costUsd, 0.04)
+  })
+
   await check('egyszerű forduló: user-üzenet → streamelt válasz → assistant üzenet, cím automatikusan', async () => {
     const h = harness({ llm: [say('Szia! Miben segíthetek?')], tool: [] })
     const c = await h.conversation()
@@ -286,16 +393,16 @@ async function main() {
     assert.equal(await cancelTurn(h.deps, r.turn.id, '99999999-9999-4999-8999-999999999999'), false)
   })
 
-  await check('napi keret elfogyott: a forduló közérthető szöveggel failed', async () => {
+  await check('napi keret elfogyott: a forduló folytathatóan szünetel', async () => {
     const h = harness({ llm: [{ content: 'A cég mai keretét erre a beszélgetésre már felhasználtuk.', blockReason: BUDGET_BLOCK_REASON }], tool: [] })
     const c = await h.conversation()
     const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
     assert.ok(r.ok)
     await h.drain()
     const turn = await h.store.getTurn(r.turn.id)
-    assert.equal(turn?.status, 'failed')
-    assert.match(String(turn?.error), /keretét/)
-    assert.ok(h.store.events.some((e) => e.type === 'error' && e.payload.code === 'budget'))
+    assert.equal(turn?.status, 'paused')
+    assert.match(String(turn?.pause?.message), /keretét/)
+    assert.ok(h.store.events.some((e) => e.type === 'pause' && e.payload.reason === 'budget'))
   })
 
   await check('ismétlődő-hurok: azonos tool + argumentum 3× → leállás', async () => {
@@ -311,13 +418,13 @@ async function main() {
     assert.equal(h.toolCalls.length, 2)
   })
 
-  await check('lépés-limit és maxAttempts: közérthető failed', async () => {
+  await check('belső vészfék: szünet; ismétlődő futási hiba: failed', async () => {
     const h = harness({ llm: [callTool('google_drive.search', { q: '1' })], tool: [done('[]')] }, { maxSteps: 2 })
     const c = await h.conversation()
     const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
     assert.ok(r.ok)
     await h.drain()
-    assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.tooManySteps)
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.message, MESSAGES.tooManySteps)
 
     const h2 = harness({ llm: [new Error('502'), new Error('502'), new Error('502')], tool: [] })
     const c2 = await h2.conversation()
@@ -339,13 +446,13 @@ async function main() {
     assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.noAccess)
   })
 
-  await check('elfogyott modell-kredit (402): azonnal failed, érthető üzenettel, nincs újrapróbálás', async () => {
+  await check('elfogyott modell-kredit (402): szünet, érthető üzenettel, nincs automatikus újrapróbálás', async () => {
     const h = harness({ llm: [new PlatformError('model gateway: 402 requires more credits', 402)], tool: [] })
     const c = await h.conversation()
     const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
     assert.ok(r.ok)
     assert.equal(await runStep(h.deps, h.queued.shift()!), 'done')
-    assert.equal((await h.store.getTurn(r.turn.id))?.error, MESSAGES.creditExhausted)
+    assert.equal((await h.store.getTurn(r.turn.id))?.pause?.reason, 'credit')
     assert.equal(h.queued.length, 0)
   })
 
@@ -431,7 +538,8 @@ async function main() {
   })
 
   // --- #1022: halasztott eszköz-betöltés ---
-  const names = (tools: unknown[]) => (tools as Array<{ function: { name: string } }>).map((t) => t.function.name)
+  // A #1025 kérdés-/munkaterv-eszközök minden fordulóban ott vannak; a #1022 tesztek a többit nézik.
+  const names = (tools: unknown[]) => (tools as Array<{ function: { name: string } }>).map((t) => t.function.name).filter((n) => !INTERACTION_TOOLS.includes(n))
   const systemOf = (messages: unknown[]) => (messages[0] as { content: string }).content
   const deferred = { coreTools: ['kb_search'], tools: [{ name: 'kb_search', description: 'Keresés a tudástárban.', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }, ...DRIVE_TOOLS] }
 
@@ -579,6 +687,216 @@ async function main() {
     assert.equal(toolGroup('valami'), 'Egyéb')
     assert.equal(summary('Első mondat. Második mondat.'), 'Első mondat.')
     assert.equal(summary('x'.repeat(300)).length, 120)
+  })
+
+  const PETER = {
+    question: 'Melyik Péternek küldjem a beszámolót?',
+    options: [{ label: 'Kovács Péter', description: 'kovacs.peter@acme.hu' }, { label: 'Nagy Péter', description: 'nagy.peter@acme.hu' }],
+  }
+
+  await check('levélből indult forduló: a Folytatás is háttérfutásként kér tokent (írás jóváhagyásra vár)', async () => {
+    const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{"id":"export"}')] }, { maxSteps: 2 })
+    const minted: Array<{ background?: true }> = []
+    h.deps.platform.continuationToken = async (input) => (minted.push(input), 'fresh-token')
+    const mail = await h.store.createConversation({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, agentName: 'Drive', origin: 'inbound_mail' })
+    const r = await startTurn(h.deps, { conversation: mail, chatToken: 'chat', content: 'levél', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
+    assert.equal(await resumeTurn(h.deps, { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }), 'ok')
+    assert.equal(minted.at(-1)?.background, true)
+    const own = await h.conversation()
+    const r2 = await startTurn(h.deps, { conversation: own, chatToken: 'chat', content: 'riport', attachments: [] })
+    assert.ok(r2.ok)
+    assert.equal(minted.at(-1)?.background, undefined)
+  })
+
+  await check('#1025 kérdés-kártya: awaiting_input, nincs futó feladat; 1 óra múlva kattintás → folytatódik, jóváhagyás-kártyáig', async () => {
+    let clock = new Date('2026-11-01T10:00:00Z')
+    const h = harness({
+      llm: [
+        { content: 'Két Pétert találtam.', toolCalls: [{ id: 'q1', name: 'ask_user', arguments: JSON.stringify(PETER) }] },
+        callTool('google_drive_create_folder', { name: 'Kovács Péter' }, 'w1'),
+      ],
+      tool: [{ kind: 'input_required', requestState: 'rs', inputKey: 'ik', message: 'Mappa létrehozása: Kovács Péter' }],
+    }, { now: () => clock })
+    let minted = 0
+    const mint = h.deps.platform.continuationToken
+    h.deps.platform.continuationToken = async (input) => (minted++, mint(input))
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Küldd el a beszámolót Péternek', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    let turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'awaiting_input')
+    assert.equal(h.queued.length, 0) // várakozás közben nincs feladat
+    const asked = h.store.events.find((e) => e.type === 'question')
+    assert.equal(asked?.payload.phase, 'requested')
+    assert.deepEqual((asked?.payload.options as Array<{ label: string }>).map((o) => o.label), ['Kovács Péter', 'Nagy Péter'])
+
+    clock = new Date(clock.getTime() + 60 * 60_000) // 1 óra (a forduló korlátja 40 perc)
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat2', answer: { selected: ['Ismeretlen'] } }), 'invalid')
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: 'masik', chatToken: 'chat2', answer: { selected: ['Kovács Péter'] } }), 'not_found')
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat2', answer: { selected: ['Kovács Péter'] } }), 'ok')
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat2', answer: { selected: ['Nagy Péter'] } }), 'not_waiting')
+    assert.equal(minted, 2) // friss folytatási token a válasznál
+    await h.drain()
+    turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'awaiting_approval') // a szokásos jóváhagyás-kártya, nem max_time
+    assert.equal(turn?.pausedSeconds, 3600)
+    const toolResult = (h.llmMessages[1] as Array<{ role: string; content: string }>).at(-1)
+    assert.equal(toolResult?.role, 'tool')
+    assert.match(toolResult!.content, /„Kovács Péter”/)
+    assert.deepEqual(h.store.messages.map((m) => [m.role, m.content]), [
+      ['user', 'Küldd el a beszámolót Péternek'],
+      ['assistant', 'Két Pétert találtam.'],
+      ['user', 'Kovács Péter'],
+    ])
+    assert.equal(h.store.messages[1].question?.answer.selected[0], 'Kovács Péter')
+    // a jelen forduló kérdés–válasz üzenetei nem duplázódnak a modell előzményében
+    const second = h.llmMessages[1] as Array<{ role: string; content: string | null }>
+    assert.equal(second.filter((m) => m.role === 'user').length, 1)
+    assert.ok((h.llmTools[0] as Array<{ function: { name: string } }>).some((t) => t.function.name === 'ask_user'))
+  })
+
+  await check('#1025 szöveges válasz a kártya helyett: ugyanaz a forduló folytatódik, nem 409', async () => {
+    const h = harness({
+      llm: [{ toolCalls: [{ id: 'q1', name: 'ask_user', arguments: JSON.stringify({ ...PETER, allowOther: false }) }] }, say('Rendben, a Q3 beszámolót Nagy Péternek készítem elő.')],
+      tool: [],
+    })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Küldd el a beszámolót Péternek', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const again = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'A Nagy Péternek, a Q3-ast', attachments: [] })
+    assert.ok(again.ok)
+    assert.equal(again.turn.id, r.turn.id)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.match((h.llmMessages[1] as Array<{ content: string }>).at(-1)!.content, /saját szöveggel.*Nagy Péternek, a Q3-ast/)
+    assert.deepEqual(h.store.messages.map((m) => m.role), ['user', 'assistant', 'user', 'assistant'])
+    assert.equal(h.store.messages.at(-1)?.content, 'Rendben, a Q3 beszámolót Nagy Péternek készítem elő.')
+  })
+
+  await check('#1025 sorhiba után azonos válasz újraküldhető, üzenet és várakozási idő nem duplázódik', async () => {
+    const h = harness({ llm: [callTool('ask_user', PETER), say('Kész.')], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Péter', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const enqueue = h.deps.queue.enqueue
+    h.deps.queue.enqueue = async () => { throw new Error('queue unavailable') }
+    const input = { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { text: 'Nagy Péter' } }
+    await assert.rejects(answerQuestion(h.deps, input), /queue unavailable/)
+    const saved = await h.store.getTurn(r.turn.id)
+    assert.equal(saved?.status, 'running')
+    assert.equal(h.store.messages.length, 3)
+    h.deps.queue.enqueue = enqueue
+    // A szövegmezős út is ugyanazt a mentett választ folytatja.
+    const retry = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Nagy Péter', attachments: [] })
+    assert.ok(retry.ok)
+    assert.equal(h.store.messages.length, 3)
+    assert.equal((await h.store.getTurn(r.turn.id))?.pausedSeconds, saved?.pausedSeconds)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.store.messages.length, 4)
+  })
+
+  await check('#1025 hosszú válasz végi utasítás megmarad; túlméret nem vágódik csendben', async () => {
+    const question = { ...PETER, allowOther: true, multiSelect: false }
+    const text = 'x'.repeat(3000) + ' NE KÜLDD EL'
+    assert.equal(normalizeAnswer(question, { text })?.text, text)
+    assert.equal(normalizeAnswer(question, { text: 'x'.repeat(32_001) }), null)
+  })
+
+  await check('#1025 következő forduló: a korábbi kérdés és a válasz a modell előzményében', async () => {
+    const h = harness({ llm: [{ toolCalls: [{ id: 'q1', name: 'ask_user', arguments: JSON.stringify(PETER) }] }, say('Elkészítettem.'), say('ok')], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Küldd el Péternek', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Nagy Péter'], text: 'és másold Annát' } }), 'ok')
+    await h.drain()
+    assert.ok((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Köszi', attachments: [] })).ok)
+    await h.drain()
+    const history = (h.llmMessages[2] as Array<{ role: string; content: string }>).slice(1).map((m) => [m.role, m.content])
+    assert.deepEqual(history, [
+      ['user', 'Küldd el Péternek'],
+      ['assistant', '\n\n[Kérdés a felhasználónak: „Melyik Péternek küldjem a beszámolót?” — lehetőségek: Kovács Péter; Nagy Péter]'],
+      ['user', 'Nagy Péter — és másold Annát'],
+      ['assistant', 'Elkészítettem.'],
+      ['user', 'Köszi'],
+    ])
+  })
+
+  await check('#1025 fordulónként legfeljebb 3 kérdés: a 4. kérdés helyi hibát ad, nem parkol', async () => {
+    const ask = (id: string) => ({ toolCalls: [{ id, name: 'ask_user', arguments: JSON.stringify({ ...PETER, question: `Kérdés ${id}` }) }] })
+    const h = harness({ llm: [ask('a'), ask('b'), ask('c'), ask('d'), say('Feltételeztem: Kovács Péter.')], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    for (let i = 0; i < 3; i++) {
+      await h.drain()
+      assert.equal((await h.store.getTurn(r.turn.id))?.status, 'awaiting_input')
+      assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Kovács Péter'] } }), 'ok')
+    }
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.match((h.llmMessages[4] as Array<{ content: string }>).at(-1)!.content, /már 3 kérdést/)
+    assert.equal(h.store.events.filter((e) => e.type === 'question' && e.payload.phase === 'requested').length, 3)
+  })
+
+  await check('#1025 hibás kérdés (1 lehetőség): helyi hiba a modellnek, nincs parkolás', async () => {
+    const h = harness({ llm: [{ toolCalls: [{ id: 'q', name: 'ask_user', arguments: JSON.stringify({ question: 'Biztos?', options: [{ label: 'Igen' }] }) }] }, say('Rendben.')], tool: [] })
+    const c = await h.conversation()
+    assert.ok((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })).ok)
+    await h.drain()
+    assert.match((h.llmMessages[1] as Array<{ content: string }>).at(-1)!.content, /2–5 különböző lehetőséget/)
+    assert.equal(h.store.events.some((e) => e.type === 'question'), false)
+  })
+
+  await check('#1025 munkaterv: plan események élőben, a záró üzeneten megmarad, nem fogyasztja a lépéskeretet', async () => {
+    const plan = (doneCount: number) => ({
+      steps: ['Levelek átnézése', 'Összesítés', 'Táblázat', 'Drive-feltöltés'].map((title, i) => ({ title, status: i < doneCount ? 'done' : i === doneCount ? 'in_progress' : 'pending' })),
+    })
+    const step = (n: number): Partial<LlmResult> => ({
+      toolCalls: [
+        { id: `p${n}`, name: 'update_plan', arguments: JSON.stringify(plan(n)) },
+        { id: `s${n}`, name: toFunctionName('google_drive.search'), arguments: JSON.stringify({ q: `lépés ${n}` }) },
+      ],
+    })
+    const h = harness({
+      llm: [step(0), step(1), step(2), step(3), { toolCalls: [{ id: 'p4', name: 'update_plan', arguments: JSON.stringify(plan(4)) }] }, say('Kész a táblázat.')],
+      tool: [done('a'), done('b'), done('c'), done('d')],
+    }, { maxSteps: 12 })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'Nézd át a leveleket és készíts táblázatot', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded') // 15 lépés, ebből 5 munkaterv → 10 ≤ 12
+    const plans = h.store.events.filter((e) => e.type === 'plan').map((e) => (e.payload.steps as Array<{ status: string }>).filter((s) => s.status === 'done').length)
+    assert.deepEqual(plans, [0, 1, 2, 3, 4])
+    const final = h.store.messages.at(-1)!
+    assert.equal(final.plan?.every((s) => s.status === 'done'), true)
+    assert.equal(h.store.events.at(-1)?.type, 'done')
+    // újracsatlakozás: a Last-Event-ID utáni események közt az utolsó munkaterv helyes
+    const lastPlan = h.store.events.filter((e) => e.type === 'plan').at(-1)!
+    assert.deepEqual((await h.store.eventsAfter(r.turn.id, lastPlan.seq - 1))[0].payload, lastPlan.payload)
+  })
+
+  await check('#1025 hibás munkaterv és Stop várakozó kérdésnél', async () => {
+    const h = harness({ llm: [{ toolCalls: [{ id: 'p', name: 'update_plan', arguments: '{"steps":[{"title":"x","status":"kész"}]}' }, { id: 'q', name: 'ask_user', arguments: JSON.stringify(PETER) }] }], tool: [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    assert.equal(h.store.events.some((e) => e.type === 'plan'), false)
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'awaiting_input')
+    assert.ok(await cancelTurn(h.deps, r.turn.id, USER))
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'cancelled')
+    assert.equal(turn?.pendingInput, null)
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Kovács Péter'] } }), 'not_waiting')
   })
 
   if (failures) {

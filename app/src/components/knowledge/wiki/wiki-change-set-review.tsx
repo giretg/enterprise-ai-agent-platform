@@ -7,6 +7,7 @@ import { getWikiChangeSetReviewAction } from '@/app/actions/knowledge-wiki'
 import { Badge } from '@/components/ui/shell'
 import { collapseUnchanged, type LineDiffRow } from '@/lib/text-line-diff'
 import { wikiHref } from './wiki-format'
+import { WikiSourceList } from './wiki-sources'
 
 const ISSUE_CODES = [
   'broken_link',
@@ -145,7 +146,7 @@ export function WikiChangeSetReview({
                 <h3 className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">{t('review.changes')}</h3>
                 <div className="space-y-4">
                   {review.pages.map((page) => (
-                    <PageDiff key={page.path} page={page} />
+                    <PageDiff key={page.path} page={page} connectorId={review.connectorId} />
                   ))}
                 </div>
               </section>
@@ -170,6 +171,16 @@ export function WikiChangeSetReview({
                 {review.pages.some((page) => page.othersPage) ? (
                   <p className="mt-4 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                     {t('review.othersPageNote')}
+                  </p>
+                ) : null}
+                {review.pages.some((page) => page.protectedCategory) ? (
+                  <p className="mt-4 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    {t('review.protectedCategoryNote')}
+                  </p>
+                ) : null}
+                {review.pages.some((page) => page.docStatusChange?.to === 'approved') ? (
+                  <p className="mt-4 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    {t('review.docStatusApprovedNote')}
                   </p>
                 ) : null}
               </section>
@@ -216,7 +227,7 @@ function ChangeBadge({ kind, othersPage, label }: { kind: Review['pages'][number
   )
 }
 
-function PageDiff({ page }: { page: Review['pages'][number] }) {
+function PageDiff({ page, connectorId }: { page: Review['pages'][number]; connectorId: string }) {
   const t = useTranslations('ControlPlane.wiki')
   const rows = collapseUnchanged(page.diff as LineDiffRow[])
   return (
@@ -228,6 +239,10 @@ function PageDiff({ page }: { page: Review['pages'][number] }) {
           {page.finalPath !== page.path ? ` → ${page.finalPath}` : ''}
         </code>
         {page.othersPage ? <span className="text-xs font-medium text-amber-800">{t('review.othersPage')}</span> : null}
+        {page.protectedCategory ? <span className="text-xs font-medium text-amber-800">{t('review.protectedCategory')}</span> : null}
+        {page.docStatusChange?.to === 'approved' ? (
+          <span className="text-xs font-medium text-amber-800" data-testid="wiki-review-doc-status">{t('review.docStatusApproved')}</span>
+        ) : null}
       </header>
       {page.summary ? <p className="px-3 pt-2 text-xs text-ink-soft">{page.summary}</p> : null}
       {page.kind === 'archived' ? (
@@ -258,12 +273,10 @@ function PageDiff({ page }: { page: Review['pages'][number] }) {
         </pre>
       )}
       {page.sources.length ? (
-        <p className="border-t border-line/70 px-3 py-1.5 text-xs text-ink-faint">
-          {t('review.pageSources')}{' '}
-          {page.sources
-            .map((ref) => `${ref.filename ?? ref.documentId}${ref.page ? ` (${t('page.pageN', { n: ref.page })})` : ''}`)
-            .join(', ')}
-        </p>
+        <div className="border-t border-line/70 px-3 py-1.5 text-xs text-ink-faint">
+          <p>{t('review.pageSources')}</p>
+          <WikiSourceList connectorId={connectorId} sources={page.sources} />
+        </div>
       ) : null}
     </article>
   )

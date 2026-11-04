@@ -2,6 +2,8 @@ import { getTranslations } from 'next-intl/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
+import { listMyInboundMailAction } from '@/app/actions/inbound-mail'
+import { InboundMailList } from '@/components/agents/inbound-mail-panel'
 import { asTranslate } from '@/i18n/translate'
 import { operationErrorLabel } from './labels'
 import { OperationsPanel } from './operations-panel'
@@ -12,6 +14,7 @@ export default async function OperationsPage() {
   await requireTenantRole('viewer')
   const listed = await listPendingGatewayOperationsAction()
   const inbox = await listHandoffInboxAction()
+  const mail = await listMyInboundMailAction()
   const operations = listed.success ? listed.data.operations : []
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const operationsError = listed.success ? null : listed.error
@@ -48,6 +51,15 @@ export default async function OperationsPage() {
       ) : (
         <HandoffsPanel handoffs={handoffs} />
       )}
+      {mail.success && mail.data.events.length > 0 ? (
+        <InboundMailList
+          events={mail.data.events}
+          canProcess
+          showAgent
+          title="Új levelek a munkatársaidnál"
+          emptyText=""
+        />
+      ) : null}
       <OperationsHistoryPanel />
     </div>
   )

@@ -1,5 +1,8 @@
-import { renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
+import { wikiIndexLine } from './wiki-categories'
+export { isUnknownSourceDate, wikiPageDateUnknown, wikiIndexLine } from './wiki-categories'
+import { WIKI_TEMPLATE_VERSION, renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
 import { resolveKbLanguage } from './kb-language'
+import type { WikiPageMeta } from './wiki-metadata'
 /**
  * #943 LLM Wiki 2/6 — a wiki-oldalak determinisztikus, DB-mentes része (#941 §1, D8, D9).
  *
@@ -28,12 +31,49 @@ export type WikiPageTypeName = (typeof WIKI_PAGE_TYPES)[number]
 /** A frontmatter mezői, amelyeket külön oszlop hordoz — a `frontmatter` JSON-ból kimaradnak. */
 const MANAGED_FRONTMATTER_KEYS = new Set(['type', 'title', 'summary', 'category', 'sources'])
 
-export type WikiSourceRef = {
+/**
+ * Feltöltött nyers forrás. `connectorId` nélkül ugyanebben a tudástárban él; #1061 F2:
+ * `connectorId`-val egy másik tudástár dokumentuma (a közönség-szabály szerint).
+ */
+export type WikiDocumentSourceRef = {
+  kind?: undefined
   documentId: string
+  connectorId?: string
   filename?: string
   page?: number
   section?: string
   cell?: string
+}
+
+/**
+ * #1061 F2: emberi rögzítés — forrás feltöltött dokumentum nélkül. A `recordedByUserId`
+ * és a `recordedAt` mindig a szerverről jön (a munkamenet embere), soha nem argumentumból.
+ */
+export type WikiHumanNoteSourceRef = {
+  kind: 'human_note'
+  recordedByUserId: string
+  recordedAt: string
+  /** Az alkalom, pl. „2026-11-03-i sales-megbeszélés”. */
+  occasion: string
+  participants?: string
+}
+
+export type WikiSourceRef = WikiDocumentSourceRef | WikiHumanNoteSourceRef
+
+export const WIKI_HUMAN_NOTE_MAX_OCCASION = 200
+export const WIKI_HUMAN_NOTE_MAX_PARTICIPANTS = 500
+
+export function isHumanNoteSource(ref: WikiSourceRef): ref is WikiHumanNoteSourceRef {
+  return ref.kind === 'human_note'
+}
+
+export function isDocumentSource(ref: WikiSourceRef): ref is WikiDocumentSourceRef {
+  return ref.kind !== 'human_note'
+}
+
+/** Egy emberi rögzítés azonossága (változatlan átvételnél nem kell új munkamenet). */
+export function humanNoteKey(ref: WikiHumanNoteSourceRef): string {
+  return JSON.stringify([ref.recordedByUserId, ref.recordedAt, ref.occasion, ref.participants ?? null])
 }
 
 /** Egy oldal teljes, írás utáni állapota (a `WikiPage` oszlopai). */
@@ -47,6 +87,11 @@ export type WikiPageState = {
   frontmatter: Record<string, unknown>
   body: string
   sources: WikiSourceRef[]
+  /**
+   * #1061 F3: beépített mezők (állapot, gazda, átnézés). Nem része a tartalom-hash-nek:
+   * az átnézés vagy a gazdaváltás nem teszi elavulttá az agent `baseVersion`-jét.
+   */
+  meta?: WikiPageMeta
 }
 
 export function isValidWikiPath(path: string): boolean {
@@ -59,8 +104,8 @@ export function isReservedWikiPath(path: string): boolean {
   return WIKI_RESERVED_PATHS.has(path.toLowerCase())
 }
 
-/** `baseVersion` = a tartalom hash-e: ami változik, az eltér (cím, összefoglaló, törzs, források is). */
-export function wikiPageContentHash(state: Omit<WikiPageState, 'path'>): string {
+/** `baseVersion` = a tartalom hash-e: ami változik, az eltér (cím, összefoglaló, törzs, források is; a `meta` nem). */
+export function wikiPageContentHash(state: Omit<WikiPageState, 'path' | 'meta'>): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
@@ -95,7 +140,13 @@ export function stripManagedFrontmatter(frontmatter: unknown): Record<string, un
   )
 }
 
-/** `frontmatter.sources` → normalizált forráslista (documentId szerint egyedi, sorrendtartó). */
+const UUID_LIKE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * `frontmatter.sources` → normalizált forráslista (documentId szerint egyedi, sorrendtartó).
+ * #1061 F2: `{ kind: "human_note", occasion, participants? }` is forrás; a szerző- és
+ * időmezőt itt csak beolvassuk — az írás a munkamenetből bélyegzi felül.
+ */
 export function readWikiSources(value: unknown): WikiSourceRef[] {
   if (!Array.isArray(value)) return []
   const out: WikiSourceRef[] = []
@@ -103,9 +154,22 @@ export function readWikiSources(value: unknown): WikiSourceRef[] {
     const raw = typeof item === 'string' ? { documentId: item } : item
     if (!raw || typeof raw !== 'object') continue
     const row = raw as Record<string, unknown>
+    if (row.kind === 'human_note') {
+      const participants = typeof row.participants === 'string' ? row.participants.trim() : ''
+      out.push({
+        kind: 'human_note',
+        recordedByUserId: typeof row.recordedByUserId === 'string' ? row.recordedByUserId : '',
+        recordedAt: typeof row.recordedAt === 'string' ? row.recordedAt : '',
+        occasion: typeof row.occasion === 'string' ? row.occasion.trim() : '',
+        ...(participants ? { participants } : {}),
+      })
+      continue
+    }
     if (typeof row.documentId !== 'string' || !row.documentId.trim()) continue
+    const connectorId = typeof row.connectorId === 'string' ? row.connectorId.trim().toLowerCase() : ''
     out.push({
       documentId: row.documentId.trim(),
+      ...(connectorId ? { connectorId } : {}),
       ...(typeof row.filename === 'string' && row.filename ? { filename: row.filename } : {}),
       ...(typeof row.page === 'number' ? { page: row.page } : {}),
       ...(typeof row.section === 'string' && row.section ? { section: row.section } : {}),
@@ -119,7 +183,9 @@ export function mergeWikiSources(base: WikiSourceRef[], extra: WikiSourceRef[]):
   const seen = new Set<string>()
   const out: WikiSourceRef[] = []
   for (const ref of [...base, ...extra]) {
-    const key = JSON.stringify([ref.documentId, ref.page ?? null, ref.section ?? null, ref.cell ?? null])
+    const key = isHumanNoteSource(ref)
+      ? `human_note:${humanNoteKey(ref)}`
+      : JSON.stringify([ref.documentId, ref.page ?? null, ref.section ?? null, ref.cell ?? null, ref.connectorId ?? null])
     if (seen.has(key)) continue
     seen.add(key)
     out.push(ref)
@@ -151,13 +217,14 @@ function resolveRelative(fromPath: string, target: string): string {
 
 /**
  * Az oldal kimenő wiki-linkjei normalizált path-ként (`entities/teya.md`).
- * `[[path]]`, `[[path|címke]]` és relatív `.md` markdown-link; külső URL nem.
+ * `[[path]]`, `[[path|címke]]` és relatív `.md` markdown-link; külső URL és a
+ * wikik közti `[[wiki:…]]` link nem (azt az `extractCrossWikiLinks` adja).
  */
 export function extractWikiLinks(body: string, fromPath: string): string[] {
   const out = new Set<string>()
   for (const match of body.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
     const target = match[1].trim().replace(/^\/+/, '')
-    if (!target) continue
+    if (!target || CROSS_WIKI_PREFIX.test(target)) continue
     out.add(target.endsWith('.md') ? target : `${target}.md`)
   }
   for (const match of body.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
@@ -166,6 +233,39 @@ export function extractWikiLinks(body: string, fromPath: string): string[] {
     out.add(resolveRelative(fromPath, target))
   }
   return [...out].sort()
+}
+
+const CROSS_WIKI_PREFIX = /^wiki:/i
+
+export type CrossWikiLink = { wikiId: string; path: string }
+
+/**
+ * #1061 F2: wikik közti link — `[[wiki:<wikiId>/<path>]]` (címkével és horgonnyal is).
+ * A cél-wikit az azonosítója jelöli (a `kb_list_index` / briefing `wikiId`-je).
+ */
+export function extractCrossWikiLinks(body: string): CrossWikiLink[] {
+  const out = new Map<string, CrossWikiLink>()
+  for (const match of body.matchAll(/\[\[\s*wiki:([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/gi)) {
+    const raw = match[1].trim()
+    const slash = raw.indexOf('/')
+    if (slash <= 0) continue
+    const wikiId = raw.slice(0, slash).trim().toLowerCase()
+    const rest = raw.slice(slash + 1).trim().replace(/^\/+/, '')
+    if (!UUID_LIKE.test(wikiId) || !rest) continue
+    const path = rest.endsWith('.md') ? rest : `${rest}.md`
+    out.set(`${wikiId}/${path}`, { wikiId, path })
+  }
+  return [...out.values()].sort((a, b) => `${a.wikiId}/${a.path}`.localeCompare(`${b.wikiId}/${b.path}`))
+}
+
+/** Az `outLinks`-ben a wikik közti link így tárolódik (a cél-wiki visszahivatkozásához). */
+export function crossWikiOutLink(link: CrossWikiLink): string {
+  return `wiki:${link.wikiId}/${link.path}`
+}
+
+/** Az oldal teljes `outLinks` listája: helyi path-ok + `wiki:<wikiId>/<path>` bejegyzések. */
+export function wikiOutLinks(body: string, fromPath: string): string[] {
+  return [...extractWikiLinks(body, fromPath), ...extractCrossWikiLinks(body).map(crossWikiOutLink)]
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +357,7 @@ export type WikiIndexPage = {
   summary: string
   category: string | null
   type: string
+  frontmatter?: unknown
 }
 
 export const WIKI_UNCATEGORIZED = 'Uncategorized'
@@ -278,10 +379,29 @@ export function renderWikiIndex(pages: WikiIndexPage[]): string {
   for (const group of groupWikiIndex(pages)) {
     lines.push('', `## ${group.category}`, '')
     for (const page of group.pages) {
-      lines.push(`- [[${page.path.replace(/\.md$/, '')}]] — ${page.title}: ${page.summary}`)
+      lines.push(wikiIndexLine(page))
     }
   }
   return `${lines.join('\n')}\n`
+}
+
+/** #1077: tételenként ennyi oldal megy a tálca-válaszba (a `pageCount` a teljes szám). */
+export const WIKI_PARTLY_WRITTEN_MAX_PAGES = 20
+
+export type WikiPartlyWritten = { pageCount: number; pages: Array<{ path: string; title: string }> }
+
+/** A még nyitott tálca-tétel forrására hivatkozó oldalak dokumentumonként. */
+export function partlyWrittenByDocument(
+  rows: Array<{ documentId: string; path: string; title: string }>,
+): Map<string, WikiPartlyWritten> {
+  const out = new Map<string, WikiPartlyWritten>()
+  for (const { documentId, path, title } of rows) {
+    const entry = out.get(documentId) ?? { pageCount: 0, pages: [] }
+    entry.pageCount++
+    if (entry.pages.length < WIKI_PARTLY_WRITTEN_MAX_PAGES) entry.pages.push({ path, title })
+    out.set(documentId, entry)
+  }
+  return out
 }
 
 export type WikiLogRow = {
@@ -307,12 +427,20 @@ export function renderWikiLog(entries: WikiLogRow[]): string {
 
 /** Az oldal markdownként (olvasáshoz / exporthoz), OKF-kompatibilis frontmatterrel. */
 export function renderWikiPageMarkdown(state: Omit<WikiPageState, 'path'>): string {
+  const meta = state.meta
   const fm: Record<string, unknown> = {
     type: state.type,
     title: state.title,
     summary: state.summary,
     ...(state.category ? { category: state.category } : {}),
     ...state.frontmatter,
+    // #1061 F3: a beépített mezők is OKF-frontmatterként (exportban, olvasáskor). A frontmatter
+    // után jönnek: egy szabad `doc_status` / `last_reviewed` kulcs nem írhatja felül a valódi értéket.
+    ...(meta?.docStatus ? { doc_status: meta.docStatus } : {}),
+    ...(meta?.ownerUserId ? { owner_user_id: meta.ownerUserId } : {}),
+    ...(meta?.ownerRole ? { owner_role: meta.ownerRole } : {}),
+    ...(meta?.reviewedAt ? { last_reviewed: meta.reviewedAt.slice(0, 10) } : {}),
+    ...(meta?.reviewCycleDays ? { review_cycle_days: meta.reviewCycleDays } : {}),
     ...(state.sources.length ? { sources: state.sources } : {}),
   }
   const lines = Object.entries(fm).map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
@@ -322,4 +450,27 @@ export function renderWikiPageMarkdown(state: Omit<WikiPageState, 'path'>): stri
 /** Új wiki alap-sémája (§2). Ember szerkeszti a Control Plane-en (D15). */
 export function defaultWikiSchema(kbLanguage: string, template: WikiTemplateId = 'general'): string {
   return renderWikiTemplate(template, resolveKbLanguage(kbLanguage))
+}
+
+/** A WIKI.md valamelyik (mostani vagy korábbi) sablon-alapszöveg-e — ilyenkor nem „módosított”. */
+export function isDefaultWikiSchema(schemaMd: string, kbLanguage: string, template: WikiTemplateId = 'general'): boolean {
+  const text = schemaMd.trim()
+  const language = resolveKbLanguage(kbLanguage)
+  for (let version = 1; version <= WIKI_TEMPLATE_VERSION; version++) {
+    if (renderWikiTemplate(template, language, version).trim() === text) return true
+  }
+  return false
+}
+
+/** Recheck external source references on every read, including history and exports. */
+export async function visibleWikiSources(
+  refs: WikiSourceRef[], connectorId: string, canRead: (id: string) => Promise<boolean>,
+): Promise<WikiSourceRef[]> {
+  const visibility = new Map<string, boolean>()
+  for (const ref of refs) {
+    if (isDocumentSource(ref) && ref.connectorId && ref.connectorId !== connectorId && !visibility.has(ref.connectorId)) {
+      visibility.set(ref.connectorId, await canRead(ref.connectorId))
+    }
+  }
+  return refs.filter(ref => !isDocumentSource(ref) || !ref.connectorId || ref.connectorId === connectorId || visibility.get(ref.connectorId))
 }

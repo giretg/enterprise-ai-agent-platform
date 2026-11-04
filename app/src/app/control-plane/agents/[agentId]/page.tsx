@@ -51,6 +51,8 @@ import { PublishAgentDefinitionForm } from '@/components/agents/publish-agent-de
 import { AgentConnectorBindingForm } from '@/components/agents/agent-connector-binding-form'
 import { AgentMailboxPanel } from '@/components/agents/agent-mailbox-panel'
 import { getAgentMailboxSettings } from '@/app/actions/agent-mailbox'
+import { getInboundMailSettings } from '@/app/actions/inbound-mail'
+import { InboundMailPanel } from '@/components/agents/inbound-mail-panel'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentWikiAccessPanel } from '@/components/agents/agent-wiki-access-panel'
 import { listAgentWikiLinksAction } from '@/app/actions/knowledge-wiki'
@@ -147,6 +149,7 @@ export default async function AgentDetailPage({
   if (!agentRes.success || !agentRes.data) notFound()
   const agent = agentRes.data
   const mailboxRes = hasMinimumRole(ctx.activeTenantRole, 'admin') ? await getAgentMailboxSettings({ agentId: agent.id }) : null
+  const inboundRes = mailboxRes?.success ? await getInboundMailSettings({ agentId: agent.id }) : null
   const capabilities = govRes.success ? govRes.data.capabilities : []
   const connectors = govRes.success ? govRes.data.connectors : []
   const skills = skillsRes.success ? skillsRes.data : []
@@ -290,9 +293,18 @@ export default async function AgentDetailPage({
             label: sectionLabel('email'),
             description: sectionDesc('email'),
             content: (
-              <Card title={sectionLabel('email')}>
-                <AgentMailboxPanel settings={mailboxRes.data} />
-              </Card>
+              <div className="space-y-6">
+                <Card title={sectionLabel('email')}>
+                  <AgentMailboxPanel settings={mailboxRes.data} />
+                </Card>
+                {inboundRes?.success ? (
+                  <Card title="Bejövő levelek">
+                    <InboundMailPanel settings={inboundRes.data} />
+                  </Card>
+                ) : inboundRes ? (
+                  <p role="alert" className="text-sm text-coral">{inboundRes.error}</p>
+                ) : null}
+              </div>
             ),
           },
         ]

@@ -22,6 +22,8 @@ import {
   canManageKnowledgeBaseLink,
   defaultWikiWriteMode,
   effectiveWikiAccess,
+  isKnowledgeBaseMember,
+  isMembersKnowledgeBase,
   isPrivateKnowledgeBase,
   isWikiAccessLevel,
 } from '@/lib/wiki-access'
@@ -245,8 +247,12 @@ export class WikiAccessService {
 
   private assertCanManage(connector: Connector, actor: WikiActor) {
     if (canManageKnowledgeBaseLink(connector, actor)) return
-    // Más privát KB-ja a hívónak nem létezik.
-    throw new WikiAccessError(isPrivateKnowledgeBase(connector) ? 'not_found' : 'forbidden')
+    // Más privát (és #1061 F2: nem-tagnak a névsoros) KB-ja a hívónak nem létezik.
+    throw new WikiAccessError(
+      isPrivateKnowledgeBase(connector) || (isMembersKnowledgeBase(connector) && !isKnowledgeBaseMember(connector, actor.userId))
+        ? 'not_found'
+        : 'forbidden',
+    )
   }
 
   private async handleAccessChange(

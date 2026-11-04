@@ -1,6 +1,6 @@
 'use client'
 
-import { useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTranslations } from 'next-intl'
@@ -69,7 +69,13 @@ export function ControlPlaneShell({
   const pathname = usePathname()
   const t = useTranslations('ControlPlane.shell')
   // TenantSwitcher useRouter()-t hív — loading.tsx + RSC redirect közben ez Router hook-hibát dob.
-  const headerReady = useSyncExternalStore(subscribeNever, readClientMounted, () => false)
+  // useSyncExternalStore(getClientSnapshot=true) NEM ugyanaz: soft-nav első kliens-renderén
+  // azonnal true, tehát pont a belépés utáni redirect ablakban mountol.
+  const [headerReady, setHeaderReady] = useState(false)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- post-paint gate; first client render must stay false
+    setHeaderReady(true)
+  }, [])
 
   return (
     <AppShell

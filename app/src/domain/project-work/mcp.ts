@@ -4,6 +4,7 @@ import { KNOWLEDGE_PLACEMENT_TABLE_REF, suggestToolForPlacement } from '@/lib/ag
 import { canOperateAgent, canReadPublishedAgent, type AgentDefinition } from '@/domain/agent-definition'
 import {
   checkDefinitionPin,
+  auditSafeDenialDetails,
   invalidArgsDetails,
   withDefinitionUpdatedNotice,
   type DefinitionPinDeps,
@@ -363,7 +364,7 @@ export async function auditDenied(
     userId: principal.userId,
     ...(definitionId ? { definitionId } : {}),
     ...(agentId ? { agentId } : {}),
-    ...details,
+    ...auditSafeDenialDetails(details),
   }
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -586,7 +587,8 @@ export async function invokeProjectWork(
       confirmMisplaced: parsed.confirmMisplaced === true,
       wikiCapable: resolveWikiScopes(definition.snapshot, principal.userId).writable.length > 0,
       withUserId: principal.userId,
-      mode: modeRes.mode,
+      // Bejövő levél feldolgozása: a memória-írás is javaslat (jóváhagyásra vár).
+      mode: principal.forceWriteApproval ? 'approval' : modeRes.mode,
     })
     if (!written.ok) {
       await auditDenied(deps, principal, toolName, written.code, definition.definitionId, definition.agentId)

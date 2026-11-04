@@ -198,6 +198,7 @@ function setup() {
         return {} as any
       },
       listPendingChangeSetIds: async (connectorId: string) => pendingChangeSets.get(connectorId) ?? [],
+      listPagesCitingDocuments: async () => [],
       listPages: async (connectorId: string) => (connectorId === KB_PRIV ? pages : []),
       findPage: async (connectorId: string, path: string) => (connectorId === KB_PRIV ? pages.find((p) => p.path === path) ?? null : null),
       listRevisions: async () => [],
@@ -379,12 +380,13 @@ async function main() {
     assert.equal(overview.name, 'Leletek')
     assert.equal(overview.private, true)
     assert.equal(overview.canManage, true)
-    assert.deepEqual(overview.categories.map((c) => c.category), ['Labor', 'Uncategorized'])
-    assert.deepEqual(overview.categories[0].pages[0].author, { kind: 'agent', name: 'Réka' })
+    assert.deepEqual(overview.menu.map((c) => c.name), ['Labor', null])
+    assert.equal(overview.managedCategories, false)
+    assert.deepEqual(overview.menu[0].pages[0].author, { kind: 'agent', name: 'Réka' })
     assert.equal(overview.log[0].title, 'Lelet feldolgozva')
     assert.deepEqual(overview.access[0], { agentId: AGENT, agentName: 'Réka', access: 'write', writeMode: 'direct', collectFocus: 'Leletek' })
     const detail = await service.getPage(owner, KB_PRIV, 'labs/hba1c.md')
-    assert.deepEqual(detail.sources[0], { documentId: DOC, page: 2, filename: 'lelet.pdf', exists: true })
+    assert.deepEqual(detail.sources[0], { kind: 'document', documentId: DOC, page: 2, section: null, filename: 'lelet.pdf', exists: true })
     assert.ok(detail.knownPaths.includes('overview.md'))
     await rejectsWith('not_found', () => service.getPage(owner, KB_PRIV, 'nincs.md'))
   })
@@ -400,7 +402,7 @@ async function main() {
     await rejectsWith('not_found', () => service.getOverview(viewer, KB_SHARED))
   })
 
-  await check('tálca: 30 fájl egy kötegben, duplikátum külön jelezve, 10 MB fölött elutasítva', async () => {
+  await check('tálca: 30 fájl egy kötegben, duplikátum külön jelezve, 25 MB fölött elutasítva', async () => {
     const { service, documents, audit } = setup()
     const results = []
     for (let i = 0; i < 30; i++) {
@@ -416,7 +418,7 @@ async function main() {
     const dup = await service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 30, filename: 'ujra.txt', buffer: Buffer.from('lelet 3') })
     assert.equal(dup.status, 'duplicate')
     await rejectsWith('too_large', () =>
-      service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 31, filename: 'nagy.pdf', buffer: Buffer.alloc(10 * 1024 * 1024 + 1) }),
+      service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: BATCH, batchSeq: 31, filename: 'nagy.pdf', buffer: Buffer.alloc(25 * 1024 * 1024 + 1) }),
     )
     await rejectsWith('invalid_args', () =>
       service.uploadToInbox(owner, { connectorId: KB_PRIV, batchId: 'nem-uuid', batchSeq: 0, filename: 'x.txt', buffer: Buffer.from('x') }),

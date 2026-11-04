@@ -8,8 +8,8 @@ export function connectorDisplayLabel(type: string, name: string, config?: unkno
   if (type === 'knowledge_base' && AGENT_OWNED_KB_CONNECTOR_NAME.test(name)) {
     return AGENT_OWNED_KB_CONNECTOR_DISPLAY_LABEL
   }
-  // #946: a Control Plane-en létrehozott (közös / privát) tudásbázis neve a configban él.
-  if (type === 'knowledge_base' && /^kb:(shared|private):/.test(name)) {
+  // #946: a Control Plane-en létrehozott (közös / privát / névsoros) tudásbázis neve a configban él.
+  if (type === 'knowledge_base' && /^kb:(shared|private|members):/.test(name)) {
     const displayName =
       config && typeof config === 'object' && !Array.isArray(config)
         ? (config as Record<string, unknown>).displayName

@@ -22,6 +22,7 @@ import {
 import { createHash } from 'node:crypto'
 import type { Agent, AgentDefinitionVersion, AgentStatus, Prisma } from '@prisma/client'
 import { describeGoogleAccountBinding } from '@/domain/connector/google-account-binding'
+import { describeGitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import {
   collectSnapshotRules,
   type AgentDefinitionSnapshotRule,
@@ -33,7 +34,7 @@ import type {
   SkillRepository,
 } from '@/repositories/interfaces'
 import type { AuditSink } from '@/lib/audit/types'
-import { isWikiAccessLevel, type WikiAccessLevel } from '@/lib/wiki-access'
+import { isWikiAccessLevel, withLiveKbAudience, withoutKbMemberLists, type WikiAccessLevel } from '@/lib/wiki-access'
 import { writeAudit } from '@/lib/audit/types'
 import { snapshotLocalRoots } from '@/lib/agent-local-roots'
 import { describeConnectorCatalog } from '@/domain/connector/catalog-description'
@@ -83,9 +84,14 @@ export type AgentDefinitionSnapshot = {
     wikiAccess?: WikiAccessLevel
     wikiWriteMode?: 'approval' | 'direct'
     wikiCollectFocus?: string
-    /** #942 D13: csak privát KB-nál jelenik meg (`private_to_user` + tulajdonos). */
-    visibility?: 'private_to_user'
+    /**
+     * #942 D13: csak privát KB-nál jelenik meg (`private_to_user` + tulajdonos).
+     * #1061 F2: névsorosnál `members` + tulajdonos; a névsor nem kerül a snapshotba,
+     * betöltéskor az élő sorból jön (`kbMemberUserIds`).
+     */
+    visibility?: 'private_to_user' | 'members'
     ownerUserId?: string
+    kbMemberUserIds?: string[]
   }>
   capabilities: Array<{ toolName: string; allowed: boolean }>
   /**
@@ -148,7 +154,7 @@ function sortKeys(value: unknown): unknown {
 
 /** Canonical JSON: recursively sorted object keys, then JSON.stringify. */
 export function canonicalizeSnapshot(snapshot: AgentDefinitionSnapshot): string {
-  return JSON.stringify(sortKeys(snapshot))
+  return JSON.stringify(sortKeys(withoutKbMemberLists(snapshot)))
 }
 
 export function hashSnapshot(snapshot: AgentDefinitionSnapshot): string {
@@ -207,11 +213,13 @@ function knowledgeBaseSnapshotFields(
   const access = isWikiAccessLevel(row.wikiAccess) ? row.wikiAccess : 'read'
   const focus = row.wikiCollectFocus?.trim()
   const isPrivate = row.connector.visibility === 'private_to_user' && !!row.connector.ownerUserId
+  const isMembers = row.connector.visibility === 'members' && !!row.connector.ownerUserId
   return {
     ...(access !== 'read' ? { wikiAccess: access } : {}),
     ...(row.wikiWriteMode === 'direct' ? { wikiWriteMode: 'direct' as const } : {}),
     ...(focus ? { wikiCollectFocus: focus.slice(0, 2000) } : {}),
     ...(isPrivate ? { visibility: 'private_to_user' as const, ownerUserId: row.connector.ownerUserId! } : {}),
+    ...(isMembers ? { visibility: 'members' as const, ownerUserId: row.connector.ownerUserId! } : {}),
   }
 }
 
@@ -240,6 +248,10 @@ async function resolveHttpApiConnectorMeta(
     const accountNote = parsed.googleAccount
       ? describeGoogleAccountBinding(parsed.googleAccount.provider, parsed.googleAccount.binding)
       : null
+    // GitHub: a megengedett kódtárak — enélkül az agent nem tudja, mit írjon a {owner}/{repo} helyére.
+    const repositoryNote = parsed.githubRepositoryAccess
+      ? describeGitHubRepositoryAccess(parsed.githubRepositoryAccess)
+      : null
     const mailbox = mailboxConnectorInfo(resolved) || isMicrosoft365Connector(resolved)
     if (hideRawMailboxEndpoints && mailbox) {
       return {
@@ -249,7 +261,7 @@ async function resolveHttpApiConnectorMeta(
             .join(' ') || null,
       }
     }
-    const description = [baseDescription, accountNote].filter(Boolean).join(' ') || null
+    const description = [baseDescription, accountNote, repositoryNote].filter(Boolean).join(' ') || null
     return {
       endpoints: summarizeHttpApiEndpoints(parsed.endpoints),
       ...(description ? { description } : {}),
@@ -490,7 +502,24 @@ export class AgentDefinitionService {
 
     if (!row || !agent) return null
     if (agent.tenantId !== input.tenantId) return null
-    return toDefinition(agent, row)
+    return this.withLiveKbAudience(toDefinition(agent, row), input.tenantId)
+  }
+
+  /**
+   * #1061 F2: a névsoros KB-kötésre az élő névsor kerül (a tagság élesítés nélkül
+   * változik). Csak a `members` sorokat érinti; connector-repó nélkül a sor névsor
+   * nélkül marad, így senkinek nem látszik (fail-closed).
+   */
+  private async withLiveKbAudience(definition: AgentDefinition, tenantId: string): Promise<AgentDefinition> {
+    const connectors = this.deps.connectors
+    const rows = definition.snapshot.connectors.filter((row) => row.type === 'knowledge_base' && row.visibility === 'members')
+    if (!connectors || rows.length === 0) return definition
+    const live = (await Promise.all(rows.map((row) => connectors.findById(row.connectorId, tenantId))))
+      .filter((row): row is NonNullable<typeof row> => !!row && row.tenantId === tenantId)
+    return {
+      ...definition,
+      snapshot: { ...definition.snapshot, connectors: withLiveKbAudience(definition.snapshot.connectors, live) },
+    }
   }
 }
 

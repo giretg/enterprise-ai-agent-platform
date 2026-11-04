@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { KB_DOCUMENT_INLINE_CHARS } from '@/lib/kb-retrieval'
+import { WIKI_CONFIG_MAX_NOTE, WIKI_CONFIG_MAX_OPERATIONS } from '@/lib/wiki-config'
 
 export const GOOGLE_DRIVE_SEARCH_TOOL = 'google_drive_search'
 export const GOOGLE_DRIVE_READ_FILE_TOOL = 'google_drive_read_file'
@@ -90,6 +92,10 @@ export const KB_WIKI_WRITE_TOOL = 'kb_wiki_write'
 export const KB_WIKI_CHANGES_TOOL = 'kb_wiki_changes'
 /** #978 §5.2: oldal / change-set visszaállítása — D2: MINDIG jóváhagyással. */
 export const KB_WIKI_REVERT_TOOL = 'kb_wiki_revert'
+/** #1075: a wiki beállításai + javaslat rájuk — az agent soha nem alkalmaz, mindig ember hagyja jóvá. */
+export const KB_WIKI_CONFIG_GET_TOOL = 'kb_wiki_config_get'
+export const KB_WIKI_CONFIG_PROPOSE_TOOL = 'kb_wiki_config_propose'
+export const KB_WIKI_CONFIG_WITHDRAW_TOOL = 'kb_wiki_config_withdraw'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
@@ -100,6 +106,9 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_WIKI_WRITE_TOOL,
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
+  KB_WIKI_CONFIG_PROPOSE_TOOL,
+  KB_WIKI_CONFIG_WITHDRAW_TOOL,
 ] as const
 
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
@@ -115,7 +124,15 @@ export const ENTERPRISE_WEB_TOOLS = [WEB_SEARCH_TOOL, WEB_FETCH_TOOL] as const
  * #1021: az oldalolvasásnak nincs külön munkatárs-szintű kapcsolója — a „Webes keresés” jog (`web_search`)
  * mindkettőt engedi, így a már bekapcsolt munkatársak újrabeállítás nélkül megkapják.
  */
-const CAPABILITY_ALIASES: Record<string, readonly string[]> = { [WEB_FETCH_TOOL]: [WEB_SEARCH_TOOL] }
+const CAPABILITY_ALIASES: Record<string, readonly string[]> = {
+  [WEB_FETCH_TOOL]: [WEB_SEARCH_TOOL],
+  // #1071: a mentett nagy válasz olvasása bármelyik http_api joggal jár (a listázáshoz, pl. Hermes Bot).
+  http_api_saved_read: ENTERPRISE_HTTP_TOOLS,
+  // #1075: a meglévő wiki-képességekkel jár, a tényleges jog a kötésen és a wiki kapcsolóján dől el.
+  [KB_WIKI_CONFIG_GET_TOOL]: [KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  [KB_WIKI_CONFIG_PROPOSE_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+}
 
 /** Az agent-képességek, amelyek közül bármelyik engedi az eszközt. */
 export function capabilityToolsFor(toolName: string): string[] {
@@ -132,6 +149,11 @@ export function withCapabilityAliases(toolNames: readonly string[]): string[] {
 
 /** #1024: letölthető fájl (XLSX, CSV, DOCX, PDF, MD) — „harness-pótló”, a listázását a `harness-substitutes.ts` dönti el. */
 export const DOCUMENT_EXPORT_TOOL = 'document_export'
+/**
+ * #1071: a plafon felett mentett http_api válasz lapozott olvasása. Nem hív céges rendszert: a mentés
+ * a kérő user + munkatárs sajátja, ezért nincs connector-jog és nincs külön munkatárs-kapcsoló.
+ */
+export const HTTP_API_SAVED_READ_TOOL = 'http_api_saved_read'
 export const ENTERPRISE_FILE_TOOLS = [DOCUMENT_EXPORT_TOOL] as const
 
 /** #395 D1: két fix eszköz minden külső MCP-szerverhez — a nevek futásidőben nem változnak. */
@@ -151,6 +173,7 @@ export const ENTERPRISE_TOOLS = [
   ...ENTERPRISE_MAIL_TOOLS,
   ...ENTERPRISE_GMAIL_TOOLS,
   ...ENTERPRISE_HTTP_TOOLS,
+  HTTP_API_SAVED_READ_TOOL,
   ...ENTERPRISE_KB_TOOLS,
   ...ENTERPRISE_SANDBOX_TOOLS,
   ...ENTERPRISE_MCP_TOOLS,
@@ -182,11 +205,13 @@ export const ENTERPRISE_READ_ONLY_TOOLS = [
   KB_GET_PAGE_TOOL,
   KB_GET_DOCUMENT_TOOL,
   KB_WIKI_CHANGES_TOOL,
+  KB_WIKI_CONFIG_GET_TOOL,
   MCP_LIST_TOOLS_TOOL,
   WEB_SEARCH_TOOL,
   WEB_FETCH_TOOL,
   // Céges rendszerbe nem ír: a fájl a platform ideiglenes tárolójába kerül.
   DOCUMENT_EXPORT_TOOL,
+  HTTP_API_SAVED_READ_TOOL,
 ] as const
 
 export type EnterpriseDriveWriteTool = (typeof ENTERPRISE_DRIVE_WRITE_TOOLS)[number]
@@ -267,6 +292,10 @@ export function isEnterpriseWebFetchTool(toolName: string): toolName is typeof W
 
 export function isDocumentExportTool(toolName: string): toolName is typeof DOCUMENT_EXPORT_TOOL {
   return toolName === DOCUMENT_EXPORT_TOOL
+}
+
+export function isHttpApiSavedReadTool(toolName: string): toolName is typeof HTTP_API_SAVED_READ_TOOL {
+  return toolName === HTTP_API_SAVED_READ_TOOL
 }
 
 export function isEnterpriseMcpTool(toolName: string): toolName is EnterpriseMcpTool {
@@ -549,7 +578,7 @@ const composeFields = {
 const gmailSendObject = z
   .object({
     ...composeFields,
-    draftId: z.string().max(200).optional().describe('Send an existing draft (from gmail_create_draft / gmail_list_drafts) instead of composing'),
+    draftId: z.string().max(200).optional().describe('Send an existing draft (from gmail_create_draft / gmail_list_drafts) instead of composing — pass it alone, without to/cc/bcc/subject/body/reply fields'),
   })
   .passthrough()
 
@@ -561,9 +590,23 @@ function composeIssue(args: { to?: string; subject?: string; body?: string; repl
   return null
 }
 
+/** draftId küldésnél a levélmezőket a végrehajtás eldobja — ha átjönnének, a jóváhagyó mást látna, mint ami kimegy (#668). */
+const DRAFT_EXCLUSIVE_FIELDS = ['to', 'cc', 'bcc', 'subject', 'body', 'replyToMessageId', 'replyAll'] as const
+
+function draftSendIssue(args: Record<string, unknown>): string | null {
+  const present = DRAFT_EXCLUSIVE_FIELDS.filter((key) => {
+    const value = args[key]
+    return typeof value === 'string' ? value.trim() !== '' : value === true
+  })
+  return present.length ? `draftId cannot be combined with ${present.join(', ')} — pass only draftId to send a draft` : null
+}
+
+function sendIssue(args: { draftId?: string } & Parameters<typeof composeIssue>[0]): string | null {
+  return args.draftId?.trim() ? draftSendIssue(args as Record<string, unknown>) : composeIssue(args)
+}
+
 export const gmailSendInputSchema = gmailSendObject.superRefine((args, ctx) => {
-  if (args.draftId) return
-  const issue = composeIssue(args)
+  const issue = sendIssue(args)
   if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
 })
 
@@ -699,13 +742,12 @@ const mailComposeFields = {
 const mailSendObject = z
   .object({
     ...mailComposeFields,
-    draftId: z.string().max(200).optional().describe('Send an existing draft instead of composing'),
+    draftId: z.string().max(200).optional().describe('Send an existing draft instead of composing — pass it alone, without to/cc/bcc/subject/body/reply fields'),
   })
   .passthrough()
 
 export const mailSendInputSchema = mailSendObject.superRefine((args, ctx) => {
-  if (args.draftId) return
-  const issue = composeIssue(args)
+  const issue = sendIssue(args)
   if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue })
 })
 
@@ -832,6 +874,20 @@ export const kbListIndexInputSchema = z
     inbox: z.boolean().optional(),
     batchId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(200).optional(),
+    /**
+     * #1061 F3 nézetek (metaadat-mezős wikin). Tömb a sémában nem lehet (Claude.ai), ezért
+     * a több érték vesszővel elválasztott szöveg; `field.<kulcs>` paraméter is jöhet (passthrough).
+     */
+    docStatus: z.string().max(100).optional().describe('Wiki view: "draft", "approved" or "none" (comma-separated).'),
+    owner: z.string().max(500).optional().describe('Wiki view: page owner — "me", an e-mail or a userId (comma-separated).'),
+    reviewOverdue: z.boolean().optional().describe('Wiki view: true = pages whose review is overdue (oldest first).'),
+    category: z.string().max(500).optional().describe('Wiki view: category keys (comma-separated); subcategories included.'),
+    orphans: z.boolean().optional().describe('Wiki view: true = pages no other page links to.'),
+    fields: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe('Wiki view: custom field filter, e.g. "country=HU,SK;product=Card" (or pass field.country="HU,SK").'),
   })
   .passthrough()
 
@@ -856,6 +912,8 @@ export const kbGetDocumentInputSchema = z
     agentId: optionalAgentId,
     documentId: z.string().uuid(),
     section: z.string().max(200).optional(),
+    offset: z.number().int().min(0).optional().describe('Character offset to read from, inside section when section is set. Use nextOffset from the previous response.'),
+    limit: z.number().int().min(1).max(KB_DOCUMENT_INLINE_CHARS).optional().describe(`Characters to return (default and maximum ${KB_DOCUMENT_INLINE_CHARS}).`),
     pageImages: z.boolean().optional().describe('Return original PDF pages as PNG images; max 5 pages per call.'),
     pages: z.string().min(1).max(100).optional().describe('1-based PDF pages, e.g. "1-3,7". Defaults to page 1.'),
     /** #943: tálca-tétel foglalása a hívó agentre (2 óra), csak írási joggal. */
@@ -890,15 +948,28 @@ export const kbIngestInputSchema = kbIngestObject
     path: ['processingMode'],
   })
 
-const wikiSourceRefSchema = z
+const wikiDocumentSourceRefSchema = z
   .object({
     documentId: z.string().uuid(),
+    /** #1061 F2: másik tudástár dokumentuma (olvasási jog + közönség-szabály). */
+    connectorId: z.string().uuid().optional(),
     filename: z.string().max(255).optional(),
     page: z.number().int().min(1).optional(),
     section: z.string().max(200).optional(),
     cell: z.string().max(64).optional(),
   })
   .strict()
+
+/** #1061 F2: emberi rögzítés — a szerzőt és az időt a szerver adja (ezért nincs ilyen mező). */
+const wikiHumanNoteSourceSchema = z
+  .object({
+    kind: z.literal('human_note'),
+    occasion: z.string().min(1).max(200),
+    participants: z.string().max(500).optional(),
+  })
+  .strict()
+
+const wikiSourceRefSchema = z.union([wikiHumanNoteSourceSchema, wikiDocumentSourceRefSchema])
 
 const wikiPatchOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('appendToSection'), section: z.string().min(1).max(200), text: z.string().min(1).max(20_000) }),
@@ -908,21 +979,36 @@ const wikiPatchOpSchema = z.discriminatedUnion('op', [
 
 const wikiPathSchema = z.string().min(1).max(200)
 
+/** #1061 F3 D7: a gazda a szervezet platform-felhasználója (e-mail vagy azonosító) + szerep. */
+export const wikiOwnerSchema = z
+  .object({
+    email: z.string().email().max(320).optional(),
+    userId: z.string().uuid().optional(),
+    role: z.string().max(120).optional(),
+  })
+  .strict()
+  .refine((value) => !!value.email || !!value.userId, { message: 'owner needs email or userId' })
+
 export const kbWikiPageInputSchema = z
   .object({
     path: wikiPathSchema,
-    action: z.enum(['upsert', 'patch', 'archive', 'move']),
+    /** #1061 F3: `review` = „Átnéztem, rendben” — csak interaktív munkamenetből, az ember nevében. */
+    action: z.enum(['upsert', 'patch', 'archive', 'move', 'review']),
     title: z.string().max(200).optional(),
     type: z.enum(['source', 'entity', 'concept', 'analysis', 'overview']).optional(),
     summary: z.string().max(400).optional(),
-    category: z.string().max(120).optional(),
+    category: z.string().max(200).optional(),
     frontmatter: z.record(z.string(), z.unknown()).optional(),
     body: z.string().max(40_000).optional(),
     /** Az utoljára olvasott tartalom hash-e (`kb_get_page` `baseVersion`). */
     baseVersion: z.string().max(128).optional(),
-    patch: z.array(wikiPatchOpSchema).min(1).max(20).optional(),
+    patch: z.array(wikiPatchOpSchema).max(20).optional(),
     /** `move` cél-path. */
     newPath: wikiPathSchema.optional(),
+    /** #1061 F3: `approved` mindig jóváhagyásra megy (D5). */
+    docStatus: z.enum(['draft', 'approved']).optional(),
+    /** #1061 F3: gazda; `null` = törlés. */
+    owner: wikiOwnerSchema.nullable().optional(),
   })
   .strict()
 
@@ -1063,6 +1149,35 @@ export const kbWikiRevertInputSchema = kbWikiRevertObject
     message: 'Pass either changeSeq, or path and version.',
   })
 
+export const kbWikiConfigGetObject = z.object({ definitionId, agentId: optionalAgentId, wikiId: optionalWikiId }).passthrough()
+
+/** MCP-n JSON-szöveg (a Claude.ai eldobja a tömb-sémát); az elemzés a `…InputSchema`-val megy. */
+export const kbWikiConfigProposeObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    baseConfigVersion: z.string().min(1).max(64).describe('configVersion from kb_wiki_config_get.'),
+    operations: z
+      .string()
+      .min(2)
+      .max(2_000_000)
+      .describe(
+        `JSON array of operations (max ${WIKI_CONFIG_MAX_OPERATIONS}), applied in order, e.g. [{"op":"upsertMetadataField","key":"direction","label":"Direction","type":"select","options":["in","out"]},{"op":"upsertTemplate","id":"partner","requiredFields":["direction","owner"],"requiredSections":["Summary"],"skeleton":"## Summary"},{"op":"upsertGroup","key":"partners","label":"Partners","order":60},{"op":"upsertCategory","key":"partners/acceptance","label":"Acceptance","order":10,"template":"partner"}]`,
+      ),
+    note: z.string().trim().min(1).max(WIKI_CONFIG_MAX_NOTE).describe('Why the change is needed — shown to the approver.'),
+    validateOnly: z.boolean().optional().describe('Validate and return the summary without creating a proposal. Always do this first.'),
+  })
+  .passthrough()
+
+export const kbWikiConfigProposeInputSchema = kbWikiConfigProposeObject.extend({
+  operations: z.preprocess(parseJsonText, z.array(z.unknown()).min(1).max(WIKI_CONFIG_MAX_OPERATIONS)),
+})
+
+export const kbWikiConfigWithdrawInputSchema = z
+  .object({ definitionId, agentId: optionalAgentId, wikiId: optionalWikiId, proposalId: z.string().uuid() })
+  .passthrough()
+
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
@@ -1071,6 +1186,9 @@ export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_WIKI_WRITE_TOOL) return kbWikiWriteInputSchema
   if (toolName === KB_WIKI_CHANGES_TOOL) return kbWikiChangesInputSchema
   if (toolName === KB_WIKI_REVERT_TOOL) return kbWikiRevertInputSchema
+  if (toolName === KB_WIKI_CONFIG_GET_TOOL) return kbWikiConfigGetObject
+  if (toolName === KB_WIKI_CONFIG_PROPOSE_TOOL) return kbWikiConfigProposeInputSchema
+  if (toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL) return kbWikiConfigWithdrawInputSchema
   return kbSearchInputSchema
 }
 
@@ -1182,6 +1300,54 @@ export const documentExportInputSchema = z
       .max(1_000_000)
       .optional()
       .describe('docx/pdf/md only. The document body in Markdown: headings (#), lists, tables, bold/italic, links.'),
+    savedResultId: z
+      .string()
+      .max(400)
+      .optional()
+      .describe(
+        'xlsx/csv only, instead of sheets: the savedResult.savedResultId of a large http_api_* response. The platform builds the table from the full saved data — never type the rows yourself. ' +
+          'Several ids, comma-separated, make one sheet each (xlsx).',
+      ),
+    columns: z
+      .string()
+      .max(20_000)
+      .optional()
+      .describe(
+        'With savedResultId, optional JSON text to pick, order and name columns: [{"path": "dimensions.partner.name", "header": "Partner"}, …]. ' +
+          'Paths are the savedResult.fields values. Default: every field, with the report\'s own column labels.',
+      ),
+    arrayPath: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('With savedResultId, only when savedResult.arrayPath picked the wrong list: dot path of the rows, e.g. body.data.rows.'),
+  })
+  .passthrough()
+
+export const httpApiSavedReadInputSchema = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    savedResultId: z.string().uuid().describe('savedResult.savedResultId from a large http_api_* response.'),
+    asText: z.boolean().optional().describe('Read the full JSON as character pages. When the reply has asText=true, pass asText=true and nextOffset to continue.'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('First row to return (0 = first row). Without a row list: character offset. Pass nextOffset to read on.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1_000)
+      .optional()
+      .describe('Rows per call (default 100). The reply stays under 20 000 characters, so fewer rows may come back — follow nextOffset.'),
+    arrayPath: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Only when savedResult.arrayPath picked the wrong list: dot path of the rows, e.g. body.data.rows.'),
   })
   .passthrough()
 
@@ -1235,6 +1401,7 @@ export function schemaForEnterpriseTool(toolName: string) {
   if (toolName === WEB_SEARCH_TOOL) return webSearchInputSchema
   if (toolName === WEB_FETCH_TOOL) return webFetchInputSchema
   if (toolName === DOCUMENT_EXPORT_TOOL) return documentExportInputSchema
+  if (toolName === HTTP_API_SAVED_READ_TOOL) return httpApiSavedReadInputSchema
   if (toolName === GMAIL_GET_MESSAGE_TOOL) return gmailGetMessageInputSchema
   if (toolName === GMAIL_SEARCH_TOOL) return gmailSearchInputSchema
   if (toolName === GMAIL_GET_THREAD_TOOL) return gmailGetThreadInputSchema

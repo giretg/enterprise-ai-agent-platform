@@ -178,6 +178,8 @@ export type MachineFloorDeps = {
   policyStore: ClientPolicyStore
   listVisibleAgentIds: (input: { tenantId: string; userId: string }) => Promise<string[]>
   listVisibleBots?: (input: { tenantId: string; userId: string }) => Promise<VisibleHermesBot[]>
+  /** #785: névrokon agentek, amelyek Bot-profilja agentId-utótagot kap. */
+  listHermesSuffixedAgentIds?: (tenantId: string) => Promise<Set<string>>
   floors: MachineFloorStore
   newInstallId?: () => string
 }
@@ -305,6 +307,7 @@ export async function issueMachineFloor(
   const bots: HermesBotConnector[] = []
   if (input.mcpUrl && input.tenantSlug && deps.listVisibleBots) {
     const seen = new Set<string>()
+    const suffixed = await deps.listHermesSuffixedAgentIds?.(input.tenantId)
     for (const bot of await deps.listVisibleBots(input)) {
       const connector = renderHermesBotConnector({
         agentId: bot.agentId,
@@ -313,6 +316,7 @@ export async function issueMachineFloor(
         mcpUrl: input.mcpUrl,
         tenantSlug: input.tenantSlug,
         warehouseAccess: bot.warehouseAccess,
+        suffixProfile: suffixed?.has(bot.agentId),
       })
       if (!isHermesProfileName(connector.profile) || seen.has(connector.profile)) continue
       seen.add(connector.profile)

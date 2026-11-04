@@ -383,6 +383,80 @@ export function okfIndexFile(bundle: unknown): { title: string; text: string } |
 
 export const KB_DOCUMENT_INLINE_CHARS = 8_000
 
+function luhnValid(digits: string): boolean {
+  let sum = 0
+  for (let i = 0; i < digits.length; i++) {
+    const digit = Number(digits[digits.length - 1 - i])
+    sum += i % 2 ? (digit * 2 > 9 ? digit * 2 - 9 : digit * 2) : digit
+  }
+  return sum % 10 === 0
+}
+
+/** Minden számjegy maszkolva, kivéve az utolsó négyet; az elválasztók maradnak. */
+function maskDigits(value: string): string {
+  let keep = 4
+  return [...value].reverse().map((char) => {
+    if (!/\d/.test(char)) return char
+    return keep-- > 0 ? char : '•'
+  }).reverse().join('')
+}
+
+/**
+ * Egy szóközzel / kötőjellel tagolt számsorban minden Luhn-érvényes, 13–19 jegyű ablak maszkolva.
+ * Az átfedő ablakok is számítanak: egy véletlenül érvényes előtag nem hagyhat szabadon valódi kártyaszámot.
+ */
+function maskLuhnWindows(run: string): string {
+  const tokens = run.split(/([\p{Zs}\t\u2010-\u2015-]+)/u)
+  const marked = new Set<number>()
+  for (let start = 0; start < tokens.length; start += 2) {
+    let digits = ''
+    for (let end = start; end < tokens.length && digits.length < 19; end += 2) {
+      digits += tokens[end]
+      if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
+        for (let index = start; index <= end; index += 2) marked.add(index)
+      }
+    }
+  }
+  if (marked.size === 0) return run
+  let out = ''
+  for (let index = 0; index < tokens.length; index++) {
+    if (!marked.has(index)) {
+      out += tokens[index]
+      continue
+    }
+    let end = index
+    while (marked.has(end + 2)) end += 2
+    out += maskDigits(tokens.slice(index, end + 1).join(''))
+    index = end
+  }
+  return out
+}
+
+const KB_MASK_LABELLED_CARD = /((?<!\p{L})(?:card(?:[ -]?(?:no|number|num))?|k[aá]rtya\p{L}*|PAN)\.?[\p{Zs}\t]*[:=|#-]?[\p{Zs}\t]*)(\d(?:[\p{Zs}\t\u2010-\u2015-]*\d){7,22})(?!\d)/giu
+const KB_MASK_LABELLED_PIN = /((?<!\p{L})PIN(?:[ -]?(?:k[oó]d\p{L}*|code|number|sz[aá]m\p{L}*))?[\p{Zs}\t]*[:=|]?[\p{Zs}\t]*)\d(?:[\p{Zs}\t-]*\d){3,11}(?!\d)/giu
+const KB_MASK_LABELLED_KEY = /((?<!\p{L})(?:mifare(?:[ -]\p{L}+)?|key(?:[ -]?[ab])?|kulcs\p{L}*)[\p{Zs}\t]*[:=|]?[\p{Zs}\t]*)([0-9a-f](?:[ :-]?[0-9a-f]){11,63})(?![0-9a-f])/giu
+const KB_ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * #1077 D6: kártyaszám, PIN és hexadecimális kulcs maszkolása a keresési találatban. A címke
+ * nélküli számot csak a Luhn-ellenőrzés után maszkoljuk, a találat szélén elvágott számot mindig
+ * (a csonkolt szám már nem ellenőrizhető). A dátum ettől nem számít számsornak.
+ */
+export function maskKbSensitiveText(text: string): string {
+  const firstContentOffset = text.search(/\S/)
+  const edge = (value: string) => (KB_ISO_DATE.test(value) ? value : value.replace(/\d/g, '•'))
+  return text
+    .replace(KB_MASK_LABELLED_KEY, (_all, label: string, key: string) => `${label}${key.replace(/[0-9a-f]/gi, '•')}`)
+    .replace(KB_MASK_LABELLED_PIN, (_all, label: string) => `${label}••••`)
+    .replace(KB_MASK_LABELLED_CARD, (_all, label: string, digits: string) => `${label}${maskDigits(digits)}`)
+    .replace(/\d+(?:[\p{Zs}\t\u2010-\u2015-]+\d+)*/gu, maskLuhnWindows)
+    // Scan runs once: an unanchored numeric suffix regex retries quadratically on long input.
+    .replace(/\d+(?:[\p{Zs}\t\u2010-\u2015-]+\d+)*/gu, (run: string, offset: number, whole: string) => {
+      const atEdge = offset === firstContentOffset || /^[\s.…]*$/.test(whole.slice(offset + run.length))
+      return atEdge && run.replace(/\D/g, '').length >= 8 ? edge(run) : run
+    })
+}
+
 type OutlineSection = { title: string; body: string }
 
 /** Fix méretű lapozás, ha a nyers fájlnak nincs `#`/`##`/`###` headingje. */
@@ -505,7 +579,30 @@ export type KbDocumentResult =
       sectionFound?: boolean
       /** Több szakaszra illő `section`: ezek közül kell pontosan egyet kérni. */
       matches?: string[]
+      /** #1077: a visszaadott szelet kezdete (`section` mellett a szakaszon belül). */
+      offset?: number
+      nextStep?: string
+      /** #1077: innen folytatható az olvasás; hiánya = a szöveg végére értünk. */
+      nextOffset?: number
+      /** #1077: egy hívásba nem férő szakaszok (a vázlat mellett). */
+      longSections?: Array<{ section: string; chars: number; parts: number }>
     }
+
+/** #1077: egy szelet a szövegből; a vágás nem szakít ketté helyettesítő párt. */
+function sliceKbText(text: string, offset = 0, limit = KB_DOCUMENT_INLINE_CHARS) {
+  let start = Math.min(offset, text.length)
+  if (start > 0 && /[\uDC00-\uDFFF]/.test(text[start] ?? '') && /[\uD800-\uDBFF]/.test(text[start - 1])) start--
+  let end = Math.min(start + limit, text.length)
+  const last = text.charCodeAt(end - 1)
+  if (end < text.length && last >= 0xd800 && last <= 0xdbff && /[\uDC00-\uDFFF]/.test(text[end])) end--
+  return {
+    truncated: end < text.length,
+    text: text.slice(start, end),
+    offset: start,
+    ...(end < text.length ? { nextOffset: end } : {}),
+    ...(end === start && start < text.length ? { nextStep: 'The next character is a UTF-16 pair. Retry with limit at least 2 at the same offset.' } : {}),
+  }
+}
 
 export function assembleKbDocument(input: {
   documentId: string
@@ -513,6 +610,8 @@ export function assembleKbDocument(input: {
   purpose: string | null
   text: string
   section?: string
+  offset?: number
+  limit?: number
 }): Exclude<KbDocumentResult, { found: false } | { kind: 'wiki' }> {
   const sections = outlineSections(input.text)
   const outline = sections.map((section) => section.title)
@@ -537,18 +636,25 @@ export function assembleKbDocument(input: {
         ...(found.matches.length > 0 ? { matches: found.matches } : { outline }),
       }
     }
-    const hit = found.hit
-    const truncated = hit.body.length > KB_DOCUMENT_INLINE_CHARS
     return {
       ...base,
-      truncated,
       section,
       sectionFound: true,
-      text: truncated ? hit.body.slice(0, KB_DOCUMENT_INLINE_CHARS) : hit.body,
+      ...sliceKbText(found.hit.body, input.offset, input.limit),
     }
+  }
+  if (input.offset !== undefined || input.limit !== undefined) {
+    return { ...base, ...sliceKbText(input.text, input.offset, input.limit) }
   }
   if (input.text.length <= KB_DOCUMENT_INLINE_CHARS) {
     return { ...base, truncated: false, text: input.text }
   }
-  return { ...base, truncated: true, outline }
+  const longSections = sections
+    .filter((row) => row.body.length > KB_DOCUMENT_INLINE_CHARS)
+    .map((row) => ({
+      section: row.title,
+      chars: row.body.length,
+      parts: Math.ceil(row.body.length / KB_DOCUMENT_INLINE_CHARS),
+    }))
+  return { ...base, truncated: true, outline, nextOffset: 0, ...(longSections.length ? { longSections } : {}) }
 }

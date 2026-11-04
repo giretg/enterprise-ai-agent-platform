@@ -207,8 +207,10 @@ export function renderHermesBotConnector(input: {
   tenantSlug: string
   /** Hiányában az alapérték (a platform hívásnál úgyis ellenőrzi). */
   warehouseAccess?: WarehouseAgentAccess
+  /** Névrokon agent a tenantban → agentId-utótagos profil ({@link hermesSuffixedAgentIds}). */
+  suffixProfile?: boolean
 }): HermesBotConnector {
-  const profile = hermesProfileName(input.snapshot.name)
+  const profile = hermesProfileName(input.snapshot.name, input.suffixProfile ? input.agentId : undefined)
   const description = input.snapshot.description?.trim() || input.snapshot.name
   const title = hermesBotTitle(input.snapshot)
   const tools = [
@@ -268,6 +270,7 @@ function hermesWriteRecipe(root: string, profile: string, localRoots: readonly s
     `   c. Model key: read model.provider from ${dir}/config.yaml, or else from ~/.hermes/config.yaml. Copy only that provider's API-key line(s) (for example OPENROUTER_API_KEY) from ~/.hermes/.env into ${dir}/.env, then chmod 600 it. Never copy the whole .env and never print a key. If the provider signs in with OAuth (Codex, Copilot), tell the user to run: hermes -p ${profile} auth add <provider>`,
     `   d. hermes -p ${profile} mcp login excellence  (opens the browser once; the user approves it)`,
     '3. If PROFILE is already listed (re-sync):',
+    `   0. If the X-Excellence-Agent-Id header in ${dir}/config.yaml differs from ROOT/config.yaml, stop: PROFILE belongs to another coworker. Tell the user, and do not update or overwrite it.`,
     `   a. hermes profile update ${profile} -y  (keeps the Bot's chats, memory, .env, MCP login, config.yaml and profile.yaml)`,
     `   b. Delete ${dir}/skills/excellence/ if it exists — skills live on MCP, not disk. Touch nothing else in ${dir}.`,
     `4. Apply the Bot label from ROOT/profile.yaml onto ${dir}/profile.yaml: copy display_name and ui_meta.hermes-bots.title only. If ${dir}/profile.yaml is missing, copy it from ROOT first. Keep avatar, color, section, and every other ui_meta key.`,
@@ -363,9 +366,37 @@ export function checkoutSlug(name: string): string {
   return trimmed || 'agent'
 }
 
-/** Hermes profile directory name (`exc-` + slug), at most 60 characters. */
-export function hermesProfileName(agentName: string): string {
-  return `exc-${checkoutSlug(agentName)}`.slice(0, 60).replace(/-+$/, '') || 'exc-agent'
+/**
+ * Hermes profile directory name (`exc-` + slug), at most 60 characters. `suffixAgentId` only when
+ * another agent of the tenant shares the slug ({@link hermesSuffixedAgentIds}): `exc-reka--1a2b3c4d`.
+ */
+export function hermesProfileName(agentName: string, suffixAgentId?: string): string {
+  if (!suffixAgentId) return `exc-${checkoutSlug(agentName)}`.slice(0, 60).replace(/-+$/, '') || 'exc-agent'
+  const suffix = `--${hermesAgentSuffix(suffixAgentId)}`
+  return `exc-${checkoutSlug(agentName)}`.slice(0, 59 - suffix.length).replace(/-+$/, '') + suffix
+}
+
+function hermesAgentSuffix(agentId: string): string {
+  return agentId.replace(/-/g, '').slice(0, 8).toLowerCase()
+}
+
+/**
+ * Agents whose Bot profile needs the agentId suffix (#785): two names that slug the same (`Réka` ≡
+ * `Reka`) would share one profile, and the re-sync keeps the first agent's config.yaml. The oldest
+ * agent keeps the bare name, so live Bots are never renamed when a namesake is created later.
+ */
+export function hermesSuffixedAgentIds(
+  agents: ReadonlyArray<{ id: string; name: string; createdAt: Date }>,
+): Set<string> {
+  const oldest = new Map<string, { id: string; createdAt: Date }>()
+  for (const agent of agents) {
+    const slug = checkoutSlug(agent.name)
+    const current = oldest.get(slug)
+    if (!current || agent.createdAt < current.createdAt || (+agent.createdAt === +current.createdAt && agent.id < current.id)) {
+      oldest.set(slug, agent)
+    }
+  }
+  return new Set(agents.filter((agent) => oldest.get(checkoutSlug(agent.name))?.id !== agent.id).map((agent) => agent.id))
 }
 
 export function isHermesProfileName(value: string): boolean {
@@ -764,6 +795,7 @@ function renderAgentsMd(input: {
     'Before any enterprise tool (Drive, Gmail, http_api_*, kb_*), call `platform.agent.get_definition` for this agentId and use its definitionId. Exempt: `platform.whoami`, `platform.agents.list`, `platform.agent.get_definition`, `platform.agent.checkout`.',
     'If the returned `contentHash` differs from the pin above, call `platform.agent.checkout`, overwrite generated paths, then retry.',
     'Enterprise tools reject stale pins with `agent_stale` until checkout completes and the manifest `definitionId` matches the current published version.',
+    'When retrying a write after checkout, reuse the same `idempotencyKey` and only update `definitionId` — a new key can enqueue a duplicate side effect.',
   )
 
   return `${lines.join('\n')}\n`
@@ -778,6 +810,8 @@ export function renderAgentCheckout(input: {
   language?: TenantLanguage
   publishedContentHash?: string
   warehouseAccess?: WarehouseAgentAccess
+  /** Hermes: névrokon agent a tenantban → agentId-utótagos profil és mappa (#785). */
+  suffixHermesProfile?: boolean
 }): CheckoutBundle {
   const warnings: string[] = []
   const snapshot = input.definition.snapshot
@@ -826,21 +860,23 @@ export function renderAgentCheckout(input: {
       mcpUrl: input.mcpUrl,
       tenantSlug,
       warehouseAccess: input.warehouseAccess,
+      suffixProfile: input.suffixHermesProfile,
     })
+    const root = `.hermes/excellence/${tenantSlug}/${input.suffixHermesProfile ? connector.profile.replace(/^exc-/, '') : slug}`
     const files: CheckoutFile[] = (Object.keys(connector.files) as Array<keyof HermesBotConnectorFiles>).map(
       (path) => ({ path, content: connector.files[path] }),
     )
     const generatedPaths = files.map((file) => file.path)
     for (const path of generatedPaths) assertSafeCheckoutPath(path)
     return {
-      suggestedRoot: `.hermes/excellence/${tenantSlug}/${slug}`,
+      suggestedRoot: root,
       mcpUrl: input.mcpUrl,
       pin,
       files,
       generatedPaths,
       deleteUnder: ['.enterprise-agent', HERMES_SKILL_DIR],
       warnings,
-      writeRecipe: hermesWriteRecipe(`.hermes/excellence/${tenantSlug}/${slug}`, connector.profile, localRoots),
+      writeRecipe: hermesWriteRecipe(root, connector.profile, localRoots),
     }
   }
 

@@ -207,6 +207,7 @@ export function compileQuery(schema: string, spec: QuerySpec, catalog: Map<strin
   const order = spec.orderBy.map((o) => {
     // Csoportosított lekérdezésben az aggregátum-oszlopnévre is lehet rendezni.
     const index = columns.indexOf(o.field)
+    if (aggregated && index < 0) throw new QueryError('invalid_order', o.field)
     const expr = index >= 0 ? qi(`c${index}`) : resolve(o.field).expr
     return `${expr} ${o.desc ? 'DESC' : 'ASC'} NULLS LAST`
   })

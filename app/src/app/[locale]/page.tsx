@@ -1,4 +1,3 @@
-import NextLink from 'next/link'
 import Image from 'next/image'
 import { getTranslations, setRequestLocale } from 'next-intl/server'
 import { PublicSiteShell } from '@/components/public-site/public-site-shell'
@@ -112,13 +111,15 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
           </h1>
           <p data-reveal className="mt-6 max-w-xl text-lg leading-relaxed text-ink-soft">{t('heroBody')}</p>
           <div data-reveal className="mt-8 flex flex-wrap items-center gap-3">
-            <NextLink href="/sign-up" className={btnPrimary}>
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; NextLink soft-nav to Clerk shows "This page couldn't load" */}
+            <a href="/sign-up" className={btnPrimary}>
               {t('ctaSignUp')}
               <span aria-hidden className="rounded-sm border border-current px-1.5 font-mono text-[11px] opacity-70">↵</span>
-            </NextLink>
-            <NextLink href="/sign-in" className={btnGhost}>
+            </a>
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; NextLink soft-nav to Clerk shows "This page couldn't load" */}
+            <a href="/sign-in" className={btnGhost}>
               {t('ctaSignIn')}
-            </NextLink>
+            </a>
             <a href="#how" className="px-2 py-3.5 text-sm font-semibold text-ink-soft underline-offset-4 hover:text-ink hover:underline">
               {t('ctaHow')}
             </a>
@@ -366,12 +367,13 @@ export default async function Home({ params }: { params: Promise<{ locale: strin
         <div data-reveal className="mt-16 border border-ink bg-ink px-8 py-14 text-center text-white shadow-[10px_10px_0_var(--color-coral)] sm:px-12">
           <h2 className="mx-auto max-w-2xl text-3xl font-bold tracking-[-0.04em] sm:text-5xl">{t('ctaTitle')}</h2>
           <p className="mx-auto mt-4 max-w-xl text-white/70">{t('ctaBody')}</p>
-          <NextLink
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- hard nav off the [locale] tree; NextLink soft-nav to Clerk shows "This page couldn't load" */}
+          <a
             href="/sign-in"
             className="signal-btn mt-8 inline-flex items-center gap-2 rounded border border-lime bg-lime px-7 py-3.5 text-sm font-semibold text-ink [--sweep:white]"
           >
             {t('ctaButton')}
-          </NextLink>
+          </a>
         </div>
       </section>
     </PublicSiteShell>

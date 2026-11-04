@@ -1,12 +1,17 @@
 import type { OkfBundle } from './kb-v3'
 import {
+  WIKI_HUMAN_NOTE_MAX_OCCASION,
+  WIKI_HUMAN_NOTE_MAX_PARTICIPANTS,
   WIKI_MAX_PAGE_CHARS,
   WIKI_PAGE_TYPES,
+  extractCrossWikiLinks,
   extractWikiLinks,
+  isHumanNoteSource,
   isReservedWikiPath,
   isValidWikiPath,
   renderWikiPageMarkdown,
   type WikiPageState,
+  isUnknownSourceDate,
 } from './kb-wiki'
 
 /**
@@ -261,6 +266,14 @@ export function validateWikiPages(input: {
   knownSourceIds: ReadonlySet<string>
   /** Az írás után létező (nem archivált) oldalak path-jai — a link-ellenőrzéshez. */
   pathsAfterWrite: ReadonlySet<string>
+  /**
+   * #1061 F2: másik tudástár forrásai (`<connectorId>/<documentId>`) és wikik közti linkek
+   * (`<wikiId>/<path>`) ellenőrzött állapota. Hiányzó bejegyzés = `unknown_source` (fail-closed).
+   */
+  crossSources?: ReadonlyMap<string, 'ok' | 'unknown_source' | 'source_audience_narrower'>
+  crossLinks?: ReadonlyMap<string, 'ok' | 'unknown_source' | 'source_audience_narrower' | 'missing_page'>
+  /** Írás nélküli előnézet: a másik wikire mutató hivatkozást a jóváhagyás ellenőrzi. */
+  skipCrossChecks?: boolean
 }): WikiValidationResult {
   const issues: KbValidationIssue[] = []
   const add = (severity: KbValidationSeverity, code: string, path: string, message: string) =>
@@ -282,12 +295,12 @@ export function validateWikiPages(input: {
     if (!state.body.trim()) add('error', 'empty_page', path, 'body is empty.')
     if (state.type === 'source') {
       const sourceDate = state.frontmatter.source_date
-      if (typeof sourceDate !== 'string' || !SOURCE_DATE_RE.test(sourceDate.trim())) {
+      if (!isUnknownSourceDate(sourceDate) && (typeof sourceDate !== 'string' || !SOURCE_DATE_RE.test(sourceDate.trim()))) {
         add(
           'error',
           'missing_source_date',
           path,
-          'type: source pages need frontmatter.source_date (YYYY, YYYY-MM, or YYYY-MM-DD) — the document\'s own date, not the upload date.',
+          'type: source pages need frontmatter.source_date (YYYY, YYYY-MM, or YYYY-MM-DD) — the document\'s own date, not the upload date. If nobody knows it, write "unknown"; never invent a date.',
         )
       }
     }
@@ -296,10 +309,40 @@ export function validateWikiPages(input: {
         'error',
         'missing_source',
         path,
-        'Every page (except overview) must cite at least one raw source: frontmatter.sources [{ documentId }] or sourceDocumentIds.',
+        'Every page (except overview) must cite at least one source: frontmatter.sources [{ documentId }] (a raw source of this knowledge base, or { documentId, connectorId } from another one you can read), sourceDocumentIds, or a human_note { kind: "human_note", occasion } recorded in a live session.',
       )
     }
     for (const ref of state.sources) {
+      if (isHumanNoteSource(ref)) {
+        // #1061 F2: a szerzőt a szerver bélyegzi a munkamenetből — hiánya: nem interaktív írás.
+        if (!ref.recordedByUserId || !ref.recordedAt) {
+          add('error', 'human_note_requires_session', path, 'A human_note source needs a live session with the person who recorded it.')
+        }
+        if (!ref.occasion) {
+          add('error', 'missing_field', path, 'human_note needs occasion (e.g. "2026-11-03 sales meeting").')
+        } else if (ref.occasion.length > WIKI_HUMAN_NOTE_MAX_OCCASION) {
+          add('error', 'invalid_field', path, `human_note occasion is longer than ${WIKI_HUMAN_NOTE_MAX_OCCASION} characters.`)
+        }
+        if ((ref.participants?.length ?? 0) > WIKI_HUMAN_NOTE_MAX_PARTICIPANTS) {
+          add('error', 'invalid_field', path, `human_note participants is longer than ${WIKI_HUMAN_NOTE_MAX_PARTICIPANTS} characters.`)
+        }
+        continue
+      }
+      if (ref.connectorId) {
+        if (input.skipCrossChecks) continue
+        const status = input.crossSources?.get(`${ref.connectorId}/${ref.documentId}`) ?? 'unknown_source'
+        if (status === 'source_audience_narrower') {
+          add(
+            'error',
+            'source_audience_narrower',
+            path,
+            `Source ${ref.documentId} is in a knowledge base with a narrower audience than this wiki. A page may only cite sources that everyone who reads this wiki can read.`,
+          )
+        } else if (status !== 'ok') {
+          add('error', 'unknown_source', path, `Source ${ref.documentId} is not a raw source you can read in knowledge base ${ref.connectorId}.`)
+        }
+        continue
+      }
       if (!input.knownSourceIds.has(ref.documentId)) {
         add('error', 'unknown_source', path, `Source ${ref.documentId} is not a raw source in this knowledge base.`)
       }
@@ -312,6 +355,24 @@ export function validateWikiPages(input: {
     for (const link of extractWikiLinks(state.body, state.path)) {
       if (!input.pathsAfterWrite.has(link) && !isReservedWikiPath(link)) {
         add('warning', 'broken_link', path, `Link to missing page: ${link}.`)
+      }
+    }
+    if (!input.skipCrossChecks) {
+      for (const link of extractCrossWikiLinks(state.body)) {
+        const target = `${link.wikiId}/${link.path}`
+        const status = input.crossLinks?.get(target) ?? 'unknown_source'
+        if (status === 'missing_page') {
+          add('warning', 'broken_link', path, `Link to missing page: wiki:${target}.`)
+        } else if (status === 'source_audience_narrower') {
+          add(
+            'error',
+            'source_audience_narrower',
+            path,
+            `wiki:${target} is in a wiki with a narrower audience than this one; do not link it from here.`,
+          )
+        } else if (status !== 'ok') {
+          add('error', 'unknown_wiki_link', path, `wiki:${target} is not a wiki you can read. Use [[wiki:<wikiId>/<path>]] with a wikiId from kb_list_index.`)
+        }
       }
     }
     const sensitive = SENSITIVE_PATTERNS.filter((p) => p.re.test(state.body)).map((p) => p.label)

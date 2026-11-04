@@ -10,6 +10,8 @@ import {
   type HttpApiConfig,
 } from '@/domain/connector/http-api-client'
 import { capHttpApiResultForModel } from '@/domain/connector/http-api-prompt'
+import { saveOversizedHttpResult, type SaveOversizedHttpResult } from '@/domain/connector/http-api-saved-result'
+import type { HttpApiFile } from '@/domain/connector/http-api-file'
 import {
   paginateHttpApiGet,
   resolveHttpApiPaginatePlan,
@@ -132,6 +134,61 @@ export async function applyPlatformGoogleAdsDeveloperToken(
 /** A published definition agentje — nem a modell args.agentId-je. */
 export type HttpApiCallAgent = { id: string; version?: number }
 
+/** #1070: a fájl-válasz mentése a letölthető-fájl tárolóba (a kérő userhez kötve). */
+export type SaveHttpApiFile = (file: HttpApiFile) => Promise<{ exportId: string; downloadUrl: string; expiresAt: Date }>
+
+function formatExpiry(date: Date, language?: TenantLanguage): string {
+  return date.toLocaleString(language === 'en' ? 'en-GB' : 'hu-HU', {
+    timeZone: 'Europe/Budapest',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/**
+ * #1070: a modell csak a fájl adatait és a letöltési linket kapja, a tartalmat nem. A mezők ugyanazok,
+ * mint a `document_export` eredményében, így a chat ugyanúgy fájl-kártyát mutat.
+ */
+async function fileResultForModel(
+  status: number,
+  file: HttpApiFile,
+  saveFile: SaveHttpApiFile | undefined,
+  language?: TenantLanguage,
+): Promise<Record<string, unknown>> {
+  const meta = { fileName: file.fileName, mimeType: file.mimeType, sizeBytes: file.bytes.length, sha256: file.sha256 }
+  const en = language === 'en'
+  if (!saveFile) {
+    return {
+      ok: false,
+      status,
+      body: null,
+      file: meta,
+      hint: en
+        ? 'The service returned a file, but file handover is not available in this run. Tell the user the file is ready in the source system.'
+        : 'A rendszer fájlt adott vissza, de ebben a futásban a fájlátadás nem érhető el. Mondd meg a felhasználónak, hogy a fájl a forrásrendszerben elkészült.',
+    }
+  }
+  const saved = await saveFile(file)
+  const expiry = formatExpiry(saved.expiresAt, language)
+  return {
+    ok: true,
+    status,
+    exportId: saved.exportId,
+    ...meta,
+    format: file.format,
+    expiresAt: saved.expiresAt.toISOString(),
+    downloadUrl: saved.downloadUrl,
+    note: en
+      ? `The service returned a file; it is ready for the user. Tell them in one sentence that they can download it from the link (${saved.downloadUrl}) until ${expiry}, and that only they can open it. ` +
+        'You cannot read the file content. To save it to Google Drive, call google_drive_upload_file with this exportId.'
+      : `A rendszer fájlt adott vissza, a felhasználó letöltheti. Egy mondatban mondd meg neki, hogy a linkről (${saved.downloadUrl}) ${expiry}-ig töltheti le, és csak ő nyithatja meg. ` +
+        'A fájl tartalmát nem látod. Google Drive-ra mentéshez hívd a google_drive_upload_file-t ezzel az exportId-vel.',
+  }
+}
+
 export async function executeHttpApiTool(
   toolName: EnterpriseHttpTool | string,
   args: Record<string, unknown>,
@@ -144,6 +201,10 @@ export async function executeHttpApiTool(
    */
   language?: TenantLanguage,
   allowedEgressHosts?: string[],
+  /** #1070: hiányában a fájl-válasz nem adható át (a modell rövid magyarázatot kap). */
+  saveFile?: SaveHttpApiFile,
+  /** #1071: a plafon feletti, hiánytalan válasz mentése a kérő usernek; hiányában csak előnézet. */
+  options?: { saveOversized?: SaveOversizedHttpResult },
 ): Promise<unknown> {
   if (
     toolName !== HTTP_API_GET_TOOL &&
@@ -169,12 +230,11 @@ export async function executeHttpApiTool(
   }
 
   const config = await applyPlatformGoogleAdsDeveloperToken(parseHttpApiConfig(connector.config))
-  const forModel = (result: unknown) =>
-    capHttpApiResultForModel({
-      result,
-      maxChars: config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS,
-      language,
-    })
+  const maxChars = config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
+  const forModel = async (result: unknown) => {
+    const saved = await saveOversizedHttpResult({ result, maxChars, path, toolName, save: options?.saveOversized })
+    return capHttpApiResultForModel({ result, maxChars, language, path, saved })
+  }
   const apiKey = await defaultApiKey(connector, delegatedAccessToken)
   const client = clientFor(config, apiKey, language, allowedEgressHosts)
   const callId = randomUUID()
@@ -265,26 +325,22 @@ export async function executeHttpApiTool(
     })
   }
 
-  if (toolName === HTTP_API_GET_TOOL) {
-    return forModel(
-      await client.request({
-        method: 'GET',
-        path,
-        query: scalarQuery(args.query),
-        headers: stringMap(args.headers),
-        context,
-      }),
-    )
-  }
-
-  return forModel(
-    await client.request({
-      method: optionalString(args.method) ?? 'POST',
-      path,
-      query: scalarQuery(args.query),
-      headers: stringMap(args.headers),
-      body: parseBody(args.body),
-      context,
-    }),
-  )
+  const response =
+    toolName === HTTP_API_GET_TOOL
+      ? await client.request({
+          method: 'GET',
+          path,
+          query: scalarQuery(args.query),
+          headers: stringMap(args.headers),
+          context,
+        })
+      : await client.request({
+          method: optionalString(args.method) ?? 'POST',
+          path,
+          query: scalarQuery(args.query),
+          headers: stringMap(args.headers),
+          body: parseBody(args.body),
+          context,
+        })
+  return response.file ? fileResultForModel(response.status, response.file, saveFile, language) : forModel(response)
 }

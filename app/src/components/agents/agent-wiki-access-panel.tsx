@@ -14,7 +14,7 @@ type Mode = 'approval' | 'direct'
 
 export type AgentWikiLinkRow = {
   connectorId: string
-  kind: 'catalog' | 'agent' | 'shared' | 'private'
+  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
   own: boolean
   name: string
   template: 'general' | 'health-journal'
@@ -71,7 +71,7 @@ function WikiLinkRow({ agentId, row }: { agentId: string; row: AgentWikiLinkRow 
     <li className="rounded-lg border border-line/70 p-3" data-testid={`agent-wiki-row-${row.connectorId}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium text-ink">{row.name}</span>
-        <Badge tone={row.kind === 'private' ? 'warning' : 'neutral'}>{row.own ? t('agent.own') : t(`kind.${row.kind}`)}</Badge>
+        <Badge tone={row.kind === 'private' || row.kind === 'members' ? 'warning' : 'neutral'}>{row.own ? t('agent.own') : t(`kind.${row.kind}`)}</Badge>
         {row.template !== 'general' ? <Badge tone="neutral">{t(`templates.${row.template}.name`)}</Badge> : null}
         <span className="text-xs text-ink-faint">{t('agent.pages', { count: row.pageCount })}</span>
         <Link href={`/control-plane/knowledge/${row.connectorId}`} className="ml-auto text-xs text-coral-deep hover:underline">
@@ -85,7 +85,7 @@ function WikiLinkRow({ agentId, row }: { agentId: string; row: AgentWikiLinkRow 
         <p className="mt-2 text-sm text-ink-soft">
           {t(`levels.${row.access}`)}
           {row.access === 'write' ? ` · ${t(`modes.${row.writeMode}`)}` : ''}
-          <span className="block text-xs text-ink-faint">{row.kind === 'private' ? t('agent.privateOwnerOnly') : t('agent.adminOnly')}</span>
+          <span className="block text-xs text-ink-faint">{row.kind === 'private' ? t('agent.privateOwnerOnly') : row.kind === 'members' ? t('agent.membersOwnerOnly') : t('agent.adminOnly')}</span>
         </p>
       ) : (
         <form

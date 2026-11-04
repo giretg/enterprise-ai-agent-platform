@@ -12,7 +12,16 @@ export class MemoryStore implements Store {
   adminViews: Array<{ tenantId: string; adminUserId: string; conversationId: string }> = []
 
   async createConversation(input: Parameters<Store['createConversation']>[0]) {
-    const c: Conversation = { ...input, id: randomUUID(), title: '', titleSetByUser: false, createdAt: new Date(), lastActivityAt: new Date() }
+    const c: Conversation = {
+      ...input,
+      id: randomUUID(),
+      title: input.title ?? '',
+      titleSetByUser: false,
+      origin: input.origin ?? 'user',
+      instructions: input.instructions ?? null,
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+    }
     this.conversations.set(c.id, c)
     return c
   }
@@ -51,7 +60,7 @@ export class MemoryStore implements Store {
     if ([...this.turns.values()].some((t) => t.conversationId === input.conversationId && ACTIVE_TURN_STATUSES.includes(t.status))) return null
     const t = {
       ...input, id: randomUUID(), status: 'queued' as const, stepCount: 0, tokenUsage: {}, error: null, continuationToken: null,
-      context: null, pendingApproval: null, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
+      context: null, pendingApproval: null, pendingInput: null, pausedSeconds: 0, pause: null, runLimits: null, createdAt: new Date(), finishedAt: null, leaseUntil: 0,
     }
     this.turns.set(t.id, t)
     return { ...t }
@@ -75,6 +84,16 @@ export class MemoryStore implements Store {
     const t = this.turns.get(id)
     if (!t || !from.includes(t.status)) return false
     Object.assign(t, patch, { status: to })
+    return true
+  }
+  async saveQuestionAnswer(input: Parameters<Store['saveQuestionAnswer']>[0]) {
+    if (this.turns.get(input.turnId)?.pendingInput?.seq !== input.pendingInput.seq) return false
+    const ok = await this.transitionTurn(input.turnId, ['awaiting_input'], 'running', {
+      pendingInput: input.pendingInput, continuationToken: input.continuationToken, pausedSeconds: input.pausedSeconds,
+    })
+    if (!ok) return false
+    for (const message of input.messages) await this.addMessage(message)
+    await this.appendEvent(input.turnId, 'question', { phase: 'answered', answer: input.display })
     return true
   }
   async claimTurn(id: string) {
@@ -109,6 +128,9 @@ export class MemoryStore implements Store {
   }
   async eventsAfter(turnId: string, after: number) {
     return this.events.filter((e) => e.turnId === turnId && e.seq > after)
+  }
+  async lastEventId(turnId: string) {
+    return this.events.filter((e) => e.turnId === turnId).at(-1)?.seq ?? 0
   }
   async pruneOldEvents() {}
   async addAttachment(input: Omit<Attachment, 'id'>) {

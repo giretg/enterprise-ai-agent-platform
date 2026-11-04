@@ -22,7 +22,7 @@ import {
   type ExecuteMcpToolInput,
   type McpGateDeps,
 } from '@/domain/enterprise-tools/handlers/mcp'
-import { auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
+import { httpResultSaver, savedResultAuditMeta, httpApiFileSaver, httpApiFileAuditMeta, type EnterpriseToolDeps, auditMcpServerRequests } from '@/domain/enterprise-tools/invoke-enterprise-tool'
 import type { McpCallResult } from '@/domain/connector/mcp-client'
 import { mcpResultForModel } from '@/domain/connector/mcp-tools'
 import { GmailApiAuthError, GmailApiError } from '@/domain/connector-grant/gmail-api-client'
@@ -68,11 +68,12 @@ import type {
   GatewayOperationStore,
   GatewayOperationView,
 } from './types'
+import type { DesignatedApproverResolution } from './designated-approver'
 import { computeDiffHash } from '@/lib/crypto/hash-chain'
 import { redactMetadata } from '@/lib/audit/kb-private-redaction'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
-import { isPrivateKnowledgeBase } from '@/lib/wiki-access'
+import { isRestrictedKnowledgeBase } from '@/lib/wiki-access'
 
 export type GatewayActor = ToolCallPrincipal
 
@@ -80,7 +81,7 @@ export type GatewayOperationOk = { ok: true; view: GatewayOperationView; created
 export type GatewayOperationErr = { ok: false; code: string; authorizationUrl?: string }
 export type GatewayOperationResult = GatewayOperationOk | GatewayOperationErr
 
-export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
+export type GatewayOperationServiceDeps = Pick<EnterpriseToolDeps, 'saveHttpResult' | 'saveDocumentExport' | 'documentExportUrl' | 'now'> & MailboxFailureDeps & AuthorizeToolCallDeps &
   DefinitionPinDeps &
   McpGateDeps & {
   loadDefinition: (input: {
@@ -104,12 +105,16 @@ export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCall
     tenantId: string
     userId: string
   }) => Promise<{ role: string; assumed: boolean } | null>
-  /** #663: konnektor > agent sorrendben a megnevezett jóváhagyó; null = általános sor. */
+  /**
+   * #663: konnektor > agent sorrendben a megnevezett jóváhagyó.
+   * `none` = általános sor; `unavailable` = binding van, de a user inaktív/hiányzik
+   * (fail-closed — ne essünk vissza nyitott jóváhagyásra).
+   */
   resolveDesignatedApprover?: (input: {
     tenantId: string
     agentId: string
     connectorId: string | null
-  }) => Promise<{ userId: string; name: string } | null>
+  }) => Promise<DesignatedApproverResolution>
   executeDriveTool?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -121,17 +126,7 @@ export type GatewayOperationServiceDeps = MailboxFailureDeps & AuthorizeToolCall
     accessToken: string,
   ) => Promise<unknown>
   executeMailTool?: typeof executeMailTool
-  executeHttpApiTool?: (
-    toolName: string,
-    args: Record<string, unknown>,
-    connector: LiveConnectorRow,
-    accessToken?: string,
-    actingUser?: { id: string; email: string; tenantId: string | null } | null,
-    agent?: { id: string; version?: number },
-    /** #717: a modellnek szóló http_api hintek nyelve. */
-    language?: TenantLanguage,
-    allowedEgressHosts?: string[],
-  ) => Promise<unknown>
+  executeHttpApiTool?: typeof executeHttpApiTool
   /** #717: a tenant kimeneti nyelve (a modellnek szóló szövegekhez). Hiányában `hu`. */
   resolveTenantLanguage?: (tenantId: string) => Promise<TenantLanguage>
   resolveEgressAllowlist?: (tenantId: string | null) => Promise<string[]>
@@ -170,9 +165,9 @@ function wikiChangeSetIdOf(row: { toolName: string; argsJson: unknown }): string
   return asUuid(asRecord(row.argsJson).changeSetId) ?? null
 }
 
-/** D13: privát wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
+/** D13: privát (és #1061 F2 névsoros) wiki path-ja nem kerül a gateway `resultJson`-ba (admin sem láthatja). */
 function wikiApplyResultJson(connector: { visibility?: unknown }, result: unknown): unknown {
-  if (!isPrivateKnowledgeBase(connector)) return result
+  if (!isRestrictedKnowledgeBase(connector)) return result
   if (!result || typeof result !== 'object' || Array.isArray(result)) return { privateKb: true }
   const row = result as Record<string, unknown>
   const pageCount = Array.isArray(row.pages) ? row.pages.length : undefined
@@ -199,6 +194,8 @@ const MESSAGES: Record<string, string> = {
   operation_not_awaiting_approval: 'Gateway operation is not awaiting approval',
   approval_already_decided: 'Gateway operation has already been decided',
   approver_not_authorized: 'Approver is not authorized',
+  approver_unavailable:
+    'The designated approver is inactive or missing — ask an admin to assign an active approver, then retry',
   drive_write_not_allowed: 'Google Drive write is not allowed for the selected files',
 }
 
@@ -222,6 +219,17 @@ export function stableJsonFingerprint(value: unknown): string {
 }
 
 /**
+ * Idempotency compares the write payload, not the published pin.
+ * `definitionId` changes on every republish; treating it as part of the
+ * fingerprint forced agents to mint a new key after checkout and duplicate
+ * side effects. `agentId` still binds the key to one agent.
+ */
+function idempotencyPayload(args: Record<string, unknown>): Record<string, unknown> {
+  const { definitionId: _omit, ...rest } = args
+  return rest
+}
+
+/**
  * Tenant-unique idempotency keys must only replay the same call.
  * Otherwise enqueue returns another user's succeeded result (bypassing get
  * visibility) or silently drops a write with different args.
@@ -231,10 +239,15 @@ function idempotencyReplayConflict(
   principal: GatewayActor,
   toolName: string,
   args: Record<string, unknown>,
+  agentId: string,
 ): GatewayOperationErr | null {
   if (existing.principalUserId !== principal.userId) return err('idempotency_key_conflict')
   if (existing.toolName !== toolName) return err('idempotency_key_conflict')
-  if (stableJsonFingerprint(asRecord(existing.argsJson)) !== stableJsonFingerprint(args)) {
+  if (existing.agentId !== agentId) return err('idempotency_key_conflict')
+  if (
+    stableJsonFingerprint(idempotencyPayload(asRecord(existing.argsJson))) !==
+    stableJsonFingerprint(idempotencyPayload(args))
+  ) {
     return err('idempotency_key_conflict')
   }
   return null
@@ -568,6 +581,52 @@ export async function recordGatewayOperationEnqueued(
   })
 }
 
+/**
+ * Replay an existing op even when its pin is no longer current.
+ * Pin checks gate *new* writes only — otherwise a republish turns a safe
+ * retry into agent_stale / key conflict and a duplicate side effect.
+ */
+async function tryIdempotentReplay(
+  deps: GatewayOperationServiceDeps,
+  input: { principal: GatewayActor; toolName: string; args: Record<string, unknown> },
+): Promise<GatewayOperationResult | null> {
+  const { principal, toolName, args } = input
+  if (!isEnterpriseWriteTool(toolName)) return null
+
+  const idempotencyKey = args.idempotencyKey
+  if (typeof idempotencyKey !== 'string' || idempotencyKey.length === 0) return null
+
+  const definitionId = asUuid(args.definitionId)
+  if (!definitionId) return null
+
+  const existing = await deps.operations.findByTenantAndIdempotencyKey(
+    principal.tenantId,
+    idempotencyKey,
+  )
+  if (!existing) return null
+
+  const definition = await deps.loadDefinition({
+    tenantId: principal.tenantId,
+    definitionId,
+  })
+  if (!definition) return null
+
+  const schema = schemaForEnterpriseTool(toolName)
+  if (!schema) return null
+  const parsed = schema.safeParse(args)
+  if (!parsed.success) return null
+
+  const conflict = idempotencyReplayConflict(
+    existing,
+    principal,
+    toolName,
+    parsed.data as Record<string, unknown>,
+    definition.agentId,
+  )
+  if (conflict) return conflict
+  return ok(toGatewayOperationView(existing), false)
+}
+
 export async function enqueueGatewayOperation(
   deps: GatewayOperationServiceDeps,
   input: {
@@ -578,6 +637,10 @@ export async function enqueueGatewayOperation(
   },
 ): Promise<GatewayOperationResult> {
   const { principal, toolName, args } = input
+
+  const replay = await tryIdempotentReplay(deps, input)
+  if (replay) return replay
+
   const authorized = await loadAuthorizedWrite(deps, principal, toolName, args)
   if (!authorized.ok) {
     await recordGatewayAudit(deps, {
@@ -607,11 +670,16 @@ export async function enqueueGatewayOperation(
   }
 
   const idempotencyKey = String(authorized.parsedArgs.idempotencyKey)
-  const designated = await deps.resolveDesignatedApprover?.({
+  const designatedResolution = await deps.resolveDesignatedApprover?.({
     tenantId: principal.tenantId,
     agentId: authorized.definition.agentId,
     connectorId: authorized.connectorId,
   })
+  if (designatedResolution?.kind === 'unavailable') return err('approver_unavailable')
+  const designated =
+    designatedResolution?.kind === 'designated'
+      ? { userId: designatedResolution.userId, name: designatedResolution.name }
+      : null
   const existing = await deps.operations.findByTenantAndIdempotencyKey(
     principal.tenantId,
     idempotencyKey,
@@ -622,6 +690,7 @@ export async function enqueueGatewayOperation(
       principal,
       toolName,
       authorized.parsedArgs,
+      authorized.definition.agentId,
     )
     if (conflict) return conflict
     return ok(toGatewayOperationView(existing), false)
@@ -645,6 +714,7 @@ export async function enqueueGatewayOperation(
       principal,
       toolName,
       authorized.parsedArgs,
+      authorized.definition.agentId,
     )
     if (conflict) return conflict
     return ok(toGatewayOperationView(inserted.record), false)
@@ -1100,6 +1170,16 @@ async function executeApprovedOperation(
           deps.resolveEgressAllowlist
             ? await deps.resolveEgressAllowlist(authorized.connector.tenantId)
             : undefined,
+          httpApiFileSaver(deps, {
+            principal: { userId: operation.principalUserId, tenantId: operation.tenantId },
+            definitionId: operation.agentDefinitionVersionId,
+            agentId: definition.agentId,
+            client: 'unknown',
+          }),
+          { saveOversized: httpResultSaver(deps, {
+            principal: { userId: operation.principalUserId, tenantId: operation.tenantId },
+            definition, definitionId: operation.agentDefinitionVersionId, client: 'unknown',
+          }) },
         )
       : isEnterpriseGmailWriteTool(operation.toolName)
         ? await (deps.executeGmailTool ?? executeGmailTool)(operation.toolName, args, accessToken ?? '')
@@ -1141,6 +1221,8 @@ async function executeApprovedOperation(
       connectorId: authorized.connectorId,
       tenantId: operation.tenantId,
       ...(typeof file?.id === 'string' ? { fileId: file.id } : {}),
+      ...httpApiFileAuditMeta(result),
+      ...savedResultAuditMeta(result),
       ...(mailbox ? { mailbox: grant?.accountLabel ?? mailbox.address ?? null, requestedBy: operation.principalUserId } : {}),
     }
     console.info('gateway.operation.succeeded', payload)

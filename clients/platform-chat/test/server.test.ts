@@ -50,6 +50,8 @@ async function main() {
   }
   const store = new MemoryStore()
   let llmDelayMs = 0
+  let askNext = false
+  let budgetNext = false
   const seenUserContent: string[] = []
   const platform: PlatformClient = {
     continuationToken: async () => 'turn-token',
@@ -61,6 +63,14 @@ async function main() {
     listTools: async () => [],
     callTool: async () => ({ kind: 'complete', text: '', isError: false }),
     streamCompletion: async (input) => {
+      if (budgetNext) {
+        budgetNext = false
+        return { content: 'A mai keret elfogyott.', toolCalls: [], usage: null, blockReason: 'platform_chat_budget' }
+      }
+      if (askNext) {
+        askNext = false
+        return { content: '', toolCalls: [{ id: 'q', name: 'ask_user', arguments: '{"question":"Melyik Péter?","options":[{"label":"Kovács"},{"label":"Nagy"}]}' }], usage: null, blockReason: null }
+      }
       seenUserContent.push(JSON.stringify(input.messages.filter((m) => m.role === 'user').at(-1)?.content))
       await new Promise((r) => setTimeout(r, llmDelayMs))
       input.onDelta('Szia, ')
@@ -98,6 +108,31 @@ async function main() {
   }
 
   try {
+    await check('szünet: HTTP + SSE + újranyitás + tulajdonosi folytatás ugyanazon a fordulón', async () => {
+      const created = await api('/conversations', { method: 'POST', body: JSON.stringify({ agentId: AGENT }) })
+      const id = ((await created.json()) as { conversation: { id: string } }).conversation.id
+      budgetNext = true
+      const started = await api(`/conversations/${id}/turns`, { method: 'POST', body: JSON.stringify({ content: 'Riport' }) })
+      const { turnId } = await started.json() as { turnId: string }
+      const events = await readEvents(turnId)
+      assert.equal(events.at(-1)?.type, 'pause')
+      const view = await (await api(`/conversations/${id}`)).json() as { activeTurn: { id: string; status: string; paused: { message: string; lastId: number; completedOperations: number } }; lastError: unknown }
+      assert.equal(view.activeTurn.id, turnId)
+      assert.equal(view.activeTurn.status, 'paused')
+      assert.match(view.activeTurn.paused.message, /keret/)
+      assert.equal(view.activeTurn.paused.lastId, events.at(-1)!.id)
+      assert.equal(view.activeTurn.paused.completedOperations, 0)
+      assert.equal(view.lastError, null)
+      assert.equal((await api(`/turns/${turnId}/resume`, { method: 'POST', tok: token({ sub: OFF_AGENT }) })).status, 404)
+      assert.equal((await api(`/turns/${turnId}/resume`, { method: 'POST', tok: token({ tid: OFF_AGENT }) })).status, 404)
+      assert.equal((await api(`/turns/${turnId}/resume`, { method: 'POST' })).status, 202)
+      const tail = await readEvents(turnId, view.activeTurn.paused.lastId)
+      assert.equal(tail.at(-1)?.type, 'done')
+      assert.equal((await store.getTurn(turnId))?.status, 'succeeded')
+      assert.deepEqual((await store.listMessages(id)).map((m) => m.role), ['user', 'assistant'])
+      await store.deleteConversation(id)
+    })
+
     await check('CORS: csak a platform origin; preflight', async () => {
       const pre = await fetch(`${base}/agents`, { method: 'OPTIONS', headers: { origin: ORIGIN } })
       assert.equal(pre.status, 204)
@@ -148,6 +183,26 @@ async function main() {
       assert.match(((await second.json()) as { message: string }).message, /állítsd le/)
       await readEvents(((await first.json()) as { turnId: string }).turnId)
       llmDelayMs = 0
+    })
+
+    await check('#1025 kérdés-kártya: a stream parkolásnál zár, a nézet mutatja, a válasz folytatja, másodszor 409', async () => {
+      askNext = true
+      const turn = await api(`/conversations/${conversationId}/turns`, { method: 'POST', body: JSON.stringify({ content: 'Küldd Péternek' }) })
+      const { turnId } = (await turn.json()) as { turnId: string }
+      const events = await readEvents(turnId)
+      assert.equal(events.at(-1)?.type, 'question')
+      const view = (await (await api(`/conversations/${conversationId}`)).json()) as { activeTurn: { status: string; pendingInput: { question: string; options: unknown[] } | null } }
+      assert.equal(view.activeTurn.status, 'awaiting_input')
+      assert.equal(view.activeTurn.pendingInput?.question, 'Melyik Péter?')
+      assert.equal((await api(`/turns/${turnId}/answer`, { method: 'POST', body: JSON.stringify({ selected: ['Senki'] }) })).status, 400)
+      assert.equal((await api(`/turns/${turnId}/answer`, { method: 'POST', body: JSON.stringify({ selected: ['Nagy'] }), tok: token({ sub: ADMIN }) })).status, 404)
+      assert.equal((await api(`/turns/${turnId}/answer`, { method: 'POST', body: JSON.stringify({ selected: ['Nagy'] }) })).status, 200)
+      const rest = await readEvents(turnId, events.at(-1)!.id)
+      assert.equal(rest.at(-1)?.type, 'done')
+      assert.equal((await api(`/turns/${turnId}/answer`, { method: 'POST', body: JSON.stringify({ selected: ['Nagy'] }) })).status, 409)
+      const after = (await (await api(`/conversations/${conversationId}`)).json()) as { messages: Array<{ role: string; question?: { answer: { selected: string[] } } }> }
+      assert.deepEqual(after.messages.slice(-3).map((m) => m.role), ['assistant', 'user', 'assistant'])
+      assert.deepEqual(after.messages.at(-3)?.question?.answer.selected, ['Nagy'])
     })
 
     await check('más user beszélgetése 404', async () => {

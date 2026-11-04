@@ -1393,7 +1393,8 @@ async function main() {
       assert.ok((result.originalChars ?? 0) > 5_000)
       assert.ok((result.preview ?? '').length <= 5_000)
       assert.equal(result.body?.rows, undefined)
-      assert.match(result.hint ?? '', /ne hívd újra|Do not retry/)
+      // #1071: riport-végponton nem az „aggregált végpontot használj” zsákutca-tanács jön.
+      assert.match(result.hint ?? '', /már aggregált\/riport végpont/)
       assert.ok(JSON.stringify(result).length < payload.length)
     } finally {
       globalThis.fetch = originalFetch
