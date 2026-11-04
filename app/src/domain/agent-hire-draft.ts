@@ -15,6 +15,7 @@
  */
 import { modelRefKey, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
 import { buildEffectiveFallbackChain, classifyProviderError, isFallbackEligible } from '@/domain/model-gateway/fallback-chain'
+import { postChatCompletion } from '@/domain/model-gateway/provider-call'
 import type { ProviderRegistry } from '@/domain/model-gateway/proxy'
 import type { AuditSink } from '@/lib/audit/types'
 import type { HireDraft, HireLocale } from '@/lib/agent-hire'
@@ -148,23 +149,18 @@ async function callModel(
 ): Promise<ChatPayload> {
   const endpoint = await deps.providers(candidate.provider, tenantId)
   if (!endpoint) throw new Error(`${candidate.provider} provider is not configured`)
-  const res = await (deps.fetchImpl ?? fetch)(`${endpoint.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
-      ...endpoint.headers,
-    },
-    body: JSON.stringify({
+  const res = await postChatCompletion(
+    endpoint,
+    {
       model: candidate.model,
       messages,
       temperature: 0.2,
       max_tokens: 1200,
       response_format: { type: 'json_object' },
       stream: false,
-    }),
-    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
-  })
+    },
+    { signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS), fetchImpl: deps.fetchImpl },
+  )
   const text = await res.text()
   if (!res.ok) throw new Error(`${candidate.provider} provider failed: ${res.status} ${text.slice(0, 200)}`)
   let data: ChatPayload

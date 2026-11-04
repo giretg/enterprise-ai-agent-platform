@@ -3,7 +3,7 @@ import { repositories } from '@/repositories/postgres'
 import { services } from '@/domain/gateway-services'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import { canViewAgent } from '@/auth/mcp-server'
-import { loadOpenRouterTenantKey } from '@/lib/openrouter-tenant-key'
+import { hasPlatformChatModelKey } from '@/lib/platform-chat-model-key'
 import { chatTokenKeyFromEnv } from '@/domain/platform-chat/chat-token'
 import type { ChatSessionDeps, ContinuationDeps } from '@/domain/platform-chat/session'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
@@ -52,8 +52,7 @@ export function chatSessionDeps(): ChatSessionDeps {
       const tenant = await repositories.tenants.findById(tenantId)
       return tenant ? { slug: tenant.slug, settings: readPlatformChatSettings(tenant.settings) } : null
     },
-    // D2: a tenant SAJÁT kulcsa kell; a platform env-kulcsa nem számít (az nem a cég költsége).
-    modelKeyConfigured: async (tenantId) => Boolean((await loadOpenRouterTenantKey(tenantId))?.trim()),
+    modelKeyConfigured: hasPlatformChatModelKey,
     loadAccess: loadPlatformChatAccess,
     canUseAgent,
     audit: repositories.audit,

@@ -52,7 +52,7 @@ export type ModelProviderOption = {
   models?: ModelOption[]
   /**
    * Luna/Terra/Sol a provider reasoning/thinking paraméterére megy.
-   * A céges API-kulcsos úton (OpenRouter, Gemini) no-op — a UI elrejti a mezőt.
+   * A céges API-kulcsos úton (OpenRouter, Gemini, OpenAI) no-op — a UI elrejti a mezőt.
    */
   thinkingProfile?: boolean
 }
@@ -96,6 +96,30 @@ export const GEMINI_TEXT_MODELS: ModelOption[] = [
   },
 ]
 
+/** Közvetlenül az OpenAI API-n elérhető modellek (developers.openai.com/api/docs/models, 2026-11). */
+export const OPENAI_TEXT_MODELS: ModelOption[] = [
+  {
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    description: 'A legerősebb — a legnehezebb érvelési, kódolási és szakmai munkához, a legdrágább.',
+  },
+  {
+    id: 'gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    description: 'Kiegyensúlyozott — összetett munkára, az Astránál jóval olcsóbban.',
+  },
+  {
+    id: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
+    description: 'Gyors és hatékony — képelemzés, természetes szövegírás.',
+  },
+  {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    description: 'A leggyorsabb és legolcsóbb — célzott, nagy mennyiségű feladatokhoz.',
+  },
+]
+
 /** OpenRouteren keresztül felvehető modellek. Egyedi slug adminból adható hozzá. */
 export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
   {
@@ -120,7 +144,7 @@ export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
  * a tenant UI-n nem jelenik meg. A régi ChatGPT/Claude/Grok OAuth id-k szándékosan
  * nincsenek itt: a parse eldobja őket, a gateway soha nem hívta őket.
  */
-export const MODEL_PROVIDER_IDS = ['gemini', 'ollama', 'openrouter'] as const
+export const MODEL_PROVIDER_IDS = ['gemini', 'ollama', 'openai', 'openrouter'] as const
 
 export type ModelProviderId = (typeof MODEL_PROVIDER_IDS)[number]
 
@@ -131,6 +155,13 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     defaultModel: 'gemini-3.5-flash',
     hint: 'Céges Google AI Studio kulcs. A hívások a platformon mennek át — csak Hermes céges kontrollban.',
     models: GEMINI_TEXT_MODELS,
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI (ChatGPT-modellek)',
+    defaultModel: 'gpt-6.1-sol',
+    hint: 'Céges OpenAI API-kulcs, a ChatGPT-előfizetés ezt nem fedezi. A hívások a platformon mennek át — csak Hermes céges kontrollban.',
+    models: OPENAI_TEXT_MODELS,
   },
   {
     value: 'openrouter',

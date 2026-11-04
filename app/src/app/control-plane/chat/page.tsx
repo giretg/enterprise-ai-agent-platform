@@ -1,7 +1,7 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { parsePlatformChatAgentParam } from '@/lib/platform-chat-href'
-import { loadOpenRouterTenantKey } from '@/lib/openrouter-tenant-key'
+import { hasPlatformChatModelKey } from '@/lib/platform-chat-model-key'
 import { PlatformChat } from '@/components/platform-chat/platform-chat'
 
 /**
@@ -18,7 +18,7 @@ export default async function PlatformChatPage({
   const query = await searchParams
   const isAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin')
   // Üres állapot (§2): kulcs nélkül csak az admin kap „Kulcs beállítása” gombot.
-  const keyMissingForAdmin = isAdmin && !(await loadOpenRouterTenantKey(ctx.activeTenantId))?.trim()
+  const keyMissingForAdmin = isAdmin && !(await hasPlatformChatModelKey(ctx.activeTenantId))
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="sr-only">Beszélgetés a munkatársakkal</h1>
