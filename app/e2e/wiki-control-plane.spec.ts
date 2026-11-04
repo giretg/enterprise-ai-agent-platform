@@ -70,6 +70,14 @@ test.afterAll(async () => {
   await prisma.$disconnect()
 })
 
+test('a 10 MB-nál nagyobb fájl is felkerül a tálcára', async ({ page }) => {
+  await page.goto(`/control-plane/knowledge/${sharedKbId}?tab=inbox`)
+  await page.getByTestId('wiki-inbox-file-input').setInputFiles([
+    { name: 'nagy-anyag.txt', mimeType: 'text/plain', buffer: Buffer.alloc(11 * 1024 * 1024, `Nagy anyag ${suffix} `) },
+  ])
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('1 új fájl a tálcán', { timeout: 120_000 })
+})
+
 test('tömeges feltöltés: 30 fájl egy mozdulattal a privát tudásbázis tálcájára', async ({ page }) => {
   await page.goto('/control-plane/knowledge')
   await page.getByTestId('kb-create-open').click()
@@ -102,9 +110,23 @@ test('tömeges feltöltés: 30 fájl egy mozdulattal a privát tudásbázis tál
   await page.getByTestId('wiki-inbox-file-input').setInputFiles([
     { name: 'ures.txt', mimeType: 'text/plain', buffer: Buffer.alloc(0) },
   ])
-  await expect(page.getByTestId('wiki-upload-progress')).toContainText('ures.txt')
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('üres (0 bájt), ezért kimaradt: ures.txt')
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('Egyik fájl sem került a tálcára.')
   await expect(page.getByTestId('wiki-upload-progress')).not.toContainText('Feltöltés:')
   await expect(page.getByRole('button', { name: 'Fájlok kiválasztása', exact: true })).toBeEnabled()
+
+  // Felhős helyőrzőt utánoz: a böngésző nem tudja beolvasni a fájlt.
+  await page.evaluate(() => {
+    File.prototype.arrayBuffer = () => Promise.reject(new DOMException('nem olvasható', 'NotReadableError'))
+  })
+  await page.getByTestId('wiki-inbox-file-input').setInputFiles([
+    { name: 'felhos.xlsx', mimeType: 'application/octet-stream', buffer: Buffer.from('felho') },
+  ])
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('nem tudott beolvasni: felhos.xlsx')
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('felhőmappában')
+  await page.evaluate(() => {
+    delete (File.prototype as { arrayBuffer?: unknown }).arrayBuffer
+  })
 
   await page.route('**/control-plane/knowledge/**', async (route) => {
     if (route.request().method() === 'POST') await route.abort('failed')
@@ -113,7 +135,7 @@ test('tömeges feltöltés: 30 fájl egy mozdulattal a privát tudásbázis tál
   await page.getByTestId('wiki-inbox-file-input').setInputFiles([
     { name: 'kapcsolathiba.txt', mimeType: 'text/plain', buffer: Buffer.from('hiba') },
   ])
-  await expect(page.getByTestId('wiki-upload-progress')).toContainText('kapcsolathiba.txt')
+  await expect(page.getByTestId('wiki-upload-progress')).toContainText('megszakadt, ezért nem került a tálcára: kapcsolathiba.txt')
   await expect(page.getByTestId('wiki-upload-progress')).not.toContainText('Feltöltés:')
   await expect(page.getByRole('button', { name: 'Fájlok kiválasztása', exact: true })).toBeEnabled()
   await page.unroute('**/control-plane/knowledge/**')

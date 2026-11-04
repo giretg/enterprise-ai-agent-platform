@@ -16,6 +16,9 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['pdf-parse', '@napi-rs/canvas'],
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
   experimental: {
+    // A proxy is olvassa a kérés törzsét; alapból 10 MB után csonkolja, és a server
+    // action „Unexpected end of form” hibával elszáll. A serverActions-korláttal együtt mozog.
+    proxyClientMaxBodySize: '26mb',
     serverActions: {
       // 25 MB-os fájl (KB_MAX_FILE_BYTES) + a multipart-boríték (#946 tálca-feltöltés).
       bodySizeLimit: '26mb',
