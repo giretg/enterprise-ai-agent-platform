@@ -1920,7 +1920,10 @@ export class WikiService {
           next.docStatus = docStatus
         }
       }
-      if ('owner' in fm) {
+      if (typeof owner === 'string' && owner === stored?.owner) {
+        // A `kb_get_page`-ből visszaküldött régi szöveges gazda nem szándék, és nem hiba.
+        next.frontmatter = { ...frontmatter, owner }
+      } else if ('owner' in fm) {
         const parsed = readFrontmatterOwner(owner)
         if (parsed === undefined) {
           fail(page.path, 'invalid_field', 'frontmatter.owner must be {email, role} (or {userId, role}), or null to clear it.')
@@ -2889,11 +2892,14 @@ function readFrontmatterOwner(value: unknown): WikiPageInput['owner'] | undefine
   return parsed.success ? parsed.data : undefined
 }
 
-/** #1077: a régi, néma `docStatus` / `owner` kulcs a következő írásnál kikerül az oldal szövegéből. */
+/**
+ * #1077: a régi, néma `docStatus` és objektum-alakú `owner` a következő írásnál kikerül az oldal
+ * szövegéből. A szöveges `owner` marad: a metaadat-átállás ebből olvas (`legacyMetaFromFrontmatter`).
+ */
 function withoutStrayMeta(frontmatter: Record<string, unknown>): Record<string, unknown> {
-  const { docStatus: _stray, owner: _owner, ...rest } = frontmatter
+  const { docStatus: _stray, ...rest } = frontmatter
   void _stray
-  void _owner
+  if (rest.owner && typeof rest.owner === 'object') delete rest.owner
   return rest
 }
 
