@@ -29,6 +29,8 @@ import {
   GoogleDriveApiError,
 } from '../src/domain/connector-grant/google-drive-api-client'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
+import { KbFileRejectedError } from '../src/lib/kb-extraction'
+import { OfficeArchiveError } from '../src/lib/office-archive-guard'
 import { auditSafeDenialDetails } from '../src/domain/enterprise-tools/definition-pin'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 
@@ -1854,6 +1856,34 @@ async function main() {
     assert.equal(seen?.toolName, KB_INGEST_TOOL)
     assert.equal(seen?.filename, 'policy.md')
     assert.equal(parsePayload(result).searchable, true)
+  })
+
+  await check('kb_ingest: a nem beolvasható fájl okát az agent is megkapja, nem általános hibát', async () => {
+    for (const [error, code] of [
+      [new KbFileRejectedError('unsupported_file_type'), 'unsupported_file_type'],
+      [new KbFileRejectedError('no_extractable_text'), 'no_extractable_text'],
+      [new OfficeArchiveError(), 'damaged_file'],
+    ] as const) {
+      const result = await invokeEnterpriseTool(
+        invokeDeps({
+          definition: kbDefinition,
+          connector: kbConnector,
+          grant: null,
+          executeKbTool: async () => {
+            throw error
+          },
+        }),
+        {
+          principal: principal(),
+          toolName: KB_INGEST_TOOL,
+          args: { definitionId: DEFINITION_ID, filename: 'x.bin', processingMode: 'okf', content: 'x' },
+        },
+      )
+      assert.equal(result.isError, true)
+      const payload = parsePayload(result)
+      assert.equal(payload.code, code)
+      assert.match(String(payload.message), /nothing was stored/)
+    }
   })
 
   const SKILL_VERSION_ID = '99999999-9999-4999-8999-999999999999'

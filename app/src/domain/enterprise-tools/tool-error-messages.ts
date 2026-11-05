@@ -123,6 +123,12 @@ export const ENTERPRISE_TOOL_ERROR_MESSAGES: Record<string, string> = {
   invalid_order:
     'orderBy is "field" or "field desc"; with groupBy/aggregates, order only by a groupBy field or a requested aggregate, e.g. sum:netto desc (see detail)',
   nothing_selected: 'Nothing to select — pass fields or aggregates',
+  unsupported_file_type:
+    'This file type cannot be read — nothing was stored. Supported: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML and text files. Tell the user plainly and ask them to save it as PDF',
+  no_extractable_text:
+    'No readable text was found in this presentation (for example it only has images) — nothing was stored. Tell the user plainly and ask them to save it as PDF',
+  damaged_file:
+    'The file could not be unpacked: it is damaged, password-protected, or too large when unpacked — nothing was stored. Tell the user plainly and ask them to save it again without a password',
   unsafe_archive: 'The Excel file is damaged or its unpacked content is too large — nothing was stored',
   unsupported_format: 'Only .xlsx Excel files are supported for now',
   unreadable_file: 'The Excel file could not be read — save it again as .xlsx and retry',

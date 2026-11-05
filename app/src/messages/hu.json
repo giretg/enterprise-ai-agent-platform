@@ -818,6 +818,9 @@
         "forbidden": "Ehhez nincs jogosultságod. A közös tudásbázisokat a szervezet adminisztrátora kezeli.",
         "invalid_args": "Hiányzó vagy hibás adat. Ellenőrizd a mezőket, és próbáld újra.",
         "too_large": "A fájl nagyobb 25 MB-nál. Bontsd kisebb részekre, és úgy töltsd fel.",
+        "unsupported_file_type": "Ezt a fájltípust nem tudjuk beolvasni. Támogatott: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML és szövegfájlok. Mentsd el a fájlt PDF-ként, és úgy töltsd fel.",
+        "no_extractable_text": "Ebben a prezentációban nem találtunk kiolvasható szöveget, például mert csak képekből áll. Mentsd el PDF-ként, és úgy töltsd fel.",
+        "damaged_file": "A fájlt nem tudtuk kibontani: sérült, jelszóval védett, vagy kibontva túl nagy. Nyisd meg, mentsd el újra jelszó nélkül, és próbáld újra.",
         "already_in_inbox": "Ez a fájl már a tálcán van, nincs mit visszatenni. Frissítsd az oldalt.",
         "reprocess_pending_approval": "Ebből a fájlból még jóváhagyásra vár egy változás. Előbb dönts róla, mert egy későbbi jóváhagyás a régi tartalmat írná vissza.",
         "generic": "Valami nem sikerült. Próbáld újra egy kicsit később."
@@ -911,7 +914,7 @@
         "help": "Az ide feltöltött anyagot egy írási joggal rendelkező AI-munkatárs dolgozza fel, amikor megkéred rá (pl. »Dolgozd fel a tálcát«).",
         "intro": "Ide gyűjtheted az anyagokat, amelyeket a wikibe szeretnél feldolgoztatni. Egy feltöltés egy köteg; a lenti sáv mutatja, hol tart a feldolgozás.",
         "dropHere": "Húzd ide a fájlokat vagy egy egész mappát",
-        "limit": "Egyszerre sok fájl is mehet; fájlonként legfeljebb 25 MB. Ugyanazt a fájlt kétszer nem vesszük fel.",
+        "limit": "Egyszerre sok fájl is mehet; fájlonként legfeljebb 25 MB. Támogatott: PDF, Word, Excel, PowerPoint, HTML és szövegfájlok. A PowerPointból csak a szöveg és a jegyzetek kerülnek be; ha a képek is számítanak, PDF-ként töltsd fel. Ugyanazt a fájlt kétszer nem vesszük fel.",
         "pickFiles": "Fájlok kiválasztása",
         "pickFolder": "Mappa kiválasztása",
         "readOnly": "Ebbe a tálcába nem tölthetsz fel. Ehhez legalább operátori jog kell.",

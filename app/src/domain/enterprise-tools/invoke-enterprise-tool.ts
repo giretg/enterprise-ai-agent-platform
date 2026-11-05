@@ -2,6 +2,7 @@ import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/c
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
 import { isDispatchable } from '@/lib/agent-lifecycle'
+import { kbFileErrorCode } from '@/lib/kb-extraction'
 import { PdfPageImageError } from '@/lib/kb-pdf-images'
 import {
   GoogleDriveApiAuthError,
@@ -1841,17 +1842,20 @@ async function invokeKbTool(
   } catch (error) {
     const known = error instanceof KbToolError
     const pdf = error instanceof PdfPageImageError
+    const fileError = kbFileErrorCode(error)
     const code = known
       ? error.code
       : pdf
         ? error.code
-        : error instanceof Error && error.message === 'not_found'
-          ? 'not_found'
-          : error instanceof Error && error.message === 'invalid_args'
-            ? 'invalid_args'
-            : error instanceof Error && error.message === 'file_too_large'
-              ? 'file_too_large'
-              : 'tool_execution_failed'
+        : fileError
+          ? fileError
+          : error instanceof Error && error.message === 'not_found'
+            ? 'not_found'
+            : error instanceof Error && error.message === 'invalid_args'
+              ? 'invalid_args'
+              : error instanceof Error && error.message === 'file_too_large'
+                ? 'file_too_large'
+                : 'tool_execution_failed'
     const payload = {
       toolName,
       tenantId: principal.tenantId,

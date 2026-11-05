@@ -22,7 +22,14 @@ import {
   pdfTextQuality,
   pdfPageQuality,
   pdfQualityHint,
+  KbFileRejectedError,
+  kbFileErrorCode,
 } from '../src/lib/kb-extraction'
+import { OfficeArchiveError } from '../src/lib/office-archive-guard'
+import huMessages from '../src/messages/hu.json'
+import enMessages from '../src/messages/en.json'
+import JSZip from 'jszip'
+import PptxGenJS from 'pptxgenjs'
 import { buildOkfBundle, chunkOkfBundle, type OkfSourceRef } from '../src/lib/kb-v3'
 import ExcelJS from 'exceljs'
 import { kbPdfFixtures } from './fixtures/kb-pdf'
@@ -32,6 +39,46 @@ async function xlsxCreate(sheets: Array<{ name: string; rows: unknown[][] }>): P
   const workbook = new ExcelJS.Workbook()
   for (const sheet of sheets) workbook.addWorksheet(sheet.name).addRows(sheet.rows)
   return Buffer.from(await workbook.xlsx.writeBuffer())
+}
+
+const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+/** Kézi PPTX: a diasorrend és a jegyzet-kötés a fájlnevektől függetlenül ellenőrizhető. */
+async function handmadePptx(input: {
+  order: string[]
+  slides: Record<string, string>
+  notes?: Record<string, string>
+  absoluteTargets?: boolean
+}): Promise<Buffer> {
+  const zip = new JSZip()
+  const target = (name: string) => (input.absoluteTargets ? `/ppt/slides/${name}` : `slides/${name}`)
+  zip.file('ppt/presentation.xml', `<p:presentation><p:sldIdLst>${input.order
+    .map((name, index) => `<p:sldId id="${256 + index}" r:id="rId${index + 1}"/>`).join('')}</p:sldIdLst></p:presentation>`)
+  zip.file('ppt/_rels/presentation.xml.rels', `<Relationships>${input.order
+    .map((name, index) => `<Relationship Target="${target(name)}" Type="${REL}/slide" Id="rId${index + 1}"/>`).join('')}</Relationships>`)
+  for (const [name, xml] of Object.entries(input.slides)) zip.file(`ppt/slides/${name}`, xml)
+  for (const [name, xml] of Object.entries(input.notes ?? {})) {
+    zip.file(`ppt/notesSlides/notes-${name}`, xml)
+    zip.file(`ppt/slides/_rels/${name}.rels`, `<Relationships><Relationship Id="rId9" Type="${REL}/notesSlide" Target="../notesSlides/notes-${name}"/></Relationships>`)
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+}
+
+function textShape(text: string, placeholder?: string) {
+  const ph = placeholder ? `<p:nvSpPr><p:nvPr><p:ph type="${placeholder}"/></p:nvPr></p:nvSpPr>` : ''
+  return `<p:sp>${ph}<p:txBody><a:bodyPr/><a:p><a:pPr/><a:r><a:rPr lang="hu"/><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp>`
+}
+
+const slideXml = (body: string, attrs = '') => `<?xml version="1.0"?><p:sld ${attrs}><p:cSld><p:spTree>${body}</p:spTree></p:cSld></p:sld>`
+
+async function rejectionCode(run: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await run()
+    return null
+  } catch (error) {
+    return kbFileErrorCode(error)
+  }
 }
 
 let failures = 0
@@ -246,6 +293,148 @@ async function run() {
     assert.equal(readExtractionBlocks({}), null)
     assert.equal(readExtractionBlocks(null), null)
     assert.equal(readExtractionBlocks({ extraction: { blocks: 'nope' } }), null)
+  })
+
+  await check('PPTX: valódi PowerPoint-szerkezetből diánként olvasható szöveg, táblázattal és jegyzettel', async () => {
+    const deck = new PptxGenJS()
+    const first = deck.addSlide()
+    first.addText('Heti státusz', { x: 1, y: 1, w: 6, h: 1 })
+    first.addNotes('Ezt élőben mondom el')
+    const second = deck.addSlide()
+    second.addTable([[{ text: 'Projekt' }, { text: 'Állapot' }], [{ text: 'Alfa' }, { text: 'Kész' }]], { x: 1, y: 1, w: 6 })
+    const buffer = Buffer.from((await deck.write({ outputType: 'nodebuffer' })) as Buffer)
+
+    const ex = await extractStructured({ buffer, filename: 'Weekly_Status_02_11.pptx', mimeType: PPTX_MIME })
+    assert.equal(ex.format, 'pptx')
+    assert.equal(ex.blocks.length, 2)
+    assert.equal(ex.blocks[0].heading, '1. dia')
+    assert.equal(ex.blocks[0].sourceRef.section, '1. dia')
+    assert.match(ex.blocks[0].text, /Heti státusz/)
+    assert.match(ex.blocks[0].text, /Előadói jegyzet:\nEzt élőben mondom el/)
+    assert.match(ex.blocks[1].text, /Projekt \| Állapot\nAlfa \| Kész/)
+    assert.match(ex.markdown, /## 2\. dia\n\nProjekt \| Állapot/)
+    assert.ok(!ex.markdown.includes('\u0000'))
+    assert.ok(!ex.markdown.includes('PK'))
+  })
+
+  await check('PPTX: a sorrendet a prezentáció adja, nem a fájlnév; cím, rejtett dia, zaj és jegyzet', async () => {
+    const buffer = await handmadePptx({
+      order: ['slide2.xml', 'slide10.xml', 'slide1.xml'],
+      absoluteTargets: true,
+      slides: {
+        'slide1.xml': slideXml(textShape('Harmadik törzs')),
+        'slide2.xml': slideXml(
+          textShape('Bevezető &amp; cél', 'title') + textShape('El&#337;ször &lt;ez&gt;&#0;') + textShape('12', 'sldNum') + textShape('Lábléc', 'ftr'),
+        ),
+        'slide10.xml': slideXml(textShape('Tartalék anyag'), 'show="0"'),
+      },
+      notes: {
+        'slide2.xml': slideXml(textShape('Jegyzet a bevezetőhöz', 'body') + textShape('3', 'sldNum')),
+      },
+    })
+    const ex = await extractStructured({ buffer, filename: 'x.pptx' })
+    assert.deepEqual(ex.blocks.map((block) => block.heading), ['1. dia: Bevezető & cél', '2. dia (rejtett)', '3. dia'])
+    assert.equal(ex.blocks[0].text, 'Először <ez>\n\nElőadói jegyzet:\nJegyzet a bevezetőhöz')
+    assert.equal(ex.blocks[1].text, 'Tartalék anyag')
+    assert.equal(ex.blocks[2].text, 'Harmadik törzs')
+  })
+
+  await check('PPTX: az ismételt diahivatkozás nem sokszorozhatja meg a kibontott tartalmat', async () => {
+    const buffer = await handmadePptx({
+      order: Array(1000).fill('slide1.xml'),
+      slides: { 'slide1.xml': slideXml(textShape('A'.repeat(10_000))) },
+    })
+    assert.equal(await rejectionCode(() => extractStructured({ buffer, filename: 'ismetelt.pptx' })), 'damaged_file')
+  })
+
+  await check('PPTX: több dia sem sokszorozhatja meg ugyanazt a jegyzetfájlt', async () => {
+    const buffer = await handmadePptx({
+      order: ['slide1.xml', 'slide2.xml'],
+      slides: { 'slide1.xml': slideXml(textShape('Első')), 'slide2.xml': slideXml(textShape('Második')) },
+      notes: { 'slide1.xml': slideXml(textShape('Jegyzet', 'body')) },
+    })
+    const zip = await JSZip.loadAsync(buffer)
+    zip.file('ppt/slides/_rels/slide2.xml.rels', await zip.file('ppt/slides/_rels/slide1.xml.rels')!.async('string'))
+    const repeatedNotes = await zip.generateAsync({ type: 'nodebuffer' })
+    assert.equal(await rejectionCode(() => extractStructured({ buffer: repeatedNotes, filename: 'jegyzet.pptx' })), 'damaged_file')
+  })
+
+  await check('PPTX: az XML-prefix nem változtatja meg a szöveget, a sorrendet vagy a jegyzeteket', async () => {
+    const buffer = await handmadePptx({
+      order: ['slide2.xml', 'slide1.xml'],
+      slides: {
+        'slide1.xml': slideXml(textShape('Második')),
+        'slide2.xml': slideXml(textShape('Első', 'title') + textShape('Törzs')),
+      },
+      notes: { 'slide2.xml': slideXml(textShape('Jegyzet', 'body')) },
+    })
+    const zip = await JSZip.loadAsync(buffer)
+    for (const [path, entry] of Object.entries(zip.files)) {
+      if (entry.dir) continue
+      const xml = (await entry.async('string'))
+        .replace(/(<\/?)(p|a):/g, (_, start, prefix) => `${start}${prefix === 'p' ? 'x' : 'd'}:`)
+        .replace(/r:id=/g, 'link:id=')
+        .replace(/<(x:sld|x:presentation)(?=[\s>])/, `<$1 xmlns:x="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:link="${REL}"`)
+        .replace(/(<\/?)(Relationships?)(?=[\s>])/g, '$1rel:$2')
+        .replace('<rel:Relationships', '<rel:Relationships xmlns:rel="http://schemas.openxmlformats.org/package/2006/relationships"')
+      zip.file(path, xml)
+    }
+    const alternative = await zip.generateAsync({ type: 'nodebuffer' })
+    assert.deepEqual(
+      await extractStructured({ buffer: alternative, filename: 'prefix.pptx' }),
+      await extractStructured({ buffer, filename: 'eredeti.pptx' }),
+    )
+  })
+
+  await check('PPTX: kiterjesztés nélkül a MIME-típus is elég; szöveg nélküli dia jelölve', async () => {
+    const buffer = await handmadePptx({
+      order: ['slide1.xml', 'slide2.xml'],
+      slides: { 'slide1.xml': slideXml(textShape('Van szöveg')), 'slide2.xml': slideXml('<p:pic/>') },
+    })
+    const ex = await extractStructured({ buffer, filename: 'feltoltes', mimeType: PPTX_MIME })
+    assert.equal(ex.format, 'pptx')
+    assert.match(ex.blocks[1].text, /nincs kiolvasható szöveg/)
+  })
+
+  await check('PPTX: csak képekből álló prezentáció érthető hibát ad', async () => {
+    const buffer = await handmadePptx({ order: ['slide1.xml'], slides: { 'slide1.xml': slideXml('<p:pic/>') } })
+    assert.equal(await rejectionCode(() => extractStructured({ buffer, filename: 'kepek.pptx' })), 'no_extractable_text')
+    const noSlides = await handmadePptx({ order: [], slides: {} })
+    assert.equal(await rejectionCode(() => extractStructured({ buffer: noSlides, filename: 'ures.pptx' })), 'no_extractable_text')
+  })
+
+  await check('sérült vagy jelszóval védett PPTX érthető hibát ad', async () => {
+    assert.equal(await rejectionCode(() => extractStructured({ buffer: Buffer.from('not a zip'), filename: 'rossz.pptx' })), 'damaged_file')
+  })
+
+  await check('nem támogatott bináris fájl azonnali hibát ad, méretétől függetlenül', async () => {
+    const binary = Buffer.concat([Buffer.from('\x89PNG'), Buffer.alloc(16), Buffer.from('adat')])
+    for (const filename of ['kep.png', 'regi.ppt', 'regi.doc', 'csomag.zip', 'nev-nelkul']) {
+      assert.equal(await rejectionCode(() => extractStructured({ buffer: binary, filename })), 'unsupported_file_type', filename)
+    }
+    assert.equal(await rejectionCode(() => extractStructured({ buffer: binary, filename: 'oldal.html' })), 'unsupported_file_type')
+    await assert.rejects(() => extractStructured({ buffer: binary, filename: 'kep.png' }), KbFileRejectedError)
+  })
+
+  await check('a szövegfájlok továbbra is átmennek, a régi kódolású ékezetes CSV is', async () => {
+    const legacy = Buffer.from([0x4e, 0xe9, 0x76, 0x3b, 0xf5, 0x0a, 0x41, 0x3b, 0x31]) // Név;ő (Windows-1250)
+    const csv = await extractStructured({ buffer: legacy, filename: 'lista.csv' })
+    assert.equal(csv.format, 'text')
+    assert.match(csv.markdown, /A;1/)
+    const md = await extractStructured({ buffer: Buffer.from('# Cím\nszöveg'), filename: 'x.md' })
+    assert.equal(md.blocks[0].heading, 'Cím')
+  })
+
+  await check('kbFileErrorCode: csak a fájl hibáját nevezi meg, az egyéb hibát nem', () => {
+    assert.equal(kbFileErrorCode(new OfficeArchiveError()), 'damaged_file')
+    assert.equal(kbFileErrorCode(new Error('adatbázis hiba')), null)
+  })
+
+  await check('minden új hibakódnak van magyar és angol szövege', () => {
+    for (const code of ['unsupported_file_type', 'no_extractable_text', 'damaged_file'] as const) {
+      assert.ok(huMessages.ControlPlane.wiki.errors[code], `hu: ${code}`)
+      assert.ok(enMessages.ControlPlane.wiki.errors[code], `en: ${code}`)
+    }
   })
 
   console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)

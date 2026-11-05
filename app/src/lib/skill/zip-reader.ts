@@ -121,7 +121,19 @@ export function readZipEntries(
   archive: Uint8Array,
   limits: ZipReadLimits = DEFAULT_ZIP_LIMITS,
 ): ZipEntry[] {
-  return readZipEntriesInternal(archive, limits, true, false)
+  return readZipEntriesInternal(archive, limits, () => true, false)
+}
+
+/**
+ * Teljes ellenőrzés mint az `assertZipEntriesWithinLimits`-nél, de a megadott
+ * bejegyzéseket vissza is adja; a többi (pl. média) nem marad a memóriában.
+ */
+export function readZipEntriesMatching(
+  archive: Uint8Array,
+  limits: ZipReadLimits,
+  keep: (path: string) => boolean,
+): ZipEntry[] {
+  return readZipEntriesInternal(archive, limits, keep, true)
 }
 
 /**
@@ -135,13 +147,13 @@ export function assertZipEntriesWithinLimits(
   archive: Uint8Array,
   limits: ZipReadLimits,
 ): void {
-  readZipEntriesInternal(archive, limits, false, true)
+  readZipEntriesInternal(archive, limits, () => false, true)
 }
 
 function readZipEntriesInternal(
   archive: Uint8Array,
   limits: ZipReadLimits,
-  collectEntries: boolean,
+  keep: (path: string) => boolean,
   rejectInvalidPaths: boolean,
 ): ZipEntry[] {
   const buf = Buffer.from(archive.buffer, archive.byteOffset, archive.byteLength)
@@ -299,7 +311,7 @@ function readZipEntriesInternal(
       )
     }
 
-    if (collectEntries) entries.push({ path, bytes: new Uint8Array(bytes) })
+    if (keep(path)) entries.push({ path, bytes: new Uint8Array(bytes) })
   }
 
   if (cursor !== centralEnd) {

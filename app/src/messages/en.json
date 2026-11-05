@@ -818,6 +818,9 @@
         "forbidden": "You don't have permission for this. Shared knowledge bases are managed by your organization's admin.",
         "invalid_args": "Missing or invalid data. Check the fields and try again.",
         "too_large": "The file is larger than 25 MB. Split it into smaller parts and upload those.",
+        "unsupported_file_type": "We can’t read this file type. Supported: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML and text files. Save the file as a PDF and upload that.",
+        "no_extractable_text": "We found no readable text in this presentation, for example because it only has images. Save it as a PDF and upload that.",
+        "damaged_file": "We couldn’t unpack the file: it is damaged, password-protected, or too large when unpacked. Open it, save it again without a password, and retry.",
         "already_in_inbox": "This file is already in the inbox, so there is nothing to send back. Refresh the page.",
         "reprocess_pending_approval": "A change from this file is still waiting for approval. Decide on it first, because approving it later would write the old content back.",
         "generic": "Something went wrong. Please try again a little later."
@@ -911,7 +914,7 @@
         "help": "Material uploaded here is processed by an AI teammate with write access when you ask it to (e.g. \"Process the inbox\").",
         "intro": "Collect the material you want turned into wiki pages here. One upload is one batch; the bar below shows how far processing has got.",
         "dropHere": "Drop files or a whole folder here",
-        "limit": "Many files at once are fine; at most 25 MB per file. The same file is never added twice.",
+        "limit": "Many files at once are fine; at most 25 MB per file. Supported: PDF, Word, Excel, PowerPoint, HTML and text files. From PowerPoint, only the text and notes are added; if the images matter, upload it as a PDF. The same file is never added twice.",
         "pickFiles": "Choose files",
         "pickFolder": "Choose folder",
         "readOnly": "You can't upload to this inbox. This needs at least operator access.",

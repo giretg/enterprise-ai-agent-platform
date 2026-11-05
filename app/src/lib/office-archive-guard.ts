@@ -1,4 +1,4 @@
-import { assertZipEntriesWithinLimits } from './skill/zip-reader'
+import { assertZipEntriesWithinLimits, readZipEntriesMatching, type ZipEntry } from './skill/zip-reader'
 
 // A 25/50 MB-os feltöltési plafon mellett ez még életszerű Office-dokumentumokat
 // enged, de a tömörítetlen XML-/média-adat nem nőhet korlátlanra a közös processzben.
@@ -10,7 +10,7 @@ export const OFFICE_ARCHIVE_ZIP_LIMITS = {
 
 export class OfficeArchiveError extends Error {
   constructor() {
-    super('A DOCX/XLSX fájl tömörítetlen tartalma túl nagy vagy sérült')
+    super('A DOCX/XLSX/PPTX fájl jelszóval védett, vagy a tömörítetlen tartalma túl nagy vagy sérült')
     this.name = 'OfficeArchiveError'
   }
 }
@@ -19,6 +19,15 @@ export class OfficeArchiveError extends Error {
 export function assertSafeOfficeArchive(buffer: Buffer): void {
   try {
     assertZipEntriesWithinLimits(buffer, OFFICE_ARCHIVE_ZIP_LIMITS)
+  } catch {
+    throw new OfficeArchiveError()
+  }
+}
+
+/** Ugyanaz az ellenőrzés, és közben visszaadja a kért bejegyzéseket. */
+export function readOfficeArchiveEntries(buffer: Buffer, keep: (path: string) => boolean): ZipEntry[] {
+  try {
+    return readZipEntriesMatching(buffer, OFFICE_ARCHIVE_ZIP_LIMITS, keep)
   } catch {
     throw new OfficeArchiveError()
   }
