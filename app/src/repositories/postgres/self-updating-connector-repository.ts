@@ -251,7 +251,11 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     fetchedAt: Date
     actorId: string | null
   }): Promise<SelfUpdatingSpecVersion> {
+    // Nem Serializable: az ottani pillanatkép az audit-lánc zárolása előtt készül, ezért elavult
+    // előző hash-re épülve megszakítaná a láncot. A kapcsolat sor-zárja a párhuzamos javaslatokat
+    // ugyanúgy sorba állítja, és minden utasítás friss adatot lát.
     const row = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${input.connectorId}::uuid FOR UPDATE`
       const connector = await tx.connector.findFirst({
         where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' },
         select: { activeSpecVersionId: true },
@@ -282,7 +286,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
         metadata: { version_id: proposal.id, version_no: proposal.versionNo, diff: input.diffSummary },
       }))
       return proposal
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 60_000 })
+    }, { timeout: 60_000 })
     return versionOf(row)
   }
 

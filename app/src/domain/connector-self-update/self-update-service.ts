@@ -171,6 +171,16 @@ export class SelfUpdateError extends Error {
 
 type SyncEngine = { sync(specUrl: string, providerHint?: string): Promise<SpecSyncResult> }
 
+/** Rövid, biztonságos hibakód az audithoz: a hibaüzenet nyers tartalmat is hordozhat, ezért az oda nem kerül. */
+function exceptionCode(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const { code, name } = error as { code?: unknown; name?: unknown }
+    if (typeof code === 'string') return code
+    if (typeof name === 'string') return name
+  }
+  return 'unknown'
+}
+
 /**
  * Az önfrissítő connector publikus domain-seamje. A repository felel az atomi DB-
  * állapotváltásokért; a service a tenant-, SoD-, trust-, diff- és auto-approve kapukat
@@ -266,8 +276,9 @@ export class SelfUpdatingConnectorService {
           else if (result.kind === 'unchanged') outcomes.unchanged++
           else if (result.autoApproved) outcomes.auto_approved++
           else outcomes.awaiting_approval++
-        } catch {
+        } catch (error) {
           outcomes.failed++
+          await this.recordDueSyncException(item, error)
         }
       }
     }
@@ -286,8 +297,9 @@ export class SelfUpdatingConnectorService {
 
     const result = await this.syncEngine.sync(ctx.source.specUrl, ctx.connector.name)
     if (!result.ok) {
+      // A `reason` kulcsot az audit-őr tiltja (nyers tartalomnak veszi), ezért itt `failure_code`.
       await this.record('connector.self_update.sync.failed', actor, connectorId, result.reason, {
-        reason: result.reason,
+        failure_code: result.reason,
         detail: result.detail ?? null,
         active_version_id: ctx.connector.activeSpecVersionId,
       })
@@ -445,6 +457,29 @@ export class SelfUpdatingConnectorService {
     const context = await this.context(connectorId, actor)
     const versions = await this.repo.listVersions(connectorId, actor.tenantId)
     return { context, versions }
+  }
+
+  /** Váratlan kivétel a háttér-ellenőrzésben: az ok ne vesszen el, a rögzítése pedig ne állítsa meg a többi kapcsolatot. */
+  private async recordDueSyncException(item: DueSpecSync, error: unknown) {
+    const failureCode = exceptionCode(error)
+    console.error('[connector.self_update] scheduled sync failed', {
+      connectorId: item.connectorId,
+      tenantId: item.tenantId,
+      failureCode,
+      error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+    })
+    await this.record(
+      'connector.self_update.sync.failed',
+      { id: null, tenantId: item.tenantId },
+      item.connectorId,
+      'internal_error',
+      { failure_code: failureCode },
+    ).catch((auditError) => {
+      console.error('[connector.self_update] scheduled sync failure audit failed', {
+        connectorId: item.connectorId,
+        error: auditError instanceof Error ? auditError.message.slice(0, 500) : String(auditError).slice(0, 500),
+      })
+    })
   }
 
   private async context(connectorId: string, actor: SelfUpdateActor | SelfUpdateSystemActor): Promise<SelfUpdatingContext> {
