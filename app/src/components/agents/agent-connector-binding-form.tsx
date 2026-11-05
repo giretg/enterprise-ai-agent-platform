@@ -16,6 +16,15 @@ import {
   matchAssignableConnectorsByName,
 } from '@/lib/create-agent-wizard'
 import { connectorDisplayLabel } from '@/lib/connector-display-label'
+import {
+  KbBindingGroupHeader,
+  KbBindingIcon,
+  KbBindingOpenLink,
+  KbBindingStatusLine,
+  useAgentKbCopy,
+  type AgentKbBindingInfo,
+} from '@/components/agents/agent-kb-binding-summary'
+import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { UpdateApproverForm } from '@/components/agents/update-approver-form'
 import { ConnectorTemplateIcon } from '@/components/account/provider-icon'
 
@@ -94,11 +103,28 @@ function ConnectorCatalogDetail({
 }
 
 type Binding = {
-  connector: { id: string; name: string; type: string; approverUserId?: string | null }
+  connector: { id: string; name: string; type: string; config?: unknown; approverUserId?: string | null }
   accessMode: 'read' | 'write'
 }
 
 type ConnectorPick = { accessMode: 'read' | 'write' }
+
+const CONNECTOR_TYPE_LABEL: Record<string, string> = {
+  http_api: 'API',
+  gmail: 'Gmail',
+  google_drive: 'Google Drive',
+  mcp: 'MCP',
+  code_sandbox: 'Kódfuttatás',
+  web_search: 'Webes keresés',
+  knowledge_base: 'Tudásbázis',
+}
+
+/** Típus és mód; a típust elhagyja, ha a kapcsolat neve már ugyanaz (pl. Gmail). */
+function connectorSubtitle(type: string, displayName: string, accessMode: 'read' | 'write'): string {
+  const mode = accessMode === 'write' ? 'Írás' : 'Olvasás'
+  const label = CONNECTOR_TYPE_LABEL[type] ?? type
+  return label === displayName ? mode : `${label} · ${mode}`
+}
 
 function AddConnectorBindingsDialog({
   agentId,
@@ -324,6 +350,7 @@ export function AgentConnectorBindingForm({
   bindings,
   catalog = [],
   catalogDetails,
+  knowledgeBases,
   suggestedConnectorNames,
   bare = false,
   canManageApprovers = false,
@@ -334,6 +361,8 @@ export function AgentConnectorBindingForm({
   catalog?: ConnectorCatalogOption[]
   /** Teljes katalógus — a már kötött kapcsolatok leírásához (a `catalog` csak a még szabad elemeket tartalmazza). */
   catalogDetails?: ConnectorCatalogOption[]
+  /** A kötött tudásbázisok adatai. Ha hiányzik, a tudásbázis-sor csak az általános címkét mutatja. */
+  knowledgeBases?: AgentKbBindingInfo[]
   suggestedConnectorNames?: string[]
   bare?: boolean
   /** Tenant admin: konnektoronkénti megnevezett jóváhagyó (kimenő eszközhívások). */
@@ -352,6 +381,11 @@ export function AgentConnectorBindingForm({
     for (const item of catalog) map.set(item.id, item)
     return map
   }, [catalog, catalogDetails])
+  const kbCopy = useAgentKbCopy()
+  const kbInfoById = useMemo(
+    () => new Map((knowledgeBases ?? []).map((item) => [item.connectorId, item])),
+    [knowledgeBases],
+  )
   const suggested = useMemo(
     () => matchAssignableConnectorsByName(catalog, suggestedConnectorNames ?? []),
     [catalog, suggestedConnectorNames],
@@ -367,105 +401,124 @@ export function AgentConnectorBindingForm({
     router.refresh()
   }
 
+  const renderRow = (row: Binding) => {
+    const expanded = expandedBindingId === row.connector.id
+    const isKb = row.connector.type === 'knowledge_base'
+    const kbInfo = isKb ? kbInfoById.get(row.connector.id) : undefined
+    const kb = kbInfo ? kbCopy(kbInfo, row.accessMode) : null
+    const displayName =
+      kb?.title ?? connectorDisplayLabel(row.connector.type, row.connector.name, row.connector.config)
+    const detailBase =
+      catalogById.get(row.connector.id) ?? {
+        id: row.connector.id,
+        type: row.connector.type,
+        name: row.connector.name,
+        description: null,
+      }
+    const detail = { ...detailBase, name: displayName }
+    const iconProvider = detail.templateKey ?? row.connector.type
+    return (
+      <li key={row.connector.id} className="rounded-lg border border-line/70 px-3 py-2.5 text-sm">
+        <div className="flex items-start gap-3">
+          {isKb ? (
+            <KbBindingIcon />
+          ) : (
+            <ConnectorListIcon iconDataUrl={detail.iconDataUrl} provider={iconProvider} />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-start">
+              <button
+                type="button"
+                className="min-w-0 rounded-md text-left"
+                aria-expanded={expanded}
+                onClick={() => setExpandedBindingId((prev) => (prev === row.connector.id ? null : row.connector.id))}
+              >
+                <span className="font-medium text-ink">{displayName}</span>
+                {kb?.kindLabel ? <span className="ml-1.5 text-xs text-ink-faint">{kb.kindLabel}</span> : null}
+                <span aria-hidden className={`ml-1.5 inline-block text-ink-faint transition-transform ${expanded ? 'rotate-90' : ''}`}>
+                  ›
+                </span>
+              </button>
+              {kb ? <HelpHint>{kb.help}</HelpHint> : null}
+            </div>
+            {kb ? (
+              <KbBindingStatusLine agentId={agentId} copy={kb} />
+            ) : (
+              <p className="mt-0.5 text-xs text-ink-faint">
+                {connectorSubtitle(row.connector.type, displayName, row.accessMode)}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              start(async () => {
+                setError(null)
+                setDone(null)
+                const result = await unassignConnectorFromAgent({
+                  agentId,
+                  connectorId: row.connector.id,
+                })
+                if (!result.success) {
+                  setError(result.error)
+                  return
+                }
+                if (expandedBindingId === row.connector.id) setExpandedBindingId(null)
+                setDone(`„${displayName}” leválasztva.`)
+                refresh()
+              })
+            }}
+            className="shrink-0 text-xs font-medium text-ink-faint hover:text-coral disabled:opacity-50"
+          >
+            Leválasztás
+          </button>
+        </div>
+        {expanded ? (
+          <div className="mt-2 space-y-3 border-t border-line/50 pt-2">
+            {kb ? (
+              <KbBindingOpenLink connectorId={row.connector.id} />
+            ) : (
+              <ConnectorCatalogDetail connector={detail} accessMode={row.accessMode} />
+            )}
+            {canManageApprovers || row.connector.approverUserId ? (
+              <div className="rounded-lg border border-line/60 bg-panel/80 px-3 py-2">
+                <p className="mb-2 text-xs font-semibold text-ink">Kimenő műveletek jóváhagyója</p>
+                <p className="mb-2 text-xs text-ink-soft">
+                  Ha be van állítva, az ezen a kapcsolaton (pl. blog API, Drive írás) keresztül induló
+                  jóváhagyások ehhez a személyhez kerülnek — felülírja az agent memóriaírás-jóváhagyóját.
+                </p>
+                <UpdateApproverForm
+                  entity={{ kind: 'connector', connectorId: row.connector.id }}
+                  currentApproverUserId={row.connector.approverUserId ?? null}
+                  canEdit={canManageApprovers}
+                />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </li>
+    )
+  }
+
+  const kbBindings = bindings.filter((row) => row.connector.type === 'knowledge_base')
+  const otherBindings = bindings.filter((row) => row.connector.type !== 'knowledge_base')
+
   const body = (
     <>
-      {bindings.length === 0 ? (
-        <p className="text-sm text-ink-soft">Nincs kötött konnektor.</p>
-      ) : (
-        <ul className="space-y-2">
-          {bindings.map((row) => {
-            const expanded = expandedBindingId === row.connector.id
-            const displayName = connectorDisplayLabel(row.connector.type, row.connector.name)
-            const detailBase =
-              catalogById.get(row.connector.id) ?? {
-                id: row.connector.id,
-                type: row.connector.type,
-                name: row.connector.name,
-                description: null,
-              }
-            const detail = { ...detailBase, name: displayName }
-            const iconProvider = detail.templateKey ?? row.connector.type
-            return (
-              <li
-                key={row.connector.id}
-                className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
-                  expanded ? 'border-coral/40 bg-coral/5' : 'border-line/70'
-                }`}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex min-w-0 flex-1 items-start gap-3">
-                    <ConnectorListIcon
-                      iconDataUrl={detail.iconDataUrl}
-                      provider={iconProvider}
-                    />
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      aria-expanded={expanded}
-                      onClick={() =>
-                        setExpandedBindingId((prev) =>
-                          prev === row.connector.id ? null : row.connector.id,
-                        )
-                      }
-                    >
-                    <span className="font-medium text-ink">{displayName}</span>
-                    <span className="ml-1 text-xs text-ink-faint">
-                      ({row.connector.type} · {row.accessMode === 'write' ? 'írás' : 'olvasás'})
-                    </span>
-                    <span className="mt-0.5 block text-xs text-ink-faint">
-                      {expanded ? 'Leírás elrejtése' : 'Koppints a szerep és leírás megtekintéséhez'}
-                    </span>
-                  </button>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() => {
-                      start(async () => {
-                        setError(null)
-                        setDone(null)
-                        const result = await unassignConnectorFromAgent({
-                          agentId,
-                          connectorId: row.connector.id,
-                        })
-                        if (!result.success) {
-                          setError(result.error)
-                          return
-                        }
-                        if (expandedBindingId === row.connector.id) setExpandedBindingId(null)
-                        setDone(`„${displayName}” leválasztva.`)
-                        refresh()
-                      })
-                    }}
-                    className="text-xs font-medium text-coral disabled:opacity-50"
-                  >
-                    Leválasztás
-                  </button>
-                </div>
-                {expanded ? (
-                  <div className="mt-2 space-y-3 border-t border-line/50 pt-2">
-                    <ConnectorCatalogDetail connector={detail} accessMode={row.accessMode} />
-                    {canManageApprovers || row.connector.approverUserId ? (
-                      <div className="rounded-lg border border-line/60 bg-panel/80 px-3 py-2">
-                        <p className="mb-2 text-xs font-semibold text-ink">Kimenő műveletek jóváhagyója</p>
-                        <p className="mb-2 text-xs text-ink-soft">
-                          Ha be van állítva, az ezen a kapcsolaton (pl. blog API, Drive írás) keresztül induló
-                          jóváhagyások ehhez a személyhez kerülnek — felülírja az agent memóriaírás-jóváhagyóját.
-                        </p>
-                        <UpdateApproverForm
-                          entity={{ kind: 'connector', connectorId: row.connector.id }}
-                          currentApproverUserId={row.connector.approverUserId ?? null}
-                          canEdit={canManageApprovers}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </li>
-            )
-          })}
-        </ul>
-      )}
+      {bindings.length === 0 ? <p className="text-sm text-ink-soft">Nincs kötött konnektor.</p> : null}
+      {kbBindings.length > 0 ? (
+        <section className="mb-4">
+          <KbBindingGroupHeader agentId={agentId} />
+          <ul className="space-y-2">{kbBindings.map(renderRow)}</ul>
+        </section>
+      ) : null}
+      {otherBindings.length > 0 ? (
+        <section>
+          {kbBindings.length > 0 ? <h3 className="mb-2 text-sm font-semibold text-ink">Külső rendszerek</h3> : null}
+          <ul className="space-y-2">{otherBindings.map(renderRow)}</ul>
+        </section>
+      ) : null}
 
       {ordered.length === 0 ? (
         <p className="mt-4 text-sm text-ink-soft">

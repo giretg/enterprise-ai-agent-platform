@@ -1,13 +1,17 @@
-/** Agent-saját KB tár belső neve: `kb:{agentUuid}` — UI-ban ne ez jelenjen meg. */
+/**
+ * Agent-saját KB tár belső neve: `kb:{agentUuid}` — UI-ban ne ez jelenjen meg. A név önmagában
+ * nem mondja meg, kinek a nézetéből látjuk: másik agent tudásbázisa is lehet, ezért nem „saját”.
+ */
 const AGENT_OWNED_KB_CONNECTOR_NAME =
   /^kb:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-export const AGENT_OWNED_KB_CONNECTOR_DISPLAY_LABEL = 'Saját tudásbázis kapcsolat'
+export const AGENT_OWNED_KB_CONNECTOR_DISPLAY_LABEL = 'Munkatárs tudásbázisa'
 
 export function connectorDisplayLabel(type: string, name: string, config?: unknown): string {
   if (type === 'knowledge_base' && AGENT_OWNED_KB_CONNECTOR_NAME.test(name)) {
     return AGENT_OWNED_KB_CONNECTOR_DISPLAY_LABEL
   }
+  if (type === 'knowledge_base' && name === 'kb:catalog') return 'Közös katalógus'
   // #946: a Control Plane-en létrehozott (közös / privát / névsoros) tudásbázis neve a configban él.
   if (type === 'knowledge_base' && /^kb:(shared|private|members):/.test(name)) {
     const displayName =

@@ -1191,6 +1191,7 @@ export class WikiConsoleService {
           collectFocus: binding?.wikiCollectFocus ?? null,
           linked: !!binding,
           canEdit: canManageKnowledgeBaseLink(row, { userId: actor.userId, role: String(actor.role) }),
+          sourceCount: row.sourceCount,
           pageCount: row.pageCount,
         }
       })

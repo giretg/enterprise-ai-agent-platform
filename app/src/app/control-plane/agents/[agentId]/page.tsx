@@ -282,6 +282,7 @@ export default async function AgentDetailPage({
           bindings={connectors}
           catalog={catalog}
           catalogDetails={connectorCatalog}
+          knowledgeBases={wikiLinksRes.success ? wikiLinksRes.data : undefined}
           canManageApprovers={canManage}
         />
       ),

@@ -8,6 +8,7 @@ import {
   deleteKbDocument,
   ingestKbDocument,
 } from '@/app/actions/platform'
+import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { confirmDialog } from '@/components/ui/confirm-dialog'
 import { Card } from '@/components/ui/shell'
 import {
@@ -30,8 +31,11 @@ export function AgentKnowledgeBasePanel({
   documents,
   catalog = [],
   canManage,
+  emptyHint = 'Még nincs dokumentum.',
 }: {
   agentId: string
+  /** Az üres állapot szövege; a varázsló itt mondja el, mire jók a dokumentumok. */
+  emptyHint?: string
   documents: KbDocumentRow[]
   /** Közös katalógus-elemek — innen másolható az agenthez, mint a konnektorok. */
   catalog?: KbDocumentRow[]
@@ -55,11 +59,14 @@ export function AgentKnowledgeBasePanel({
   }
 
   return (
-    <Card title="Tudásbázis">
-      <p className="mb-4 text-xs text-ink-faint">
-        Az agent először a katalógust látja (fájlnév, mire való, méret), és csak egy oldalt
-        vagy egy fájlt nyit meg. A „mire való” sor segít választani anélkül, hogy belenézne.
-      </p>
+    <Card>
+      <div className="mb-3 flex items-center">
+        <h2 className="font-display text-lg font-semibold tracking-tight">Saját dokumentumok</h2>
+        <HelpHint>
+          Ezek a munkatárs saját tudásbázisába kerülnek. A munkatárs először a listát látja (fájlnév, mire való,
+          méret), és csak azt nyitja meg, amire szüksége van.
+        </HelpHint>
+      </div>
       {canManage ? (
         <form
           className="mb-4 space-y-3"
@@ -96,6 +103,8 @@ export function AgentKnowledgeBasePanel({
             </label>
             <span className="text-sm text-ink-soft">{fileName ?? 'Nincs fájl kiválasztva'}</span>
           </div>
+          {fileName ? (
+            <div className="space-y-3">
           <fieldset className="space-y-2">
             {KB_PROCESSING_MODE_OPTIONS.map((option) => (
               <label key={option.value} className="flex gap-2 text-sm">
@@ -128,6 +137,8 @@ export function AgentKnowledgeBasePanel({
           >
             Feltöltés
           </button>
+            </div>
+          ) : null}
         </form>
       ) : null}
       {error ? <p className="mb-3 text-sm text-coral-deep">{error}</p> : null}
@@ -137,7 +148,7 @@ export function AgentKnowledgeBasePanel({
         </p>
       ) : null}
       {documents.length === 0 ? (
-        <p className="text-sm text-ink-soft">Még nincs dokumentum.</p>
+        <p className="text-sm text-ink-soft">{emptyHint}</p>
       ) : (
         <ul className="space-y-2">
           {documents.map((doc) => (
@@ -182,13 +193,12 @@ export function AgentKnowledgeBasePanel({
         </ul>
       )}
       {canManage ? (
-        <div className="mt-5 border-t border-line/70 pt-4">
-          <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
-            Hozzákötés a katalógusból
-          </p>
-          <p className="mb-3 text-xs text-ink-faint">
-            A kiválasztott elem másolatként kerül az agenthez — a későbbi
-            katalógus-frissítés nem írja át.
+        <details className="mt-4 border-t border-line/70 pt-3">
+          <summary className="cursor-pointer text-xs font-medium text-ink-soft hover:text-ink">
+            Hozzáadás a közös katalógusból
+          </summary>
+          <p className="mb-3 mt-2 text-xs text-ink-faint">
+            A kiválasztott dokumentum másolatként kerül a munkatárshoz, a katalógus későbbi frissítése nem írja át.
           </p>
           {unattachedCatalog.length === 0 ? (
             <p className="text-xs text-ink-faint">
@@ -245,7 +255,7 @@ export function AgentKnowledgeBasePanel({
               </button>
             </form>
           )}
-        </div>
+        </details>
       ) : null}
     </Card>
   )
