@@ -7,7 +7,7 @@ import {
   mailboxConnectorInfo,
   type MailboxKind,
 } from '@/domain/agent-mailbox/agent-mailbox'
-import { isMicrosoft365Connector } from '@/domain/connector-grant/tenant-mailbox'
+import { isMicrosoft365Connector, tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import {
   linkedAccountHandle,
   type LinkedAccountChoice,
@@ -255,8 +255,8 @@ export async function listMailAccounts(input: {
     if (!live || live.lifecycleState !== 'active' || live.tenantId !== input.tenantId) continue
     const kind = kindOf(live)
     if (!kind) continue
-    const access: 'read' | 'write' = row.accessMode === 'write' ? 'write' : 'read'
-    const primary = live.id === input.primaryConnectorId
+    const access: 'read' | 'write' = row.accessMode === 'write' && !tenantMailboxOf(live)?.readOnly ? 'write' : 'read'
+    const primary = live.id === input.primaryConnectorId && access === 'write'
     if (live.type === 'gmail' && live.authMode === 'user_delegated') {
       const grants = await input.findActiveGrants({
         tenantId: input.tenantId,

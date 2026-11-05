@@ -4,6 +4,7 @@
  * AgentMail-postafiók megjelenő nevének szinkronja.
  */
 import { prisma } from '@/lib/db'
+import { tenantMailboxOf } from '@/domain/connector-grant/tenant-mailbox'
 import {
   effectiveMailDisplayName,
   mailboxConnectorInfo,
@@ -42,7 +43,7 @@ export async function loadAgentMailIdentity(tenantId: string, agentId: string): 
     if (connector.type === 'gmail' && connector.authMode === 'user_delegated') userGmail = true
     const info = mailboxConnectorInfo(connector)
     if (!info) continue
-    if (connector.id === agent.primaryMailboxConnectorId && binding.accessMode === 'write') {
+    if (connector.id === agent.primaryMailboxConnectorId && binding.accessMode === 'write' && !tenantMailboxOf(connector)?.readOnly) {
       primary = {
         connectorId: connector.id,
         connectorName: connector.name,
@@ -57,7 +58,7 @@ export async function loadAgentMailIdentity(tenantId: string, agentId: string): 
         connectorName: connector.name,
         kind: info.kind,
         address: info.address,
-        accessMode: binding.accessMode,
+        accessMode: tenantMailboxOf(connector)?.readOnly ? 'read' : binding.accessMode,
       })
     }
   }
