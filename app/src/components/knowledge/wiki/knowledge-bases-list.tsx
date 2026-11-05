@@ -198,7 +198,17 @@ export function KnowledgeBasesList({
   )
 }
 
-const KNOWN_ERRORS = ['not_found', 'forbidden', 'invalid_args', 'too_large', 'already_in_inbox', 'reprocess_pending_approval'] as const
+const KNOWN_ERRORS = [
+  'not_found',
+  'forbidden',
+  'invalid_args',
+  'too_large',
+  'already_in_inbox',
+  'reprocess_pending_approval',
+  'unsupported_file_type',
+  'no_extractable_text',
+  'damaged_file',
+] as const
 
 export function errorKey(code: string): (typeof KNOWN_ERRORS)[number] | 'generic' {
   return (KNOWN_ERRORS as readonly string[]).includes(code) ? (code as (typeof KNOWN_ERRORS)[number]) : 'generic'

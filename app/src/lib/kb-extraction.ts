@@ -1,6 +1,7 @@
 import type { ExtractedBlock } from './kb-v3'
-import { assertSafeOfficeArchive } from './office-archive-guard'
+import { assertSafeOfficeArchive, OfficeArchiveError } from './office-archive-guard'
 import { loadPdfParse } from './pdf-parse'
+import { readPptxSlides } from './pptx-text'
 
 /**
  * KB-v3 Sprint 2 — Extraction pipeline (Knowledge-Base-v3-OKF-Spec §7.3/§7.4).
@@ -11,6 +12,7 @@ import { loadPdfParse } from './pdf-parse'
  *   - PDF  → oldal-szint (`page`)      — `pdf-parse` `getText()` oldal-tömbje,
  *   - DOCX → heading/section-út        — `mammoth` HTML + heading-szekciózás,
  *   - XLSX → cella-tartomány (`cell`)  — `exceljs`, `Sheet!A1:E20`,
+ *   - PPTX → dia (section)             — `pptx-text`, táblázattal és jegyzettel,
  *   - MD/HTML/plain → section (heading) — direkt parser.
  *
  * A kimenet a `buildOkfBundle` bemenete (`blocks`): innen egy szelet = egy
@@ -21,7 +23,31 @@ import { loadPdfParse } from './pdf-parse'
  * döntés (D-G/D7) — itt oldal/section/cella a granularitás.
  */
 
-export type ExtractionFormat = 'pdf' | 'docx' | 'xlsx' | 'html' | 'text'
+export type ExtractionFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'html' | 'text'
+
+const KB_FILE_REJECTION_MESSAGES = {
+  unsupported_file_type:
+    'Ezt a fájltípust nem tudjuk beolvasni. Támogatott: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), HTML és szövegfájlok. Mentsd el a fájlt PDF-ként, és úgy töltsd fel.',
+  no_extractable_text:
+    'Ebben a prezentációban nem találtunk kiolvasható szöveget, például mert csak képekből áll. Mentsd el PDF-ként, és úgy töltsd fel.',
+} as const
+
+/** A fájl tartalma miatt nem tárolható; az újrapróbálkozás nem segít. */
+export class KbFileRejectedError extends Error {
+  constructor(readonly code: keyof typeof KB_FILE_REJECTION_MESSAGES) {
+    super(KB_FILE_REJECTION_MESSAGES[code])
+    this.name = 'KbFileRejectedError'
+  }
+}
+
+/** A felület és az agent ebből tudja, hogy a fájllal van a gond; más hibánál `null`. */
+export function kbFileErrorCode(
+  error: unknown,
+): KbFileRejectedError['code'] | 'damaged_file' | null {
+  if (error instanceof KbFileRejectedError) return error.code
+  if (error instanceof OfficeArchiveError) return 'damaged_file'
+  return null
+}
 
 /** A `Document.metadata` alkulcsa, ahol a strukturált extraction eltárolódik (§8.2). */
 export const EXTRACTION_METADATA_KEY = 'extraction'
@@ -39,6 +65,7 @@ function detectFormat(filename: string, mimeType?: string | null): ExtractionFor
   if (ext === '.pdf' || mimeType === 'application/pdf') return 'pdf'
   if (ext === '.docx' || mimeType?.includes('wordprocessingml')) return 'docx'
   if (ext === '.xlsx' || ext === '.xlsm' || mimeType?.includes('spreadsheetml')) return 'xlsx'
+  if (ext === '.pptx' || ext === '.pptm' || mimeType?.includes('presentationml')) return 'pptx'
   if (ext === '.html' || ext === '.htm' || mimeType === 'text/html') return 'html'
   return 'text'
 }
@@ -60,11 +87,23 @@ export async function extractStructured(input: {
       return extractDocx(input.buffer)
     case 'xlsx':
       return extractXlsx(input.buffer)
+    case 'pptx':
+      return extractPptx(input.buffer)
     case 'html':
-      return extractHtml(input.buffer.toString('utf8'))
+      return extractHtml(decodeTextFile(input.buffer))
     default:
-      return extractPlainText(input.buffer.toString('utf8'))
+      return extractPlainText(decodeTextFile(input.buffer))
   }
+}
+
+/**
+ * A NUL-bájt bináris fájlt jelez (kép, régi Office, ZIP): szövegként úgysem
+ * tárolható, ezért már itt elutasítjuk. A hibás UTF-8 önmagában nem ok erre,
+ * mert a régi kódolású magyar CSV-k is ilyenek.
+ */
+function decodeTextFile(buffer: Buffer): string {
+  if (buffer.includes(0)) throw new KbFileRejectedError('unsupported_file_type')
+  return buffer.toString('utf8')
 }
 
 /** Plain text / markdown / HTML → heading-szintű blokkok (section source ref). */
@@ -184,6 +223,27 @@ async function extractDocx(buffer: Buffer): Promise<StructuredExtraction> {
   const blocks = htmlToSections(html)
   const markdown = blocks.map((b) => `## ${b.heading}\n\n${b.text}`).join('\n\n')
   return { format: 'docx', markdown, blocks }
+}
+
+// ── PPTX (diánként) ──────────────────────────────────────────────────────────
+
+function extractPptx(buffer: Buffer): StructuredExtraction {
+  const slides = readPptxSlides(buffer)
+  if (!slides.some((slide) => slide.title || slide.lines.length > 0 || slide.notes.length > 0)) {
+    throw new KbFileRejectedError('no_extractable_text')
+  }
+  const blocks: ExtractedBlock[] = slides.map((slide, index) => {
+    const heading = `${index + 1}. dia${slide.title ? `: ${slide.title}` : ''}${slide.hidden ? ' (rejtett)' : ''}`
+    const body = slide.lines.join('\n')
+    const notes = slide.notes.length > 0 ? `Előadói jegyzet:\n${slide.notes.join('\n')}` : ''
+    return {
+      heading,
+      text: [body, notes].filter(Boolean).join('\n\n') || '(Ezen a dián nincs kiolvasható szöveg.)',
+      sourceRef: { section: heading },
+    }
+  })
+  const markdown = blocks.map((block) => `## ${block.heading}\n\n${block.text}`).join('\n\n')
+  return { format: 'pptx', markdown, blocks }
 }
 
 // ── HTML (heading-szekciók, markup nélkül) ───────────────────────────────────

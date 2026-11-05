@@ -251,7 +251,7 @@ export function WikiInboxPanel({ connectorId, initial }: { connectorId: string; 
             {upload.interrupted.length ? (
               <p className="text-xs text-coral-deep">{t('inbox.interrupted', { count: upload.interrupted.length, names: listNames(upload.interrupted) })}</p>
             ) : null}
-            {(['not_found', 'forbidden', 'invalid_args', 'too_large', 'generic'] as const).map((reason) => {
+            {[...new Set(upload.rejected.map((item) => item.reason))].map((reason) => {
               const names = upload.rejected.filter((item) => item.reason === reason).map((item) => item.name)
               return names.length ? (
                 <p key={reason} className="text-xs text-coral-deep">{t('inbox.rejected', { reason: t(`errors.${reason}`), names: listNames(names) })}</p>

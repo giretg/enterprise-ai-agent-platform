@@ -15,6 +15,7 @@ import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiCategoryError } from '@/domain/knowledge-base/wiki-category-service'
 import { WikiMetadataError } from '@/domain/knowledge-base/wiki-metadata-service'
 import { WikiConfigError } from '@/domain/knowledge-base/wiki-config-service'
+import { kbFileErrorCode } from '@/lib/kb-extraction'
 import { WIKI_FIELD_TYPES, type WikiViewFilter } from '@/lib/wiki-metadata'
 import { WIKI_CATEGORY_MAX_COUNT, WIKI_CATEGORY_MAX_PAGE_ORDER, WIKI_CATEGORY_MAX_PINNED, WIKI_PAGE_SORTS } from '@/lib/wiki-categories'
 import { WIKI_COLLECT_MAX_CHARS } from '@/lib/wiki-config'
@@ -28,6 +29,8 @@ async function actor(): Promise<WikiConsoleActor> {
 }
 
 function failFrom(error: unknown, fallback: string) {
+  const fileError = kbFileErrorCode(error)
+  if (fileError) return fail(fileError)
   if (
     error instanceof WikiConsoleError ||
     error instanceof WikiAccessError ||
@@ -136,7 +139,7 @@ export async function uploadWikiInboxFileAction(formData: FormData) {
     return ok(result)
   } catch (e) {
     // A felület érthető hibát mutat; a váratlan ok a naplóból derül ki (fájlnév és tartalom nélkül).
-    if (!(e instanceof WikiConsoleError) && !(e instanceof z.ZodError)) {
+    if (!(e instanceof WikiConsoleError) && !(e instanceof z.ZodError) && !kbFileErrorCode(e)) {
       console.error('wiki_inbox_upload_failed', {
         connectorId: formData.get('connectorId'),
         message: e instanceof Error ? e.message : String(e),
