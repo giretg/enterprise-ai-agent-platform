@@ -240,9 +240,9 @@
   "ControlPlane": {
     "scheduledTasks": {
       "title": "Scheduled tasks",
-      "body": "Recurring work that an AI coworker does on your own computer or in the cloud — for example every weekday morning. The platform only records and coordinates it; your AI client runs it.",
+      "body": "Recurring or one-time work the AI teammate does on your machine or in the cloud — for example every weekday morning. The platform only records and coordinates it; your AI client runs it.",
       "helpLabel": "How does it work?",
-      "help": "Here you set what the coworker should do and when. The AI client on your computer (e.g. Claude) offers to install it the next time you open it; from then on its own scheduler starts it. Even if it is installed in two places, it runs only once per scheduled time.",
+      "help": "Here you set what the teammate should do and when. The platform does not start tasks itself: the scheduler of the selected AI client (such as Claude) does, so the client has to be opened once to install it. If it is installed in two places, it still runs only once per time. If a run does not happen, a red warning appears on the task.",
       "empty": "No scheduled tasks yet. Create one here, or ask the AI coworker on your own computer: \"summarize my emails every morning\".",
       "error": "Scheduled tasks could not be loaded or saved right now. Please try again.",
       "new": "New scheduled task",
@@ -276,22 +276,16 @@
       "noAgents": "There is no coworker you can run. Ask an admin for access.",
       "taskTitle": "Short name",
       "taskTitlePlaceholder": "e.g. Review expired offers",
-      "instruction": "What should it do every time?",
+      "instruction": "What should it do when it runs?",
       "instructionPlaceholder": "e.g. Review expired offers in the CRM and list whom to call.",
       "when": "When should it run?",
-      "presets": {
-        "weekdays8": "Weekdays 8:00",
-        "daily8": "Daily 8:00",
-        "monday9": "Mondays 9:00",
-        "hourly": "Hourly"
-      },
-      "cron": "Schedule (cron, advanced)",
       "timezone": "Time zone",
       "runsPerDay": "About {count} runs per day.",
       "scheduleErrors": {
-        "invalid_args": "I don't understand this schedule. Pick one of the buttons above, or enter a 5-field cron (minute hour day month weekday).",
+        "invalid_args": "This schedule is not valid. Use the buttons above, or enter a 5-field cron (minute hour day month weekday).",
         "schedule_too_frequent": "It can run at most every 15 minutes. For more frequent watching this is not the right tool.",
-        "schedule_never_runs": "This schedule would never run."
+        "schedule_never_runs": "This schedule would never run.",
+        "schedule_in_past": "This time has already passed. Pick a later one."
       },
       "where": "Where should it run?",
       "targets": {
@@ -332,7 +326,8 @@
       "statuses": {
         "active": "Active",
         "paused": "Paused",
-        "archived": "Archived"
+        "archived": "Archived",
+        "onceDone": "Finished"
       },
       "installStates": {
         "waiting": "Waiting to be installed",
@@ -388,6 +383,50 @@
         "agent_unavailable": "This coworker is not available right now.",
         "limit_exceeded": "You reached the maximum of 50 scheduled tasks.",
         "not_allowed": "You are not allowed to do this."
+      },
+      "nextRun": "Next run: {when}",
+      "editScheduleNote": "The client has to pick up the new time too. It updates at its next run or sync; if it is urgent, open the client and ask it to sync your scheduled tasks.",
+      "overdue": {
+        "title": "Did not run: it should have started at {when}.",
+        "body": "The platform does not start tasks itself. The selected client has to, and none of them checked in. Check that the schedule really exists in the client: open Claude Code (or the client you chose) and ask it to sync your scheduled tasks."
+      },
+      "picker": {
+        "frequency": "How often?",
+        "modes": {
+          "once": "Once",
+          "daily": "Daily",
+          "weekdays": "Weekdays",
+          "weekly": "Weekly",
+          "monthly": "Monthly",
+          "hourly": "Hourly",
+          "custom": "Custom"
+        },
+        "date": "On which day?",
+        "time": "At what time?",
+        "days": "On which days?",
+        "weekdays": {
+          "0": "Sun",
+          "1": "Mon",
+          "2": "Tue",
+          "3": "Wed",
+          "4": "Thu",
+          "5": "Fri",
+          "6": "Sat"
+        },
+        "dayOfMonth": "Which day of the month?",
+        "dayOption": "{day}.",
+        "shortMonthNote": "Months without this day skip the run.",
+        "everyHours": "How often?",
+        "everyHoursOption": "{hours, plural, =1 {every hour} other {every # hours}}",
+        "minute": "At which minute of the hour?",
+        "minuteOption": "minute {minute}",
+        "cron": "Custom schedule (cron expression)",
+        "cronHint": "Five fields separated by spaces: minute, hour, day, month, day of week. Example: 0 8 * * 1-5 = weekdays at 8:00. If this format is new to you, use the buttons above.",
+        "pickDay": "Pick at least one day.",
+        "pickTime": "Enter the day and the time.",
+        "nextRuns": "Next run:",
+        "checking": "Checking…",
+        "onceNotShared": "\"Once\" is not available here: an \"Everyone gets their own\" task runs separately for each member."
       }
     },
     "promises": {

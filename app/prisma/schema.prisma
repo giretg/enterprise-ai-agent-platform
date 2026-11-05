@@ -1953,6 +1953,8 @@ model ScheduledTask {
   instruction      String                @db.Text
   /// 5 mezős cron, a `timezone`-ban értve.
   cron             String
+  /// Egyszeri futás időpontja; ilyenkor a cron ezt az alkalmat írja le, a későbbi évek nem érvényesek.
+  runOnceAt        DateTime?             @map("run_once_at") @db.Timestamptz
   timezone         String
   graceMinutes     Int?                  @map("grace_minutes")
   targets          String[]

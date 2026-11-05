@@ -35,7 +35,8 @@ export const scheduledTaskSchemas: Record<ScheduledTaskToolName, z.ZodTypeAny> =
     agentId: uuid,
     title: z.string().min(1).max(200),
     instruction: z.string().min(1).max(8000).describe('What the agent should do on every run.'),
-    cron: z.string().max(200).describe('5-field cron in timezone, at most every 15 minutes, e.g. "0 8 * * 1-5".'),
+    cron: z.string().max(200).optional().describe('Recurring: 5-field cron in timezone, at most every 15 minutes, e.g. "0 8 * * 1-5". Pass cron or runOnceAt, not both.'),
+    runOnceAt: z.string().max(16).optional().describe('One-time run: local time in timezone as YYYY-MM-DDTHH:mm, e.g. "2026-11-05T15:45". Runs once, then the task closes itself. Not for a daily cron with a note to turn it off.'),
     timezone: z.string().max(100).optional().describe('IANA, default Europe/Budapest.'),
     targets: z.array(clientType).max(6).optional().describe('Client types to install on; default: this client.'),
     client: client.optional(),
@@ -45,7 +46,8 @@ export const scheduledTaskSchemas: Record<ScheduledTaskToolName, z.ZodTypeAny> =
     expectedVersion: z.number().int(),
     title: z.string().max(200).optional(),
     instruction: z.string().max(8000).optional(),
-    cron: z.string().max(200).optional(),
+    cron: z.string().max(200).optional().describe('New recurring schedule; turns a one-time task into a recurring one.'),
+    runOnceAt: z.string().max(16).optional().describe('New one-time run, local time in timezone as YYYY-MM-DDTHH:mm; replaces the recurring schedule.'),
     timezone: z.string().max(100).optional(),
     status: z.enum(['active', 'paused']).optional(),
     targets: z.array(clientType).max(6).optional(),
@@ -129,9 +131,9 @@ function normalizeLists(args: Record<string, unknown>): Record<string, unknown> 
 }
 
 export const SCHEDULED_TASK_DESCRIPTIONS: Record<ScheduledTaskToolName, string> = {
-  'platform.scheduled_task.list': 'List your scheduled tasks (recurring agent work that your own client schedules and runs).',
+  'platform.scheduled_task.list': 'List your scheduled tasks (recurring or one-time agent work that your own client schedules and runs).',
   'platform.scheduled_task.get': 'Read one scheduled task. Pass client to get its install recipe for this client.',
-  'platform.scheduled_task.create': 'Register recurring work on the platform first, then install the returned recipe in this client\'s own scheduler and call install_report. Runs in your name.',
+  'platform.scheduled_task.create': 'Register recurring (cron) or one-time (runOnceAt) work on the platform first, then install the returned recipe in this client\'s own scheduler and call install_report. The platform never starts a run itself: until a client has it installed, nothing runs. Runs in your name.',
   'platform.scheduled_task.update': 'Change your scheduled task (owner only). Pass expectedVersion; a conflict returns the fresh task.',
   'platform.scheduled_task.sync': 'Compare the platform stubs installed on this client with the platform. Returns a plan: carry out its actions, ask the user its questions, then install_report.',
   'platform.scheduled_task.install_report': 'Report what you installed, updated, removed or disabled on this client (batch).',

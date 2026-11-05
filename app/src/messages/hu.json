@@ -240,9 +240,9 @@
   "ControlPlane": {
     "scheduledTasks": {
       "title": "Ütemezett feladatok",
-      "body": "Ismétlődő munka, amit az AI-munkatárs a saját gépeden vagy a felhőben végez el — például minden hétköznap reggel. A platform csak nyilvántartja és összehangolja; a futtatást a te AI-kliensed végzi.",
+      "body": "Ismétlődő vagy egyszeri munka, amit az AI-munkatárs a saját gépeden vagy a felhőben végez el — például minden hétköznap reggel. A platform csak nyilvántartja és összehangolja; a futtatást a te AI-kliensed végzi.",
       "helpLabel": "Hogyan működik?",
-      "help": "Itt megadod, mit és mikor csináljon a munkatárs. A gépeden futó AI-kliens (pl. Claude) a következő megnyitáskor felajánlja a telepítést; onnantól a saját ütemezője indítja. Ha két helyen is telepítve van, egy időpontban akkor is csak egyszer fut.",
+      "help": "Itt megadod, mit és mikor csináljon a munkatárs. A platform maga nem indít feladatot: a kijelölt AI-kliens (pl. Claude) saját ütemezője indítja, ezért a klienst egyszer meg kell nyitni, hogy telepítse. Ha két helyen is telepítve van, egy időpontban akkor is csak egyszer fut. Ha egy időpont elmarad, a feladatnál piros figyelmeztetés jelenik meg.",
       "empty": "Még nincs ütemezett feladat. Hozz létre egyet itt, vagy kérd meg az AI-munkatársat a saját gépeden: „minden reggel foglald össze a leveleimet”.",
       "error": "Az ütemezett feladatokat most nem sikerült betölteni vagy menteni. Próbáld újra.",
       "new": "Új ütemezett feladat",
@@ -276,22 +276,16 @@
       "noAgents": "Nincs olyan munkatárs, akit futtathatsz. Kérd az admint, hogy adjon hozzáférést.",
       "taskTitle": "Rövid név",
       "taskTitlePlaceholder": "pl. Lejárt ajánlatok átnézése",
-      "instruction": "Mit csináljon minden alkalommal?",
+      "instruction": "Mit csináljon a futáskor?",
       "instructionPlaceholder": "pl. Nézd át a CRM-ben a lejárt ajánlatokat, és írd össze, kit kell felhívni.",
       "when": "Mikor fusson?",
-      "presets": {
-        "weekdays8": "Hétköznap 8:00",
-        "daily8": "Naponta 8:00",
-        "monday9": "Hétfőnként 9:00",
-        "hourly": "Óránként"
-      },
-      "cron": "Ütemezés (cron, haladóknak)",
       "timezone": "Időzóna",
       "runsPerDay": "Naponta kb. {count} futás.",
       "scheduleErrors": {
         "invalid_args": "Ezt az ütemezést nem értem. Válassz a fenti gombokból, vagy adj meg 5 mezős cront (perc óra nap hónap hét napja).",
         "schedule_too_frequent": "Legfeljebb 15 percenként futhat. Ennél sűrűbb figyelésre ez nem a megfelelő eszköz.",
-        "schedule_never_runs": "Ez az ütemezés soha nem futna le."
+        "schedule_never_runs": "Ez az ütemezés soha nem futna le.",
+        "schedule_in_past": "Ez az időpont már elmúlt. Válassz egy későbbit."
       },
       "where": "Hol fusson?",
       "targets": {
@@ -332,7 +326,8 @@
       "statuses": {
         "active": "Aktív",
         "paused": "Szüneteltetve",
-        "archived": "Archiválva"
+        "archived": "Archiválva",
+        "onceDone": "Lefutott"
       },
       "installStates": {
         "waiting": "Telepítésre vár",
@@ -388,6 +383,50 @@
         "agent_unavailable": "Ez a munkatárs most nem elérhető.",
         "limit_exceeded": "Elérted a legfeljebb 50 ütemezett feladatot.",
         "not_allowed": "Ehhez nincs jogosultságod."
+      },
+      "nextRun": "Következő futás: {when}",
+      "editScheduleNote": "Az új időpontot a kliensnek is át kell vennie. A legközelebbi futásnál vagy szinkronnál frissül; ha sürgős, nyisd meg a klienst, és kérd meg, hogy szinkronizálja az ütemezett feladatokat.",
+      "overdue": {
+        "title": "Nem futott le: {when} időpontban kellett volna elindulnia.",
+        "body": "A platform maga nem indít feladatot, ezt a kijelölt kliensnek kell megtennie, és egyik sem jelentkezett. Ellenőrizd, hogy a kliensben tényleg létezik-e az ütemezés: nyisd meg a Claude Code-ot (vagy a választott klienst), és kérd meg, hogy szinkronizálja az ütemezett feladatokat."
+      },
+      "picker": {
+        "frequency": "Milyen gyakran?",
+        "modes": {
+          "once": "Egyszer",
+          "daily": "Naponta",
+          "weekdays": "Hétköznap",
+          "weekly": "Hetente",
+          "monthly": "Havonta",
+          "hourly": "Óránként",
+          "custom": "Egyedi"
+        },
+        "date": "Melyik napon?",
+        "time": "Hány órakor?",
+        "days": "Melyik napokon?",
+        "weekdays": {
+          "0": "V",
+          "1": "H",
+          "2": "K",
+          "3": "Sze",
+          "4": "Cs",
+          "5": "P",
+          "6": "Szo"
+        },
+        "dayOfMonth": "A hónap hányadik napján?",
+        "dayOption": "{day}.",
+        "shortMonthNote": "Abban a hónapban, amelyikben nincs ilyen nap, a futás kimarad.",
+        "everyHours": "Milyen sűrűn?",
+        "everyHoursOption": "{hours, plural, =1 {minden órában} other {# óránként}}",
+        "minute": "Az óra hányadik percében?",
+        "minuteOption": "{minute}. perc",
+        "cron": "Egyedi ütemezés (cron-kifejezés)",
+        "cronHint": "Öt mező szóközzel: perc, óra, nap, hónap, a hét napja. Példa: 0 8 * * 1-5 = hétköznap 8:00. Ha nem ismered ezt a formát, válassz a fenti gombokból.",
+        "pickDay": "Válassz legalább egy napot.",
+        "pickTime": "Add meg a napot és az időpontot.",
+        "nextRuns": "Következő futás:",
+        "checking": "Ellenőrzés…",
+        "onceNotShared": "Az „Egyszer” itt nem választható: a „Mindenkinek a sajátja” feladat minden tagnál külön fut."
       }
     },
     "promises": {

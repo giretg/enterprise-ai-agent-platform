@@ -4,7 +4,8 @@
  * Futtatás: npm run test:scheduled-task-sync-plan
  */
 import assert from 'node:assert/strict'
-import { describeCron, minimumGapMinutes, nextSlot, parseCron, prevSlot } from '../src/domain/scheduled-task/cron'
+import { describeCron, localDateTime, minimumGapMinutes, nextSlot, onceSchedule, parseCron, prevSlot } from '../src/domain/scheduled-task/cron'
+import { defaultOnceDate, formFromSchedule, scheduleFromForm } from '../src/domain/scheduled-task/schedule-form'
 import { planScheduledTaskSync, type InventoryEntry, type PlanInstallation, type PlanTask } from '../src/domain/scheduled-task/sync-plan'
 import { expectedStubHash, scheduleHash, stubExtraText, stubHash, stubPrompt } from '../src/domain/scheduled-task/stub'
 
@@ -66,13 +67,49 @@ test('nonexistent DST time is skipped, Feb 29 found', () => {
   assert.equal(nextSlot(parseCron('0 0 29 2 *')!, 'UTC', new Date('2026-01-01T00:00:00Z'))!.toISOString(), '2028-02-29T00:00:00.000Z')
   assert.equal(nextSlot(parseCron('0 0 31 2 *')!, 'UTC', new Date('2026-01-01T00:00:00Z')), null)
 })
+test('one-time schedule: local time ↔ UTC, impossible times rejected', () => {
+  assert.deepEqual(onceSchedule('2026-11-05T15:45', TZ), { at: new Date('2026-11-05T14:45:00Z'), cron: '45 15 5 11 *' })
+  assert.deepEqual(onceSchedule('2026-07-01T08:00', TZ), { at: new Date('2026-07-01T06:00:00Z'), cron: '0 8 1 7 *' })
+  for (const bad of ['2026-02-30T08:00', '2026-13-01T08:00', '2026-11-05T25:00', '2026-03-29T02:30', '2026-11-05', 'tomorrow', 5]) assert.equal(onceSchedule(bad, TZ), null, String(bad))
+  assert.equal(localDateTime(new Date('2026-11-05T14:45:00Z'), TZ), '2026-11-05T15:45')
+})
+test('schedule form: every mode round-trips through the cron', () => {
+  const cases: Array<[string, string]> = [
+    ['45 15 * * *', 'daily'], ['0 8 * * 1-5', 'weekdays'], ['30 9 * * 1,3', 'weekly'], ['0 7 15 * *', 'monthly'],
+    ['0 * * * *', 'hourly'], ['15 */6 * * *', 'hourly'], ['0 8 1 1 *', 'custom'], ['*/20 8-17 * * *', 'custom'], ['10 * * 1', 'custom'],
+  ]
+  for (const [cron, mode] of cases) {
+    const form = formFromSchedule({ cron, timezone: TZ })
+    assert.equal(form.mode, mode, cron)
+    assert.deepEqual(scheduleFromForm(form), { cron }, cron)
+  }
+  const once = formFromSchedule({ cron: '45 15 5 11 *', runOnceLocal: '2026-11-05T15:45', timezone: TZ })
+  assert.deepEqual([once.mode, once.date, once.time], ['once', '2026-11-05', '15:45'])
+  assert.deepEqual(scheduleFromForm(once), { runOnceAt: '2026-11-05T15:45' })
+  assert.deepEqual(scheduleFromForm({ ...once, mode: 'weekly', days: [0, 5, 5] }), { cron: '45 15 * * 0,5' })
+})
+test('schedule form: incomplete input and the default one-time day', () => {
+  const form = formFromSchedule({ cron: '0 8 * * *', timezone: TZ })
+  assert.equal(scheduleFromForm({ ...form, mode: 'weekly', days: [] }), null)
+  assert.equal(scheduleFromForm({ ...form, time: '' }), null)
+  assert.equal(scheduleFromForm({ ...form, mode: 'once', date: '' }), null)
+  assert.equal(scheduleFromForm({ ...form, mode: 'custom', cron: '  ' }), null)
+  const morning = new Date('2026-11-05T09:14:00Z') // 10:14 Budapest
+  assert.equal(defaultOnceDate('15:45', TZ, morning), '2026-11-05')
+  assert.equal(defaultOnceDate('08:00', TZ, morning), '2026-11-06')
+  assert.equal(defaultOnceDate('08:00', TZ, new Date('2026-12-31T20:00:00Z')), '2027-01-01')
+})
 test('minimum gap (K6) and description', () => {
   assert.equal(minimumGapMinutes(parseCron('*/5 * * * *')!, TZ, new Date()), 5)
   assert.equal(minimumGapMinutes(parseCron('0,10 9 * * *')!, TZ, new Date()), 10)
   assert.equal(minimumGapMinutes(parseCron('*/15 * * * *')!, TZ, new Date()), 15)
   assert.equal(describeCron('0 8 * * 1-5'), 'hétköznap 8:00-kor')
   assert.equal(describeCron('30 9 * * *', 'en'), 'every day at 9:30')
-  assert.equal(describeCron('0 8 1 * *'), 'egyedi ütemezés (cron: 0 8 1 * *)')
+  assert.equal(describeCron('0 8 1 * *'), 'minden hónap 1-jén 8:00-kor')
+  assert.equal(describeCron('30 7 22 * *', 'en'), 'every month on the 22nd at 7:30')
+  assert.equal(describeCron('0 * * * *'), 'óránként')
+  assert.equal(describeCron('15 */6 * * *'), '6 óránként, az óra 15. percében')
+  assert.equal(describeCron('0 8 1 1 *'), 'egyedi ütemezés (cron: 0 8 1 1 *)')
 })
 test('stub: hash is stable, extra text is isolated', () => {
   const text = stubPrompt({ taskId: TASK, client: CLIENT })

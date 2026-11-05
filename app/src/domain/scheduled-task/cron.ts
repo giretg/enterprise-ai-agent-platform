@@ -187,8 +187,56 @@ export function minimumGapMinutes(spec: CronSpec, timezone: string, from: Date, 
   return Number.isFinite(smallest) ? smallest : null
 }
 
+/** A következő `count` időpont `after` után. */
+export function nextSlots(spec: CronSpec, timezone: string, after: Date, count: number): Date[] {
+  const slots: Date[] = []
+  let cursor = after
+  while (slots.length < count) {
+    const next = nextSlot(spec, timezone, cursor)
+    if (!next) break
+    slots.push(next)
+    cursor = next
+  }
+  return slots
+}
+
+/**
+ * Egyszeri futás: helyi falióra-idő (`YYYY-MM-DDTHH:mm`) → UTC + a hozzá tartozó cron. A cron
+ * évente ismétlődne, ezt a `runOnceAt` zárja le; így a cront értő kliensek is telepíthetik.
+ * Nem létező időpontra (február 30., nyári átállás) `null`.
+ */
+export function onceSchedule(local: unknown, timezone: string): { at: Date; cron: string } | null {
+  const match = typeof local === 'string' ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(local) : null
+  if (!match) return null
+  const [year, month, day, hour, minute] = match.slice(1).map(Number)
+  if (month < 1 || month > 12) return null
+  const utc = localToUtc(year, month, day, hour, minute, timezone)
+  return utc === null ? null : { at: new Date(utc), cron: `${minute} ${hour} ${day} ${month} *` }
+}
+
+/** UTC → helyi falióra-idő (`YYYY-MM-DDTHH:mm`), az `onceSchedule` párja. */
+export function localDateTime(at: Date, timezone: string): string {
+  const p = localParts(at.getTime(), timezone)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`
+}
+
 const HU_DAYS = ['vasárnap', 'hétfőn', 'kedden', 'szerdán', 'csütörtökön', 'pénteken', 'szombaton']
 const EN_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const HU_DAY_SUFFIX = ['jén', 'án', 'án', 'én', 'én', 'án', 'én', 'án', 'én', 'én', 'én', 'én', 'án', 'én', 'én', 'án', 'én', 'án', 'én', 'án', 'én', 'én', 'án', 'én', 'én', 'án', 'én', 'án', 'én', 'án', 'én']
+
+function ordinalEn(day: number): string {
+  const tens = day % 100
+  if (tens >= 11 && tens <= 13) return `${day}th`
+  return `${day}${['th', 'st', 'nd', 'rd'][day % 10] ?? 'th'}`
+}
+
+/** Hétköznapi leírás az egyszeri futással együtt. */
+export function describeSchedule(task: { cron: string; timezone: string; runOnceAt?: Date | null }, language: 'hu' | 'en' = 'hu'): string {
+  if (!task.runOnceAt) return describeCron(task.cron, language)
+  const when = new Intl.DateTimeFormat(language === 'en' ? 'en-GB' : 'hu-HU', { timeZone: task.timezone, dateStyle: 'long', timeStyle: 'short' }).format(task.runOnceAt)
+  return language === 'en' ? `once, on ${when}` : `egyszer: ${when}`
+}
 
 /** Hétköznapi leírás („hétköznap 8:00-kor”); amit nem tud szépen mondani, cronként mutatja. */
 export function describeCron(expr: string, language: 'hu' | 'en' = 'hu'): string {
@@ -197,7 +245,20 @@ export function describeCron(expr: string, language: 'hu' | 'en' = 'hu'): string
   const fallback = language === 'en' ? `custom schedule (cron: ${raw})` : `egyedi ütemezés (cron: ${raw})`
   if (!spec) return fallback
   const fields = raw.split(' ')
+  const singleTime = /^\d+$/.test(fields[0]) && /^\d+$/.test(fields[1])
+  if (singleTime && /^\d+$/.test(fields[2]) && fields[3] === '*' && fields[4] === '*') {
+    const time = `${spec.hours[0]}:${String(spec.minutes[0]).padStart(2, '0')}`
+    const day = spec.doms[0]
+    return language === 'en' ? `every month on the ${ordinalEn(day)} at ${time}` : `minden hónap ${day}-${HU_DAY_SUFFIX[day - 1]} ${time}-kor`
+  }
   if (fields[2] !== '*' || fields[3] !== '*') return fallback
+  const everyHours = fields[1] === '*' ? 1 : /^\*\/(\d+)$/.exec(fields[1])?.[1]
+  if (everyHours && /^\d+$/.test(fields[0]) && fields[4] === '*') {
+    const n = Number(everyHours)
+    const minute = spec.minutes[0]
+    if (language === 'en') return `${n === 1 ? 'every hour' : `every ${n} hours`}${minute ? ` at minute ${minute}` : ''}`
+    return `${n === 1 ? 'óránként' : `${n} óránként`}${minute ? `, az óra ${minute}. percében` : ''}`
+  }
   let days: string
   if (!spec.dowRestricted || spec.dows.length === 7) days = language === 'en' ? 'every day' : 'naponta'
   else if (spec.dows.join(',') === '1,2,3,4,5') days = language === 'en' ? 'on weekdays' : 'hétköznap'

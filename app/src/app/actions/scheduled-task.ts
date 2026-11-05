@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { getLocale } from 'next-intl/server'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
-import { describeCron, minimumGapMinutes, parseCron } from '@/domain/scheduled-task/cron'
+import { describeSchedule, localDateTime, minimumGapMinutes, nextSlots, parseCron } from '@/domain/scheduled-task/cron'
 import { scheduleHash, SCHEDULED_TASK_CLIENT_TYPES } from '@/domain/scheduled-task/stub'
 import type { ScheduledTaskPrincipal } from '@/domain/scheduled-task/scheduled-task-service'
 import { canOperateAgent } from '@/domain/agent-definition'
@@ -31,6 +31,13 @@ export type ScheduledTaskRow = {
   myState: MemberState | 'owner' | null
   schedule: string
   cron: string
+  /** Egyszeri futás helyi ideje (`YYYY-MM-DDTHH:mm`), ismétlődőnél null. */
+  runOnceLocal: string | null
+  /** Sikeresen lefutott egyszeri feladat. */
+  onceDone: boolean
+  nextRunAt: string | null
+  /** Esedékes volt, de egyetlen kliens sem indította el. */
+  overdueSlot: string | null
   timezone: string
   status: 'active' | 'paused' | 'archived'
   version: number
@@ -64,26 +71,38 @@ function runsPerDay(cron: string, timezone: string): number | null {
   return gap !== null && gap < 60 ? Math.round(1440 / gap) : null
 }
 
+function upcomingRuns(task: { cron: string; timezone: string; runOnceAt: Date | null }, count: number): Date[] {
+  const now = new Date()
+  if (task.runOnceAt) return task.runOnceAt > now ? [task.runOnceAt] : []
+  const spec = parseCron(task.cron)
+  return spec ? nextSlots(spec, task.timezone, now, count) : []
+}
+
+/** Ennyi ideig marad szem előtt a lefutott egyszeri feladat, utána az archiváltak közé kerül. */
+const ONCE_DONE_VISIBLE_MS = 7 * 24 * 3600_000
+
 export async function listScheduledTasksAction(includeArchived = false): Promise<ActionResult<{ tasks: ScheduledTaskRow[]; tenantScope: boolean }>> {
   try {
     const ctx = await requireTenantRole('viewer')
     const principal = principalOf(ctx)
     const tenantScope = hasMinimumRole(ctx.activeTenantRole, 'admin')
     const svc = services.scheduledTasks
-    const found = await svc.list(principal, { scope: tenantScope ? 'tenant' : 'mine', includeArchived })
+    const found = await svc.list(principal, { scope: tenantScope ? 'tenant' : 'mine', includeArchived: true })
+    const nowMs = Date.now()
+    const shown = found.tasks.filter((task) => includeArchived || task.status !== 'archived' || (task.runOnceAt && nowMs - task.runOnceAt.getTime() < ONCE_DONE_VISIBLE_MS))
     const userIds = new Set<string>()
-    for (const task of found.tasks) userIds.add(task.ownerUserId)
+    for (const task of shown) userIds.add(task.ownerUserId)
     for (const row of found.members) userIds.add(row.userId)
     for (const row of found.installations) userIds.add(row.userId)
     for (const row of found.runs) userIds.add(row.runnerUserId)
     const [agents, users] = await Promise.all([
-      repositories.agents.findMany({ tenantId: ctx.activeTenantId, ids: [...new Set(found.tasks.map((task) => task.agentId))] }),
+      repositories.agents.findMany({ tenantId: ctx.activeTenantId, ids: [...new Set(shown.map((task) => task.agentId))] }),
       repositories.users.findManyByIds([...userIds]),
     ])
     const agentNames = new Map(agents.map((agent) => [agent.id, agent.name]))
     const names = new Map(users.map((user) => [user.id, user.name || user.email]))
     const language = (await getLocale()) === 'en' ? 'en' : 'hu'
-    const tasks = found.tasks.map((task): ScheduledTaskRow => {
+    const tasks = shown.map((task): ScheduledTaskRow => {
       const members = found.members.filter((row) => row.taskId === task.id)
       const live = found.installations.filter((row) => row.taskId === task.id && !row.removedAt)
       const isOwner = task.ownerUserId === ctx.user.id
@@ -100,8 +119,12 @@ export async function listScheduledTasksAction(includeArchived = false): Promise
         ownerName: names.get(task.ownerUserId) ?? task.ownerUserId,
         isOwner,
         myState: isOwner && !mine ? 'owner' : mine?.state ?? (isOwner ? 'owner' : null),
-        schedule: describeCron(task.cron, language),
+        schedule: describeSchedule(task, language),
         cron: task.cron,
+        runOnceLocal: task.runOnceAt ? localDateTime(task.runOnceAt, task.timezone) : null,
+        onceDone: Boolean(task.runOnceAt) && task.status === 'archived' && found.runs.some((run) => run.taskId === task.id && run.status === 'succeeded'),
+        nextRunAt: task.status === 'active' ? upcomingRuns(task, 1)[0]?.toISOString() ?? null : null,
+        overdueSlot: svc.overdueSlot(task, found.runs)?.toISOString() ?? null,
         timezone: task.timezone,
         status: task.status,
         version: task.version,
@@ -167,12 +190,14 @@ export async function scheduledTaskFormOptionsAction(): Promise<ActionResult<Sch
 }
 
 const clientTypeSchema = z.enum(SCHEDULED_TASK_CLIENT_TYPES)
+const runOnceAtSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
 const createSchema = z.object({
   agentId: z.string().uuid(),
   kind: z.enum(['personal', 'team', 'shared']),
   title: z.string().trim().min(1).max(200),
   instruction: z.string().trim().min(1).max(8000),
-  cron: z.string().trim().min(1).max(200),
+  cron: z.string().trim().min(1).max(200).optional(),
+  runOnceAt: runOnceAtSchema.optional(),
   timezone: z.string().trim().min(1).max(100),
   targets: z.array(clientTypeSchema).min(1).max(6),
   audience: z.enum(['selected', 'agent_operators']).optional(),
@@ -200,6 +225,7 @@ const updateSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   instruction: z.string().trim().min(1).max(8000).optional(),
   cron: z.string().trim().min(1).max(200).optional(),
+  runOnceAt: runOnceAtSchema.optional(),
   timezone: z.string().trim().min(1).max(100).optional(),
   status: z.enum(['active', 'paused', 'archived']).optional(),
   targets: z.array(clientTypeSchema).min(1).max(6).optional(),
@@ -249,15 +275,17 @@ export async function respondScheduledTaskAction(input: z.infer<typeof respondSc
   }
 }
 
-/** Élő előnézet a létrehozó űrlapnak: hétköznapi leírás + becsült napi futásszám (K6). */
-export async function previewScheduleAction(input: { cron: string; timezone: string }): Promise<ActionResult<{ description: string; runsPerDay: number | null; error: string | null }>> {
+/** Élő előnézet az időzítőnek: hétköznapi leírás, a következő időpontok, becsült napi futásszám (K6). */
+export async function previewScheduleAction(input: { cron?: string; runOnceAt?: string; timezone: string }): Promise<ActionResult<{ description: string; runsPerDay: number | null; nextRuns: string[]; error: string | null }>> {
   try {
     await requireTenantRole('viewer')
-    const checked = services.scheduledTasks.validateSchedule(input.cron, input.timezone)
+    const checked = services.scheduledTasks.resolveSchedule(input)
+    if (!checked.ok) return ok({ description: '', runsPerDay: null, nextRuns: [], error: checked.code })
     return ok({
-      description: describeCron(input.cron, (await getLocale()) === 'en' ? 'en' : 'hu'),
-      runsPerDay: checked.ok ? runsPerDay(checked.cron, checked.timezone) : null,
-      error: checked.ok ? null : checked.code,
+      description: describeSchedule(checked, (await getLocale()) === 'en' ? 'en' : 'hu'),
+      runsPerDay: runsPerDay(checked.cron, checked.timezone),
+      nextRuns: upcomingRuns(checked, 3).map((run) => run.toISOString()),
+      error: null,
     })
   } catch (error) {
     return mapError(error)

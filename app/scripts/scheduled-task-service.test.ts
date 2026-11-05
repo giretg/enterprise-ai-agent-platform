@@ -158,7 +158,7 @@ async function main() {
     assert(created.ok)
     const start = await service.runStart(principal(PETER), { taskId: created.task.id })
     assert.equal((start as { code: string }).code, 'needs_consent')
-    const stale = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: created.task.id, expectedVersion: 0, externalId: 'stale', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+    const stale = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: created.task.id, expectedVersion: 0, externalId: 'trig_stale', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
     assert(stale.ok && stale.results[0].code === 'conflict')
     assert.equal(store.members.find((m) => m.taskId === created.task.id)!.state, 'invited')
     const report = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: created.task.id, expectedVersion: created.task.version, externalId: 'trig_p', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
@@ -252,7 +252,7 @@ async function main() {
     assert(team.ok && shared.ok)
     assert.equal((await service.runStart(principal(PETER), { taskId: team.task.id }) as { code: string }).code, 'needs_consent')
     for (const [userId, taskId] of [[PETER, team.task.id], [CSILLA, team.task.id], [PETER, shared.task.id]]) {
-      const reported = await service.installReport(principal(userId), { client: ROUTINE(userId), reports: [{ taskId, externalId: `t_${userId}`, expectedVersion: 1, action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+      const reported = await service.installReport(principal(userId), { client: ROUTINE(userId), reports: [{ taskId, externalId: `trig_${userId}`, expectedVersion: 1, action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
       assert(reported.ok && reported.results[0].ok)
     }
     const peter = await service.runStart(principal(PETER), { taskId: team.task.id })
@@ -285,7 +285,7 @@ async function main() {
     const made = await service.create(principal(ANNA), { ...base, kind: 'shared', memberUserIds: [PETER] })
     assert(made.ok)
     const task = made.task
-    const installed = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: task.id, expectedVersion: 1, action: 'installed', externalId: 'private', scheduleHash: 'h', stubHash: 's' }] })
+    const installed = await service.installReport(principal(PETER), { client: ROUTINE(PETER), reports: [{ taskId: task.id, expectedVersion: 1, action: 'installed', externalId: 'trig_private', scheduleHash: 'h', stubHash: 's' }] })
     assert(installed.ok && installed.results[0].ok)
     const started = await service.runStart(principal(PETER), { taskId: task.id })
     assert(started.ok)
@@ -329,6 +329,98 @@ async function main() {
     now = new Date('2026-11-09T07:01:00Z')
     assert.equal((await service.runStart(principal(PETER), { taskId: shared.id }) as { code: string }).code, 'agent_access_revoked')
     operators.add(PETER)
+  })
+
+  await test('run once: runs at its time only, closes itself on success, reschedulable after a failure', async () => {
+    now = new Date('2026-11-05T09:00:00Z') // 10:00 Budapest
+    const once = { ...base, cron: undefined }
+    const past = await service.create(principal(ANNA), { ...once, runOnceAt: '2026-11-05T09:30' })
+    assert.equal((past as { code: string }).code, 'schedule_in_past')
+    for (const runOnceAt of ['2026-02-30T15:45', '2026-11-05 15:45', '2026-11-05T15:45:00Z', '2026-03-29T02:30']) {
+      assert.equal((await service.create(principal(ANNA), { ...once, runOnceAt }) as { code: string }).code, 'invalid_args', runOnceAt)
+    }
+    assert.equal((await service.create(principal(ANNA), { ...base, runOnceAt: '2026-11-05T15:45' }) as { code: string }).code, 'invalid_args', 'cron and runOnceAt together')
+    assert.equal((await service.create(principal(ANNA), { ...once, kind: 'shared', runOnceAt: '2026-11-05T15:45' }) as { code: string }).code, 'invalid_args', 'shared has no one-time mode')
+
+    const created = await service.create(principal(ANNA), { ...once, runOnceAt: '2026-11-05T15:45' })
+    assert(created.ok)
+    const task = created.task
+    assert.equal(task.cron, '45 15 5 11 *')
+    assert.equal(task.runOnceAt?.toISOString(), '2026-11-05T14:45:00.000Z')
+    const recipe = service.recipe(task, ROUTINE(ANNA))
+    assert.equal(recipe.runOnceAt, '2026-11-05T14:45:00.000Z')
+    assert(recipe.steps.some((step) => step.includes('run_once_at')))
+    assert.equal(service.view(task, { language: 'hu' }).schedule, 'egyszer: 2026. november 5. 15:45')
+
+    assert.equal(service.overdueSlot(task, []), null, 'not due yet')
+    const early = await service.runStart(principal(ANNA), { taskId: task.id })
+    assert.equal((early as { code?: string }).code, 'not_due')
+
+    now = new Date('2026-11-05T17:30:00Z') // 2 óránál később
+    assert.equal(service.overdueSlot(task, [])?.toISOString(), '2026-11-05T14:45:00.000Z', 'nobody started it')
+
+    now = new Date('2026-11-05T14:46:00Z')
+    const failed = await service.runStart(principal(ANNA), { taskId: task.id })
+    assert(failed.ok)
+    await service.runFinish(principal(ANNA), { runId: failed.runId, status: 'failed' })
+    assert.equal((await service.get(principal(ANNA), task.id) as { task: TaskRecord }).task.status, 'active', 'a failed one-time run can be rescheduled')
+
+    const moved = await service.update(principal(ANNA), { taskId: task.id, expectedVersion: task.version, runOnceAt: '2026-11-06T09:00' })
+    assert(moved.ok)
+    assert.equal(moved.task.cron, '0 9 6 11 *')
+    now = new Date('2026-11-06T08:01:00Z')
+    const second = await service.runStart(principal(ANNA), { taskId: task.id })
+    assert(second.ok)
+    await service.runFinish(principal(ANNA), { runId: second.runId, status: 'succeeded' })
+    const finished = (await service.get(principal(ANNA), task.id) as { task: TaskRecord }).task
+    assert.equal(finished.status, 'archived')
+    assert.equal(service.overdueSlot(finished, []), null)
+
+    now = new Date('2027-11-06T08:01:00Z')
+    const nextYear = await service.runStart(principal(ANNA), { taskId: task.id })
+    assert.equal((nextYear as { code?: string }).code, 'archived', 'the yearly cron never fires again')
+  })
+
+  await test('run once: a recurring schedule replaces it; timezone change keeps the local time', async () => {
+    now = new Date('2026-11-05T09:00:00Z')
+    const once = { ...base, cron: undefined }
+    const created = await service.create(principal(ANNA), { ...once, runOnceAt: '2026-11-05T15:45' })
+    assert(created.ok)
+    const moved = await service.update(principal(ANNA), { taskId: created.task.id, expectedVersion: 1, timezone: 'UTC' })
+    assert(moved.ok)
+    assert.equal(moved.task.runOnceAt?.toISOString(), '2026-11-05T15:45:00.000Z')
+    assert.equal(moved.task.cron, '45 15 5 11 *')
+    const recurring = await service.update(principal(ANNA), { taskId: created.task.id, expectedVersion: moved.task.version, cron: '0 8 * * *', timezone: 'Europe/Budapest' })
+    assert(recurring.ok)
+    assert.equal(recurring.task.runOnceAt, null)
+    assert.equal(recurring.task.cron, '0 8 * * *')
+  })
+
+  await test('a run that no client started is overdue; a run or a fresh edit clears it', async () => {
+    now = new Date('2026-11-05T09:00:00Z')
+    const created = await service.create(principal(ANNA), { ...base, cron: '0 8 * * *' })
+    assert(created.ok)
+    const task = { ...created.task, updatedAt: new Date('2026-11-01T00:00:00Z') }
+    assert.equal(service.overdueSlot(task, []), null, 'inside the grace window of the 8:00 run')
+    now = new Date('2026-11-05T11:00:00Z')
+    assert.equal(service.overdueSlot(task, [])?.toISOString(), '2026-11-05T07:00:00.000Z')
+    const started = { taskId: task.id, slot: new Date('2026-11-05T07:00:00Z'), status: 'succeeded' } as RunRecord
+    assert.equal(service.overdueSlot(task, [started]), null)
+    assert.notEqual(service.overdueSlot(task, [{ ...started, status: 'missed' }]), null, 'an expired claim is still not a run')
+    assert.equal(service.overdueSlot({ ...task, updatedAt: now }, []), null, 'edited after the slot')
+    assert.equal(service.overdueSlot({ ...task, status: 'paused' }, []), null)
+  })
+
+  await test('claude_routine: "installed" needs a real routine id', async () => {
+    now = new Date('2026-11-05T09:00:00Z')
+    const created = await service.create(principal(ANNA), base)
+    assert(created.ok)
+    const fake = await service.installReport(principal(ANNA), { client: ROUTINE(ANNA), reports: [{ taskId: created.task.id, externalId: `${ANNA}:routine`, action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+    assert(fake.ok)
+    assert.deepEqual(fake.results.map((row) => [row.ok, row.code]), [[false, 'invalid_external_id']])
+    assert.equal((await service.get(principal(ANNA), created.task.id) as { installations: unknown[] }).installations.length, 0)
+    const real = await service.installReport(principal(ANNA), { client: ROUTINE(ANNA), reports: [{ taskId: created.task.id, externalId: 'trig_abc', action: 'installed', scheduleHash: 'h', stubHash: 's' }] })
+    assert(real.ok && real.results[0].ok)
   })
 
   await test('paused task → deny with a disable step; archived hidden from list', async () => {
