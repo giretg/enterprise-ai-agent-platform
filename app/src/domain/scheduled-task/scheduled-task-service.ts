@@ -3,7 +3,7 @@ import { canOperateAgent } from '@/domain/agent-definition'
 import type { AuditSink } from '@/lib/audit/types'
 import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
 import { hasMinimumRole } from '@/lib/iam-policy'
-import { describeCron, isValidTimezone, minimumGapMinutes, nextSlot, normalizeCron, parseCron, prevSlot } from './cron'
+import { describeSchedule, isValidTimezone, localDateTime, minimumGapMinutes, nextSlot, normalizeCron, onceSchedule, parseCron, prevSlot } from './cron'
 import { planScheduledTaskSync, summarizePlan, type InventoryEntry, type PlanAction, type PlanTask, type PlanTaskAccess, type ReportAction } from './sync-plan'
 import {
   expectedStubHash, isScheduledTaskClientType, scheduleHash, stubExtraText, stubHash, stubPrompt, syncStubCron, syncStubPrompt,
@@ -21,8 +21,8 @@ export type InstallationRecord = ScheduledTaskInstallation
 export type RunRecord = ScheduledTaskRun
 export type ScheduledTaskPrincipal = { userId: string; tenantId: string; role: string; assumed: boolean }
 
-export type TaskInsert = Pick<TaskRecord, 'tenantId' | 'agentId' | 'ownerUserId' | 'kind' | 'createdById' | 'title' | 'instruction' | 'cron' | 'timezone' | 'graceMinutes' | 'targets' | 'audience' | 'ownerSeesResults' | 'scheduleHash'>
-export type TaskPatch = Partial<Pick<TaskRecord, 'title' | 'instruction' | 'cron' | 'timezone' | 'status' | 'targets' | 'scheduleHash' | 'ownerSeesResults'>>
+export type TaskInsert = Pick<TaskRecord, 'tenantId' | 'agentId' | 'ownerUserId' | 'kind' | 'createdById' | 'title' | 'instruction' | 'cron' | 'runOnceAt' | 'timezone' | 'graceMinutes' | 'targets' | 'audience' | 'ownerSeesResults' | 'scheduleHash'>
+export type TaskPatch = Partial<Pick<TaskRecord, 'title' | 'instruction' | 'cron' | 'runOnceAt' | 'timezone' | 'status' | 'targets' | 'scheduleHash' | 'ownerSeesResults'>>
 export type MemberInsert = { userId: string; state: MemberRecord['state']; acceptedVersion: number | null; invitedById: string }
 export type InstallationUpsert = {
   taskId: string; userId: string; clientType: string; clientInstanceId: string; externalId: string
@@ -77,7 +77,7 @@ type TaskAgentStatus = Parameters<typeof isAvailableOnMcp>[0]['status']
 
 export type ScheduledTaskCode =
   | 'invalid_args' | 'not_found' | 'not_owner' | 'not_member' | 'not_allowed' | 'conflict' | 'limit_exceeded'
-  | 'agent_unavailable' | 'agent_access_denied' | 'schedule_too_frequent' | 'schedule_never_runs'
+  | 'agent_unavailable' | 'agent_access_denied' | 'schedule_too_frequent' | 'schedule_never_runs' | 'schedule_in_past'
 export type Result<T> = { ok: true } & T | { ok: false; code: ScheduledTaskCode; message?: string; task?: unknown }
 
 const MAX_ACTIVE_OWNED = 50
@@ -87,13 +87,13 @@ const DEFAULT_GRACE_CAP_MINUTES = 120
 const RUN_LINK_MAX_AGE_MS = 24 * 3600_000
 
 export type CreateInput = {
-  agentId?: unknown; title?: unknown; instruction?: unknown; cron?: unknown; timezone?: unknown; targets?: unknown
+  agentId?: unknown; title?: unknown; instruction?: unknown; cron?: unknown; runOnceAt?: unknown; timezone?: unknown; targets?: unknown
   kind?: unknown; audience?: unknown; ownerSeesResults?: unknown; memberUserIds?: unknown; ownerUserId?: unknown
   graceMinutes?: unknown; clientType?: unknown
 }
 export type UpdateInput = {
   taskId?: unknown; expectedVersion?: unknown
-  title?: unknown; instruction?: unknown; cron?: unknown; timezone?: unknown; status?: unknown; targets?: unknown; ownerSeesResults?: unknown
+  title?: unknown; instruction?: unknown; cron?: unknown; runOnceAt?: unknown; timezone?: unknown; status?: unknown; targets?: unknown; ownerSeesResults?: unknown
 }
 
 function str(value: unknown, max: number): string | null {
@@ -136,6 +136,20 @@ export class ScheduledTaskService {
       return { ok: false, code: 'schedule_too_frequent', message: 'A scheduled task runs at most every 15 minutes. Watching for changes more often is monitoring, not a scheduled task.' }
     }
     return { ok: true, cron: normalizeCron(cron), timezone, minGapMinutes: gap }
+  }
+
+  /** Ismétlődő (`cron`) vagy egyszeri (`runOnceAt`: helyi `YYYY-MM-DDTHH:mm`) ütemezés; a kettő közül pontosan az egyik. */
+  resolveSchedule(input: { cron?: unknown; runOnceAt?: unknown; timezone: unknown }): Result<{ cron: string; timezone: string; runOnceAt: Date | null }> {
+    if ((input.cron === undefined) === (input.runOnceAt === undefined)) return { ok: false, code: 'invalid_args', message: 'pass exactly one of cron or runOnceAt' }
+    if (input.runOnceAt === undefined) {
+      const schedule = this.validateSchedule(input.cron, input.timezone)
+      return schedule.ok ? { ok: true, cron: schedule.cron, timezone: schedule.timezone, runOnceAt: null } : schedule
+    }
+    if (!isValidTimezone(input.timezone)) return { ok: false, code: 'invalid_args' }
+    const once = onceSchedule(input.runOnceAt, input.timezone)
+    if (!once) return { ok: false, code: 'invalid_args', message: 'runOnceAt must be a real local time as YYYY-MM-DDTHH:mm in timezone' }
+    if (once.at.getTime() <= this.now().getTime()) return { ok: false, code: 'schedule_in_past', message: 'runOnceAt is in the past' }
+    return { ok: true, cron: once.cron, timezone: input.timezone, runOnceAt: once.at }
   }
 
   // ── Jogosultság ────────────────────────────────────────────────────────────
@@ -197,8 +211,10 @@ export class ScheduledTaskService {
     if (kind !== 'personal' && kind !== 'team' && kind !== 'shared') return { ok: false, code: 'invalid_args' }
     if (audience !== 'selected' && audience !== 'agent_operators') return { ok: false, code: 'invalid_args' }
     if (input.ownerSeesResults !== undefined && typeof input.ownerSeesResults !== 'boolean') return { ok: false, code: 'invalid_args' }
-    const schedule = this.validateSchedule(input.cron, input.timezone ?? 'Europe/Budapest')
+    const schedule = this.resolveSchedule({ cron: input.cron, runOnceAt: input.runOnceAt, timezone: input.timezone ?? 'Europe/Budapest' })
     if (!schedule.ok) return schedule
+    // A megosztott feladat tagonként külön fut: egy közös „egyszer” lezárná a többiek elől.
+    if (schedule.runOnceAt && kind === 'shared') return { ok: false, code: 'invalid_args', message: 'a one-time run is not available for shared tasks' }
     const targets = input.targets === undefined
       ? isScheduledTaskClientType(input.clientType) ? [input.clientType] : null
       : parseTargets(input.targets)
@@ -234,11 +250,11 @@ export class ScheduledTaskService {
     }
     const task = await this.deps.store.createTask({
       tenantId: principal.tenantId, agentId, ownerUserId, kind, createdById: principal.userId, title, instruction,
-      cron: schedule.cron, timezone: schedule.timezone, graceMinutes: grace, targets, audience,
+      cron: schedule.cron, runOnceAt: schedule.runOnceAt, timezone: schedule.timezone, graceMinutes: grace, targets, audience,
       ownerSeesResults: input.ownerSeesResults === true,
       scheduleHash: scheduleHash({ cron: schedule.cron, timezone: schedule.timezone, enabled: true }),
     }, members)
-    await this.record('scheduled_task.create', principal, task, { kind, targets, cron: task.cron, timezone: task.timezone, members: members.length })
+    await this.record('scheduled_task.create', principal, task, { kind, targets, cron: task.cron, runOnceAt: task.runOnceAt?.toISOString() ?? null, timezone: task.timezone, members: members.length })
     return { ok: true, task }
   }
 
@@ -259,10 +275,17 @@ export class ScheduledTaskService {
       if (!instruction) return { ok: false, code: 'invalid_args' }
       if (instruction !== task.instruction) data.instruction = instruction
     }
-    if (input.cron !== undefined || input.timezone !== undefined) {
-      const schedule = this.validateSchedule(input.cron ?? task.cron, input.timezone ?? task.timezone)
+    if (input.cron !== undefined || input.runOnceAt !== undefined || input.timezone !== undefined) {
+      // Csak időzóna-váltásnál az egyszeri futás a helyi időpontját tartja meg.
+      const schedule = input.cron !== undefined || input.runOnceAt !== undefined
+        ? this.resolveSchedule({ cron: input.cron, runOnceAt: input.runOnceAt, timezone: input.timezone ?? task.timezone })
+        : task.runOnceAt
+          ? this.resolveSchedule({ runOnceAt: localDateTime(task.runOnceAt, task.timezone), timezone: input.timezone })
+          : this.resolveSchedule({ cron: task.cron, timezone: input.timezone })
       if (!schedule.ok) return schedule
+      if (schedule.runOnceAt && task.kind === 'shared') return { ok: false, code: 'invalid_args', message: 'a one-time run is not available for shared tasks' }
       data.cron = schedule.cron
+      data.runOnceAt = schedule.runOnceAt
       data.timezone = schedule.timezone
     }
     if (input.status !== undefined) {
@@ -372,8 +395,9 @@ export class ScheduledTaskService {
       kind: task.kind,
       instruction: task.instruction,
       cron: task.cron,
+      runOnceAt: task.runOnceAt?.toISOString() ?? null,
       timezone: task.timezone,
-      schedule: describeCron(task.cron, extra?.language ?? 'en'),
+      schedule: describeSchedule(task, extra?.language ?? 'en'),
       status: task.status,
       version: task.version,
       targets: task.targets,
@@ -408,7 +432,7 @@ export class ScheduledTaskService {
   }
 
   /** §4.7 telepítési recept: a csonk + ütemezés + kliensenkénti lépések. */
-  recipe(task: Pick<TaskRecord, 'id' | 'title' | 'cron' | 'timezone' | 'status'>, client: ScheduledTaskClient, enabled = task.status === 'active') {
+  recipe(task: Pick<TaskRecord, 'id' | 'title' | 'cron' | 'runOnceAt' | 'timezone' | 'status'>, client: ScheduledTaskClient, enabled = task.status === 'active') {
     const prompt = stubPrompt({ taskId: task.id, client })
     return {
       taskId: task.id,
@@ -416,10 +440,11 @@ export class ScheduledTaskService {
       stubPrompt: prompt,
       stubHash: stubHash(prompt),
       cron: task.cron,
+      runOnceAt: task.runOnceAt?.toISOString() ?? null,
       timezone: task.timezone,
       enabled,
       scheduleHash: scheduleHash({ cron: task.cron, timezone: task.timezone, enabled }),
-      steps: clientSteps(client.clientType),
+      steps: clientSteps(client.clientType, Boolean(task.runOnceAt)),
     }
   }
 
@@ -438,12 +463,15 @@ export class ScheduledTaskService {
     await Promise.all(agentIds.map(async (id) => operate.set(id, (await this.agentState(principal, id)).canOperate)))
     const names = await this.deps.userNames([...new Set([...tasks.map((task) => task.ownerUserId), ...members.map((row) => row.invitedById)])])
     const planTasks: PlanTask[] = []
+    const now = this.now().getTime()
     for (const task of tasks) {
       let access = this.accessFor(task, members, principal.userId)
       if (access === null) continue
       if (!operate.get(task.agentId)) access = 'not_allowed'
       const live = allInstallations.filter((row) => row.taskId === task.id && !row.removedAt)
       if (task.status === 'archived' && !live.some((row) => row.userId === principal.userId)) continue
+      // Lejárt egyszeri futást már nincs értelme felajánlani telepítésre.
+      if (task.runOnceAt && task.runOnceAt.getTime() <= now && !live.some((row) => row.userId === principal.userId)) continue
       const member = members.find((row) => row.taskId === task.id && row.userId === principal.userId)
       planTasks.push({
         taskId: task.id, title: task.title, kind: task.kind, ownerSeesResults: task.ownerSeesResults, status: task.status, cron: task.cron, timezone: task.timezone,
@@ -551,6 +579,8 @@ export class ScheduledTaskService {
     const hash = typeof report.scheduleHash === 'string' ? report.scheduleHash.slice(0, 64) : ''
     const stub = typeof report.stubHash === 'string' ? report.stubHash.slice(0, 64) : ''
     if (!externalId || !hash || !stub) return { ok: false, code: 'invalid_args' }
+    // A „Telepítve” jelzés csak valódi routine-azonosítóval járhat: anélkül semmi sem indítaná el a feladatot.
+    if (client.clientType === 'claude_routine' && !externalId.startsWith('trig_')) return { ok: false, code: 'invalid_external_id' }
     if (access === 'needs_consent' && report.expectedVersion !== task.version) return { ok: false, code: 'conflict' }
     // Egy (task, user, kliens) egy élő telepítés: a régi externalId-k lezárulnak (L7 újratelepítés).
     await this.deps.store.markInstallationsRemoved({ taskId: task.id, userId: principal.userId, clientType: client.clientType, clientInstanceId: client.clientInstanceId, now })
@@ -576,6 +606,18 @@ export class ScheduledTaskService {
     const next = nextSlot(spec, task.timezone, slot)
     const period = next ? (next.getTime() - slot.getTime()) / 60_000 : DEFAULT_GRACE_CAP_MINUTES
     return Math.min(period, DEFAULT_GRACE_CAP_MINUTES)
+  }
+
+  /** A legutóbbi esedékes időpont, ha a türelmi idő letelt, és egyetlen kliens sem indította el. */
+  overdueSlot(task: TaskRecord, runs: RunRecord[]): Date | null {
+    if (task.status !== 'active') return null
+    const now = this.now()
+    const computed = this.slotFor(task, now)
+    if (!computed || computed.slot <= task.updatedAt) return null
+    if (task.runOnceAt && computed.slot.getTime() !== task.runOnceAt.getTime()) return null
+    if (now.getTime() - computed.slot.getTime() <= computed.graceMinutes * 60_000) return null
+    const started = runs.some((run) => run.taskId === task.id && run.slot.getTime() === computed.slot.getTime() && run.status !== 'missed')
+    return started ? null : computed.slot
   }
 
   /** §4.4 lépés 3: korai indulásnál (≤ 5 perc) a következő slot; különben a legutóbbi. */
@@ -609,6 +651,9 @@ export class ScheduledTaskService {
     const computed = this.slotFor(task, now)
     if (!computed || computed.slot.getTime() < task.createdAt.getTime() - EARLY_START_MS) return stop('skip', 'not_due', 'no scheduled time is due yet.')
     const { slot, graceMinutes } = computed
+    // Egyszeri futás: a cron évente újra sorra kerülne, de csak a megadott alkalom érvényes.
+    if (task.runOnceAt && slot.getTime() < task.runOnceAt.getTime()) return stop('skip', 'not_due', 'no scheduled time is due yet.')
+    if (task.runOnceAt && slot.getTime() > task.runOnceAt.getTime()) return stop('deny', 'once_finished', 'this one-time task is over.', { steps: [{ type: 'local', op: 'remove' }] })
     const claimKey = task.kind === 'shared' ? principal.userId : ''
     const client = parseClient(input.installation)
     if (client && !task.targets.includes(client.clientType)) return stop('deny', 'target_not_allowed', 'this client is no longer a target.', { steps: [{ type: 'local', op: 'remove' }] })
@@ -697,6 +742,14 @@ export class ScheduledTaskService {
     if (run.status === 'running') {
       finished = (await this.deps.store.finishRun({ runId: run.id, runnerUserId: principal.userId, status: input.status, summary, now: this.now() })) ?? run
       await this.record('scheduled_task.run_finish', principal, task, { runId: run.id, status: input.status })
+      // Sikeres egyszeri futás után kész: a kliensek a következő szinkronnál leveszik. Hibánál marad, új időponttal újraindítható.
+      if (input.status === 'succeeded' && task.status === 'active' && task.runOnceAt?.getTime() === run.slot.getTime()) {
+        const done = await this.deps.store.updateTask({
+          tenantId: principal.tenantId, taskId: task.id, expectedVersion: task.version, reconsent: false, ownerUserId: task.ownerUserId,
+          data: { status: 'archived', scheduleHash: scheduleHash({ cron: task.cron, timezone: task.timezone, enabled: false }) },
+        })
+        if (done) await this.record('scheduled_task.update', principal, done, { fields: ['status'], reason: 'one_time_run_succeeded', version: done.version })
+      }
     } else if (run.status !== input.status) {
       return { ok: false as const, code: 'already_finished' as const, status: run.status }
     }
@@ -778,12 +831,24 @@ function supportsSyncStub(clientType: string) {
 }
 
 /** §6 kliens-képességek: programozható ütemező, vagy kézi recept. */
-function clientSteps(clientType: string): string[] {
+function clientSteps(clientType: string, once = false): string[] {
+  const steps = recurringClientSteps(clientType)
+  if (!once) return steps
+  return [
+    ...steps,
+    clientType === 'claude_routine'
+      ? 'This task runs once: set run_once_at = recipe.runOnceAt (UTC) on the routine instead of a cron schedule.'
+      : 'This task runs once, at recipe.runOnceAt: use the one-time option of this client if it has one. Otherwise install recipe.cron; the platform refuses every later run and asks to remove it.',
+  ]
+}
+
+function recurringClientSteps(clientType: string): string[] {
   switch (clientType) {
     case 'claude_routine':
       return [
-        'Create (or update) a Claude Code routine with RemoteTrigger: name = recipe.name, prompt = recipe.stubPrompt exactly, schedule = recipe.cron in recipe.timezone (convert to the timezone the routine expects), enabled = recipe.enabled.',
-        'Use the routine id as externalId in platform.scheduled_task.install_report.',
+        'Create (or update) a Claude Code routine with RemoteTrigger: name = recipe.name, prompt = recipe.stubPrompt exactly, schedule = recipe.cron in recipe.timezone (convert to the timezone the routine expects), enabled = recipe.enabled. Attach the MCP connector of this organization so the run can call the platform.',
+        'Use the routine id (trig_...) as externalId in platform.scheduled_task.install_report.',
+        'If you have no RemoteTrigger tool here, you cannot install it: do not report it as installed. Tell the user to open Claude Code and ask for the scheduled task sync there.',
       ]
     case 'hermes':
       return [

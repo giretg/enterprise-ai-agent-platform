@@ -1,19 +1,20 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import {
-  createScheduledTaskAction, inviteScheduledTaskMembersAction, listRunToolCallsAction, previewScheduleAction, respondScheduledTaskAction, updateScheduledTaskAction,
+  createScheduledTaskAction, inviteScheduledTaskMembersAction, listRunToolCallsAction, respondScheduledTaskAction, updateScheduledTaskAction,
   type ScheduledTaskFormOptions, type ScheduledTaskRow,
 } from '@/app/actions/scheduled-task'
-import { formatDateTime } from '@/i18n/format'
+import { formatDateTime, formatRunTime } from '@/i18n/format'
 import { Badge } from '@/components/ui/shell'
+import { formFromSchedule, scheduleFromForm, type ScheduleForm } from '@/domain/scheduled-task/schedule-form'
 import type { ScheduledTaskClientType } from '@/domain/scheduled-task/stub'
+import { SchedulePicker } from './schedule-picker'
 
 type Kind = ScheduledTaskRow['kind']
 const KINDS: Kind[] = ['personal', 'team', 'shared']
-const PRESETS = { weekdays8: '0 8 * * 1-5', daily8: '0 8 * * *', monday9: '0 9 * * 1', hourly: '0 * * * *' } as const
 const CODES = ['not_owner', 'agent_access_denied', 'agent_unavailable', 'limit_exceeded', 'not_allowed'] as const
 const button = 'rounded-md border border-ink/20 px-3 py-2 text-sm disabled:opacity-50'
 const primary = 'rounded-md bg-ink px-3 py-2 text-sm text-white disabled:opacity-50'
@@ -45,41 +46,8 @@ function useErrorText() {
   const t = useTranslations('ControlPlane.scheduledTasks')
   return (code: string) => code === 'conflict' ? t('conflict')
     : (CODES as readonly string[]).includes(code) ? t(`codes.${code as (typeof CODES)[number]}`)
-      : code === 'schedule_too_frequent' || code === 'schedule_never_runs' || code === 'invalid_args' ? t(`scheduleErrors.${code}`)
+      : code === 'schedule_too_frequent' || code === 'schedule_never_runs' || code === 'schedule_in_past' || code === 'invalid_args' ? t(`scheduleErrors.${code}`)
         : t('error')
-}
-
-function SchedulePicker({ cron, timezone, onChange }: { cron: string; timezone: string; onChange: (next: { cron?: string; timezone?: string }) => void }) {
-  const t = useTranslations('ControlPlane.scheduledTasks')
-  const [preview, setPreview] = useState<{ description: string; runsPerDay: number | null; error: string | null } | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    const timer = setTimeout(async () => {
-      const result = await previewScheduleAction({ cron, timezone }).catch(() => null)
-      if (!cancelled && result?.success) setPreview(result.data)
-    }, 300)
-    return () => { cancelled = true; clearTimeout(timer) }
-  }, [cron, timezone])
-  return (
-    <fieldset className="space-y-2">
-      <legend className="font-medium">{t('when')}</legend>
-      <div className="flex flex-wrap gap-2">
-        {(Object.keys(PRESETS) as Array<keyof typeof PRESETS>).map((key) => (
-          <button key={key} type="button" className={PRESETS[key] === cron ? primary : button} onClick={() => onChange({ cron: PRESETS[key] })}>{t(`presets.${key}`)}</button>
-        ))}
-      </div>
-      <div className="grid gap-2 sm:grid-cols-2">
-        <label className="text-sm text-ink-soft">{t('cron')}<input className={input} value={cron} onChange={(event) => onChange({ cron: event.target.value })} /></label>
-        <label className="text-sm text-ink-soft">{t('timezone')}<input className={input} value={timezone} onChange={(event) => onChange({ timezone: event.target.value })} /></label>
-      </div>
-      {preview ? (
-        <p className={preview.error ? 'text-sm text-red-800' : 'text-sm text-ink-soft'}>
-          {preview.error ? t(`scheduleErrors.${preview.error as 'invalid_args'}`) : preview.description}
-          {!preview.error && preview.runsPerDay ? ` ${t('runsPerDay', { count: preview.runsPerDay })}` : ''}
-        </p>
-      ) : null}
-    </fieldset>
-  )
 }
 
 function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormOptions; onDone: (message: string) => void; onCancel: () => void }) {
@@ -92,8 +60,9 @@ function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormO
   const [agentId, setAgentId] = useState(options.agents[0]?.id ?? '')
   const [title, setTitle] = useState('')
   const [instruction, setInstruction] = useState('')
-  const [cron, setCron] = useState<string>(PRESETS.weekdays8)
   const [timezone, setTimezone] = useState('Europe/Budapest')
+  const [schedule, setSchedule] = useState<ScheduleForm>(() => formFromSchedule({ cron: '0 8 * * 1-5', timezone: 'Europe/Budapest' }))
+  const [scheduleValid, setScheduleValid] = useState(false)
   const [targets, setTargets] = useState<string[]>(['claude_routine'])
   const [ownerUserId, setOwnerUserId] = useState('')
   const [audience, setAudience] = useState<'selected' | 'agent_operators'>('selected')
@@ -103,11 +72,19 @@ function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormO
 
   if (options.agents.length === 0) return <p className="text-sm text-ink-soft">{t('noAgents')}</p>
 
+  function pickKind(next: Kind) {
+    setKind(next)
+    // A megosztott feladat tagonként fut, ott nincs egyszeri mód.
+    if (next === 'shared' && schedule.mode === 'once') setSchedule({ ...schedule, mode: 'daily' })
+  }
+
   function submit() {
+    const value = scheduleFromForm(schedule)
+    if (!value) return
     setError(null)
     startTransition(async () => {
       const result = await createScheduledTaskAction({
-        agentId, kind, title, instruction, cron, timezone, targets: targets as ScheduledTaskClientType[],
+        agentId, kind, title, instruction, ...value, timezone, targets: targets as ScheduledTaskClientType[],
         ...(kind === 'personal' && ownerUserId ? { ownerUserId } : {}),
         ...(kind !== 'personal' ? { audience, ownerSeesResults, ...(audience === 'selected' ? { memberUserIds } : {}) } : {}),
       }).catch(() => null)
@@ -127,7 +104,7 @@ function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormO
         <div className="grid gap-3 md:grid-cols-3">
           {KINDS.map((value) => (
             <label key={value} className={`cursor-pointer rounded-lg border p-3 text-sm ${kind === value ? 'border-ink bg-ink/5' : 'border-ink/15'}`}>
-              <input type="radio" name="kind" className="sr-only" checked={kind === value} onChange={() => setKind(value)} />
+              <input type="radio" name="kind" className="sr-only" checked={kind === value} onChange={() => pickKind(value)} />
               <span className="block font-medium">{t(`kinds.${value}.name`)}</span>
               <span className="mt-1 block text-ink-soft">{t(`kinds.${value}.body`)}</span>
               <span className="mt-1 block text-ink-faint">{t(`kinds.${value}.example`)}</span>
@@ -143,7 +120,7 @@ function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormO
       {kind === 'team' && agent?.userDelegated ? (
         <div role="alert" className="rounded-lg bg-honey/10 p-3 text-sm">
           <p>{t('teamWarning')}</p>
-          <button type="button" className={`${button} mt-2`} onClick={() => setKind('shared')}>{t('switchToShared')}</button>
+          <button type="button" className={`${button} mt-2`} onClick={() => pickKind('shared')}>{t('switchToShared')}</button>
         </div>
       ) : null}
       <label className="block text-sm">{t('taskTitle')}
@@ -152,7 +129,7 @@ function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormO
       <label className="block text-sm">{t('instruction')}
         <textarea className={input} rows={4} maxLength={8000} required value={instruction} placeholder={t('instructionPlaceholder')} onChange={(event) => setInstruction(event.target.value)} />
       </label>
-      <SchedulePicker cron={cron} timezone={timezone} onChange={(next) => { if (next.cron !== undefined) setCron(next.cron); if (next.timezone !== undefined) setTimezone(next.timezone) }} />
+      <SchedulePicker form={schedule} timezone={timezone} allowOnce={kind !== 'shared'} onChange={setSchedule} onTimezone={setTimezone} onValidity={setScheduleValid} />
       <fieldset className="space-y-1 text-sm">
         <legend className="font-medium">{t('where')}</legend>
         {options.clientTypes.map((clientType) => (
@@ -194,7 +171,7 @@ function CreateForm({ options, onDone, onCancel }: { options: ScheduledTaskFormO
       ) : null}
       {error ? <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p> : null}
       <div className="flex gap-2">
-        <button type="submit" className={primary} disabled={pending || !title.trim() || !instruction.trim() || targets.length === 0}>{t('create')}</button>
+        <button type="submit" className={primary} disabled={pending || !scheduleValid || !title.trim() || !instruction.trim() || targets.length === 0}>{t('create')}</button>
         <button type="button" className={button} disabled={pending} onClick={onCancel}>{t('closeForm')}</button>
       </div>
     </form>
@@ -209,7 +186,9 @@ function TaskCard({ task, options }: { task: ScheduledTaskRow; options: Schedule
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState({ title: task.title, instruction: task.instruction, cron: task.cron, timezone: task.timezone })
+  const [draft, setDraft] = useState({ title: task.title, instruction: task.instruction, timezone: task.timezone })
+  const [schedule, setSchedule] = useState<ScheduleForm>(() => formFromSchedule({ cron: task.cron, runOnceLocal: task.runOnceLocal, timezone: task.timezone }))
+  const [scheduleValid, setScheduleValid] = useState(false)
   const [inviting, setInviting] = useState<string[] | null>(null)
   const activeMembers = task.members.filter((row) => row.state === 'active').length
 
@@ -225,15 +204,18 @@ function TaskCard({ task, options }: { task: ScheduledTaskRow; options: Schedule
       router.refresh()
     })
   }
-  const update = (patch: Partial<{ title: string; instruction: string; cron: string; timezone: string; status: 'active' | 'paused' | 'archived' }>, after?: () => void) =>
+  const update = (patch: Partial<{ title: string; instruction: string; cron: string; runOnceAt: string; timezone: string; status: 'active' | 'paused' | 'archived' }>, after?: () => void) =>
     run(() => updateScheduledTaskAction({ taskId: task.taskId, expectedVersion: task.version, ...patch }), after)
+  const scheduleValue = scheduleFromForm(schedule)
+  const savedSchedule = task.runOnceLocal ? { runOnceAt: task.runOnceLocal } : { cron: task.cron }
+  const scheduleChanged = JSON.stringify(scheduleValue) !== JSON.stringify(savedSchedule) || draft.timezone !== task.timezone
   const respond = (response: 'accept' | 'decline') => run(() => respondScheduledTaskAction({ taskId: task.taskId, response, expectedVersion: task.version }))
 
   return (
     <article className="rounded-xl border border-ink/10 bg-white/50 p-4 text-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-60 max-w-2xl">
-          <h2 className="text-base font-medium">{task.title} <Badge tone={task.status === 'active' ? 'success' : 'neutral'}>{t(`statuses.${task.status}`)}</Badge></h2>
+          <h2 className="text-base font-medium">{task.title} <Badge tone={task.status === 'active' || task.onceDone ? 'success' : 'neutral'}>{task.onceDone ? t('statuses.onceDone') : t(`statuses.${task.status}`)}</Badge></h2>
           <p className="mt-1 whitespace-pre-wrap break-words text-ink-soft">{task.instruction}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -255,10 +237,17 @@ function TaskCard({ task, options }: { task: ScheduledTaskRow; options: Schedule
 
       {task.ownerSeesResults && (task.myState === 'invited' || task.myState === 'needs_reconsent') ? <p className="mt-3 rounded-lg bg-honey/10 p-3">{t('resultsVisibilityWarning', { owner: task.ownerName })}</p> : null}
 
+      {task.overdueSlot ? (
+        <div role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-red-800">
+          <p className="font-medium">{t('overdue.title', { when: formatRunTime(task.overdueSlot, locale, task.timezone) })}</p>
+          <p className="mt-1">{t('overdue.body')}</p>
+        </div>
+      ) : null}
+
       <dl className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div><dt className="text-ink-faint">{t('columns.agent')}</dt><dd>{task.agentName}</dd></div>
         <div><dt className="text-ink-faint">{t('columns.who')}</dt><dd>{task.kind === 'personal' ? (task.isOwner ? t('kinds.personal.who') : task.ownerName) : t(`kinds.${task.kind}.who`, { count: activeMembers })}</dd></div>
-        <div><dt className="text-ink-faint">{t('columns.when')}</dt><dd>{task.schedule}<span className="block text-xs text-ink-faint">{task.timezone}{task.runsPerDay ? ` · ${t('runsPerDay', { count: task.runsPerDay })}` : ''}</span></dd></div>
+        <div><dt className="text-ink-faint">{t('columns.when')}</dt><dd>{task.schedule}<span className="block text-xs text-ink-faint">{task.timezone}{task.runsPerDay ? ` · ${t('runsPerDay', { count: task.runsPerDay })}` : ''}</span>{task.nextRunAt ? <span className="block text-xs text-ink-soft">{t('nextRun', { when: formatRunTime(task.nextRunAt, locale, task.timezone) })}</span> : null}</dd></div>
         <div>
           <dt className="text-ink-faint">{t('columns.where')}</dt>
           <dd className="space-y-1">
@@ -282,13 +271,13 @@ function TaskCard({ task, options }: { task: ScheduledTaskRow; options: Schedule
           <label className="block">{t('taskTitle')}<input className={input} maxLength={200} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
           <label className="block">{t('instruction')}<textarea className={input} rows={4} maxLength={8000} value={draft.instruction} onChange={(event) => setDraft({ ...draft, instruction: event.target.value })} /></label>
           {task.kind !== 'personal' ? <p className="text-ink-soft">{t('editReconsentNote')}</p> : null}
-          <SchedulePicker cron={draft.cron} timezone={draft.timezone} onChange={(next) => setDraft({ ...draft, ...next })} />
+          <SchedulePicker form={schedule} timezone={draft.timezone} allowOnce={task.kind !== 'shared'} onChange={setSchedule} onTimezone={(timezone) => setDraft({ ...draft, timezone })} onValidity={setScheduleValid} />
+          {scheduleChanged ? <p className="text-ink-soft">{t('editScheduleNote')}</p> : null}
           <div className="flex gap-2">
-            <button type="button" className={primary} disabled={pending} onClick={() => update({
+            <button type="button" className={primary} disabled={pending || !scheduleValue || (scheduleChanged && !scheduleValid)} onClick={() => update({
               ...(draft.title !== task.title ? { title: draft.title } : {}),
               ...(draft.instruction !== task.instruction ? { instruction: draft.instruction } : {}),
-              ...(draft.cron !== task.cron ? { cron: draft.cron } : {}),
-              ...(draft.timezone !== task.timezone ? { timezone: draft.timezone } : {}),
+              ...(scheduleChanged && scheduleValue ? { ...scheduleValue, timezone: draft.timezone } : {}),
             }, () => setEditing(false))}>{t('save')}</button>
             <button type="button" className={button} disabled={pending} onClick={() => setEditing(false)}>{t('cancel')}</button>
           </div>
