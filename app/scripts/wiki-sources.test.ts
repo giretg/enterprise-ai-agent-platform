@@ -19,6 +19,7 @@ import {
 import {
   extractCrossWikiLinks,
   extractWikiLinks,
+  wikiLinkTitles,
   isDefaultWikiSchema,
   mergeWikiSources,
   readWikiSources,
@@ -26,7 +27,7 @@ import {
 } from '../src/lib/kb-wiki'
 import { renderWikiTemplate } from '../src/lib/wiki-templates'
 import { validateWikiPages } from '../src/lib/kb-validator'
-import { linkifyWikiLinks } from '../src/lib/wiki-markdown-links'
+import { linkifyWikiLinks, resolveRelativeWikiLink } from '../src/lib/wiki-markdown-links'
 import { hashSnapshot } from '../src/domain/agent-definition'
 import { buildCategoryTree, categoryIndex, linkedWikiItems, renderWikiTreeIndex, type WikiCategoryRow } from '../src/lib/wiki-categories'
 
@@ -130,6 +131,51 @@ check('wikik közti link: [[wiki:<wikiId>/<path>]] — a helyi linkek közé nem
     linkifyWikiLinks(`[[wiki:${WIKI}/contracts/acme|ACME]]`),
     `[ACME](#xwiki:${WIKI}/contracts%2Facme.md)`,
   )
+})
+
+check('escape-elt pipe: a [[path\\|címke]] ugyanaz, mint a [[path|címke]] (Obsidian táblában így írja)', () => {
+  const row = '| [[entities/x.md\\|Díjkeret]] | [[entities/y\\|Y]] |'
+  assert.deepEqual(extractWikiLinks(row, 'a.md'), ['entities/x.md', 'entities/y.md'])
+  assert.equal(linkifyWikiLinks(row), '| [Díjkeret](#wiki:entities%2Fx.md) | [Y](#wiki:entities%2Fy.md) |')
+  assert.equal(linkifyWikiLinks('[[entities/x.md#fees\\|Díjak]]'), '[Díjak](#wiki:entities%2Fx.md)')
+  const cross = `[[wiki:${WIKI}/contracts/acme.md\\|ACME]]`
+  assert.deepEqual(extractCrossWikiLinks(cross), [{ wikiId: WIKI, path: 'contracts/acme.md' }])
+  assert.equal(linkifyWikiLinks(cross), `[ACME](#xwiki:${WIKI}/contracts%2Facme.md)`)
+  // A címkében maradó `\|`-t a markdown oldja fel, így a táblacella nem esik szét.
+  assert.equal(linkifyWikiLinks('[[a\\|b\\|c]]'), '[b\\|c](#wiki:a.md)')
+})
+
+check('címke nélküli link: az oldal címe, escape-elve; a címke elsőbbséget élvez; ismeretlen oldalnál marad az útvonal', () => {
+  const titles = { 'entities/x.md': 'Díj | *fontos*', [`wiki:${WIKI}/contracts/acme.md`]: 'ACME szerződés' }
+  assert.equal(linkifyWikiLinks('[[entities/x]]', titles), '[Díj \\| \\*fontos\\*](#wiki:entities%2Fx.md)')
+  assert.equal(linkifyWikiLinks('[[entities/x|Saját]]', titles), '[Saját](#wiki:entities%2Fx.md)')
+  assert.equal(linkifyWikiLinks('[[entities/nincs]]', titles), '[entities/nincs](#wiki:entities%2Fnincs.md)')
+  assert.equal(linkifyWikiLinks(`[[wiki:${WIKI}/contracts/acme]]`, titles), `[ACME szerződés](#xwiki:${WIKI}/contracts%2Facme.md)`)
+})
+
+check('wikiLinkTitles: csak az oldalról hivatkozott, címmel rendelkező oldalak', () => {
+  const pages = [
+    { path: 'entities/x.md', title: 'X' },
+    { path: 'entities/y.md', title: 'Y' },
+    { path: 'entities/z.md', title: 'Z' },
+    { path: 'entities/torolt.md', title: '' },
+  ]
+  assert.deepEqual(
+    wikiLinkTitles('[[entities/x]] [Y](../entities/y.md) [[entities/torolt]] [[entities/nincs]]', 'analyses/a.md', pages),
+    { 'entities/x.md': 'X', 'entities/y.md': 'Y' },
+  )
+})
+
+check('relatív markdown link: a felület és a szerver ugyanarra az oldalra oldja fel', () => {
+  assert.equal(resolveRelativeWikiLink('analyses/a.md', '../entities/x.md'), 'entities/x.md')
+  assert.equal(resolveRelativeWikiLink('analyses/a.md', 'b.md'), 'analyses/b.md')
+  assert.equal(resolveRelativeWikiLink('analyses/a.md', './b.md#resz'), 'analyses/b.md')
+  assert.equal(resolveRelativeWikiLink('analyses/a.md', '/entities/x.md?v=1'), 'entities/x.md')
+  assert.equal(resolveRelativeWikiLink('a.md', '../../x.md'), 'x.md')
+  for (const href of ['https://a.hu/x.md', 'mailto:a@b.md', '//a.hu/x.md', 'x.pdf', '#wiki:x.md', '#resz', '']) {
+    assert.equal(resolveRelativeWikiLink('analyses/a.md', href), null, href)
+  }
+  assert.deepEqual(extractWikiLinks('[a](../entities/x.md) [b](//a.hu/y.md)', 'analyses/a.md'), ['entities/x.md'])
 })
 
 check('validátor: emberi rögzítés teljesíti a forrás-szabályt; hiányzó szerző/alkalom hiba; másik tudástár állapota', () => {

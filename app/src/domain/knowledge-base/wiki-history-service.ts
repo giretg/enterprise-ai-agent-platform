@@ -23,6 +23,7 @@ import {
   type WikiPageState,
   type WikiPageTypeName,
   type WikiSourceRef,
+  wikiLinkTitles,
 } from '@/lib/kb-wiki'
 import { EMPTY_WIKI_META, readWikiMeta } from '@/lib/wiki-metadata'
 import {
@@ -426,6 +427,14 @@ export class WikiHistoryService {
       body: row.erasedAt ? '' : row.body,
       sources: row.erasedAt ? [] : await this.sourcesFor(actor, connector.id, row.sourceRefs),
       knownPaths: state.filter((item) => item.status !== 'archived' && item.path).map((item) => item.path!),
+      // Törölt (erased) oldal címe nem kerülhet link feliratába.
+      linkTitles: row.erasedAt
+        ? {}
+        : wikiLinkTitles(
+            row.body,
+            row.path!,
+            state.flatMap((item) => (item.status !== 'archived' && item.path && !item.erasedAt ? [{ path: item.path, title: item.title }] : [])),
+          ),
     }
   }
 

@@ -2,6 +2,7 @@ import { wikiIndexLine } from './wiki-categories'
 export { isUnknownSourceDate, wikiPageDateUnknown, wikiIndexLine } from './wiki-categories'
 import { WIKI_TEMPLATE_VERSION, renderWikiTemplate, type WikiTemplateId } from './wiki-templates'
 import { resolveKbLanguage } from './kb-language'
+import { resolveRelativeWikiLink, wikiLinkTargets } from './wiki-markdown-links'
 import type { WikiPageMeta } from './wiki-metadata'
 /**
  * #943 LLM Wiki 2/6 — a wiki-oldalak determinisztikus, DB-mentes része (#941 §1, D8, D9).
@@ -203,36 +204,33 @@ export function stripLeadingFrontmatter(body: string): { body: string; stripped:
 // ---------------------------------------------------------------------------
 // Linkek
 
-function resolveRelative(fromPath: string, target: string): string {
-  const baseDir = fromPath.includes('/') ? fromPath.slice(0, fromPath.lastIndexOf('/')) : ''
-  const parts = (target.startsWith('/') ? [] : baseDir ? baseDir.split('/') : []).concat(target.split('/'))
-  const stack: string[] = []
-  for (const part of parts) {
-    if (part === '' || part === '.') continue
-    if (part === '..') stack.pop()
-    else stack.push(part)
-  }
-  return stack.join('/')
-}
-
 /**
  * Az oldal kimenő wiki-linkjei normalizált path-ként (`entities/teya.md`).
- * `[[path]]`, `[[path|címke]]` és relatív `.md` markdown-link; külső URL és a
+ * `[[path]]`, `[[path|címke]]`, `[[path\|címke]]` és relatív `.md` markdown-link; külső URL és a
  * wikik közti `[[wiki:…]]` link nem (azt az `extractCrossWikiLinks` adja).
  */
 export function extractWikiLinks(body: string, fromPath: string): string[] {
   const out = new Set<string>()
-  for (const match of body.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g)) {
-    const target = match[1].trim().replace(/^\/+/, '')
+  for (const raw of wikiLinkTargets(body)) {
+    const target = raw.replace(/^\/+/, '')
     if (!target || CROSS_WIKI_PREFIX.test(target)) continue
     out.add(target.endsWith('.md') ? target : `${target}.md`)
   }
   for (const match of body.matchAll(/\[[^\]]*\]\(([^)\s]+)\)/g)) {
-    const target = match[1].split('#')[0].split('?')[0]
-    if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || !target.endsWith('.md')) continue
-    out.add(resolveRelative(fromPath, target))
+    const target = resolveRelativeWikiLink(fromPath, match[1])
+    if (target) out.add(target)
   }
   return [...out].sort()
+}
+
+/** Az oldalról hivatkozott oldalak címe (a felület címke nélküli linkjeinek felirata). */
+export function wikiLinkTitles(
+  body: string,
+  fromPath: string,
+  pages: ReadonlyArray<{ path: string; title: string }>,
+): Record<string, string> {
+  const linked = new Set(extractWikiLinks(body, fromPath))
+  return Object.fromEntries(pages.filter((page) => page.title && linked.has(page.path)).map((page) => [page.path, page.title]))
 }
 
 const CROSS_WIKI_PREFIX = /^wiki:/i
@@ -245,8 +243,9 @@ export type CrossWikiLink = { wikiId: string; path: string }
  */
 export function extractCrossWikiLinks(body: string): CrossWikiLink[] {
   const out = new Map<string, CrossWikiLink>()
-  for (const match of body.matchAll(/\[\[\s*wiki:([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/gi)) {
-    const raw = match[1].trim()
+  for (const target of wikiLinkTargets(body)) {
+    if (!CROSS_WIKI_PREFIX.test(target)) continue
+    const raw = target.replace(CROSS_WIKI_PREFIX, '').trim()
     const slash = raw.indexOf('/')
     if (slash <= 0) continue
     const wikiId = raw.slice(0, slash).trim().toLowerCase()
