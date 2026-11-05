@@ -11,6 +11,7 @@
  * Futtatás: DATABASE_URL=… npm run test:wiki-sources-members-db (CI: migrations job).
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type { Connector } from '@prisma/client'
 import { prisma } from '../src/lib/db'
@@ -460,6 +461,40 @@ async function main() {
       expectedMemberUserIds: stale.kbMemberUserIds, kbMemberUserIds: [...stale.kbMemberUserIds, bob.id],
     }))
     assert.deepEqual((await connectors.findById(M2.connector.id, tenant.id))!.kbMemberUserIds, before.kbMemberUserIds)
+  })
+  await check('[[path\\|címke]] táblában: nincs broken_link, a céloldalon backlink, a címke nélküli link felirata a cím', async () => {
+    const cited = [{ documentId: S.doc.id }]
+    const target = await wikiService.write(await caller(admin), {
+      wikiId: S.wiki.id, pages: [upsert('entities/link-target.md', 'cél', cited, { title: 'Link cél' })],
+    })
+    assert.equal(target.ok, true, JSON.stringify(target))
+    const written = await wikiService.write(await caller(admin), {
+      wikiId: S.wiki.id,
+      pages: [upsert('analyses/link-table.md', '| a |\n|---|\n| [[entities/link-target.md\\|Saját címke]] |', cited)],
+    })
+    assert.equal(written.ok, true, JSON.stringify(written))
+    assert.ok(!JSON.stringify(written).includes('broken_link'), JSON.stringify(written))
+    const backlinks = await wikiService.backlinks(S.connector.id, 'entities/link-target.md')
+    assert.deepEqual(backlinks!.pages.map((page) => page.path), ['analyses/link-table.md'])
+
+    const titled = await wikiService.write(await caller(admin), {
+      wikiId: S.wiki.id, pages: [upsert('analyses/link-plain.md', '[[entities/link-target]]', cited)],
+    })
+    assert.equal(titled.ok, true, JSON.stringify(titled))
+    const view = await consoleService.getPage(asAlice, S.connector.id, 'analyses/link-plain.md')
+    assert.deepEqual(view.linkTitles, { 'entities/link-target.md': 'Link cél' })
+  })
+  await check('0057: a korábban hibásan tárolt kimenő link helyes alakra áll, a jó érintetlen, újrafuttatva is', async () => {
+    const stored = ['entities/a.md\\.md', 'entities/b\\.md', 'entities/c.md', `wiki:${M.wiki.id}/x.md\\.md`]
+    const page = (await wikis.findPage(S.connector.id, 'analyses/link-table.md'))!
+    await prisma.wikiPage.update({ where: { id: page.id }, data: { outLinks: stored } })
+    const sql = readFileSync('prisma/migrations/0057_wiki_out_links_escaped_pipe/migration.sql', 'utf8')
+    await prisma.$executeRawUnsafe(sql)
+    await prisma.$executeRawUnsafe(sql)
+    const after = (await prisma.wikiPage.findUnique({ where: { id: page.id } }))!
+    assert.deepEqual([...after.outLinks].sort(), ['entities/a.md', 'entities/b.md', 'entities/c.md', `wiki:${M.wiki.id}/x.md`].sort())
+    assert.equal(after.version, page.version)
+    assert.equal(after.contentHash, page.contentHash)
   })
   await check('agent audience also covers published and pinned definitions', async () => {
     const version = await prisma.agentDefinitionVersion.create({ data: {

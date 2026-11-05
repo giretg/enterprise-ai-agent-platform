@@ -33,6 +33,7 @@ import {
   groupWikiIndex,
   isDefaultWikiSchema,
   extractCrossWikiLinks,
+  wikiLinkTitles,
   isDocumentSource,
   isHumanNoteSource,
   readWikiSources,
@@ -230,12 +231,13 @@ export class WikiConsoleService {
 
   /** #1061 F2: a törzs wikik közti linkjei a felületnek (a nem látott wiki azonosító nélkül). */
   private async crossLinkViews(actor: WikiConsoleActor, connectorId: string, body: string) {
-    const out: Array<{ wikiId: string; path: string; connectorId: string | null; exists: boolean }> = []
+    const out: Array<{ wikiId: string; path: string; connectorId: string | null; exists: boolean; title: string | null }> = []
     for (const link of extractCrossWikiLinks(body)) {
       const wiki = await this.deps.wikis.findById(link.wikiId)
       const target = wiki && wiki.connectorId !== connectorId ? await this.viewableConnector(actor, wiki.connectorId) : null
       const page = target ? await this.deps.wikis.findPage(target.id, link.path) : null
-      out.push({ wikiId: link.wikiId, path: link.path, connectorId: target?.id ?? null, exists: page?.status === 'published' })
+      const exists = page?.status === 'published'
+      out.push({ wikiId: link.wikiId, path: link.path, connectorId: target?.id ?? null, exists, title: exists ? page.title : null })
     }
     return out
   }
@@ -588,6 +590,8 @@ export class WikiConsoleService {
       lastEditor: page.updatedByAgentId ? agentNames.get(page.updatedByAgentId) ?? null : null,
       sources,
       knownPaths: published.map((row) => row.path),
+      /** A címke nélküli linkek felirata: csak az erről az oldalról hivatkozott oldalak címe. */
+      linkTitles: wikiLinkTitles(page.body, page.path, published),
       /** #1061 F2: `[[wiki:<wikiId>/<path>]]` linkek — `connectorId: null` = a néző nem látja azt a wikit. */
       crossLinks,
       /** #1061 F2: más wikik oldalai, amelyek ide mutatnak — csak a néző által látott wikikből. */

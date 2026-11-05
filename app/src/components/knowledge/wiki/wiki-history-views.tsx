@@ -236,7 +236,7 @@ export async function RevisionView({
             <h2 className="mt-1 font-display text-2xl font-semibold">{rev.title}</h2>
             {rev.summary ? <p className="mt-1 text-ink-soft">{rev.summary}</p> : null}
             <div className="mt-4">
-              <WikiMarkdown connectorId={connectorId} body={rev.body} />
+              <WikiMarkdown connectorId={connectorId} body={rev.body} pagePath={rev.revisionPath ?? path} />
             </div>
           </>
         )}

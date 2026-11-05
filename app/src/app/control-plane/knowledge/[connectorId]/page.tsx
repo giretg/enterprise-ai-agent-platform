@@ -251,7 +251,14 @@ async function WikiTab({
           </p>
           {pageMeta ? <WikiPageMeta connectorId={connectorId} path={res.data.path} data={pageMeta} locale={locale} /> : null}
           <div className="mt-4">
-            <WikiMarkdown connectorId={connectorId} body={res.data.body} knownPaths={res.data.knownPaths} crossLinks={res.data.crossLinks} />
+            <WikiMarkdown
+              connectorId={connectorId}
+              body={res.data.body}
+              pagePath={res.data.path}
+              knownPaths={res.data.knownPaths}
+              linkTitles={res.data.linkTitles}
+              crossLinks={res.data.crossLinks}
+            />
           </div>
           {res.data.sources.length ? (
             <div className="mt-6 border-t border-line/70 pt-3">
@@ -366,7 +373,9 @@ async function TimeTravelTab({
                     <WikiMarkdown
                       connectorId={connectorId}
                       body={pageRes.data.body}
+                      pagePath={pageRes.data.path}
                       knownPaths={pageRes.data.knownPaths}
+                      linkTitles={pageRes.data.linkTitles}
                       linkQuery={{ asOf }}
                     />
                   </div>
