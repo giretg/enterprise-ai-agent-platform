@@ -70,6 +70,60 @@ test.afterAll(async () => {
   await prisma.$disconnect()
 })
 
+test('olvasó nézet: csak cím, menü és tartalom; a Vissza az előző lapra és görgetési helyre visz', async ({ page }) => {
+  const wiki = await prisma.agentWiki.create({ data: { connectorId: sharedKbId, schemaMd: '# WIKI' } })
+  const filler = Array.from({ length: 120 }, (_, i) => `Bekezdés ${i + 1}.`).join('\n\n')
+  await prisma.wikiPage.createMany({
+    data: [
+      { wikiId: wiki.id, connectorId: sharedKbId, path: 'concepts/elso.md', type: 'entity', title: 'Első lap', summary: 'Első', body: `${filler}\n\n[[concepts/masodik.md]]`, outLinks: ['concepts/masodik.md'], contentHash: `a-${suffix}` },
+      { wikiId: wiki.id, connectorId: sharedKbId, path: 'concepts/masodik.md', type: 'entity', title: 'Második lap', summary: 'Második', body: 'Rövid szöveg.', contentHash: `b-${suffix}` },
+    ],
+  })
+
+  // A normál nézetben nyitott lap a fülváltás után is nyitva marad.
+  await page.goto(`/control-plane/knowledge/${sharedKbId}?page=concepts/elso.md`)
+  await page.getByTestId('wiki-tab-reader').click()
+  await expect(page).toHaveURL(/tab=reader/)
+  await expect(page.getByTestId('wiki-reader')).toBeVisible()
+  await expect(page.getByTestId('wiki-page')).toContainText('Első lap')
+
+  // Felül csak a cím marad: se fülsor, se „kik látják”, se lap-adminisztráció.
+  await expect(page.getByTestId('wiki-title')).toBeVisible()
+  await expect(page.getByTestId('wiki-tab-wiki')).toHaveCount(0)
+  await expect(page.getByTestId('wiki-who-sees')).toHaveCount(0)
+  await expect(page.getByTestId('wiki-page-meta')).toHaveCount(0)
+  const titleBox = await page.getByTestId('wiki-title').boundingBox()
+  const tocBox = await page.getByTestId('wiki-toc').boundingBox()
+  expect(tocBox!.y - titleBox!.y).toBeLessThan(120)
+
+  // Első lapnál nincs hova visszalépni.
+  const back = page.getByTestId('wiki-reader-back')
+  await expect(back).toBeDisabled()
+
+  // A szövegbeli link olvasó nézetben marad, a Vissza a görgetési helyre tér vissza.
+  const link = page.getByTestId('wiki-page').getByRole('link', { name: 'Második lap' }).first()
+  await link.scrollIntoViewIfNeeded()
+  const scrolled = await page.evaluate(() => window.scrollY)
+  expect(scrolled).toBeGreaterThan(200)
+  await link.click()
+  await expect(page.getByTestId('wiki-page')).toContainText('Rövid szöveg.')
+  await expect(page).toHaveURL(/tab=reader/)
+  await expect(back).toBeEnabled()
+
+  await back.click()
+  await expect(page.getByTestId('wiki-page')).toContainText('Első lap')
+  await expect(page).toHaveURL(/tab=reader/)
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrolled - 50)
+  await expect(back).toBeDisabled()
+
+  // A menü linkje is olvasó nézetben marad; a bezárás ugyanazt a lapot mutatja normál nézetben.
+  await page.getByTestId('wiki-toc').getByRole('link', { name: 'Második lap' }).click()
+  await expect(page).toHaveURL(/tab=reader.*masodik/)
+  await page.getByTestId('wiki-reader-exit').click()
+  await expect(page.getByTestId('wiki-tab-wiki')).toBeVisible()
+  await expect(page.getByTestId('wiki-page')).toContainText('Rövid szöveg.')
+})
+
 test('a 10 MB-nál nagyobb fájl is felkerül a tálcára', async ({ page }) => {
   await page.goto(`/control-plane/knowledge/${sharedKbId}?tab=inbox`)
   await page.getByTestId('wiki-inbox-file-input').setInputFiles([

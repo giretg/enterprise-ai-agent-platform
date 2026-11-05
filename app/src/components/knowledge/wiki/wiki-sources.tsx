@@ -10,7 +10,16 @@ import { wikiHref } from './wiki-format'
  * emberi rögzítés („Emberi rögzítés · név · dátum · alkalom”), vagy olyan másik tudástár
  * forrása, amelyhez a nézőnek nincs hozzáférése (tartalom és név nélkül).
  */
-export function WikiSourceLabel({ connectorId, source }: { connectorId: string; source: WikiSourceView }) {
+export function WikiSourceLabel({
+  connectorId,
+  source,
+  linkQuery,
+}: {
+  connectorId: string
+  source: WikiSourceView
+  /** Olvasó nézetben a forrás is olvasó nézetben nyílik. */
+  linkQuery?: Record<string, string>
+}) {
   const t = useTranslations('ControlPlane.wiki.page')
   const locale = useLocale()
   if (source.kind === 'restricted') {
@@ -37,7 +46,7 @@ export function WikiSourceLabel({ connectorId, source }: { connectorId: string; 
   return (
     <span>
       <Link
-        href={`${wikiHref(owner, { source: source.documentId, p: source.page ? String(source.page) : undefined })}${source.page ? `#p-${source.page}` : ''}`}
+        href={`${wikiHref(owner, { ...linkQuery, source: source.documentId, p: source.page ? String(source.page) : undefined })}${source.page ? `#p-${source.page}` : ''}`}
         className="text-coral-deep hover:underline"
       >
         {label}
@@ -47,12 +56,20 @@ export function WikiSourceLabel({ connectorId, source }: { connectorId: string; 
   )
 }
 
-export function WikiSourceList({ connectorId, sources }: { connectorId: string; sources: WikiSourceView[] }) {
+export function WikiSourceList({
+  connectorId,
+  sources,
+  linkQuery,
+}: {
+  connectorId: string
+  sources: WikiSourceView[]
+  linkQuery?: Record<string, string>
+}) {
   return (
     <ul className="space-y-1 text-sm" data-testid="wiki-page-sources">
       {sources.map((source, index) => (
         <li key={index}>
-          <WikiSourceLabel connectorId={connectorId} source={source} />
+          <WikiSourceLabel connectorId={connectorId} source={source} linkQuery={linkQuery} />
         </li>
       ))}
     </ul>

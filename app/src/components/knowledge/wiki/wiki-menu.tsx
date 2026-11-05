@@ -30,12 +30,15 @@ export async function WikiMenu({
   groups,
   currentPath,
   linkedWikis = [],
+  linkQuery,
 }: {
   connectorId: string
   groups: MenuGroup[]
   currentPath?: string
   /** #1061 F2: „kapcsolt wiki” menüpontok — a szerver már csak a néző által látottakat adja (AC9). */
   linkedWikis?: LinkedWiki[]
+  /** Olvasó nézetben a menü linkjei is olvasó nézetben maradnak. */
+  linkQuery?: Record<string, string>
 }) {
   const t = await getTranslations('ControlPlane.wiki.toc')
   const openAll = groups.length <= 6
@@ -57,7 +60,7 @@ export async function WikiMenu({
               </span>
             ) : null}
             <Link
-              href={wikiHref(connectorId, { page: page.path })}
+              href={wikiHref(connectorId, { ...linkQuery, page: page.path })}
               className={`block min-w-0 truncate rounded px-1.5 py-0.5 text-sm hover:bg-coral/5 ${
                 currentPath === page.path ? 'bg-coral/10 font-medium text-coral-deep' : 'text-ink'
               }`}
@@ -74,7 +77,7 @@ export async function WikiMenu({
   const linkedItem = (item: LinkedWiki) => (
     <Link
       key={item.key}
-      href={wikiHref(item.connectorId)}
+      href={wikiHref(item.connectorId, linkQuery)}
       data-testid="wiki-toc-linked"
       className="flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-ink-soft hover:bg-ink/5 hover:text-coral-deep"
       title={t('linkedWiki')}
