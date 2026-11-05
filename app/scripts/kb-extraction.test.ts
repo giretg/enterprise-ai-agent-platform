@@ -339,6 +339,53 @@ async function run() {
     assert.equal(ex.blocks[2].text, 'Harmadik törzs')
   })
 
+  await check('PPTX: az ismételt diahivatkozás nem sokszorozhatja meg a kibontott tartalmat', async () => {
+    const buffer = await handmadePptx({
+      order: Array(1000).fill('slide1.xml'),
+      slides: { 'slide1.xml': slideXml(textShape('A'.repeat(10_000))) },
+    })
+    assert.equal(await rejectionCode(() => extractStructured({ buffer, filename: 'ismetelt.pptx' })), 'damaged_file')
+  })
+
+  await check('PPTX: több dia sem sokszorozhatja meg ugyanazt a jegyzetfájlt', async () => {
+    const buffer = await handmadePptx({
+      order: ['slide1.xml', 'slide2.xml'],
+      slides: { 'slide1.xml': slideXml(textShape('Első')), 'slide2.xml': slideXml(textShape('Második')) },
+      notes: { 'slide1.xml': slideXml(textShape('Jegyzet', 'body')) },
+    })
+    const zip = await JSZip.loadAsync(buffer)
+    zip.file('ppt/slides/_rels/slide2.xml.rels', await zip.file('ppt/slides/_rels/slide1.xml.rels')!.async('string'))
+    const repeatedNotes = await zip.generateAsync({ type: 'nodebuffer' })
+    assert.equal(await rejectionCode(() => extractStructured({ buffer: repeatedNotes, filename: 'jegyzet.pptx' })), 'damaged_file')
+  })
+
+  await check('PPTX: az XML-prefix nem változtatja meg a szöveget, a sorrendet vagy a jegyzeteket', async () => {
+    const buffer = await handmadePptx({
+      order: ['slide2.xml', 'slide1.xml'],
+      slides: {
+        'slide1.xml': slideXml(textShape('Második')),
+        'slide2.xml': slideXml(textShape('Első', 'title') + textShape('Törzs')),
+      },
+      notes: { 'slide2.xml': slideXml(textShape('Jegyzet', 'body')) },
+    })
+    const zip = await JSZip.loadAsync(buffer)
+    for (const [path, entry] of Object.entries(zip.files)) {
+      if (entry.dir) continue
+      const xml = (await entry.async('string'))
+        .replace(/(<\/?)(p|a):/g, (_, start, prefix) => `${start}${prefix === 'p' ? 'x' : 'd'}:`)
+        .replace(/r:id=/g, 'link:id=')
+        .replace(/<(x:sld|x:presentation)(?=[\s>])/, `<$1 xmlns:x="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:link="${REL}"`)
+        .replace(/(<\/?)(Relationships?)(?=[\s>])/g, '$1rel:$2')
+        .replace('<rel:Relationships', '<rel:Relationships xmlns:rel="http://schemas.openxmlformats.org/package/2006/relationships"')
+      zip.file(path, xml)
+    }
+    const alternative = await zip.generateAsync({ type: 'nodebuffer' })
+    assert.deepEqual(
+      await extractStructured({ buffer: alternative, filename: 'prefix.pptx' }),
+      await extractStructured({ buffer, filename: 'eredeti.pptx' }),
+    )
+  })
+
   await check('PPTX: kiterjesztés nélkül a MIME-típus is elég; szöveg nélküli dia jelölve', async () => {
     const buffer = await handmadePptx({
       order: ['slide1.xml', 'slide2.xml'],
