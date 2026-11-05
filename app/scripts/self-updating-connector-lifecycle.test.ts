@@ -9,6 +9,9 @@ import {
   type SelfUpdatingSpecVersion,
 } from '../src/domain/connector-self-update/self-update-service'
 import type { SpecSyncResult } from '../src/domain/connector-self-update/spec-sync'
+import { parseCapabilitySet } from '../src/domain/connector-self-update/capability-set'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
+import { appendAuditInTransaction, AuditChainIsolationError } from '../src/repositories/postgres/audit-repository'
 
 const TENANT = '00000000-0000-0000-0000-000000000001'
 const OTHER_TENANT = '00000000-0000-0000-0000-000000000002'
@@ -85,6 +88,13 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
     if (input.diffFromVersionId !== this.context!.connector.activeSpecVersionId) {
       throw new SelfUpdateError('INVALID_STATE', 'stale proposal')
     }
+    const open = this.versions.find((v) =>
+      v.status === 'proposed' &&
+      v.rawHash === input.rawHash &&
+      v.diffFromVersionId === input.diffFromVersionId &&
+      (parseCapabilitySet(v.capabilitySet)?.capabilitySchemaVersion ?? 1) === (input.capabilitySet.capabilitySchemaVersion ?? 1),
+    )
+    if (open) return { version: open, created: false }
     const version: SelfUpdatingSpecVersion = {
       id: `00000000-0000-0000-0000-${String(this.versions.length + 200).padStart(12, '0')}`,
       connectorId: input.connectorId, tenantId: input.tenantId, versionNo: this.versions.length + 1,
@@ -93,7 +103,7 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
       fetchedAt: input.fetchedAt, approvedById: null, approvedAt: null,
     }
     this.versions.push(version)
-    return version
+    return { version, created: true }
   }
   async activateVersion(input: Parameters<SelfUpdatingConnectorRepository['activateVersion']>[0]) {
     const next = this.versions.find((v) => v.id === input.versionId && v.connectorId === input.connectorId && v.tenantId === input.tenantId)
@@ -131,8 +141,12 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
 }
 
 class AuditSpy implements SelfUpdateAudit {
-  events: Array<{ action: string; actorId: string | null; tenantId: string; connectorId: string; policyDecision: string }> = []
-  async append(input: { action: string; actorId: string | null; tenantId: string; connectorId: string; policyDecision: string }) {
+  events: Array<Parameters<SelfUpdateAudit['append']>[0]> = []
+  fail = false
+  async append(input: Parameters<SelfUpdateAudit['append']>[0]) {
+    // Ugyanaz az őr, ami élesben az audit-írás előtt fut.
+    assertAuditMetadataSafe(input.metadata)
+    if (this.fail) throw new Error('audit down')
     this.events.push(input)
   }
 }
@@ -264,6 +278,62 @@ async function run() {
     const failed = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
     assert.equal(failed.outcomes.failed, 1)
     assert.equal(repo.context!.connector.activeSpecVersionId, v1.id)
+  })
+
+  await test('napi háttér-ellenőrzés: a váratlan kivétel oka auditba kerül, az audit hibája sem állítja meg a futást', async () => {
+    const { service, repo, sync, audit, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT }); await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+    repo.context!.source.lastSyncedAt = null
+    sync.sync = async () => { throw Object.assign(new Error('secret-content'), { code: 'P2034' }) }
+    const first = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(first.outcomes.failed, 1)
+    const event = audit.events.at(-1)
+    assert.equal(event?.action, 'connector.self_update.sync.failed')
+    assert.equal(event?.actorId, null)
+    assert.equal(event?.policyDecision, 'internal_error')
+    assert.deepEqual(event?.metadata, { failure_code: 'P2034' })
+    audit.fail = true
+    const second = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(second.outcomes.failed, 1)
+    audit.fail = false
+    sync.sync = async () => { throw new SelfUpdateError('INVALID_STATE', 'emberi jóváhagyásra vár') }
+    await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(audit.events.at(-1)?.policyDecision, 'INVALID_STATE')
+    assert.deepEqual(audit.events.at(-1)?.metadata, { failure_code: 'INVALID_STATE' })
+  })
+
+  await test('párhuzamos mentés: ha a zár alatt már vár ugyanez a javaslat, nem készül második', async () => {
+    const { service, repo, audit, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    // A zár előtti ellenőrzés még nem látja a másik mentést.
+    repo.findOpenProposalByHash = async () => null
+    const first = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    const second = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    assert.equal(repo.versions.length, 1)
+    assert.ok(first.kind === 'proposed' && second.kind === 'proposed')
+    assert.equal(second.version.id, first.version.id)
+    assert.equal(second.autoApproved, false)
+    assert.equal(audit.events.at(-1)?.policyDecision, 'proposal_already_exists')
+  })
+
+  await test('audit-lánc: read committednél magasabb izolációban nem ír, mert a lánc megszakadna', async () => {
+    const tx = {
+      $executeRaw: async () => 1,
+      $queryRaw: async () => [{ nextval: BigInt(1), isolation: 'serializable' }],
+      auditLog: {
+        findFirst: async () => { throw new Error('nem juthat idáig') },
+        create: async () => { throw new Error('nem juthat idáig') },
+      },
+    } as unknown as Parameters<typeof appendAuditInTransaction>[0]
+    await assert.rejects(
+      appendAuditInTransaction(tx, {
+        actorType: 'system', actorId: null, agentVersion: null, action: 'connector.self_update.sync.proposed',
+        targetType: 'connector', targetId: null, modelUsed: null, inputRef: null, outputRef: null,
+        policyDecision: 'allowed', metadata: {}, tenantId: TENANT,
+      }),
+      AuditChainIsolationError,
+    )
   })
 
   await test('napi háttér-ellenőrzés: lejárt időkeretnél nem indít új ellenőrzést', async () => {

@@ -15,6 +15,13 @@ import { deriveAuditAttribution } from '@/lib/audit/attribution'
 const AUDIT_CHAIN_LOCK_KEY = 424242
 const AUDIT_WALK_MAX = 100_000
 
+export class AuditChainIsolationError extends Error {
+  constructor(isolation: string) {
+    super(`Audit chain append requires read committed isolation, got: ${isolation}`)
+    this.name = 'AuditChainIsolationError'
+  }
+}
+
 /** Ugyanaz az audit-hash-lánc írás, egy hívó által már megnyitott tranzakcióban. */
 export async function appendAuditInTransaction(
   tx: Prisma.TransactionClient,
@@ -23,9 +30,12 @@ export async function appendAuditInTransaction(
   assertAuditActionRegistered(data.action)
   assertAuditMetadataSafe(data.metadata)
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`
-  const [{ nextval: seq }] = await tx.$queryRaw<{ nextval: bigint }[]>`
-    SELECT nextval('audit_log_seq_seq') AS nextval
+  const [{ nextval: seq, isolation }] = await tx.$queryRaw<{ nextval: bigint; isolation: string }[]>`
+    SELECT nextval('audit_log_seq_seq') AS nextval, current_setting('transaction_isolation') AS isolation
   `
+  // Magasabb izolációnál a pillanatkép a zárolás előtt készül: az utolsó sort elavultan olvasnánk,
+  // és a lánc csendben megszakadna. Inkább látható hiba legyen.
+  if (isolation !== 'read committed') throw new AuditChainIsolationError(isolation)
   const last = await tx.auditLog.findFirst({ orderBy: { seq: 'desc' } })
   const prevHash = last?.hash ?? GENESIS_HASH
   const createdAt = new Date()
