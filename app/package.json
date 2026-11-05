@@ -344,6 +344,7 @@
     "test:http-api-per-agent-key": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/http-api-per-agent-key.test.ts",
     "test:per-user-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/per-user-connector.test.ts",
     "test:platform-google-oauth": "tsx scripts/platform-google-oauth.test.ts",
+    "test:agent-kb-binding-summary": "tsx scripts/agent-kb-binding-summary.test.ts",
     "test:wiki-console": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-console.test.ts",
     "test:wiki-inbox-upload": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-inbox-upload.test.ts",
     "test:wiki-console-db": "tsx scripts/wiki-console-db.test.ts",

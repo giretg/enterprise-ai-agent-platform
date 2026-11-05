@@ -1035,6 +1035,7 @@ export function CreateAgentWizard({
                         bindings={c.connectors}
                         catalog={c.assignableConnectors}
                         catalogDetails={catalogDetails.length > 0 ? catalogDetails : catalog}
+                        knowledgeBases={c.wikiLinks ?? undefined}
                         canManageApprovers
                         onAssigned={refresh}
                       />
@@ -1105,16 +1106,12 @@ export function CreateAgentWizard({
 
               {step === 'knowledge' && createdAgentId && c ? (
                 <div className="space-y-4">
-                  {c.knowledgeDocuments.length === 0 ? (
-                    <p className="rounded-lg border border-dashed border-ink/20 bg-paper px-3 py-3 text-sm text-ink-soft">
-                      {t('knowledgeEmpty')}
-                    </p>
-                  ) : null}
                   <AgentKnowledgeBasePanel
                     agentId={createdAgentId}
                     documents={c.knowledgeDocuments}
                     catalog={c.knowledgeCatalog}
                     canManage
+                    emptyHint={t('knowledgeEmpty')}
                   />
                   {c.wikiLinks ? <AgentWikiAccessPanel agentId={createdAgentId} rows={c.wikiLinks} /> : null}
                 </div>

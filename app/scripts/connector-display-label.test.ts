@@ -10,7 +10,11 @@ assert.equal(
   AGENT_OWNED_KB_CONNECTOR_DISPLAY_LABEL,
 )
 assert.equal(connectorDisplayLabel('http_api', 'Posnavigator – banks'), 'Posnavigator – banks')
-assert.equal(connectorDisplayLabel('knowledge_base', 'kb:catalog'), 'kb:catalog')
+assert.equal(connectorDisplayLabel('knowledge_base', 'kb:catalog'), 'Közös katalógus')
+assert.equal(
+  connectorDisplayLabel('knowledge_base', 'kb:shared:0379e10b-ce6f-413c-9d34-23724c059ce5', { displayName: 'Termékwiki' }),
+  'Termékwiki',
+)
 assert.equal(isAgentDetailSectionId('kapcsolatok'), true)
 assert.equal(isAgentDetailSectionId('nincs'), false)
 
