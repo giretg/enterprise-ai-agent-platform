@@ -7,8 +7,8 @@
 - **Lelet (magas, jogosultság és UX):** az élő közös postafiók `readOnly` jelzése nem szerepelt a `listMailAccounts` írási döntésében. Régebbi, írható publikált snapshot mellett a fiók írhatónak és saját küldőcímnek látszhatott; a `mail_send` a régi jogon átjuthatott a fiókfeloldáson. A külső OAuth scope külön védőréteg, de az üzleti házirendet a platformnak önállóan és előre jelezhetően kell betartania.
 - Javítás: a közös fiókfeloldás az élő `readOnly` beállítást metszi a snapshot hozzáférésével; a briefing ugyanebben az állapotban nem jelöl saját küldőcímet. Nincs új függőség vagy migráció. Regresszió: régi `write` snapshot + élő `readOnly` mellett a fiók `read`, nem `primary`, és a küldés `mailbox_read_only`.
 - Üzleti hatás: az admin későbbi szigorítása azonnal megjelenik az agent eszközeiben és utasításaiban. Az operátor nem kap félrevezető „küldhető” fiókot, és a platform nem támaszkodik kizárólag a külső szolgáltató elutasítására.
-- Ellenőrzés: `npm run test:mail-tools` zöld; `git diff --check` tiszta. A worktree teljes TypeScript-ellenőrzése a másik checkoutból symlinkelt, régebbi generált Prisma kliens miatt több tucat, e változtatástól független modellhibával állt meg; a PR CI-jében friss generált klienssel kell futnia.
-- Issue: [#1092](https://github.com/giretg/enterprise-ai-agent-platform/issues/1092). PR: előkészítés alatt.
+- Ellenőrzés: `npm run test:mail-tools`, `npm run test:agent-mailbox`, célzott ESLint zöld; `git diff --check` tiszta. A worktree teljes TypeScript-ellenőrzése a másik checkoutból symlinkelt, régebbi generált Prisma kliens miatt több tucat, e változtatástól független modellhibával állt meg; a PR CI-jében friss generált klienssel kell futnia.
+- Issue: [#1092](https://github.com/giretg/enterprise-ai-agent-platform/issues/1092). PR: [#1093](https://github.com/giretg/enterprise-ai-agent-platform/pull/1093) (`codex`, `codex-automation`, `security`, `bug`).
 
 ## 2026-11-02 01:31 Europe/Budapest - AI-adattárház lekérdezési határ: hibás csoportosított rendezés
 
