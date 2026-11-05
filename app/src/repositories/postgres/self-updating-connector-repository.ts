@@ -1,7 +1,7 @@
 import { Prisma, type ConnectorSpecSource, type ConnectorSpecVersion } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { AutoApprovePolicy, CapabilityDiff, UsageRef } from '@/domain/connector-self-update/spec-diff'
-import type { CapabilitySet } from '@/domain/connector-self-update/capability-set'
+import { parseCapabilitySet, type CapabilitySet } from '@/domain/connector-self-update/capability-set'
 import {
   SelfUpdateError,
   type DueSpecSync,
@@ -250,12 +250,13 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     diffSummary: CapabilityDiff
     fetchedAt: Date
     actorId: string | null
-  }): Promise<SelfUpdatingSpecVersion> {
+  }): Promise<{ version: SelfUpdatingSpecVersion; created: boolean }> {
     // Nem Serializable: az ottani pillanatkép az audit-lánc zárolása előtt készül, ezért elavult
     // előző hash-re épülve megszakítaná a láncot. A kapcsolat sor-zárja a párhuzamos javaslatokat
-    // ugyanúgy sorba állítja, és minden utasítás friss adatot lát.
-    const row = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${input.connectorId}::uuid FOR UPDATE`
+    // sorba állítja, és minden utasítás friss adatot lát. A gyengébb zár a kapcsolatra hivatkozó
+    // más táblák írását nem fogja meg, így azok az audit-zár birtokában sem várnak rá.
+    const { row, created } = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM connectors WHERE id = ${input.connectorId}::uuid FOR NO KEY UPDATE`
       const connector = await tx.connector.findFirst({
         where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' },
         select: { activeSpecVersionId: true },
@@ -263,6 +264,20 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
       if (!connector) throw new SelfUpdateError('NOT_FOUND', 'Az OpenAPI-kapcsolat nem található.')
       if (connector.activeSpecVersionId !== input.diffFromVersionId) {
         throw new SelfUpdateError('INVALID_STATE', 'A jelenlegi verzió időközben megváltozott. Keress újra frissítést.')
+      }
+      // A zár előtti ellenőrzés óta egy párhuzamos mentés már létrehozhatta ugyanezt a javaslatot.
+      const open = await tx.connectorSpecVersion.findFirst({
+        where: {
+          connectorId: input.connectorId,
+          tenantId: input.tenantId,
+          rawHash: input.rawHash,
+          diffFromVersionId: input.diffFromVersionId,
+          status: 'proposed',
+        },
+        orderBy: { versionNo: 'desc' },
+      })
+      if (open && (parseCapabilitySet(open.capabilitySet)?.capabilitySchemaVersion ?? 1) === (input.capabilitySet.capabilitySchemaVersion ?? 1)) {
+        return { row: open, created: false }
       }
       const latest = await tx.connectorSpecVersion.aggregate({ where: { connectorId: input.connectorId }, _max: { versionNo: true } })
       const proposal = await tx.connectorSpecVersion.create({
@@ -285,9 +300,9 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
         policyDecision: 'human_approval_required',
         metadata: { version_id: proposal.id, version_no: proposal.versionNo, diff: input.diffSummary },
       }))
-      return proposal
+      return { row: proposal, created: true }
     }, { timeout: 60_000 })
-    return versionOf(row)
+    return { version: versionOf(row), created }
   }
 
   async activateVersion(input: {

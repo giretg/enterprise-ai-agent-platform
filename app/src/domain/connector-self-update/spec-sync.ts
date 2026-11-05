@@ -275,7 +275,8 @@ export class SpecSyncService {
       const contentType = res.headers.get('content-type') ?? ''
       // Üres content-type-ot elfogadunk (sok statikus fájlkiszolgáló nem küld) — a parse dönt.
       if (contentType && !contentTypeAllowed(contentType)) {
-        return { ok: false, reason: 'content_type_blocked', detail: contentType.split(';')[0]?.trim() }
+        // A partner fejléce az audit-naplóba is bekerül, ezért a hossza korlátos (média-típus legfeljebb 255 karakter).
+        return { ok: false, reason: 'content_type_blocked', detail: contentType.split(';')[0]?.trim().slice(0, 255) }
       }
 
       const body = await readCapped(res, this.limits.maxBytes, controller)

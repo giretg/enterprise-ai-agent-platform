@@ -9,6 +9,7 @@ import {
   type SelfUpdatingSpecVersion,
 } from '../src/domain/connector-self-update/self-update-service'
 import type { SpecSyncResult } from '../src/domain/connector-self-update/spec-sync'
+import { parseCapabilitySet } from '../src/domain/connector-self-update/capability-set'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { appendAuditInTransaction, AuditChainIsolationError } from '../src/repositories/postgres/audit-repository'
 
@@ -87,6 +88,13 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
     if (input.diffFromVersionId !== this.context!.connector.activeSpecVersionId) {
       throw new SelfUpdateError('INVALID_STATE', 'stale proposal')
     }
+    const open = this.versions.find((v) =>
+      v.status === 'proposed' &&
+      v.rawHash === input.rawHash &&
+      v.diffFromVersionId === input.diffFromVersionId &&
+      (parseCapabilitySet(v.capabilitySet)?.capabilitySchemaVersion ?? 1) === (input.capabilitySet.capabilitySchemaVersion ?? 1),
+    )
+    if (open) return { version: open, created: false }
     const version: SelfUpdatingSpecVersion = {
       id: `00000000-0000-0000-0000-${String(this.versions.length + 200).padStart(12, '0')}`,
       connectorId: input.connectorId, tenantId: input.tenantId, versionNo: this.versions.length + 1,
@@ -95,7 +103,7 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
       fetchedAt: input.fetchedAt, approvedById: null, approvedAt: null,
     }
     this.versions.push(version)
-    return version
+    return { version, created: true }
   }
   async activateVersion(input: Parameters<SelfUpdatingConnectorRepository['activateVersion']>[0]) {
     const next = this.versions.find((v) => v.id === input.versionId && v.connectorId === input.connectorId && v.tenantId === input.tenantId)
@@ -133,9 +141,9 @@ class MemoryRepo implements SelfUpdatingConnectorRepository {
 }
 
 class AuditSpy implements SelfUpdateAudit {
-  events: Array<{ action: string; actorId: string | null; tenantId: string; connectorId: string; policyDecision: string; metadata?: Record<string, unknown> }> = []
+  events: Array<Parameters<SelfUpdateAudit['append']>[0]> = []
   fail = false
-  async append(input: { action: string; actorId: string | null; tenantId: string; connectorId: string; policyDecision: string; metadata?: Record<string, unknown> }) {
+  async append(input: Parameters<SelfUpdateAudit['append']>[0]) {
     // Ugyanaz az őr, ami élesben az audit-írás előtt fut.
     assertAuditMetadataSafe(input.metadata)
     if (this.fail) throw new Error('audit down')
@@ -288,6 +296,25 @@ async function run() {
     audit.fail = true
     const second = await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
     assert.equal(second.outcomes.failed, 1)
+    audit.fail = false
+    sync.sync = async () => { throw new SelfUpdateError('INVALID_STATE', 'emberi jóváhagyásra vár') }
+    await service.syncDue({ syncedBefore: new Date('2026-07-16T00:00:00Z'), limit: 10 })
+    assert.equal(audit.events.at(-1)?.policyDecision, 'INVALID_STATE')
+    assert.deepEqual(audit.events.at(-1)?.metadata, { failure_code: 'INVALID_STATE' })
+  })
+
+  await test('párhuzamos mentés: ha a zár alatt már vár ugyanez a javaslat, nem készül második', async () => {
+    const { service, repo, audit, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    // A zár előtti ellenőrzés még nem látja a másik mentést.
+    repo.findOpenProposalByHash = async () => null
+    const first = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    const second = await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    assert.equal(repo.versions.length, 1)
+    assert.ok(first.kind === 'proposed' && second.kind === 'proposed')
+    assert.equal(second.version.id, first.version.id)
+    assert.equal(second.autoApproved, false)
+    assert.equal(audit.events.at(-1)?.policyDecision, 'proposal_already_exists')
   })
 
   await test('audit-lánc: read committednél magasabb izolációban nem ír, mert a lánc megszakadna', async () => {

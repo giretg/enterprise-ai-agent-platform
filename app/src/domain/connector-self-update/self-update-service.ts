@@ -112,7 +112,7 @@ export interface SelfUpdatingConnectorRepository {
     diffSummary: CapabilityDiff
     fetchedAt: Date
     actorId: string | null
-  }): Promise<SelfUpdatingSpecVersion>
+  }): Promise<{ version: SelfUpdatingSpecVersion; created: boolean }>
   activateVersion(input: {
     connectorId: string
     tenantId: string
@@ -179,6 +179,10 @@ function exceptionCode(error: unknown): string {
     if (typeof name === 'string') return name
   }
   return 'unknown'
+}
+
+function errorText(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 500)
 }
 
 /**
@@ -333,12 +337,7 @@ export class SelfUpdatingConnectorService {
       existingProposal
       && (existingProposalSet?.capabilitySchemaVersion ?? 1) === nextSchemaVersion
     ) {
-      await this.repo.touchSynced(ctx.source.id, this.now())
-      await this.record('connector.self_update.sync.no_change', actor, connectorId, 'proposal_already_exists', {
-        raw_hash: result.rawHash,
-        version_id: existingProposal.id,
-      })
-      return { kind: 'proposed', version: existingProposal, autoApproved: false }
+      return this.keepOpenProposal(ctx.source.id, actor, connectorId, existingProposal, result.rawHash)
     }
 
     const usage = await this.repo.listUsage(connectorId, actor.tenantId)
@@ -348,7 +347,7 @@ export class SelfUpdatingConnectorService {
       return [...new Map(refs.map((ref) => [`${ref.type}:${ref.id}`, ref])).values()]
     })
     const fetchedAt = this.now()
-    const version = await this.repo.createProposal({
+    const { version, created } = await this.repo.createProposal({
       connectorId,
       tenantId: actor.tenantId,
       rawSnapshot: result.rawText,
@@ -359,6 +358,7 @@ export class SelfUpdatingConnectorService {
       fetchedAt,
       actorId: actor.id,
     })
+    if (!created) return this.keepOpenProposal(ctx.source.id, actor, connectorId, version, result.rawHash)
     await this.repo.touchSynced(ctx.source.id, fetchedAt)
 
     const autoApproved = Boolean(
@@ -459,6 +459,22 @@ export class SelfUpdatingConnectorService {
     return { context, versions }
   }
 
+  /** Ugyanerre a tartalomra már vár javaslat: nem készül újabb, csak az ellenőrzés idejét rögzítjük. */
+  private async keepOpenProposal(
+    sourceId: string,
+    actor: SelfUpdateActor | SelfUpdateSystemActor,
+    connectorId: string,
+    version: SelfUpdatingSpecVersion,
+    rawHash: string,
+  ) {
+    await this.repo.touchSynced(sourceId, this.now())
+    await this.record('connector.self_update.sync.no_change', actor, connectorId, 'proposal_already_exists', {
+      raw_hash: rawHash,
+      version_id: version.id,
+    })
+    return { kind: 'proposed' as const, version, autoApproved: false }
+  }
+
   /** Váratlan kivétel a háttér-ellenőrzésben: az ok ne vesszen el, a rögzítése pedig ne állítsa meg a többi kapcsolatot. */
   private async recordDueSyncException(item: DueSpecSync, error: unknown) {
     const failureCode = exceptionCode(error)
@@ -466,18 +482,19 @@ export class SelfUpdatingConnectorService {
       connectorId: item.connectorId,
       tenantId: item.tenantId,
       failureCode,
-      error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      error: errorText(error),
     })
     await this.record(
       'connector.self_update.sync.failed',
       { id: null, tenantId: item.tenantId },
       item.connectorId,
-      'internal_error',
+      // A szándékos kapu (pl. emberi jóváhagyásra váró javaslat) nem belső hiba.
+      error instanceof SelfUpdateError ? error.code : 'internal_error',
       { failure_code: failureCode },
     ).catch((auditError) => {
       console.error('[connector.self_update] scheduled sync failure audit failed', {
         connectorId: item.connectorId,
-        error: auditError instanceof Error ? auditError.message.slice(0, 500) : String(auditError).slice(0, 500),
+        error: errorText(auditError),
       })
     })
   }

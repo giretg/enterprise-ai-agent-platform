@@ -315,6 +315,15 @@ async function run() {
     assert.equal(r.reason, 'not_openapi')
   })
 
+  await test('fail-closed: tiltott content-type részlete korlátos, mert az audit-naplóba kerül', async () => {
+    const svc = new SpecSyncService({ fetchImpl: fakeFetch('{}', { contentType: `text/${'x'.repeat(5000)}; charset=utf-8` }) })
+    const r = await svc.sync('https://api.partner-crm.example/v1/openapi.json')
+    assert.equal(r.ok, false)
+    if (r.ok) return
+    assert.equal(r.reason, 'content_type_blocked')
+    assert.equal(r.detail?.length, 255)
+  })
+
   await test('fail-closed: nulla műveletes OpenAPI → empty_spec', async () => {
     const empty = JSON.stringify(baseSpec({}))
     const svc = new SpecSyncService({ fetchImpl: fakeFetch(empty) })
