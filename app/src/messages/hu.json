@@ -469,6 +469,11 @@
       "eyebrow": "Tudásbázis",
       "back": "← Vissza a tudásbázisokhoz",
       "tabsAria": "A tudásbázis részei",
+      "reader": {
+        "exit": "Olvasó nézet bezárása",
+        "back": "Vissza",
+        "backDisabled": "Még nincs előző lap, amelyre visszaléphetnél."
+      },
       "authorAgent": "AI-munkatárs",
       "authorHuman": "ember",
       "history": {
@@ -662,6 +667,7 @@
       },
       "tabs": {
         "wiki": "Wiki",
+        "reader": "Olvasó nézet",
         "views": "Nézetek",
         "changes": "Változások",
         "inbox": "Tálca",

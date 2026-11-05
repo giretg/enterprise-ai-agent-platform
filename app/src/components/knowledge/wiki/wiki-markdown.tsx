@@ -14,6 +14,7 @@ export function WikiMarkdown({
   knownPaths,
   linkTitles,
   linkQuery,
+  crossLinkQuery,
   crossLinks,
 }: {
   connectorId: string
@@ -26,6 +27,8 @@ export function WikiMarkdown({
   linkTitles?: Record<string, string>
   /** #978: időutazásban a linkek is az adott állapotra mutatnak. */
   linkQuery?: Record<string, string>
+  /** Másik wikibe mutató link query-je: az időutazás nem, az olvasó nézet átvihető. */
+  crossLinkQuery?: Record<string, string>
   /** #1061 F2: `[[wiki:…]]` célok — `connectorId: null` = a néző nem látja azt a wikit. */
   crossLinks?: Array<{ wikiId: string; path: string; connectorId: string | null; exists: boolean; title?: string | null }>
 }) {
@@ -56,7 +59,7 @@ export function WikiMarkdown({
               }
               return (
                 <Link
-                  href={wikiHref(target.connectorId, { page: path })}
+                  href={wikiHref(target.connectorId, { ...crossLinkQuery, page: path })}
                   className={target.exists ? undefined : 'opacity-60'}
                   title={target.exists ? path : t('page.missingLink', { path })}
                 >

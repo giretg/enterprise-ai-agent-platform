@@ -469,6 +469,11 @@
       "eyebrow": "Knowledge base",
       "back": "← Back to knowledge bases",
       "tabsAria": "Knowledge base sections",
+      "reader": {
+        "exit": "Close reader view",
+        "back": "Back",
+        "backDisabled": "There is no previous page to go back to yet."
+      },
       "authorAgent": "AI teammate",
       "authorHuman": "person",
       "history": {
@@ -662,6 +667,7 @@
       },
       "tabs": {
         "wiki": "Wiki",
+        "reader": "Reader view",
         "views": "Views",
         "changes": "Changes",
         "inbox": "Inbox",

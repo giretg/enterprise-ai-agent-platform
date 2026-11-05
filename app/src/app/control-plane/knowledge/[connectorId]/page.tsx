@@ -32,6 +32,7 @@ import { WikiCategoriesPanel } from '@/components/knowledge/wiki/wiki-categories
 import { WikiMetadataPanel } from '@/components/knowledge/wiki/wiki-metadata-panel'
 import { WikiPageMeta } from '@/components/knowledge/wiki/wiki-page-meta'
 import { WikiMenu } from '@/components/knowledge/wiki/wiki-menu'
+import { WikiReaderBack } from '@/components/knowledge/wiki/wiki-reader-back'
 import {
   ChangesTab,
   PageHistoryPanel,
@@ -44,8 +45,11 @@ import { HelpHint } from '@/components/onboarding/onboarding-ui'
 
 export const dynamic = 'force-dynamic'
 
-const TABS = ['wiki', 'views', 'changes', 'inbox', 'log', 'access', 'proposals', 'settings'] as const
+const TABS = ['wiki', 'reader', 'views', 'changes', 'inbox', 'log', 'access', 'proposals', 'settings'] as const
 type Tab = (typeof TABS)[number]
+
+/** Az olvasó nézetben minden belső link megtartja ezt, különben kattintásra kilépne belőle. */
+const READER_QUERY = { tab: 'reader' }
 
 export default async function KnowledgeBaseWikiPage({
   params,
@@ -73,6 +77,22 @@ export default async function KnowledgeBaseWikiPage({
   const wiki = overviewRes.data
   const tabs = TABS.filter((tab) => (tab !== 'settings' || wiki.canManage) && (tab !== 'proposals' || wiki.canManage) && (tab !== 'views' || wiki.managedFields))
   const tab: Tab = (tabs as readonly string[]).includes(query.tab ?? '') ? (query.tab as Tab) : 'wiki'
+  // A nyitott lap (és forrás) a nézetváltáskor is megmarad.
+  const openItem = { page: query.page, source: query.source, p: query.p }
+
+  if (tab === 'reader') {
+    return (
+      <div className="space-y-3" data-testid="wiki-reader">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <h1 className="font-display text-2xl font-semibold" data-testid="wiki-title">{wiki.name}</h1>
+          <Link href={wikiHref(connectorId, openItem)} data-testid="wiki-reader-exit" className="text-sm text-ink-soft hover:text-ink">
+            {t('reader.exit')}
+          </Link>
+        </div>
+        <WikiTab connectorId={connectorId} wiki={wiki} query={query} t={t} locale={locale} reader />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -96,7 +116,7 @@ export default async function KnowledgeBaseWikiPage({
         {tabs.map((id) => (
           <Link
             key={id}
-            href={wikiHref(connectorId, { tab: id })}
+            href={wikiHref(connectorId, id === 'reader' && tab === 'wiki' && !query.asOf ? { tab: id, ...openItem } : { tab: id })}
             data-testid={`wiki-tab-${id}`}
             className={`-mb-px rounded-t-lg border-b-2 px-3 py-2 text-sm font-medium ${
               tab === id ? 'border-coral text-coral-deep' : 'border-transparent text-ink-soft hover:text-ink'
@@ -186,18 +206,28 @@ async function WikiTab({
   query,
   t,
   locale,
+  reader = false,
 }: {
   connectorId: string
   wiki: Overview
   query: WikiQuery
   t: T
   locale: string
+  /** Olvasó nézet: csak az olvasáshoz kell tartalom, a kezelőfelületek a normál nézetben maradnak. */
+  reader?: boolean
 }) {
-  if (query.asOf) {
+  if (query.asOf && !reader) {
     return <TimeTravelTab connectorId={connectorId} query={query} asOf={query.asOf} t={t} locale={locale} />
   }
+  const linkQuery = reader ? READER_QUERY : undefined
+  const backControl = reader ? (
+    <div className="float-right mb-2 ml-3">
+      <WikiReaderBack href={wikiHref(connectorId, { ...READER_QUERY, page: query.page, source: query.source, p: query.p })} />
+    </div>
+  ) : null
   const toc = (
-    <Card className="lg:sticky lg:top-4">
+    // Az olvasó nézetben a hosszú tartalomjegyzék önállóan görgethető, a szöveg mellett végig elérhető.
+    <Card className={`lg:sticky lg:top-4 ${reader ? 'lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto' : ''}`}>
       <div className="mb-2 flex items-center">
         <h2 className="font-display text-lg font-semibold">{t('toc.title')}</h2>
         <HelpHint>{t('toc.help')}</HelpHint>
@@ -207,7 +237,7 @@ async function WikiTab({
       ) : (
         <>
           {wiki.pageCount === 0 ? <p className="mb-2 text-sm text-ink-soft" data-testid="wiki-empty">{t('toc.empty')}</p> : null}
-          <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} linkedWikis={wiki.linkedWikis} />
+          <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} linkedWikis={wiki.linkedWikis} linkQuery={linkQuery} />
         </>
       )}
     </Card>
@@ -217,13 +247,13 @@ async function WikiTab({
   if (query.source) {
     const res = await getWikiSourceAction({ connectorId, documentId: query.source })
     main = res.success ? (
-      <SourceView connectorId={connectorId} source={res.data} page={query.p} t={t} locale={locale} />
+      <SourceView connectorId={connectorId} source={res.data} page={query.p} t={t} locale={locale} backControl={backControl} />
     ) : (
-      <Card><p className="text-sm text-ink-soft">{t('source.notFound')}</p></Card>
+      <Card>{backControl}<p className="text-sm text-ink-soft">{t('source.notFound')}</p></Card>
     )
-  } else if (query.page && query.rev) {
+  } else if (!reader && query.page && query.rev) {
     main = <RevisionView connectorId={connectorId} path={query.page} version={query.rev} locale={locale} />
-  } else if (query.page && query.from && query.to) {
+  } else if (!reader && query.page && query.from && query.to) {
     main = <RevisionDiffView connectorId={connectorId} path={query.page} from={query.from} to={query.to} locale={locale} />
   } else if (query.page) {
     const [res, metaRes] = await Promise.all([
@@ -233,8 +263,9 @@ async function WikiTab({
     const pageMeta = metaRes.success ? metaRes.data : null
     main = res.success ? (
       <Card>
+        {backControl}
         <article data-testid="wiki-page">
-          <p className="text-xs text-ink-faint">{res.data.path}</p>
+          {reader ? null : <p className="text-xs text-ink-faint">{res.data.path}</p>}
           <h2 className="mt-1 font-display text-2xl font-semibold">{res.data.title}</h2>
           {res.data.summary ? <p className="mt-1 text-ink-soft">{res.data.summary}</p> : null}
           <p className="mt-2 text-xs text-ink-faint">
@@ -249,7 +280,7 @@ async function WikiTab({
             {t('page.updated', { when: formatWhen(res.data.updatedAt, locale), version: res.data.version })}
             {res.data.status === 'archived' ? ` · ${t('page.archived')}` : ''}
           </p>
-          {pageMeta ? <WikiPageMeta connectorId={connectorId} path={res.data.path} data={pageMeta} locale={locale} /> : null}
+          {pageMeta && !reader ? <WikiPageMeta connectorId={connectorId} path={res.data.path} data={pageMeta} locale={locale} /> : null}
           <div className="mt-4">
             <WikiMarkdown
               connectorId={connectorId}
@@ -257,6 +288,8 @@ async function WikiTab({
               pagePath={res.data.path}
               knownPaths={res.data.knownPaths}
               linkTitles={res.data.linkTitles}
+              linkQuery={linkQuery}
+              crossLinkQuery={linkQuery}
               crossLinks={res.data.crossLinks}
             />
           </div>
@@ -266,28 +299,31 @@ async function WikiTab({
                 {t('page.sources')}
                 <HelpHint>{t('page.sourcesHelp')}</HelpHint>
               </p>
-              <WikiSourceList connectorId={connectorId} sources={res.data.sources} />
+              <WikiSourceList connectorId={connectorId} sources={res.data.sources} linkQuery={linkQuery} />
             </div>
           ) : null}
-          {res.data.backlinks ? <BacklinksPanel connectorId={connectorId} backlinks={res.data.backlinks} t={t} /> : null}
-          {res.data.crossBacklinks.length ? <CrossBacklinksPanel rows={res.data.crossBacklinks} t={t} /> : null}
-          <PageHistoryPanel connectorId={connectorId} path={res.data.path} locale={locale} />
+          {res.data.backlinks ? <BacklinksPanel connectorId={connectorId} backlinks={res.data.backlinks} t={t} linkQuery={linkQuery} /> : null}
+          {res.data.crossBacklinks.length ? <CrossBacklinksPanel rows={res.data.crossBacklinks} t={t} linkQuery={linkQuery} /> : null}
+          {reader ? null : <PageHistoryPanel connectorId={connectorId} path={res.data.path} locale={locale} />}
         </article>
       </Card>
     ) : (
-      <Card><p className="text-sm text-ink-soft">{t('page.notFound')}</p></Card>
+      <Card>{backControl}<p className="text-sm text-ink-soft">{t('page.notFound')}</p></Card>
     )
   } else {
     main = (
       <Card>
+        {backControl}
         <h2 className="font-display text-lg font-semibold">{t('overview.title')}</h2>
         <p className="mt-2 text-sm text-ink-soft">
           {wiki.pageCount === 0 ? t('overview.empty') : t('overview.body', { pages: wiki.pageCount })}
         </p>
-        <ul className="mt-3 space-y-1 text-sm text-ink-soft">
-          <li>{t('overview.inbox', { pending: wiki.inbox.pending + wiki.inbox.reprocess, inProgress: wiki.inbox.inProgress })}</li>
-          <li>{t('overview.writers', { count: wiki.access.filter((row) => row.access === 'write').length })}</li>
-        </ul>
+        {reader ? null : (
+          <ul className="mt-3 space-y-1 text-sm text-ink-soft">
+            <li>{t('overview.inbox', { pending: wiki.inbox.pending + wiki.inbox.reprocess, inProgress: wiki.inbox.inProgress })}</li>
+            <li>{t('overview.writers', { count: wiki.access.filter((row) => row.access === 'write').length })}</li>
+          </ul>
+        )}
       </Card>
     )
   }
@@ -406,17 +442,21 @@ function SourceView({
   page,
   t,
   locale,
+  backControl,
 }: {
   connectorId: string
   source: { documentId: string; filename: string; text: string; createdAt: string }
   page?: string
   t: T
   locale: string
+  /** Olvasó nézetben ez a gomb váltja ki a lap alji „vissza a wikihez” linket. */
+  backControl?: React.ReactNode
 }) {
   // A PDF-kinyerés oldalanként `# Oldal N` fejlécet ír; erre ugrunk.
   const sections = source.text.split(/\n(?=# Oldal \d+\n)/)
   return (
     <Card>
+      {backControl}
       <p className="text-xs text-ink-faint">{t('source.eyebrow')}</p>
       <h2 className="mt-1 font-display text-xl font-semibold">{source.filename}</h2>
       <p className="mt-1 text-xs text-ink-faint">{t('source.uploaded', { when: formatWhen(source.createdAt, locale) })}</p>
@@ -437,9 +477,11 @@ function SourceView({
           )
         })}
       </div>
-      <Link href={wikiHref(connectorId)} className="mt-4 inline-block text-sm text-coral-deep hover:underline">
-        {t('source.back')}
-      </Link>
+      {backControl ? null : (
+        <Link href={wikiHref(connectorId)} className="mt-4 inline-block text-sm text-coral-deep hover:underline">
+          {t('source.back')}
+        </Link>
+      )}
     </Card>
   )
 }
@@ -448,7 +490,7 @@ type PageData = Extract<Awaited<ReturnType<typeof getWikiPageAction>>, { success
 
 /** #1061 F1: „Erre az oldalra hivatkozik (N)” — kategória szerint csoportosítva. */
 /** #1061 F2: más wikik oldalai, amelyek ide mutatnak (csak a néző által látott wikikből). */
-function CrossBacklinksPanel({ rows, t }: { rows: PageData['crossBacklinks']; t: T }) {
+function CrossBacklinksPanel({ rows, t, linkQuery }: { rows: PageData['crossBacklinks']; t: T; linkQuery?: Record<string, string> }) {
   return (
     <div className="mt-4 border-t border-line/70 pt-3" data-testid="wiki-cross-backlinks">
       <p className="mb-1 text-xs font-medium uppercase tracking-[0.14em] text-ink-faint">
@@ -458,7 +500,7 @@ function CrossBacklinksPanel({ rows, t }: { rows: PageData['crossBacklinks']; t:
         {rows.map((row) => (
           <li key={`${row.connectorId}:${row.path}`}>
             <Link
-              href={wikiHref(row.connectorId, { page: row.path })}
+              href={wikiHref(row.connectorId, { ...linkQuery, page: row.path })}
               className="rounded bg-ink/5 px-1.5 py-0.5 text-ink hover:text-coral-deep"
               title={row.path}
             >
@@ -475,10 +517,12 @@ function BacklinksPanel({
   connectorId,
   backlinks,
   t,
+  linkQuery,
 }: {
   connectorId: string
   backlinks: NonNullable<PageData['backlinks']>
   t: T
+  linkQuery?: Record<string, string>
 }) {
   return (
     <div className="mt-6 border-t border-line/70 pt-3" data-testid="wiki-backlinks">
@@ -497,7 +541,7 @@ function BacklinksPanel({
                 {group.pages.map((page) => (
                   <li key={page.path}>
                     <Link
-                      href={wikiHref(connectorId, { page: page.path })}
+                      href={wikiHref(connectorId, { ...linkQuery, page: page.path })}
                       className="rounded bg-ink/5 px-1.5 py-0.5 text-ink hover:text-coral-deep"
                       title={page.path}
                     >
