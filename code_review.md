@@ -8,7 +8,7 @@
 - Javítás: a profilozó az összevonást csak a fejlécfelismerésben ténylegesen vizsgált, legfeljebb 50 sorra ellenőrzi. Nincs új függőség vagy migráció.
 - Üzleti hatás: egy rossz vagy rosszindulatú Excel nem köti le aránytalanul a közös szervert, miközben a több soros üzleti fejlécek felismerése megmarad.
 - Ellenőrzés: szélsőséges, ismételt 9 999 999 soros tartományra regresszió, `test:warehouse` zöld; célzott ESLint és `git diff --check` zöld. A teljes TypeScript a worktree-ben megosztott, elavult Prisma kliens miatt más modulokban hibázik, így az itt nem értékelhető. Éles terheléspróba nem futott.
-- Korlát: ez a célzott review nem igazolja a teljes adattárház és a platform enterprise alkalmasságát. Issue: [#1108](https://github.com/giretg/enterprise-ai-agent-platform/issues/1108).
+- Korlát: ez a célzott review nem igazolja a teljes adattárház és a platform enterprise alkalmasságát. Issue: [#1108](https://github.com/giretg/enterprise-ai-agent-platform/issues/1108). PR: [#1109](https://github.com/giretg/enterprise-ai-agent-platform/pull/1109) (`codex`, `codex-automation`, `security`, `bug`).
 
 ## 2026-11-02 01:31 Europe/Budapest - AI-adattárház lekérdezési határ: hibás csoportosított rendezés
 
