@@ -27,6 +27,7 @@ export function buildLiveSessionRequest(input: VoiceBrowserSessionInput, backend
           model: backendModel,
           instructions: input.backendInstructions,
           tool_choice: 'auto',
+          reasoning: { effort: input.backendReasoningEffort },
           tools: [
             {
               type: 'mcp',

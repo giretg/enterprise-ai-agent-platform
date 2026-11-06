@@ -1,4 +1,6 @@
 /** #1111: a hangszolgáltató felülete. A beszélgetés-indítás logikája nem hivatkozhat konkrét szolgáltatóra. */
+import type { ReasoningEffort } from '@/lib/agent-model-config'
+
 export type VoiceProviderFailureCode = 'provider_key_rejected' | 'provider_no_access' | 'provider_quota' | 'provider_error'
 
 export type VoiceBrowserSessionInput = {
@@ -8,6 +10,7 @@ export type VoiceBrowserSessionInput = {
   voiceInstructions: string
   backendInstructions: string
   greeting: string
+  backendReasoningEffort: ReasoningEffort
   mcp: {
     serverUrl: string
     /** Rövid életű token; a böngészőbe nem kerül. */
