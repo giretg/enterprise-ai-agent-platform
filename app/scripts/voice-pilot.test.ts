@@ -27,7 +27,7 @@ import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyCha
 import {
   decryptContent,
   listVoiceTranscripts,
-  readVoiceTranscript,
+  openVoiceTranscript,
   recordVoiceTranscript,
   voiceTranscriptAllowed,
   type AiInteractionFilter,
@@ -195,14 +195,32 @@ async function main() {
     } as never
     const deps = { store, depthFor: async () => 'prompt_and_response' as const, now: () => NOW, retentionDays: () => 90 }
     await recordVoiceTranscript(deps, { tenantId: TENANT, userId: USER, agentId: AGENT, sessionId: 'live_1', lines: [{ role: 'user', text: 'Kiss Anna' }], meta: { seconds: 5 } })
-    const [summary] = await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })
+    const { items: [summary], hasMore } = await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })
     assert.equal(summary.hasContent, true)
+    assert.equal(hasMore, false)
     assert.equal(JSON.stringify(summary).includes('Kiss Anna'), false)
-    assert.deepEqual(await readVoiceTranscript(store, { tenantId: TENANT, agentId: AGENT, id: summary.id }), { sessionId: 'live_1', lines: [{ role: 'user', text: 'Kiss Anna' }] })
-    assert.equal(await readVoiceTranscript(store, { tenantId: TENANT, agentId: USER, id: summary.id }), null)
+    const audits: Array<{ action: string; actorId?: string | null; targetId?: string | null; metadata?: unknown }> = []
+    const reader = { store, audit: { append: async (entry: (typeof audits)[number]) => void audits.push(entry) } }
+    const opening = { tenantId: TENANT, agentId: AGENT, id: summary.id, actorId: USER }
+    assert.deepEqual(await openVoiceTranscript(reader, opening), { lines: [{ role: 'user', text: 'Kiss Anna' }] })
+    assert.deepEqual(
+      audits.map((a) => [a.action, a.actorId, a.targetId, a.metadata]),
+      [['ai_audit.voice_transcript.read', USER, summary.id, { agentId: AGENT, sessionId: 'live_1' }]],
+    )
+    await assert.rejects(openVoiceTranscript({ store, audit: { append: async () => Promise.reject(new Error('audit_down')) } }, opening), /audit_down/)
+    assert.equal(await openVoiceTranscript(reader, { ...opening, agentId: USER }), null)
     rows[0].kind = 'model_call'
-    assert.equal(await readVoiceTranscript(store, { tenantId: TENANT, agentId: AGENT, id: summary.id }), null)
-    assert.deepEqual(await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT }), [])
+    assert.equal(await openVoiceTranscript(reader, opening), null)
+    assert.equal(audits.length, 1)
+    assert.deepEqual((await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })).items, [])
+  })
+
+  await check('átirat-lista: 50 sornál jelzi, hogy van régebbi is', async () => {
+    const rows = Array.from({ length: 51 }, (_, i) => ({ id: String(i), createdAt: NOW, meta: {}, content: null }))
+    const store = { list: async (f: AiInteractionFilter) => rows.slice(0, f.limit) } as never
+    const listing = await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })
+    assert.equal(listing.items.length, 50)
+    assert.equal(listing.hasMore, true)
   })
 
   await check('lezárás: az átirat érvényes jelentésnél mentődik, a hibája vagy a hibás formája nem bukhat el', async () => {

@@ -292,12 +292,21 @@ export default async function AgentDetailPage({
                     />
                   </Card>
                 ) : null}
-                {canManage && agent.kind === 'internal' ? (
-                  <Card title="Hangos beszélgetések">
-                    <VoiceTranscriptsPanel agentId={agent.id} />
-                  </Card>
-                ) : null}
               </div>
+            ),
+          },
+        ]
+      : []),
+    // A hang kikapcsolása után is látszik, mert a megőrzési időn belül az átiratok még olvashatók.
+    ...(canManage && agent.kind === 'internal' && agent.voiceConfig !== null
+      ? [
+          {
+            id: 'hangbeszelgetesek' as const,
+            label: sectionLabel('hangbeszelgetesek'),
+            content: (
+              <Card>
+                <VoiceTranscriptsPanel agentId={agent.id} agentName={agent.name} />
+              </Card>
             ),
           },
         ]

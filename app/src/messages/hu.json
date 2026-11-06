@@ -1636,6 +1636,7 @@
         "munkakor": "Munkakör",
         "modell": "Gondolkodási motor",
         "modellDesc": "Melyik AI-modell dolgozik a munkatárs mögött, és mi legyen a tartalék, ha egy szolgáltató kiesik.",
+        "hangbeszelgetesek": "Hangos beszélgetések",
         "kapcsolatok": "Konnektorok",
         "kapcsolatokDesc": "Tudásbázisok, API-k, levelezés, Drive és más külső rendszerek, amelyeket a munkatárs használhat.",
         "email": "E-mail",

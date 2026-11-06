@@ -301,6 +301,10 @@ jobs:
       - name: Inbound mail events (Postgres)
         run: npm run test:inbound-mail-db
 
+      # A hamis tárolós tesztek nem látják az adatbázis CHECK-szabályait, ezért maradt észrevétlen a voice_transcript tiltása.
+      - name: AI interaction audit (Postgres)
+        run: npm run test:ai-audit-db
+
       - name: AI-adattárház (#984) valódi Postgresen
         run: npm run test:warehouse-db
 

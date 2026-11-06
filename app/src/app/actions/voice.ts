@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { aiInteractionStore } from '@/auth/ai-audit-deps'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
-import { listVoiceTranscripts, readVoiceTranscript } from '@/domain/ai-audit/ai-audit-service'
+import { listVoiceTranscripts, openVoiceTranscript } from '@/domain/ai-audit/ai-audit-service'
 import { services } from '@/domain/gateway-services'
 import { parseVoiceConfig } from '@/domain/voice/config'
 import { prisma } from '@/lib/db'
@@ -56,6 +56,7 @@ export async function listVoiceTranscriptsAction(input: { agentId: string }) {
     const agentId = z.string().uuid().parse(input.agentId)
     return ok(await listVoiceTranscripts(aiInteractionStore, { tenantId: ctx.activeTenantId, agentId }))
   } catch (e) {
+    if (e instanceof TenantAuthError && e.code === 'INSUFFICIENT_ROLE') return fail('Ehhez ebben a szervezetben adminisztrátori szerep kell.')
     console.warn('[voice] listing the transcripts failed', e instanceof Error ? e.name : 'unknown')
     return fail('A beszélgetések listáját nem sikerült betölteni. Frissítsd az oldalt, és próbáld újra.')
   }
@@ -65,25 +66,19 @@ export async function listVoiceTranscriptsAction(input: { agentId: string }) {
 export async function readVoiceTranscriptAction(input: { agentId: string; id: string }) {
   try {
     const ctx = await requireTenantRole('admin')
-    const scope = { tenantId: ctx.activeTenantId, agentId: z.string().uuid().parse(input.agentId), id: z.string().uuid().parse(input.id) }
-    const transcript = await readVoiceTranscript(aiInteractionStore, scope)
+    const transcript = await openVoiceTranscript(
+      { store: aiInteractionStore, audit: services.audit },
+      {
+        tenantId: ctx.activeTenantId,
+        agentId: z.string().uuid().parse(input.agentId),
+        id: z.string().uuid().parse(input.id),
+        actorId: ctx.user.id,
+      },
+    )
     if (!transcript) return fail('Ehhez a beszélgetéshez nincs elmentett szöveg.')
-    await services.audit.append({
-      actorType: 'human',
-      actorId: ctx.user.id,
-      agentVersion: null,
-      action: 'ai_audit.voice_transcript.read',
-      targetType: 'ai_interaction_event',
-      targetId: scope.id,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision: 'allowed',
-      metadata: { agentId: scope.agentId, sessionId: transcript.sessionId },
-      tenantId: ctx.activeTenantId,
-    })
     return ok(transcript)
   } catch (e) {
+    if (e instanceof TenantAuthError && e.code === 'INSUFFICIENT_ROLE') return fail('Ehhez ebben a szervezetben adminisztrátori szerep kell.')
     console.warn('[voice] reading the transcript failed', e instanceof Error ? e.name : 'unknown')
     return fail('A beszélgetést nem sikerült megnyitni. Frissítsd az oldalt, és próbáld újra.')
   }

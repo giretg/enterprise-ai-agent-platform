@@ -422,6 +422,7 @@
     "test:warehouse": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/warehouse.test.ts",
     "test:warehouse-db": "tsx scripts/warehouse-db.test.ts",
     "test:handoff-repository": "tsx scripts/handoff-repository.test.ts",
+    "test:ai-audit-db": "tsx scripts/ai-audit-db.test.ts",
     "test:client-policy-admin": "tsx scripts/client-policy-admin.test.ts",
     "test:client-policy-admin-db": "tsx scripts/client-policy-admin-db.test.ts"
   },

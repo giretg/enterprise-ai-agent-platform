@@ -71,6 +71,12 @@ export const AGENT_SETTING_SECTIONS = [
       'Alapból bekapcsolva: minden új munkatárs elérhető a platform-chatben, ha a cégnél be van kapcsolva — kikapcsolni utólag az adatlapon lehet.',
   },
   {
+    id: 'voiceTranscripts',
+    detailSection: 'hangbeszelgetesek',
+    detailComponent: 'VoiceTranscriptsPanel',
+    wizardSkipReason: 'Nem beállítás: a már lezajlott hangos beszélgetések visszaolvasása, létrehozáskor nincs mit megadni.',
+  },
+  {
     id: 'connectors',
     detailSection: 'kapcsolatok',
     detailComponent: 'AgentConnectorBindingForm',
