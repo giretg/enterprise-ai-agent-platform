@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { requireTenantRole } from '@/auth/tenant-context'
+import { voiceSessionEndDeps } from '@/auth/voice-deps'
 import { recordVoiceSessionEnd } from '@/domain/voice/session'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
-import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -19,7 +19,7 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401 })
   }
   const result = await recordVoiceSessionEnd(
-    { audit: repositories.audit },
+    voiceSessionEndDeps(),
     { userId: ctx.user.id, tenantId: ctx.activeTenantId, body: await request.json().catch(() => null) },
   )
   return NextResponse.json({ ok: result.ok }, { status: result.ok ? 200 : 400 })

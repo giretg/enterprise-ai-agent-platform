@@ -1530,11 +1530,14 @@ async function createMcpResourceHandler(
       if (principal.voiceCall) limitServerToVoiceTools(server)
       const tenantPackages = await deps.listMcpSkills({ tenantId: principal.tenantId })
       // A client bound to one agent lists only that agent's skills (resources/list, skills/list).
-      const packages = !agentHeader
-        ? tenantPackages
-        : boundSkills && boundSkills !== 'not_found'
-          ? boundSkills.packages
-          : []
+      // #1111: hang közben a skillek sem érhetők el, csak az eszköz-engedélylista.
+      const packages = principal.voiceCall
+        ? []
+        : !agentHeader
+          ? tenantPackages
+          : boundSkills && boundSkills !== 'not_found'
+            ? boundSkills.packages
+            : []
       server.registerTool(
         MCP_WHOAMI_TOOL,
         {
@@ -2471,7 +2474,7 @@ async function createMcpResourceHandler(
           return scheduledTaskToolResult(principal, toolName, args, deps, agentHeader ? boundAgentId : null)
         }
         if (isProjectWorkTool(toolName)) {
-          return projectWorkToolResult(principal, toolName, args, deps, origin)
+          return auditVoiceToolCall(principal, toolName, deps, projectWorkToolResult(principal, toolName, args, deps, origin))
         }
         if (isMiniAppTool(toolName)) {
           return miniAppToolResult(principal, toolName, args, deps)
@@ -2485,7 +2488,12 @@ async function createMcpResourceHandler(
         if (isEnterpriseTool(toolName)) {
           const confirm =
             isEnterpriseWriteTool(toolName) || toolName === MCP_CALL_TOOL ? writeConfirmInput(ctx, codec) : undefined
-          return enterpriseToolResult(principal, toolName, args, deps, origin, confirm, !scheduledRunId && !principal.background)
+          return auditVoiceToolCall(
+            principal,
+            toolName,
+            deps,
+            enterpriseToolResult(principal, toolName, args, deps, origin, confirm, !scheduledRunId && !principal.background),
+          )
         }
         return whoamiToolResult(principal, deps)
       })
@@ -2575,6 +2583,34 @@ async function customerPromiseToolResult(
 ) {
   if (!deps.invokeCustomerPromise) return textResult({ code: 'tool_not_configured', message: 'Tool is not configured' }, true)
   return deps.invokeCustomerPromise({ principal, toolName, args })
+}
+
+/**
+ * #1111: az eszközök saját auditsora nem a kérésre szűkített sinken megy, ezért a hang-jelölést
+ * (`clientName: 'voice'`) ez a sor hordozza, a `turnId` pedig a beszélgetés indítási sorához köti.
+ */
+async function auditVoiceToolCall<T>(
+  principal: McpPrincipal,
+  toolName: string,
+  deps: McpRuntimeDeps,
+  call: Promise<T>,
+): Promise<T> {
+  const result = await call
+  if (principal.voiceCall) {
+    const failed = (result as { isError?: boolean } | null)?.isError === true
+    await deps.audit?.append({
+      actorType: 'human',
+      actorId: principal.userId,
+      action: 'voice.tool_call',
+      targetType: 'agent',
+      targetId: principal.boundAgentId ?? null,
+      inputRef: toolName,
+      policyDecision: failed ? 'error' : 'allowed',
+      metadata: { toolName, turnId: principal.turnId ?? null, failed },
+      tenantId: principal.tenantId,
+    })
+  }
+  return result
 }
 
 async function projectWorkToolResult(

@@ -296,10 +296,11 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.platform_chat',
   'platform_chat.continuation_issued',
   'platform_chat.budget_exhausted',
-  // #1111 hang-pilot: beállítás, böngészős beszélgetés kezdete és (a böngésző jelentése szerinti) vége.
+  // #1111 hang-pilot: beállítás, böngészős beszélgetés kezdete és (a böngésző jelentése szerinti) vége, eszközhívás.
   'agent.voice_settings',
   'voice.session_started',
   'voice.session_ended',
+  'voice.tool_call',
   // #1016 nyilvános ügyfélszolgálati asszisztens
   'public_assistant.created',
   'public_assistant.published',

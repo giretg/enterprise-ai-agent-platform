@@ -45,7 +45,7 @@ import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder
 import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
 import { VoiceCallButton } from '@/components/agents/voice-call-button'
 import { VoiceSettingsForm } from '@/components/agents/voice-settings-form'
-import { canStartVoiceCall, readVoiceConfig } from '@/domain/voice/config'
+import { canStartVoiceCall, readVoiceConfig, VOICE_ROLE_MAX_CHARS } from '@/domain/voice/config'
 import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
@@ -188,7 +188,8 @@ export default async function AgentDetailPage({
     currentDefinitionVersionId: agent.currentDefinitionVersionId,
   })
   // #1111: a hang-beállítást csak platform-adminisztrátor látja, a titoktárat is csak neki kérdezzük.
-  const voiceKeyConfigured = canDelete ? await loadOpenAiTenantKey(ctx.activeTenantId).then(Boolean, () => false) : false
+  const canConfigureVoice = isSuperadmin(ctx.platformRoles) && agent.kind === 'internal'
+  const voiceKeyConfigured = canConfigureVoice ? await loadOpenAiTenantKey(ctx.activeTenantId).then(Boolean, () => false) : false
   const t = await getTranslations('ControlPlane.agentDetail')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
   const sectionDesc = (id: AgentDetailSectionId) => {
@@ -279,9 +280,15 @@ export default async function AgentDetailPage({
                 <Card title="Platform-chat">
                   <UpdatePlatformChatForm agentId={agent.id} enabled={agent.platformChatEnabled} canEdit={canManage} />
                 </Card>
-                {canDelete && agent.kind === 'internal' ? (
+                {canConfigureVoice ? (
                   <Card title="Hang-beszélgetés (próba)">
-                    <VoiceSettingsForm agentId={agent.id} config={readVoiceConfig(agent.voiceConfig)} keyConfigured={voiceKeyConfigured} />
+                    <VoiceSettingsForm
+                      agentId={agent.id}
+                      config={readVoiceConfig(agent.voiceConfig)}
+                      keyConfigured={voiceKeyConfigured}
+                      published={agent.status === 'active' && Boolean(agent.currentDefinitionVersionId)}
+                      roleClipped={(agent.roleInstruction?.trim().length ?? 0) > VOICE_ROLE_MAX_CHARS}
+                    />
                   </Card>
                 ) : null}
               </div>

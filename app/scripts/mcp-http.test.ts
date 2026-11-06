@@ -14,6 +14,7 @@ import type {
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
 import { voiceAllowedToolAliases } from '../src/auth/voice-tool-guard'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { PRESETS } from '../src/domain/client-policy/capabilities'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
 import type { McpSkillPackage } from '../src/lib/skill/mcp-skill'
@@ -2873,6 +2874,22 @@ async function main() {
     const allowed = await call('platform__work_file__list')
     assert.doesNotMatch(allowed?.content?.[0]?.text ?? '', /voice_tool_blocked|tool_not_allowed/)
     assert.ok(audit.some((a) => a.action === 'mcp.tools.call.deny' && (a.metadata as Record<string, unknown> | undefined)?.clientName === 'voice'))
+    // A sikeres eszközhívás is a hang-jelöléssel kerül az auditba, a beszélgetéshez kötve.
+    const marked = audit.find((a) => a.action === 'voice.tool_call')
+    const markedMeta = marked?.metadata as Record<string, unknown> | undefined
+    assert.equal(markedMeta?.clientName, 'voice')
+    assert.equal(markedMeta?.toolName, 'platform.work_file.list')
+    assert.equal(markedMeta?.turnId, 'voice-1')
+    assert.equal(marked?.targetId, AGENT_ID)
+    assertAuditMetadataSafe(markedMeta)
+    // Az engedélylistán kívül a skillek, a promptok és az erőforrások sem érhetők el.
+    const rpc = async (id: number, method: string, params: Record<string, unknown> = {}) => {
+      const res = await post('acme', { jsonrpc: '2.0', id, method, params: { ...params, _meta: meta } }, { ...headers, ...envelope, 'mcp-method': method }, deps)
+      return (await readJson(res)) as { result?: Record<string, unknown[]>; error?: unknown }
+    }
+    assert.deepEqual((await rpc(13, 'skills/list')).result?.skills ?? [], [])
+    assert.deepEqual((await rpc(14, 'resources/list')).result?.resources ?? [], [])
+    assert.deepEqual((await rpc(15, 'prompts/list')).result?.prompts ?? [], [])
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

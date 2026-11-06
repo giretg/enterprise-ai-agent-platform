@@ -5,14 +5,17 @@ import {
   applyVoiceEvent,
   INITIAL_VOICE_CALL_VIEW,
   microphoneFailureMessage,
+  voiceEndedMessage,
   voiceEndReport,
   voiceFailureMessage,
+  voiceProviderErrorMessage,
 } from '@/components/agents/voice-call-events'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'closing' | 'ended' | 'failed'
 
 const ICE_GATHERING_TIMEOUT_MS = 4000
 const CLOSE_TIMEOUT_MS = 15_000
+const DEFAULT_MAX_SECONDS = 600
 
 function waitForIceGathering(connection: RTCPeerConnection): Promise<void> {
   if (connection.iceGatheringState === 'complete') return Promise.resolve()
@@ -41,6 +44,8 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
   const [failure, setFailure] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const [view, setView] = useState(INITIAL_VOICE_CALL_VIEW)
+  const [limitReached, setLimitReached] = useState(false)
+  const [maxSeconds, setMaxSeconds] = useState(DEFAULT_MAX_SECONDS)
   // A lezárási jelentésnek az utolsó esemény utáni állapot kell, a következő renderre nem várhat.
   const viewRef = useRef(INITIAL_VOICE_CALL_VIEW)
 
@@ -65,16 +70,23 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
     connectionRef.current = null
   }, [])
 
+  const sendEndReport = useCallback(
+    (sessionId: string, summary: ReturnType<typeof voiceEndReport>) => {
+      void fetch('/api/voice/session/end', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agentId, sessionId, ...summary }),
+      }).catch(() => undefined)
+    },
+    [agentId],
+  )
+
   const report = useCallback(() => {
     if (reportedRef.current || !sessionIdRef.current) return
     reportedRef.current = true
-    void fetch('/api/voice/session/end', {
-      method: 'POST',
-      keepalive: true,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId, sessionId: sessionIdRef.current, ...voiceEndReport(viewRef.current) }),
-    }).catch(() => undefined)
-  }, [agentId])
+    sendEndReport(sessionIdRef.current, voiceEndReport(viewRef.current))
+  }, [sendEndReport])
 
   const finish = useCallback(
     (next: 'ended' | 'failed') => {
@@ -104,6 +116,8 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
 
   useEffect(() => {
     const onLeave = () => {
+      // A folyamatban lévő indítás így nem nyitja meg a mikrofont az oldal elhagyása után.
+      runRef.current += 1
       release()
       report()
     }
@@ -126,6 +140,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
     const stale = () => run !== runRef.current
     setFailure(null)
     setElapsed(0)
+    setLimitReached(false)
     viewRef.current = INITIAL_VOICE_CALL_VIEW
     setView(INITIAL_VOICE_CALL_VIEW)
     sessionIdRef.current = null
@@ -197,7 +212,11 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
         greeting?: string
         maxSeconds?: number
       } | null
-      if (stale()) return
+      if (stale()) {
+        // Megszakítás közben a szerver már elindíthatta: az indítási auditsor mellé kerüljön lezárás is.
+        if (payload?.sessionId) sendEndReport(payload.sessionId, { ...voiceEndReport(INITIAL_VOICE_CALL_VIEW), reason: 'cancelled_while_connecting' })
+        return
+      }
       if (!response.ok || !payload?.sessionId || !payload.sdpAnswer) {
         setFailure(voiceFailureMessage(payload?.error ?? 'unknown'))
         release()
@@ -208,7 +227,13 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
       greeting = payload.greeting ?? ''
       await connection.setRemoteDescription({ type: 'answer', sdp: payload.sdpAnswer })
       setPhase('live')
-      timersRef.current.push(setTimeout(requestClose, (payload.maxSeconds ?? 600) * 1000))
+      setMaxSeconds(payload.maxSeconds ?? DEFAULT_MAX_SECONDS)
+      timersRef.current.push(
+        setTimeout(() => {
+          setLimitReached(true)
+          requestClose()
+        }, (payload.maxSeconds ?? DEFAULT_MAX_SECONDS) * 1000),
+      )
     } catch {
       if (stale()) return
       setFailure('A beszélgetést nem sikerült elindítani. Próbáld újra pár perc múlva.')
@@ -250,7 +275,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
                 <p className="text-ink-soft">
                   {phase === 'idle' ? 'Még nem indult el a beszélgetés. Az Indítás után kéri a böngésző a mikrofon-engedélyt.' : null}
                   {phase === 'connecting' ? 'Kapcsolódás… Ha a böngésző mikrofon-engedélyt kér, engedélyezd.' : null}
-                  {phase === 'live' ? 'A munkatárs mindjárt megszólal. Az elhangzott szöveg itt jelenik meg.' : null}
+                  {phase === 'live' ? 'A munkatárs mindjárt megszólal. Ha néhány másodpercig csend van, köszönj neki te. Az elhangzott szöveg itt jelenik meg.' : null}
                 </p>
               ) : null}
               {view.lines.map((line, index) =>
@@ -267,18 +292,15 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
               )}
               {view.backendSince !== null ? <p className="text-xs text-ink-soft">A munkatárs utánanéz…</p> : null}
               {failure ? <p className="text-coral-deep">{failure}</p> : null}
-              {view.providerError ? <p className="text-coral-deep">Az OpenAI hibát jelzett: {view.providerError}</p> : null}
+              {view.providerError ? <p className="text-coral-deep">{voiceProviderErrorMessage(view.providerError)}</p> : null}
               {phase === 'ended' ? (
-                <p className="text-ink-soft">
-                  A beszélgetés véget ért
-                  {view.closedReason === 'expired' ? ', mert elérte az időkorlátot' : ''}. Az átirat az ablak bezárásával törlődik.
-                </p>
+                <p className="text-ink-soft">{voiceEndedMessage(view.closedReason, limitReached)} Az átirat az ablak bezárásával törlődik.</p>
               ) : null}
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-4 text-sm">
               <div className="text-ink-soft">
-                {busy || phase === 'ended' ? <span>{formatClock(Math.max(elapsed, view.seconds))}</span> : null}
+                {busy || phase === 'ended' ? <span title="Eltelt idő és a beszélgetés leghosszabb ideje">{formatClock(Math.max(elapsed, view.seconds))} / {formatClock(maxSeconds)}</span> : null}
                 {view.lastBackendWaitMs !== null ? (
                   <span
                     className="ml-3"

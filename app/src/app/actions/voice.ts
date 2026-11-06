@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { requireTenantRole } from '@/auth/tenant-context'
+import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
 import { parseVoiceConfig } from '@/domain/voice/config'
 import { prisma } from '@/lib/db'
@@ -21,7 +21,7 @@ export async function saveAgentVoiceConfigAction(input: { agentId: string; enabl
     if (!agent) return fail('A munkatárs nem található.')
     if (agent.kind !== 'internal') return fail('Nyilvános asszisztensnél a hang-beszélgetés nem kapcsolható be.')
     if (config.enabled && !(await loadOpenAiTenantKey(ctx.activeTenantId))) {
-      return fail('A bekapcsoláshoz előbb add meg a céges OpenAI-kulcsot a Beállításokban.')
+      return fail('A bekapcsoláshoz előbb add meg a céges OpenAI-kulcsot: Beállítások → Céges modellkulcsok.')
     }
     await prisma.agent.update({ where: { id: agentId }, data: { voiceConfig: config } })
     await services.audit.append({
@@ -42,6 +42,8 @@ export async function saveAgentVoiceConfigAction(input: { agentId: string; enabl
     return ok(config)
   } catch (e) {
     if (e instanceof z.ZodError) return fail('Az első mondat legfeljebb 300 karakter lehet, és létező hangot kell választani.')
-    return fail(e instanceof Error ? e.message : 'save_failed')
+    if (e instanceof TenantAuthError && e.code === 'INSUFFICIENT_ROLE') return fail('Ehhez ebben a szervezetben adminisztrátori szerep kell.')
+    console.warn('[voice] saving the voice settings failed', e instanceof Error ? e.name : 'unknown')
+    return fail('A mentés nem sikerült. Frissítsd az oldalt, és próbáld újra.')
   }
 }

@@ -126,9 +126,15 @@ export async function startVoiceSession(
 const boundedNumber = (value: unknown, max: number): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max ? Math.round(value) : null
 
-/** A beszélgetés vége és a mért idők a böngésző jelentése, ezért csak tájékoztató adat. */
+/**
+ * A beszélgetés vége és a mért idők a böngésző jelentése, ezért csak tájékoztató adat.
+ * Csak a felhasználó saját, még le nem zárt beszélgetéséhez írható sor, így az audit-láncba nem kerülhet kitalált lezárás.
+ */
 export async function recordVoiceSessionEnd(
-  deps: { audit?: AuditSink },
+  deps: {
+    audit?: AuditSink
+    sessionAwaitsEnd: (input: { tenantId: string; userId: string; agentId: string; sessionId: string }) => Promise<boolean>
+  },
   input: { userId: string; tenantId: string; body: unknown },
 ): Promise<{ ok: boolean }> {
   const b = (input.body ?? {}) as Record<string, unknown>
@@ -140,6 +146,8 @@ export async function recordVoiceSessionEnd(
   ) {
     return { ok: false }
   }
+  const scope = { tenantId: input.tenantId, userId: input.userId, agentId: b.agentId, sessionId: b.sessionId }
+  if (!(await deps.sessionAwaitsEnd(scope))) return { ok: false }
   await writeAudit(deps.audit, {
     actorType: 'human',
     actorId: input.userId,

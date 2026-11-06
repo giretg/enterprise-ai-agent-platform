@@ -16,7 +16,7 @@ const VOICE_ALLOWED_TOOLS = new Set<string>([
 ])
 
 export const VOICE_TOOL_BLOCKED_MESSAGE =
-  'Ezt az eszközt hangos beszélgetés közben nem használhatod. Mondd el a hívónak, hogy ezt egy kolléga intézi el.'
+  'Ezt az eszközt hangos beszélgetés közben nem használhatod. Mondd el a hívónak, hogy ezt hang közben nem tudod elintézni.'
 
 /**
  * A platform eszköznevei pontot tartalmaznak, az OpenAI példái viszont csak pont nélküli neveket
@@ -38,10 +38,21 @@ export function voiceBlocksTool(principal: { voiceCall?: true }, toolName: strin
   return principal.voiceCall === true && !VOICE_ALLOWED_TOOLS.has(toolName)
 }
 
-/** Csak az engedélylista kerül a szerverre, alias néven. A hívást a `tools/call` kezelő oldja vissza. */
-export function limitServerToVoiceTools(server: { registerTool: (...args: never[]) => unknown }): void {
+type VoiceLimitableServer = {
+  registerTool: (...args: never[]) => unknown
+  registerPrompt: (...args: never[]) => unknown
+  registerResource: (...args: never[]) => unknown
+}
+
+/**
+ * Csak az engedélylista kerül a szerverre, alias néven; a hívást a `tools/call` kezelő oldja vissza.
+ * Prompt és erőforrás nem kerül fel, így a munkatárs eligazítása és a skillek sem olvashatók hang-tokennel.
+ */
+export function limitServerToVoiceTools(server: VoiceLimitableServer): void {
   const register = server.registerTool.bind(server) as (name: string, ...rest: unknown[]) => unknown
   const limited = (name: string, ...rest: unknown[]) =>
     VOICE_ALLOWED_TOOLS.has(name) ? register(voiceToolAlias(name), ...rest) : undefined
   server.registerTool = limited as unknown as typeof server.registerTool
+  server.registerPrompt = (() => undefined) as unknown as typeof server.registerPrompt
+  server.registerResource = (() => undefined) as unknown as typeof server.registerResource
 }

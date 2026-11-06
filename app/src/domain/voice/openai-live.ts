@@ -1,4 +1,4 @@
-/** #1111: OpenAI GPT-Live böngészős (WebRTC) munkamenet. Minden OpenAI-specifikus részlet itt van. */
+/** #1111: OpenAI GPT-Live böngészős (WebRTC) munkamenet. A szerveroldali OpenAI-részletek itt vannak; az adatcsatorna eseményeit a `voice-call-events` dolgozza fel. */
 import { OPENAI_BASE_URL } from '@/lib/openai-tenant-key'
 import type { VoiceBrowserSessionInput, VoiceBrowserSessionResult, VoiceProvider, VoiceProviderFailureCode } from '@/domain/voice/provider'
 

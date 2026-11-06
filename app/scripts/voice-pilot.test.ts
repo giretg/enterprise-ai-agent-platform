@@ -7,6 +7,7 @@ import { MCP_ALLOWED_TOOLS, resolveMcpPrincipal, type McpPrincipalDeps } from '.
 import {
   limitServerToVoiceTools,
   toolNameFromVoiceAlias,
+  VOICE_TOOL_BLOCKED_MESSAGE,
   voiceAllowedToolAliases,
   voiceBlocksTool,
   voiceToolAlias,
@@ -14,8 +15,10 @@ import {
 import {
   applyVoiceEvent,
   INITIAL_VOICE_CALL_VIEW,
+  voiceEndedMessage,
   voiceEndReport,
   voiceFailureMessage,
+  voiceProviderErrorMessage,
   type VoiceCallView,
 } from '../src/components/agents/voice-call-events'
 import { issueGatewayToken } from '../src/domain/model-gateway-token/gateway-token'
@@ -218,11 +221,47 @@ async function main() {
     assert.match(voiceFailureMessage('ismeretlen'), /próbáld újra/i)
   })
 
+  await check('felület: hétköznapi eszköznév, teendő a hibáknál, a lezárás oka érthető', () => {
+    const toolLine = (name: string, error?: string) =>
+      applyVoiceEvent(INITIAL_VOICE_CALL_VIEW, { type: 'response.event', event: { type: 'response.output_item.done', item: { type: 'mcp_call', name, error } } }, 0).lines[0].text
+    assert.equal(toolLine('kb_search'), 'A munkatárs keresett a tudásbázisban.')
+    for (const alias of voiceAllowedToolAliases()) assert.doesNotMatch(toolLine(alias), /__|platform|kb_|használt egy eszközt/, alias)
+    assert.match(toolLine('platform__work_file__append', 'denied'), /hozzáírt egy munkafájlhoz\. Ez nem sikerült\./)
+    assert.match(voiceProviderErrorMessage('responses_validation_failed'), /Próbáld újra.*rendszergazdának: responses_validation_failed/)
+    assert.match(voiceEndedMessage('close_requested', true), /időkorlát/)
+    assert.match(voiceEndedMessage('expired', false), /időkorlát/)
+    assert.match(voiceEndedMessage('connection_lost', false), /hálózatot/)
+    assert.equal(voiceEndedMessage(null, false), 'A beszélgetés véget ért.')
+    for (const code of ['no_tenant_access', 'agent_unavailable', 'voice_disabled', 'key_missing']) {
+      assert.match(voiceFailureMessage(code), /szólj|Kérj|kérd|adhatja meg/i, code)
+    }
+    assert.match(voiceFailureMessage('key_missing'), /Céges modellkulcsok/)
+  })
+
+  await check('utasítás: a szabály a leírás elé kerül, hosszú leírásnál sem esik ki; nincs teljesíthetetlen ígéret', () => {
+    const built = buildVoiceInstructions({ name: 'Réka', roleInstruction: 'x'.repeat(30_000), rules: [{ text: 'KÖTELEZŐ SZABÁLY', source: 'hard' }] })
+    assert.ok(built.voice.indexOf('KÖTELEZŐ SZABÁLY') < built.voice.indexOf('xxx'))
+    assert.ok(built.voice.length < 10_000)
+    assert.doesNotMatch(built.voice, /telefon|visszahív[^á]/i)
+    assert.doesNotMatch(built.backend, /telefon/i)
+    assert.doesNotMatch(VOICE_TOOL_BLOCKED_MESSAGE, /kolléga/)
+  })
+
   await check('lezárás: a böngésző adata korlátozott, hibás kérés nem naplózódik', async () => {
     const audits: Array<{ action: string; metadata?: unknown }> = []
-    const deps = { audit: { append: async (a: { action: string; metadata?: unknown }) => void audits.push(a) } }
+    const asked: unknown[] = []
+    const deps = {
+      audit: { append: async (a: { action: string; metadata?: unknown }) => void audits.push(a) },
+      sessionAwaitsEnd: async (input: { sessionId: string }) => {
+        asked.push(input)
+        return input.sessionId === 'live_1'
+      },
+    }
     assert.deepEqual(await recordVoiceSessionEnd(deps as never, { userId: USER, tenantId: TENANT, body: { agentId: 'x', sessionId: 'live_1' } }), { ok: false })
     assert.deepEqual(await recordVoiceSessionEnd(deps as never, { userId: USER, tenantId: TENANT, body: { agentId: AGENT, sessionId: '<script>' } }), { ok: false })
+    // Kitalált vagy már lezárt beszélgetéshez nem kerülhet sor az audit-láncba.
+    assert.deepEqual(await recordVoiceSessionEnd(deps as never, { userId: USER, tenantId: TENANT, body: { agentId: AGENT, sessionId: 'live_other' } }), { ok: false })
+    assert.deepEqual(asked, [{ tenantId: TENANT, userId: USER, agentId: AGENT, sessionId: 'live_other' }])
     assert.equal(audits.length, 0)
     const ended = await recordVoiceSessionEnd(deps as never, {
       userId: USER,
@@ -339,7 +378,7 @@ async function main() {
     assert.deepEqual(view.lines, [
       { role: 'assistant', text: 'Jó napot.' },
       { role: 'user', text: 'Két láda bort.' },
-      { role: 'tool', text: 'Eszköz: platform.work_file.append' },
+      { role: 'tool', text: 'A munkatárs hozzáírt egy munkafájlhoz.' },
     ])
     assert.equal(view.lastBackendWaitMs, 2500)
     assert.equal(view.backendSince, null)

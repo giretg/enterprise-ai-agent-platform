@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { requireTenantRole } from '@/auth/tenant-context'
+import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { voiceSessionDeps } from '@/auth/voice-deps'
 import { startVoiceSession, type VoiceSessionFailureCode } from '@/domain/voice/session'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
@@ -26,7 +26,11 @@ export async function POST(request: Request): Promise<Response> {
   let ctx: Awaited<ReturnType<typeof requireTenantRole>>
   try {
     ctx = await requireTenantRole('viewer')
-  } catch {
+  } catch (error) {
+    // Csak a hiányzó belépés „lejárt”; a nem elérhető szervezethez újra belépni nem segít.
+    if (error instanceof TenantAuthError && error.code !== 'NO_USER') {
+      return NextResponse.json({ error: 'no_tenant_access' }, { status: 403 })
+    }
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401 })
   }
   const result = await startVoiceSession(voiceSessionDeps(origin), {

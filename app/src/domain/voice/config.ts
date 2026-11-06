@@ -4,6 +4,8 @@ import { z } from 'zod'
 /** A GPT-Live beépített hangjaiból egy rövid válogatás; az alap a szolgáltató alapértelmezése. */
 export const VOICE_NAMES = ['marin', 'cedar', 'coral', 'sage', 'verse', 'ash'] as const
 export const VOICE_GREETING_MAX_CHARS = 300
+/** A beszélő modell ennyit kap a munkaköri leírásból; a beállítási felület figyelmeztet, ha hosszabb. */
+export const VOICE_ROLE_MAX_CHARS = 8000
 /** Egy beszélgetés leghosszabb ideje. A böngésző tartja be, ezért a token is ehhez igazodik. */
 export const VOICE_MAX_SESSION_SECONDS = 600
 export const VOICE_TOKEN_TTL_SECONDS = VOICE_MAX_SESSION_SECONDS + 120
