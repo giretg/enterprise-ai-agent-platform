@@ -59,6 +59,8 @@ export type AiInteractionRow = {
 
 export type AiInteractionFilter = {
   tenantId: string
+  id?: string
+  kind?: AuditKind
   userId?: string
   agentId?: string
   sessionId?: string
@@ -268,6 +270,29 @@ export async function recordVoiceTranscript(
     meta: { ...input.meta, lineCount: input.lines.length, ...(fits ? {} : { contentDropped: 'too_large' }) },
   })
   await deps.store.insertMany([row])
+}
+
+export type VoiceTranscriptSummary = Pick<AiInteractionRow, 'id' | 'sessionId' | 'createdAt' | 'expiresAt' | 'meta'> & { hasContent: boolean }
+
+const VOICE_TRANSCRIPT_LIST_LIMIT = 50
+
+export async function listVoiceTranscripts(
+  store: Pick<AiInteractionStore, 'list'>,
+  input: { tenantId: string; agentId: string },
+): Promise<VoiceTranscriptSummary[]> {
+  const rows = await store.list({ ...input, kind: 'voice_transcript', limit: VOICE_TRANSCRIPT_LIST_LIMIT })
+  return rows.map((r) => ({ id: r.id, sessionId: r.sessionId, createdAt: r.createdAt, expiresAt: r.expiresAt, meta: r.meta, hasContent: r.content != null }))
+}
+
+/** A minőségellenőrzés egy adminnak is elérhető, a többi AI-napló négyszemes marad. A hívó naplózza a megnyitást. */
+export async function readVoiceTranscript(
+  store: Pick<AiInteractionStore, 'list'>,
+  input: { tenantId: string; agentId: string; id: string },
+): Promise<{ sessionId: string | null; lines: unknown[] } | null> {
+  const [row] = await store.list({ ...input, kind: 'voice_transcript', limit: 1 })
+  if (!row?.content) return null
+  const content = JSON.parse(decryptContent(row.tenantId, row.content)) as { lines?: unknown }
+  return { sessionId: row.sessionId, lines: Array.isArray(content.lines) ? content.lines : [] }
 }
 
 // --- Admin olvasás ---

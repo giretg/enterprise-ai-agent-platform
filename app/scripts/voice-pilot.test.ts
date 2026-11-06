@@ -24,7 +24,15 @@ import {
 import { issueGatewayToken } from '../src/domain/model-gateway-token/gateway-token'
 import { PLATFORM_CHAT_INSTALL_ID } from '../src/domain/platform-chat/gateway'
 import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
-import { decryptContent, recordVoiceTranscript, voiceTranscriptAllowed, type AiInteractionRow } from '../src/domain/ai-audit/ai-audit-service'
+import {
+  decryptContent,
+  listVoiceTranscripts,
+  readVoiceTranscript,
+  recordVoiceTranscript,
+  voiceTranscriptAllowed,
+  type AiInteractionFilter,
+  type AiInteractionRow,
+} from '../src/domain/ai-audit/ai-audit-service'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { canStartVoiceCall, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS } from '../src/domain/voice/config'
 import { buildLiveSessionRequest, createOpenAiLiveProvider, mapLiveFailure } from '../src/domain/voice/openai-live'
@@ -174,6 +182,27 @@ async function main() {
     assert.equal(rows[1].meta.lineCount, 1)
     assert.equal(voiceTranscriptAllowed('metadata'), false)
     assert.equal(voiceTranscriptAllowed('prompt_and_response'), true)
+  })
+
+  await check('átirat-olvasó: csak ennek a munkatársnak a hang-átiratát adja, más naplósort nem', async () => {
+    const rows: AiInteractionRow[] = []
+    const store = {
+      insertMany: async (next: AiInteractionRow[]) => (rows.push(...next), next.length),
+      list: async (f: AiInteractionFilter) =>
+        rows.filter(
+          (r) => r.tenantId === f.tenantId && r.agentId === f.agentId && r.kind === f.kind && (f.id === undefined || r.id === f.id),
+        ),
+    } as never
+    const deps = { store, depthFor: async () => 'prompt_and_response' as const, now: () => NOW, retentionDays: () => 90 }
+    await recordVoiceTranscript(deps, { tenantId: TENANT, userId: USER, agentId: AGENT, sessionId: 'live_1', lines: [{ role: 'user', text: 'Kiss Anna' }], meta: { seconds: 5 } })
+    const [summary] = await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })
+    assert.equal(summary.hasContent, true)
+    assert.equal(JSON.stringify(summary).includes('Kiss Anna'), false)
+    assert.deepEqual(await readVoiceTranscript(store, { tenantId: TENANT, agentId: AGENT, id: summary.id }), { sessionId: 'live_1', lines: [{ role: 'user', text: 'Kiss Anna' }] })
+    assert.equal(await readVoiceTranscript(store, { tenantId: TENANT, agentId: USER, id: summary.id }), null)
+    rows[0].kind = 'model_call'
+    assert.equal(await readVoiceTranscript(store, { tenantId: TENANT, agentId: AGENT, id: summary.id }), null)
+    assert.deepEqual(await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT }), [])
   })
 
   await check('lezárás: az átirat érvényes jelentésnél mentődik, a hibája vagy a hibás formája nem bukhat el', async () => {

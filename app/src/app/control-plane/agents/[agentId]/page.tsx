@@ -45,6 +45,7 @@ import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder
 import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
 import { VoiceCallButton } from '@/components/agents/voice-call-button'
 import { VoiceSettingsForm } from '@/components/agents/voice-settings-form'
+import { VoiceTranscriptsPanel } from '@/components/agents/voice-transcripts-panel'
 import { canStartVoiceCall, readVoiceConfig, VOICE_ROLE_MAX_CHARS } from '@/domain/voice/config'
 import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
@@ -289,6 +290,11 @@ export default async function AgentDetailPage({
                       published={agent.status === 'active' && Boolean(agent.currentDefinitionVersionId)}
                       roleClipped={(agent.roleInstruction?.trim().length ?? 0) > VOICE_ROLE_MAX_CHARS}
                     />
+                  </Card>
+                ) : null}
+                {canManage && agent.kind === 'internal' ? (
+                  <Card title="Hangos beszélgetések">
+                    <VoiceTranscriptsPanel agentId={agent.id} />
                   </Card>
                 ) : null}
               </div>
