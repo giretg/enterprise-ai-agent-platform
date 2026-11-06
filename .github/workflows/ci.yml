@@ -153,6 +153,7 @@ jobs:
           npm run test:kb-wiki
           npm run test:wiki-console
           npm run test:agent-kb-binding-summary
+          npm run test:agent-product-links
           npm run test:wiki-inbox-upload
           npm run test:wiki-reader-trail
           npm run test:wiki-categories

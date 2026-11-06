@@ -52,8 +52,24 @@ export type WikiConsoleBindingRow = {
   wikiCollectFocus: string | null
 }
 
+/** Egy agent kötése egy tudástárhoz, a néző-jog és a név kiszámításához szükséges adatokkal. */
+export type WikiConsoleAgentBindingRow = {
+  agentId: string
+  connectorId: string
+  name: string
+  config: Prisma.JsonValue
+  visibility: 'shared' | 'private_to_user' | 'members'
+  ownerUserId: string | null
+  kbMemberUserIds: string[]
+  accessMode: 'read' | 'write'
+  wikiAccess: 'none' | 'read' | 'submit' | 'write'
+  pageCount: number
+}
+
 export interface WikiConsoleRepository {
   listKnowledgeBases(tenantId: string): Promise<WikiConsoleKbRow[]>
+  /** A megadott agentek aktív tudástár-kötései (a munkatárs-kártyák egyszerre kérik). */
+  listAgentKnowledgeBindings(tenantId: string, agentIds: string[]): Promise<WikiConsoleAgentBindingRow[]>
   listInboxItems(connectorId: string, input: { now: Date; limit?: number }): Promise<WikiConsoleInboxRow[]>
   listBindingsForConnector(connectorId: string): Promise<WikiConsoleBindingRow[]>
   listSourceDocuments(
@@ -118,6 +134,40 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
       sourceCount: Number(row.source_count),
       pageCount: Number(row.page_count),
       bytes: Number(row.bytes ?? 0),
+    }))
+  }
+
+  async listAgentKnowledgeBindings(tenantId: string, agentIds: string[]): Promise<WikiConsoleAgentBindingRow[]> {
+    const rows = await prisma.agentConnector.findMany({
+      where: {
+        agentId: { in: agentIds },
+        connector: { tenantId, type: 'knowledge_base', lifecycleState: 'active' },
+      },
+      select: {
+        agentId: true,
+        connectorId: true,
+        accessMode: true,
+        wikiAccess: true,
+        connector: {
+          select: {
+            name: true,
+            config: true,
+            visibility: true,
+            ownerUserId: true,
+            kbMemberUserIds: true,
+            _count: { select: { wikiPages: { where: { status: 'published' } } } },
+          },
+        },
+      },
+    })
+    return rows.map(({ connector, ...row }) => ({
+      ...row,
+      name: connector.name,
+      config: connector.config,
+      visibility: connector.visibility,
+      ownerUserId: connector.ownerUserId,
+      kbMemberUserIds: connector.kbMemberUserIds,
+      pageCount: connector._count.wikiPages,
     }))
   }
 

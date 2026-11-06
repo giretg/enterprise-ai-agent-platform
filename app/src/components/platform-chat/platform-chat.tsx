@@ -4,7 +4,9 @@ import Link from 'next/link'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { AgentProductLinks } from '@/components/agents/agent-product-links'
 import { VoiceCallDialog, VoiceCallIconButton } from '@/components/agents/voice-call-button'
+import type { AgentProductLink } from '@/lib/agent-product-links'
 import { pickPlatformChatAgentId } from '@/lib/platform-chat-href'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import { takePendingPrompt } from './pending-prompt'
@@ -415,6 +417,7 @@ export function PlatformChat({
   isAdmin,
   keyMissingForAdmin,
   voiceAgentIds = [],
+  productLinks = {},
   initialAgentId = null,
   initialConversationId = null,
 }: {
@@ -422,6 +425,8 @@ export function PlatformChat({
   keyMissingForAdmin: boolean
   /** #1111: azok a munkatársak, akikkel hangon is lehet beszélni. */
   voiceAgentIds?: string[]
+  /** A munkatárs mini appjai, tudásbázisa és társai; a listát a worker adja, ezeket csak a szerver látja. */
+  productLinks?: Record<string, AgentProductLink[]>
   /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
   initialAgentId?: string | null
   /** #1032: `?conversation=` — pl. a bejövő levél feldolgozásának beszélgetése a Postaládából. */
@@ -1271,6 +1276,7 @@ export function PlatformChat({
                     {agent.description ? <span className="line-clamp-2"> {agent.description}</span> : null}
                   </p>
                 ) : null}
+                {agent ? <AgentProductLinks agentName={agent.name} links={productLinks[agent.agentId]} layout="wide" className="justify-center" /> : null}
               </div>
               <div className="order-3 sm:order-2">
                 {noticeLine}

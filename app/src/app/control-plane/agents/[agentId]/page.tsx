@@ -4,6 +4,7 @@ import { PromisesPanel } from '@/app/control-plane/promises/promises-panel'
 import { ClientPolicyForm } from '@/components/client-policy/client-policy-form'
 import { adminPolicyView } from '@/domain/client-policy/admin-policy'
 import { prisma } from '@/lib/db'
+import { loadAgentProductLinks } from '@/lib/agent-product-links-loader'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
@@ -35,6 +36,7 @@ import { repositories } from '@/repositories/postgres'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
+import { AgentProductLinks } from '@/components/agents/agent-product-links'
 import { AgentIdCopyButton } from '@/components/agents/agent-id-copy-button'
 import { StartPlatformChatLink } from '@/components/agents/start-platform-chat-link'
 import { PublishStaleDraftButton } from '@/components/agents/publish-stale-draft-button'
@@ -190,8 +192,10 @@ export default async function AgentDetailPage({
   })
   // #1111: a hang-beállítást csak platform-adminisztrátor látja, a titoktárat is csak neki kérdezzük.
   const canConfigureVoice = isSuperadmin(ctx.platformRoles) && agent.kind === 'internal'
+  const productLinks = (await loadAgentProductLinks(ctx, [agent]))[agent.id]
   const voiceKeyConfigured = canConfigureVoice ? await loadOpenAiTenantKey(ctx.activeTenantId).then(Boolean, () => false) : false
   const t = await getTranslations('ControlPlane.agentDetail')
+  const tAgents = await getTranslations('ControlPlane.agents')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
   const sectionDesc = (id: AgentDetailSectionId) => {
     const key = SECTION_DESC_KEYS[id]
@@ -481,20 +485,27 @@ export default async function AgentDetailPage({
         {t('back')}
       </Link>
       <div className="flex flex-wrap items-start gap-4">
-        <AgentAvatar name={agent.name} avatarUrl={agent.avatarUrl} size="lg" />
+        <AgentAvatar name={agent.name} status={agent.status} avatarUrl={agent.avatarUrl} size="lg" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
           <h1 className="mt-1 font-display text-3xl font-semibold">{agent.name}</h1>
           {agent.description ? (
             <p className="mt-1 text-ink-soft">{agent.description}</p>
           ) : null}
-          <p className="mt-1 text-ink-soft">{agent.status}</p>
+          {agent.status === 'active' ? null : (
+            <p className="mt-1 text-ink-soft">
+              {tAgents.has(`status.${agent.status}`) ? tAgents(`status.${agent.status}` as 'status.draft') : agent.status}
+            </p>
+          )}
           {mailboxRes?.success && mailboxRes.data.primaryAddress ? (
             <p className="mt-1 text-sm text-ink-soft" title="A munkatárs saját e-mail címe">✉ {mailboxRes.data.primaryAddress}</p>
           ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
             {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} /> : null}
+            <AgentProductLinks agentName={agent.name} links={productLinks} layout="wide" />
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <AgentIdCopyButton agentId={agent.id} />
             {canManage ? (
               <Link
@@ -528,7 +539,9 @@ export default async function AgentDetailPage({
 
       <p className="max-w-2xl text-sm text-ink-soft">{t('pickTopic')}</p>
 
+      {/* A gombsor linkjei ezen az oldalon váltanak témát: a `key` nélkül a témaválasztó a régin maradna. */}
       <SettingsSectionShell
+        key={initialSection ?? ''}
         ariaLabel={t('aria')}
         navHeading={t('navHeading')}
         initialId={initialSection}

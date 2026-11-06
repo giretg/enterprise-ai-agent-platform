@@ -1,6 +1,7 @@
 import { listAgents } from '@/app/actions/platform'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { canStartVoiceCall } from '@/domain/voice/config'
+import { loadAgentProductLinks } from '@/lib/agent-product-links-loader'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { parsePlatformChatAgentParam } from '@/lib/platform-chat-href'
 import { hasPlatformChatModelKey } from '@/lib/platform-chat-model-key'
@@ -24,6 +25,7 @@ export default async function PlatformChatPage({
   // A munkatárslistát a worker adja, a hang-beállítás viszont csak itt, a szerveren olvasható.
   const listed = await listAgents({ limit: 100 })
   const voiceAgentIds = listed.success ? listed.data.filter((agent) => canStartVoiceCall(agent)).map((agent) => agent.id) : []
+  const productLinks = listed.success ? await loadAgentProductLinks(ctx, listed.data) : {}
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="sr-only">Beszélgetés a munkatársakkal</h1>
@@ -31,6 +33,7 @@ export default async function PlatformChatPage({
         isAdmin={isAdmin}
         keyMissingForAdmin={keyMissingForAdmin}
         voiceAgentIds={voiceAgentIds}
+        productLinks={productLinks}
         initialAgentId={parsePlatformChatAgentParam(query.agent)}
         initialConversationId={parsePlatformChatAgentParam(query.conversation)}
       />

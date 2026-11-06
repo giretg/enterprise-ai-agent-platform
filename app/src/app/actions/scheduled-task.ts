@@ -81,13 +81,13 @@ function upcomingRuns(task: { cron: string; timezone: string; runOnceAt: Date | 
 /** Ennyi ideig marad szem előtt a lefutott egyszeri feladat, utána az archiváltak közé kerül. */
 const ONCE_DONE_VISIBLE_MS = 7 * 24 * 3600_000
 
-export async function listScheduledTasksAction(includeArchived = false): Promise<ActionResult<{ tasks: ScheduledTaskRow[]; tenantScope: boolean }>> {
+export async function listScheduledTasksAction(includeArchived = false, agentId?: string): Promise<ActionResult<{ tasks: ScheduledTaskRow[]; tenantScope: boolean }>> {
   try {
     const ctx = await requireTenantRole('viewer')
     const principal = principalOf(ctx)
     const tenantScope = hasMinimumRole(ctx.activeTenantRole, 'admin')
     const svc = services.scheduledTasks
-    const found = await svc.list(principal, { scope: tenantScope ? 'tenant' : 'mine', includeArchived: true })
+    const found = await svc.list(principal, { scope: tenantScope ? 'tenant' : 'mine', includeArchived: true, agentId })
     const nowMs = Date.now()
     const shown = found.tasks.filter((task) => includeArchived || task.status !== 'archived' || (task.runOnceAt && nowMs - task.runOnceAt.getTime() < ONCE_DONE_VISIBLE_MS))
     const userIds = new Set<string>()
