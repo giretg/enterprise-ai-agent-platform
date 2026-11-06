@@ -4,11 +4,17 @@ import { hasMinimumRole } from '@/lib/iam-policy'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import { listAgents } from '@/app/actions/platform'
 import { listWorkProjectsAction } from '@/app/actions/project-work'
+import { parseWorkFileDeepLink } from '@/lib/work-file-link'
 import { ProjectsPanel } from './projects-panel'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ProjectsPage() {
+export default async function ProjectsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
+  const deepLink = parseWorkFileDeepLink(await searchParams)
   const ctx = await requireTenantRole('viewer')
   const [projectsRes, agentsRes] = await Promise.all([
     listWorkProjectsAction(),
@@ -38,6 +44,9 @@ export default async function ProjectsPage() {
         canEdit={canEdit}
         canDeleteMemory={canDeleteMemory}
         initialError={error}
+        initialProjectKey={deepLink.project}
+        initialTab={deepLink.tab}
+        initialFile={deepLink.file}
       />
     </div>
   )

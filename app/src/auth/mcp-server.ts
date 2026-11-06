@@ -1684,42 +1684,42 @@ async function createMcpResourceHandler(
         {
           title: 'List work files',
           description:
-            'List work files for a project (plans, notes, drafts). Shared across agents on the same project. Optional prefix. Pass projectKey; omit for __general__. These files are not injected into the prompt.',
+            'List work files for a project (plans, notes, drafts). Shared across agents on the same project. Optional prefix. Pass projectKey; omit for __general__. These files are not injected into the prompt. Every file in the result carries a url: the human page that opens this exact file (formatted, downloadable as Word/HTML). When you tell the user where the file is, give them this url instead of pasting the content.',
           inputSchema: workFileListInputSchema,
           annotations: { readOnlyHint: true },
         },
-        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_LIST_TOOL, args, deps),
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_LIST_TOOL, args, deps, origin),
       )
       server.registerTool(
         MCP_WORK_FILE_READ_TOOL,
         {
           title: 'Read work file',
           description:
-            'Read one work file by path under the project. No approval. Pass projectKey; omit for __general__.',
+            'Read one work file by path under the project. No approval. Pass projectKey; omit for __general__. Every file in the result carries a url: the human page that opens this exact file (formatted, downloadable as Word/HTML). When you tell the user where the file is, give them this url instead of pasting the content.',
           inputSchema: workFileReadInputSchema,
           annotations: { readOnlyHint: true },
         },
-        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_READ_TOOL, args, deps),
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_READ_TOOL, args, deps, origin),
       )
       server.registerTool(
         MCP_WORK_FILE_WRITE_TOOL,
         {
           title: 'Write work file',
           description:
-            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__. See the Where to save what table — work files are not memory.',
+            'Create or overwrite a work file under the project (plans, notes, drafts). No approval; quota-capped. Do not write these into the checkout folder. Pass projectKey; omit for __general__. See the Where to save what table — work files are not memory. Every file in the result carries a url: the human page that opens this exact file (formatted, downloadable as Word/HTML). When you tell the user where the file is, give them this url instead of pasting the content.',
           inputSchema: workFileWriteInputSchema,
         },
-        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_WRITE_TOOL, args, deps),
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_WRITE_TOOL, args, deps, origin),
       )
       server.registerTool(
         MCP_WORK_FILE_APPEND_TOOL,
         {
           title: 'Append work file',
           description:
-            'Append text to the end of a work file under the project (metrics JSONL, changelog CSV). Creates the file when missing. No approval; the quota applies to the resulting file size. Pass projectKey; omit for __general__.',
+            'Append text to the end of a work file under the project (metrics JSONL, changelog CSV). Creates the file when missing. No approval; the quota applies to the resulting file size. Pass projectKey; omit for __general__. Every file in the result carries a url: the human page that opens this exact file (formatted, downloadable as Word/HTML). When you tell the user where the file is, give them this url instead of pasting the content.',
           inputSchema: workFileAppendInputSchema,
         },
-        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_APPEND_TOOL, args, deps),
+        async (args) => projectWorkToolResult(principal, MCP_WORK_FILE_APPEND_TOOL, args, deps, origin),
       )
       server.registerTool(
         MCP_WORK_FILE_DELETE_TOOL,

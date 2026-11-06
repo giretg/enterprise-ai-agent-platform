@@ -260,7 +260,7 @@ export class ProjectWorkService {
     tenantId: string
     projectKey?: string
     prefix?: string
-  }): Promise<ProjectWorkResult<{ files: Array<{ path: string; byteSize: number; lastWriterUserId: string; updatedAt: string }> }>> {
+  }): Promise<ProjectWorkResult<{ files: Array<{ path: string; byteSize: number; lastWriterUserId: string; createdAt: string; updatedAt: string }> }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const prefix = input.prefix ? normalizeWorkFilePath(input.prefix) : undefined
@@ -271,6 +271,7 @@ export class ProjectWorkService {
         path: row.path,
         byteSize: row.byteSize,
         lastWriterUserId: row.lastWriterUserId,
+        createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
       })),
     })
@@ -280,7 +281,7 @@ export class ProjectWorkService {
     tenantId: string
     projectKey?: string
     path: string
-  }): Promise<ProjectWorkResult<{ file: { path: string; content: string; lastWriterUserId: string; updatedAt: string } }>> {
+  }): Promise<ProjectWorkResult<{ file: { path: string; content: string; lastWriterUserId: string; createdAt: string; updatedAt: string } }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const path = normalizeWorkFilePath(input.path)
@@ -292,6 +293,7 @@ export class ProjectWorkService {
         path: row.path,
         content: row.content,
         lastWriterUserId: row.lastWriterUserId,
+        createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
       },
     })
