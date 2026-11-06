@@ -57,6 +57,7 @@ const sessionInput: VoiceBrowserSessionInput = {
   voiceInstructions: 'beszéd',
   backendInstructions: 'háttér',
   greeting: 'Jó napot!',
+  backendReasoningEffort: 'low',
   mcp: {
     serverUrl: 'https://app.example.com/api/mcp/acme',
     token: 'mcp-token',
@@ -151,6 +152,7 @@ async function main() {
   await check('OpenAI-kérés: MCP a háttérmodellnél, a böngésző nem írhatja át a beállításokat', () => {
     const body = buildLiveSessionRequest(sessionInput)
     assert.equal(body.session.model, 'gpt-live-1')
+    assert.deepEqual(body.session.delegation.responses.reasoning, { effort: 'low' })
     assert.deepEqual(body.transport, { type: 'webrtc', sdp: 'v=0 offer' })
     assert.equal(body.session.audio.output.voice, 'cedar')
     assert.equal('format' in body.session.audio, false)
@@ -175,6 +177,16 @@ async function main() {
     assert.equal(mapLiveFailure(400, 'model_not_found'), 'provider_no_access')
     const thrown = createOpenAiLiveProvider({ fetchImpl: (async () => { throw new Error('net') }) as typeof fetch })
     assert.deepEqual(await thrown.startBrowserSession(sessionInput), { ok: false, code: 'provider_error' })
+  })
+
+  await check('indítás: a háttérmodell gondolkodási mélysége a munkatárs beállítása, beállítás nélkül a gyors', async () => {
+    const plain = sessionDeps()
+    assert.ok((await start(plain.deps)).ok)
+    assert.equal(plain.calls[0].backendReasoningEffort, 'low')
+    const modelConfig = { provider: 'openrouter', model: 'vendor/model', reasoningEffort: 'high', fallbackModels: [] }
+    const set = sessionDeps({ loadAgent: async () => ({ kind: 'internal', voiceConfig: ENABLED, modelConfig }) })
+    assert.ok((await start(set.deps)).ok)
+    assert.equal(set.calls[0].backendReasoningEffort, 'high')
   })
 
   await check('indítás: a kulcs és a token nem kerül a böngészőnek szánt válaszba, a token szűk', async () => {

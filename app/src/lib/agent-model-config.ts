@@ -9,9 +9,14 @@ export const modelRefSchema = z.object({
   model: z.string().trim().min(1).max(200),
 })
 
+export const REASONING_EFFORTS = ['low', 'medium', 'high'] as const
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number]
+
 /** `Agent.modelConfig` (#768). Nem kerül az MCP-snapshotba. */
 export const agentModelConfigSchema = modelRefSchema.extend({
   modelType: z.enum(['luna', 'terra', 'sol']).optional(),
+  /** Mennyit gondolkodjon a modell válasz előtt. Hiányzó érték: a modell saját alapértéke. */
+  reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().max(1_000_000).optional(),
   fallbackModels: z.array(modelRefSchema).max(MAX_FALLBACK_MODELS).default([]),

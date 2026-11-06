@@ -7,6 +7,7 @@ import { createServer } from 'node:http'
 import {
   handleChatCompletion,
   MAX_REQUEST_BYTES,
+  reasoningEffortParams,
   type GatewayPipelineHooks,
   type ModelCallEvent,
   type ModelGatewayDeps,
@@ -34,7 +35,7 @@ async function check(name: string, fn: () => Promise<void>) {
 type Scripted = Response | Error | (() => Response)
 function setup(opts: {
   scripts?: Scripted[]
-  agent?: { primary: ModelRef; fallbacks?: ModelRef[]; temperature?: number; maxTokens?: number }
+  agent?: { primary: ModelRef; fallbacks?: ModelRef[]; temperature?: number; maxTokens?: number; reasoningEffort?: 'low' | 'medium' | 'high' }
   enabled?: ModelRef[]
   allowedModels?: string[] | null
   hooks?: GatewayPipelineHooks
@@ -54,7 +55,7 @@ function setup(opts: {
             principal: { userId: USER, tenantId: TENANT, tenantSlug: 'acme', role: 'operator', assumed: false },
           } as never),
     loadAgentModelConfig: async () =>
-      opts.agent ? { ...opts.agent.primary, fallbackModels: opts.agent.fallbacks ?? [], temperature: opts.agent.temperature, maxTokens: opts.agent.maxTokens } : null,
+      opts.agent ? { ...opts.agent.primary, fallbackModels: opts.agent.fallbacks ?? [], temperature: opts.agent.temperature, maxTokens: opts.agent.maxTokens, reasoningEffort: opts.agent.reasoningEffort } : null,
     getTenantPolicy: async () => ({ enabled: opts.enabled ?? [A, B, C] }),
     getGlobalFallbackChain: async () => opts.global ?? [],
     getAllowedModels: async () => opts.allowedModels ?? null,
@@ -382,6 +383,31 @@ async function main() {
     await s.call({ ...ask, temperature: 0.9 })
     assert.equal(s.calls[0].body.temperature, 0.2)
     assert.equal(s.calls[1].body.temperature, 0.9)
+  })
+
+  await check('gondolkodási mélység: az agent beállítása felülírja a kliensét, beállítás nélkül a kliensé megy tovább', async () => {
+    const s = setup({ agent: { primary: A, reasoningEffort: 'low' }, scripts: [completion('a')] })
+    await s.call({ ...ask, reasoning_effort: 'high', reasoning: { effort: 'high' } })
+    assert.deepEqual(s.calls[0].body.reasoning, { effort: 'low' })
+    assert.equal(s.calls[0].body.reasoning_effort, undefined)
+    const free = setup({ agent: { primary: A }, scripts: [completion('a')] })
+    await free.call({ ...ask, reasoning_effort: 'high' })
+    assert.equal(free.calls[0].body.reasoning_effort, 'high')
+    assert.equal(free.calls[0].body.reasoning, undefined)
+  })
+
+  await check('gondolkodási mélység: szolgáltatónként a neki való mezőn megy, az Ollama nem kapja', () => {
+    assert.deepEqual(reasoningEffortParams('openrouter', 'high'), { reasoning: { effort: 'high' } })
+    assert.deepEqual(reasoningEffortParams('openai', 'low'), { reasoning_effort: 'low' })
+    assert.deepEqual(reasoningEffortParams('gemini', 'medium'), { reasoning_effort: 'medium' })
+    assert.deepEqual(reasoningEffortParams('ollama', 'high'), {})
+  })
+
+  await check('gondolkodási mélység: a helyettesített segédhívás nem kapja, a kliensé megmarad', async () => {
+    const s = setup({ agent: { primary: A, reasoningEffort: 'high' }, scripts: [completion('a')] })
+    await s.call({ ...ask, model: 'gpt-4o-mini', reasoning_effort: 'low' })
+    assert.equal(s.calls[0].body.reasoning, undefined)
+    assert.equal(s.calls[0].body.reasoning_effort, 'low')
   })
 
   await check('helyettesített segédhívás (kért modell nem engedett) nem kapja az agent max_tokens-ét', async () => {

@@ -6,9 +6,10 @@ import { randomUUID } from 'node:crypto'
 import type { UserRole } from '@prisma/client'
 import type { AgentDefinitionSnapshot } from '@/domain/agent-definition'
 import { CHAT_TURN_TOKEN_AUDIENCE, signChatToken, usableChatTokenKey } from '@/domain/platform-chat/chat-token'
-import { readVoiceConfig, VOICE_MAX_SESSION_SECONDS, VOICE_TOKEN_TTL_SECONDS } from '@/domain/voice/config'
+import { readVoiceConfig, VOICE_DEFAULT_REASONING_EFFORT, VOICE_MAX_SESSION_SECONDS, VOICE_TOKEN_TTL_SECONDS } from '@/domain/voice/config'
 import { buildVoiceGreeting, buildVoiceInstructions } from '@/domain/voice/prompt'
 import type { VoiceProvider, VoiceProviderFailureCode } from '@/domain/voice/provider'
+import { parseAgentModelConfig } from '@/lib/agent-model-config'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 
@@ -30,7 +31,7 @@ export type VoiceSessionDeps = {
   allowedTools: string[]
   provider: VoiceProvider
   loadTenantSlug: (tenantId: string) => Promise<string | null>
-  loadAgent: (input: { tenantId: string; agentId: string }) => Promise<{ kind: string; voiceConfig: unknown } | null>
+  loadAgent: (input: { tenantId: string; agentId: string }) => Promise<{ kind: string; voiceConfig: unknown; modelConfig?: unknown } | null>
   /** Publikált + a user láthatja (ugyanaz a szabály, mint az MCP-n). */
   loadUsableDefinition: (input: {
     tenantId: string
@@ -103,6 +104,7 @@ export async function startVoiceSession(
     voiceInstructions: instructions.voice,
     backendInstructions: instructions.backend,
     greeting,
+    backendReasoningEffort: parseAgentModelConfig(agent.modelConfig)?.reasoningEffort ?? VOICE_DEFAULT_REASONING_EFFORT,
     mcp: {
       serverUrl: `${deps.publicOrigin}/api/mcp/${encodeURIComponent(tenantSlug)}`,
       token,
