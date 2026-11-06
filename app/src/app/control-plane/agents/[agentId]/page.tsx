@@ -45,6 +45,7 @@ import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder
 import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
 import { VoiceCallButton } from '@/components/agents/voice-call-button'
 import { VoiceSettingsForm } from '@/components/agents/voice-settings-form'
+import { VoiceTranscriptsPanel } from '@/components/agents/voice-transcripts-panel'
 import { canStartVoiceCall, readVoiceConfig, VOICE_ROLE_MAX_CHARS } from '@/domain/voice/config'
 import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
@@ -292,6 +293,20 @@ export default async function AgentDetailPage({
                   </Card>
                 ) : null}
               </div>
+            ),
+          },
+        ]
+      : []),
+    // A hang kikapcsolása után is látszik, mert a megőrzési időn belül az átiratok még olvashatók.
+    ...(canManage && agent.kind === 'internal' && agent.voiceConfig !== null
+      ? [
+          {
+            id: 'hangbeszelgetesek' as const,
+            label: sectionLabel('hangbeszelgetesek'),
+            content: (
+              <Card>
+                <VoiceTranscriptsPanel agentId={agent.id} agentName={agent.name} />
+              </Card>
             ),
           },
         ]

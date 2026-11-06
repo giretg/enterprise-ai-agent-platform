@@ -10,6 +10,7 @@ import { openAesGcm, sealAesGcm } from '@/domain/privacy/aes-gcm-envelope'
 import { resolveSecret } from '@/lib/crypto/secret-resolver'
 import type { ModelCallAuditSink, ModelCallEvent } from '@/domain/model-gateway/proxy'
 import type { UnclassifiedToolUse } from '@/domain/client-policy/tool-catalog'
+import type { AuditSink } from '@/lib/audit/types'
 
 export const MAX_EVENTS_PER_BATCH = 100
 export const MAX_CONTENT_BYTES = 256 * 1024
@@ -23,8 +24,10 @@ export const MAX_LIST_LIMIT = 500
 
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
 /** `tool_unclassified` (#872): a Guard a katalógusban nem szereplő eszközt blokkolta; tartalom soha. */
-export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final' | 'tool_unclassified' | 'voice_transcript'
-export type AuditSource = 'gateway' | 'guard' | 'voice'
+export const AUDIT_KINDS = ['user_prompt', 'model_call', 'tool_call', 'final', 'tool_unclassified', 'voice_transcript'] as const
+export type AuditKind = (typeof AUDIT_KINDS)[number]
+export const AUDIT_SOURCES = ['gateway', 'guard', 'voice'] as const
+export type AuditSource = (typeof AUDIT_SOURCES)[number]
 
 const DEPTH_RANK: Record<AuditDepth, number> = { metadata: 0, prompt_and_response: 1, plus_tool_results: 2 }
 
@@ -59,6 +62,8 @@ export type AiInteractionRow = {
 
 export type AiInteractionFilter = {
   tenantId: string
+  id?: string
+  kind?: AuditKind
   userId?: string
   agentId?: string
   sessionId?: string
@@ -268,6 +273,50 @@ export async function recordVoiceTranscript(
     meta: { ...input.meta, lineCount: input.lines.length, ...(fits ? {} : { contentDropped: 'too_large' }) },
   })
   await deps.store.insertMany([row])
+}
+
+export type VoiceTranscriptSummary = Pick<AiInteractionRow, 'id' | 'createdAt' | 'meta'> & { hasContent: boolean }
+
+const VOICE_TRANSCRIPT_LIST_LIMIT = 50
+
+export async function listVoiceTranscripts(
+  store: Pick<AiInteractionStore, 'list'>,
+  input: { tenantId: string; agentId: string },
+): Promise<{ items: VoiceTranscriptSummary[]; hasMore: boolean }> {
+  const rows = await store.list({ ...input, kind: 'voice_transcript', limit: VOICE_TRANSCRIPT_LIST_LIMIT + 1 })
+  return {
+    items: rows.slice(0, VOICE_TRANSCRIPT_LIST_LIMIT).map((r) => ({ id: r.id, createdAt: r.createdAt, meta: r.meta, hasContent: r.content != null })),
+    hasMore: rows.length > VOICE_TRANSCRIPT_LIST_LIMIT,
+  }
+}
+
+/**
+ * Az átirat a DPIA 3. pontja szerint egy adminnak is olvasható, a többi AI-napló négyszemes marad.
+ * Ha a megnyitás nem kerül a naplóba, a szöveg sem kerül ki.
+ */
+export async function openVoiceTranscript(
+  deps: { store: Pick<AiInteractionStore, 'list'>; audit: AuditSink },
+  input: { tenantId: string; agentId: string; id: string; actorId: string; assumed: boolean },
+): Promise<{ lines: unknown[] } | null> {
+  const { tenantId, agentId, id, actorId, assumed } = input
+  const [row] = await deps.store.list({ tenantId, agentId, id, kind: 'voice_transcript', limit: 1 })
+  if (!row?.content) return null
+  const content = JSON.parse(decryptContent(row.tenantId, row.content)) as { lines?: unknown }
+  await deps.audit.append({
+    actorType: 'human',
+    actorId,
+    agentVersion: null,
+    action: 'ai_audit.voice_transcript.read',
+    targetType: 'ai_interaction_event',
+    targetId: id,
+    modelUsed: null,
+    inputRef: null,
+    outputRef: null,
+    policyDecision: 'allowed',
+    metadata: { agentId, sessionId: row.sessionId, assumed },
+    tenantId,
+  })
+  return { lines: Array.isArray(content.lines) ? content.lines : [] }
 }
 
 // --- Admin olvasás ---

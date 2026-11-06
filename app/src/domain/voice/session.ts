@@ -10,6 +10,7 @@ import { CHAT_TURN_TOKEN_AUDIENCE, signChatToken, usableChatTokenKey } from '@/d
 import { readVoiceConfig, VOICE_DEFAULT_REASONING_EFFORT, VOICE_MAX_SESSION_SECONDS, VOICE_TOKEN_TTL_SECONDS } from '@/domain/voice/config'
 import { buildVoiceGreeting, buildVoiceInstructions } from '@/domain/voice/prompt'
 import type { VoiceProvider, VoiceProviderFailureCode } from '@/domain/voice/provider'
+import { redactSensitiveText } from '@/domain/privacy/sensitivity-match-spans'
 import { parseAgentModelConfig } from '@/lib/agent-model-config'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
@@ -207,7 +208,8 @@ export async function recordVoiceSessionEnd(
     await deps
       .recordTranscript({
         ...scope,
-        lines: transcript.data,
+        // A hang nem a modell-kapun megy át, ezért a kártyaszám és társai itt maradnak ki a naplóból (DPIA 1. pont).
+        lines: transcript.data.map((line) => ({ ...line, text: redactSensitiveText(line.text).text })),
         meta: {
           ...measured,
           reportedBy: 'browser',

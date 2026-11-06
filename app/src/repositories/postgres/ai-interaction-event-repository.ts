@@ -16,6 +16,8 @@ export class PostgresAiInteractionEventRepository implements AiInteractionStore 
     const rows = await prisma.aiInteractionEvent.findMany({
       where: {
         tenantId: f.tenantId,
+        id: f.id,
+        kind: f.kind,
         userId: f.userId,
         agentId: f.agentId,
         sessionId: f.sessionId,

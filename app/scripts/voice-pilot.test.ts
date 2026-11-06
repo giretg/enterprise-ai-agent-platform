@@ -24,7 +24,15 @@ import {
 import { issueGatewayToken } from '../src/domain/model-gateway-token/gateway-token'
 import { PLATFORM_CHAT_INSTALL_ID } from '../src/domain/platform-chat/gateway'
 import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
-import { decryptContent, recordVoiceTranscript, voiceTranscriptAllowed, type AiInteractionRow } from '../src/domain/ai-audit/ai-audit-service'
+import {
+  decryptContent,
+  listVoiceTranscripts,
+  openVoiceTranscript,
+  recordVoiceTranscript,
+  voiceTranscriptAllowed,
+  type AiInteractionFilter,
+  type AiInteractionRow,
+} from '../src/domain/ai-audit/ai-audit-service'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { canStartVoiceCall, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS } from '../src/domain/voice/config'
 import { buildLiveSessionRequest, createOpenAiLiveProvider, mapLiveFailure } from '../src/domain/voice/openai-live'
@@ -176,6 +184,45 @@ async function main() {
     assert.equal(voiceTranscriptAllowed('prompt_and_response'), true)
   })
 
+  await check('átirat-olvasó: csak ennek a munkatársnak a hang-átiratát adja, más naplósort nem', async () => {
+    const rows: AiInteractionRow[] = []
+    const store = {
+      insertMany: async (next: AiInteractionRow[]) => (rows.push(...next), next.length),
+      list: async (f: AiInteractionFilter) =>
+        rows.filter(
+          (r) => r.tenantId === f.tenantId && r.agentId === f.agentId && r.kind === f.kind && (f.id === undefined || r.id === f.id),
+        ),
+    } as never
+    const deps = { store, depthFor: async () => 'prompt_and_response' as const, now: () => NOW, retentionDays: () => 90 }
+    await recordVoiceTranscript(deps, { tenantId: TENANT, userId: USER, agentId: AGENT, sessionId: 'live_1', lines: [{ role: 'user', text: 'Kiss Anna' }], meta: { seconds: 5 } })
+    const { items: [summary], hasMore } = await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })
+    assert.equal(summary.hasContent, true)
+    assert.equal(hasMore, false)
+    assert.equal(JSON.stringify(summary).includes('Kiss Anna'), false)
+    const audits: Array<{ action: string; actorId?: string | null; targetId?: string | null; metadata?: unknown }> = []
+    const reader = { store, audit: { append: async (entry: (typeof audits)[number]) => void audits.push(entry) } }
+    const opening = { tenantId: TENANT, agentId: AGENT, id: summary.id, actorId: USER, assumed: true }
+    assert.deepEqual(await openVoiceTranscript(reader, opening), { lines: [{ role: 'user', text: 'Kiss Anna' }] })
+    assert.deepEqual(
+      audits.map((a) => [a.action, a.actorId, a.targetId, a.metadata]),
+      [['ai_audit.voice_transcript.read', USER, summary.id, { agentId: AGENT, sessionId: 'live_1', assumed: true }]],
+    )
+    await assert.rejects(openVoiceTranscript({ store, audit: { append: async () => Promise.reject(new Error('audit_down')) } }, opening), /audit_down/)
+    assert.equal(await openVoiceTranscript(reader, { ...opening, agentId: USER }), null)
+    rows[0].kind = 'model_call'
+    assert.equal(await openVoiceTranscript(reader, opening), null)
+    assert.equal(audits.length, 1)
+    assert.deepEqual((await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })).items, [])
+  })
+
+  await check('átirat-lista: 50 sornál jelzi, hogy van régebbi is', async () => {
+    const rows = Array.from({ length: 51 }, (_, i) => ({ id: String(i), createdAt: NOW, meta: {}, content: null }))
+    const store = { list: async (f: AiInteractionFilter) => rows.slice(0, f.limit) } as never
+    const listing = await listVoiceTranscripts(store, { tenantId: TENANT, agentId: AGENT })
+    assert.equal(listing.items.length, 50)
+    assert.equal(listing.hasMore, true)
+  })
+
   await check('lezárás: az átirat érvényes jelentésnél mentődik, a hibája vagy a hibás formája nem bukhat el', async () => {
     const audits: Array<{ metadata?: unknown }> = []
     const saved: Array<{ lines: unknown[]; meta: Record<string, unknown> }> = []
@@ -194,6 +241,26 @@ async function main() {
     assert.equal(saved.length, 1)
     const failing = async () => { throw new Error('nem érhető el') }
     assert.deepEqual(await end({ recordTranscript: failing }, { transcript }), { ok: true })
+  })
+
+  await check('lezárás: a kártyaszám nem kerül a naplóba, a név és a telefonszám megmarad', async () => {
+    const saved: Array<{ lines: unknown[] }> = []
+    await recordVoiceSessionEnd(
+      { sessionAwaitsEnd: async () => true, recordTranscript: async (row: { lines: unknown[] }) => void saved.push(row) } as never,
+      {
+        userId: USER,
+        tenantId: TENANT,
+        body: {
+          agentId: AGENT,
+          sessionId: 'live_1',
+          transcript: [{ role: 'user', text: 'Kiss Anna, 06 30 123 4567, a kártyám 4111 1111 1111 1111', atSeconds: 3 }],
+        },
+      },
+    )
+    const [line] = saved[0].lines as Array<{ text: string; atSeconds: number }>
+    assert.equal(line.text.includes('4111'), false)
+    assert.match(line.text, /^Kiss Anna, 06 30 123 4567, a kártyám «redaktált:/)
+    assert.equal(line.atSeconds, 3)
   })
 
   await check('első mondat: a rögzítésről csak akkor szól, ha az átirat tényleg a naplóba kerül; hibánál inkább szól', async () => {

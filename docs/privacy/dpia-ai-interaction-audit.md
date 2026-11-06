@@ -2,7 +2,7 @@
 
 **Hatály:** Excellence AI Agent Platform, Hermes Managed Client céges mód.
 **Hivatkozás:** GitHub #759, spec `docs/specs/hermes-managed-client-spec.md` §14, D5, D6.
-**Verzió:** 1.0 · 2026-10-03
+**Verzió:** 1.1 · 2026-11-06 (hang-átirat: #1117, #1120)
 **Státusz:** műszaki DPIA, aláírásra kész. Az éles bekapcsolás a DPO / jogi képviselő aláírása után indul.
 
 Ez a dokumentum a GDPR 35. cikke szerinti adatvédelmi hatásvizsgálat a munkavállalói
@@ -21,18 +21,22 @@ be. A közös napló az `AiInteractionEvent` tábla:
 |---|---|
 | Ki | tenant, felhasználó, agent, telepítés (`installId`) |
 | Mikor | `createdAt`, session/turn azonosító |
-| Mit | `kind`: user_prompt / model_call / tool_call / final |
-| Honnan | `source`: gateway vagy guard |
+| Mit | `kind`: user_prompt / model_call / tool_call / final / tool_unclassified / voice_transcript |
+| Honnan | `source`: gateway, guard vagy voice |
 | Tartalom | AES-GCM boríték, vagy üres (metaadat-mélység) |
 | Meta | modell, policy-döntés, tool neve, token-használat — nem a prompt szövege |
 | Lejárat | `expiresAt` = írás + 90 nap (konfig: `AI_AUDIT_RETENTION_DAYS`) |
 
 **Cél:** biztonság, visszaélés-felderítés, költség- és policy-ellenőrzés, incidensvizsgálat.
+A hang-átiratnál ezen felül a beszélgetések minőségének ellenőrzése.
 Modelltréningre, marketingre, teljesítményértékelésre a napló **nem** használható.
 
 **Érintettek:** a tenant munkavállalói és megbízottai, akik céges módban AI-munkatársat
 használnak. A naplóban ügyféladatok is megjelenhetnek, ha a munkavállaló a promptba írja
 őket — ezt a tartalomszűrő (PAN-blokk, e-mail/név tokenizálás, #773) arányosítja.
+A hangos beszélgetésnél a hívó is érintett, aki nem feltétlenül munkavállaló: a neve és a telefonszáma
+az átiratban marad. A számjegyekkel leírt kártyaszám, IBAN, TAJ, adószám, valamint az e-mail-cím és a titok
+mentés előtt, formátum alapján kikerül. A szavakkal leírt szám bent maradhat.
 
 **Jogalap:**
 
@@ -44,6 +48,8 @@ használnak. A naplóban ügyféladatok is megjelenhetnek, ha a munkavállaló a
 - A tenant a saját munkaszerződésében / IT-szabályzatában rögzíti a céges AI-használatot.
   A platform nem a munkáltató, a tenant az adatkezelő a saját munkavállalói adatain;
   az Excellence a platformüzemeltető (adatfeldolgozó a tenant utasítására).
+- **Nyitott, a DPO-nak kell rögzítenie:** a fenti jogalap a munkavállalók megfigyelésére szól.
+  A hívó adatainak kezeléséhez és a minőségellenőrzési célhoz külön jogalapot kell megnevezni.
 
 **DPIA-kötelezettség:** a GDPR 35. cikk (3) c) és a 29. cikk szerinti munkacsoport
 iránymutatása szerint a munkavállalók **rendszeres, módszeres megfigyelése** DPIA-köteles.
@@ -60,8 +66,8 @@ Ez a napló ilyen megfigyelés (minden céges beszélgetés).
 | 90 napos tartalom-retenció | D5, véglegesítve. Metaadat ugyanaddig él (egy sor, egy lejárat). Konfig: `AI_AUDIT_RETENTION_DAYS` > 0. |
 | Élő törlő járat | Napi `POST /api/v1/internal/ai-audit-retention`. 5000-es kötegekben ürít, amíg van lejárt sor. A lejárt sor a listában a járat előtt sem jelenik meg. |
 | Lokális session-DB | v1-ben a Guard **nem** törli a gép session-tárolóját (D5). A szerveroldali tartalom a kötelező minimum. |
-| Tartalomszűrő | PAN nem jut el a modellhez és nem kerül a napló kérésébe; e-mail/név álnéven megy a modellhez. |
-| Nincs UI v1-ben | Olvasás csak admin API-n, négy szemmel (3. pont). A napló-UI későbbi issue (#750). |
+| Tartalomszűrő | PAN nem jut el a modellhez és nem kerül a napló kérésébe; e-mail/név álnéven megy a modellhez. A hang nem ezen a szűrőn megy át, az átiratra csak a mentés előtti kitakarás fut (1. pont). |
+| Nincs UI v1-ben | Olvasás csak admin API-n, négy szemmel (3. pont). A napló-UI későbbi issue (#750). Kivétel a hang-átirat, amelynek a munkatárs adatlapján van olvasó nézete. |
 
 A 90 nap a biztonsági és incidensvizsgálati ablak (negyedéves audit, késve felfedezett
 szivárgás). Hosszabb megőrzéshez a tenant DPO-jának külön indok kell, és az env-konfig
@@ -89,6 +95,14 @@ A vagy B GET  /api/ai-audit/events?includeContent=true
 olvas. Minden kérés, jóváhagyás és visszafejtés `AuditLog` sor (`ai_audit.content_unlock.*`,
 `ai_audit.content_read`), a hash-lánc append-only.
 
+**Kivétel: hang-átirat** (`voice_transcript`, #1120). Egy admin második jóváhagyó nélkül is
+megnyithatja a munkatárs adatlapján, mert második admin nélküli szervezetben a minőségellenőrzés
+máskülönben nem lehetséges. A kivétel minden szervezetre érvényes, a több adminnal rendelkezőkre is.
+A szervezetbe belépő platform-superadmin adminként szintén megnyithatja, ezt a naplósor `assumed: true`
+értéke jelöli. Minden megnyitás `AuditLog` sor (`ai_audit.voice_transcript.read`), és ha a naplózás nem
+sikerül, a szöveg nem jelenik meg. A lista szöveget nem tartalmaz. A többi tartalomra a négy szem
+változatlanul érvényes.
+
 ---
 
 ## 4. Kockázatok és intézkedések
@@ -96,9 +110,10 @@ olvas. Minden kérés, jóváhagyás és visszafejtés `AuditLog` sor (`ai_audit
 | Kockázat | Súly | Intézkedés | Maradék |
 |---|---|---|---|
 | Munkavállaló nem tudja, hogy naplózzák | magas | Guard session-indításkor stderr + rendszerprompt-szakasz: „Ez a munkatárs céges módban fut, a beszélgetéseid naplózásra kerülnek.” | A tenant saját munkajogi tájékoztatója továbbra is kell. |
-| Túl sok tartalom tárolása | közepes | Audit-mélység; tool-eredmény alapból kiesik; PAN nem kerül a naplóba. | A felhasználó szabad szövegbe írhat nevet, titkot. |
+| Túl sok tartalom tárolása | közepes | Audit-mélység; tool-eredmény alapból kiesik; PAN nem kerül a naplóba. | A felhasználó szabad szövegbe írhat nevet, titkot. A szavakkal elmondott kártyaszámot a hang-átirat kitakarása nem feltétlenül ismeri fel. |
 | Retenció csak papíron van (a függvény sosem fut) | magas | Élő HTTP-hívó + Clerk-allowlist + KEEP teszt, hogy a handler a sweepet hívja. | A Scheduler-jobot az üzemeltetőnek be kell kötnie (DEPLOY.md 3.2). |
 | Egy admin egyedül olvassa a beszélgetést | magas | Négy szem a visszafejtésen; magán az olvasáson is AuditLog. | A grant 15 percig újrahasználható (nincs egyszer-használatos tábla v1-ben). |
+| Egy admin vagy belépett platform-superadmin egyedül olvassa a hang-átiratot | magas | Tudatos kivétel (3. pont): minden megnyitás AuditLog sor, naplózási hibánál nincs szöveg. | Nincs előzetes második jóváhagyó, csak utólagos ellenőrzés. A DPO-nak külön el kell fogadnia. |
 | Cross-tenant szivárgás | magas | Tenant a tokentből / Clerk-kontextusból jön, soha a payloadból. Lista tenant-szűrt. | — |
 | Kulcsvesztés | közepes | Tenantonként származtatott kulcs a platform-titokból; prod-ban placeholder fail-closed. | Platform-titok kompromittálása az összes tenant borítékát nyitja — KMS-envelope későbbi erősítés. |
 | Lokális gép session-DB | alacsony (v1 tudatos) | D5: v1-ben a Guard nem törli. A szerveroldali 90 nap a kötelező. | Offboardingkor a profil törlődik; a gép session-fájlja maradhat. |
@@ -116,13 +131,16 @@ tudja: a beszélgetés naplózott. A staging POC belső, tájékoztatott userekk
 aláírása előtt is futhat (spec §15); éles tenant-bekapcsolás előtt a tenant DPO-ja
 aláírja ezt a lapot, és a munkavállalókat a saját csatornáján is tájékoztatja.
 
+A hangos beszélgetés első mondata közli a hívóval, ha az átirat a naplóba kerül.
+
 ---
 
 ## 6. Adattovábbítás, megőrzés, törlés
 
 - **Továbbítás:** a napló tartalma nem megy ki LLM-providernek (a provider a szűrt
   promptot kapja, a napló a mi adatbázisunk). Incidensnél a tenant admin négy szemmel
-  olvashat. SIEM-export v1-ben nincs erre a táblára.
+  olvashat, a hang-átiratot egyedül is (3. pont). A hangos beszélgetés hangja és szövege
+  élőben az OpenAI-hoz kerül. SIEM-export v1-ben nincs erre a táblára.
 - **Megőrzés:** 90 nap, aztán törlés. A lejárt sor a GET-listában már a törlés előtt sem
   jelenik meg.
 - **Törlési jog:** a munkavállaló a tenant adatkezelőjénél élhet GDPR 17. cikkel; a
@@ -140,7 +158,10 @@ A kezelés **megkezdhető** a következő feltételekkel:
 1. Ez a DPIA a tenant DPO / jogi képviselő aláírásával lezárt.
 2. A Guard-tájékoztatás a kliensben megjelenik (KEEP: Hermes Guard teszt).
 3. A 90 napos retenciós sweep route élesben a Cloud Schedulerhez van kötve (`DEPLOY.md` 3.2).
-4. A tartalomolvasás négy szemmel megy, önjóváhagyás nélkül.
+4. A tartalomolvasás négy szemmel megy, önjóváhagyás nélkül. Kivétel a hang-átirat (3. pont),
+   amelyet az aláíró ezzel kifejezetten elfogad.
+5. A hangos beszélgetés első mondata közli a rögzítést (KEEP: `test:voice-pilot`), és a hívó adatainak
+   jogalapja az 1. pont szerint rögzített.
 
 **Aláírás**
 

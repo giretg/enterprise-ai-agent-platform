@@ -1636,6 +1636,7 @@
         "munkakor": "Role",
         "modell": "Reasoning engine",
         "modellDesc": "Which AI model powers this agent, and which backup to use when a provider is down.",
+        "hangbeszelgetesek": "Voice conversations",
         "kapcsolatok": "Connectors",
         "kapcsolatokDesc": "Knowledge bases, APIs, mail, Drive and other systems this teammate can use.",
         "email": "E-mail",
