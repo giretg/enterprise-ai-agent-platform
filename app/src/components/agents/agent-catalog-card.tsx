@@ -2,7 +2,9 @@ import Link from 'next/link'
 import { getTranslations } from 'next-intl/server'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { StartPlatformChatLink } from '@/components/agents/start-platform-chat-link'
+import { VoiceCallButton } from '@/components/agents/voice-call-button'
 import { Card } from '@/components/ui/shell'
+import { canStartVoiceCall } from '@/domain/voice/config'
 import { personaFor } from '@/lib/agent-persona'
 import { createAgentWizardContinueHref, isHalfFinishedAgent } from '@/lib/create-agent-wizard'
 import { canStartPlatformChat } from '@/lib/platform-chat-href'
@@ -27,6 +29,8 @@ export type AgentCatalogCardModel = {
   kind?: string
   /** #1029: az agent saját e-mail címe (ha van). */
   mailboxAddress?: string | null
+  /** #1111: a hang-beállítás; a kártyáról csak a belőle számolt igen/nem jut tovább. */
+  voiceConfig?: unknown
 }
 
 /**
@@ -62,6 +66,12 @@ export async function AgentCatalogCard({
   const showStartChat = !isPublic && canStartPlatformChat({
     tenantEnabled: tenantChatEnabled,
     platformChatEnabled: agent.platformChatEnabled !== false,
+    status: agent.status,
+    currentDefinitionVersionId,
+  })
+  const showVoiceCall = canStartVoiceCall({
+    kind: agent.kind ?? 'internal',
+    voiceConfig: agent.voiceConfig,
     status: agent.status,
     currentDefinitionVersionId,
   })
@@ -114,9 +124,10 @@ export async function AgentCatalogCard({
           ) : null}
         </div>
       </Link>
-      {showStartChat ? (
-        <div className="mt-4">
-          <StartPlatformChatLink agentId={agent.id} />
+      {showStartChat || showVoiceCall ? (
+        <div className="mt-4 flex h-7 items-center gap-2">
+          {showStartChat ? <StartPlatformChatLink agentId={agent.id} /> : null}
+          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} variant="icon" /> : null}
         </div>
       ) : null}
     </Card>

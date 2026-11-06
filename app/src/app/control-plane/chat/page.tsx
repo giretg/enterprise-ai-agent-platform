@@ -1,4 +1,6 @@
+import { listAgents } from '@/app/actions/platform'
 import { requireTenantRole } from '@/auth/tenant-context'
+import { canStartVoiceCall } from '@/domain/voice/config'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { parsePlatformChatAgentParam } from '@/lib/platform-chat-href'
 import { hasPlatformChatModelKey } from '@/lib/platform-chat-model-key'
@@ -19,12 +21,16 @@ export default async function PlatformChatPage({
   const isAdmin = hasMinimumRole(ctx.activeTenantRole, 'admin')
   // Üres állapot (§2): kulcs nélkül csak az admin kap „Kulcs beállítása” gombot.
   const keyMissingForAdmin = isAdmin && !(await hasPlatformChatModelKey(ctx.activeTenantId))
+  // A munkatárslistát a worker adja, a hang-beállítás viszont csak itt, a szerveren olvasható.
+  const listed = await listAgents({ limit: 100 })
+  const voiceAgentIds = listed.success ? listed.data.filter((agent) => canStartVoiceCall(agent)).map((agent) => agent.id) : []
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="sr-only">Beszélgetés a munkatársakkal</h1>
       <PlatformChat
         isAdmin={isAdmin}
         keyMissingForAdmin={keyMissingForAdmin}
+        voiceAgentIds={voiceAgentIds}
         initialAgentId={parsePlatformChatAgentParam(query.agent)}
         initialConversationId={parsePlatformChatAgentParam(query.conversation)}
       />

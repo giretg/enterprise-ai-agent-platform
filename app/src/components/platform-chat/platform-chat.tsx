@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { VoiceCallDialog, VoiceCallIconButton } from '@/components/agents/voice-call-button'
 import { pickPlatformChatAgentId } from '@/lib/platform-chat-href'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
 import { takePendingPrompt } from './pending-prompt'
@@ -413,11 +414,14 @@ function Message({
 export function PlatformChat({
   isAdmin,
   keyMissingForAdmin,
+  voiceAgentIds = [],
   initialAgentId = null,
   initialConversationId = null,
 }: {
   isAdmin: boolean
   keyMissingForAdmin: boolean
+  /** #1111: azok a munkatársak, akikkel hangon is lehet beszélni. */
+  voiceAgentIds?: string[]
   /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
   initialAgentId?: string | null
   /** #1032: `?conversation=` — pl. a bejövő levél feldolgozásának beszélgetése a Postaládából. */
@@ -451,6 +455,7 @@ export function PlatformChat({
   const [atBottom, setAtBottom] = useState(true)
   const [dragging, setDragging] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
+  const [voiceOpen, setVoiceOpen] = useState(false)
   const streamAbort = useRef<AbortController | null>(null)
   const scroller = useRef<HTMLDivElement | null>(null)
   const textarea = useRef<HTMLTextAreaElement | null>(null)
@@ -1147,6 +1152,7 @@ export function PlatformChat({
           ) : null}
         </div>
         <span className="flex-1" />
+        {agent && voiceAgentIds.includes(agent.agentId) ? <VoiceCallIconButton agentName={agent.name} onClick={() => setVoiceOpen(true)} /> : null}
         {working || live?.paused ? (
           <button
             type="button"
@@ -1398,6 +1404,8 @@ export function PlatformChat({
           </>
         )}
       </section>
+      {/* A beviteli doboz a beszélgetés indulásakor máshová kerül; az ablak azért itt él, hogy ez ne bontsa a hívást. */}
+      {voiceOpen && agent ? <VoiceCallDialog key={agent.agentId} agentId={agent.agentId} agentName={agent.name} onClose={() => setVoiceOpen(false)} /> : null}
     </div>
   )
 }
