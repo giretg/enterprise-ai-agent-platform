@@ -4,6 +4,8 @@ import { VOICE_ROLE_MAX_CHARS } from '@/domain/voice/config'
 
 /** Nem kikapcsolható: a hívónak tudnia kell, hogy gép beszél vele. */
 const AI_DISCLOSURE = 'Tájékoztatom, hogy mesterséges intelligenciával beszél.'
+/** Csak akkor hangzik el, ha a szervezet beállítása szerint az átirat tényleg a naplóba kerül. */
+const TRANSCRIPT_NOTICE = 'A beszélgetés szövegét minőségbiztosítási céllal rögzítjük.'
 
 const VOICE_RULES = [
   'Hangon beszélő munkatárs vagy, a másik fél böngészőből beszél veled. Magyarul beszélj, hacsak a hívó nem kér más nyelvet.',
@@ -12,7 +14,7 @@ const VOICE_RULES = [
   'Ha adat kell, vagy rögzíteni kell valamit, add át a háttérnek, és előtte szólj egy rövid mondatot, hogy a hívó ne csendet halljon.',
   'Árat, készletet és határidőt csak akkor mondj, ha a leírásodból vagy a háttértől tudod.',
   'Kártyaadatot nem kérsz és nem fogadsz.',
-  'Ha valamiben nem tudsz segíteni, mondd ki egyenesen. Visszahívást vagy olyasmit, amit nem tudsz elintézni, ne ígérj.',
+  'Ha valamiben nem tudsz segíteni, mondd ki egyenesen. Visszahívást vagy olyasmit, amit nem tudsz elintézni, csak akkor ígérj, ha a munkaköri leírásod kifejezetten megengedi.',
 ].join('\n')
 
 const BACKEND_RULES = [
@@ -53,7 +55,7 @@ export function buildVoiceInstructions(
   }
 }
 
-export function buildVoiceGreeting(name: string, custom: string): string {
+export function buildVoiceGreeting(name: string, custom: string, transcriptRecorded = false): string {
   const opening = custom.trim() || `Jó napot kívánok, ${name} vagyok. Miben segíthetek?`
-  return `${opening} ${AI_DISCLOSURE}`
+  return `${opening} ${AI_DISCLOSURE}${transcriptRecorded ? ` ${TRANSCRIPT_NOTICE}` : ''}`
 }

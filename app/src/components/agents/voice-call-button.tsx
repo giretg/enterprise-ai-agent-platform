@@ -46,6 +46,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
   const [view, setView] = useState(INITIAL_VOICE_CALL_VIEW)
   const [limitReached, setLimitReached] = useState(false)
   const [maxSeconds, setMaxSeconds] = useState(DEFAULT_MAX_SECONDS)
+  const [copied, setCopied] = useState(false)
   // A lezárási jelentésnek az utolsó esemény utáni állapot kell, a következő renderre nem várhat.
   const viewRef = useRef(INITIAL_VOICE_CALL_VIEW)
 
@@ -241,6 +242,13 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
     }
   }
 
+  async function copyTranscript() {
+    const text = view.lines
+      .map((line) => (line.role === 'tool' ? `[${line.text}]` : `${ROLE_LABEL[line.role]}: ${line.text}`))
+      .join('\n')
+    await navigator.clipboard.writeText(text).then(() => setCopied(true), () => setCopied(false))
+  }
+
   function closeDialog() {
     if (phase === 'live' || phase === 'closing' || phase === 'connecting') return
     setOpen(false)
@@ -266,7 +274,8 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
               <h3 className="font-display text-lg font-semibold text-ink">Hangos beszélgetés: {agentName}</h3>
               <p className="mt-1 text-sm text-ink-soft">
                 Úgy működik, mintha felhívnád: te szólsz, a munkatárs válaszol. A hang és a szöveg az OpenAI-hoz kerül, ezért
-                ne mondj valódi ügyféladatot. Legfeljebb 10 percig tart. A platform nem készít felvételt, és az átiratot sem menti.
+                ne mondj valódi ügyféladatot. Legfeljebb 10 percig tart. Hangfelvétel nem készül. Ha a szervezet naplózási beállítása engedi, az átirat
+                minőségbiztosítási célból titkosítva a platform naplójába kerül, és alapból 90 napig őrizzük.
               </p>
             </div>
 
@@ -294,7 +303,7 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
               {failure ? <p className="text-coral-deep">{failure}</p> : null}
               {view.providerError ? <p className="text-coral-deep">{voiceProviderErrorMessage(view.providerError)}</p> : null}
               {phase === 'ended' ? (
-                <p className="text-ink-soft">{voiceEndedMessage(view.closedReason, limitReached)} Az átirat az ablak bezárásával törlődik.</p>
+                <p className="text-ink-soft">{voiceEndedMessage(view.closedReason, limitReached)} Ez a nézet az ablak bezárásával eltűnik.</p>
               ) : null}
             </div>
 
@@ -326,6 +335,11 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
                   </button>
                 ) : (
                   <>
+                    {phase === 'ended' && view.lines.length > 0 ? (
+                      <button type="button" onClick={() => void copyTranscript()} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
+                        {copied ? 'Kimásolva' : 'Átirat másolása'}
+                      </button>
+                    ) : null}
                     <button type="button" onClick={closeDialog} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
                       Bezárás
                     </button>

@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { UserRole } from '@prisma/client'
+import { z } from 'zod'
 import type { AgentDefinitionSnapshot } from '@/domain/agent-definition'
 import { CHAT_TURN_TOKEN_AUDIENCE, signChatToken, usableChatTokenKey } from '@/domain/platform-chat/chat-token'
 import { readVoiceConfig, VOICE_MAX_SESSION_SECONDS, VOICE_TOKEN_TTL_SECONDS } from '@/domain/voice/config'
@@ -39,6 +40,8 @@ export type VoiceSessionDeps = {
     agentId: string
   }) => Promise<{ snapshot: Pick<AgentDefinitionSnapshot, 'name' | 'roleInstruction' | 'rules'> } | null>
   loadApiKey: (tenantId: string) => Promise<string | null>
+  /** Elkerül-e az átirat szövege a naplóba: ettől függ, elhangzik-e az erről szóló tájékoztatás. */
+  transcriptRecorded?: (input: { tenantId: string; userId: string; agentId: string }) => Promise<boolean>
   audit?: AuditSink
   now?: () => Date
 }
@@ -95,7 +98,11 @@ export async function startVoiceSession(
     VOICE_TOKEN_TTL_SECONDS,
   )
   const instructions = buildVoiceInstructions(definition.snapshot, now)
-  const greeting = buildVoiceGreeting(definition.snapshot.name, config.greeting)
+  // Ha a lekérdezés nem sikerül, inkább elhangozzon a tájékoztatás, mint hogy tudtán kívül rögzítsük a hívót.
+  const transcriptRecorded = deps.transcriptRecorded
+    ? await deps.transcriptRecorded({ tenantId: input.tenantId, userId: input.userId, agentId }).catch(() => true)
+    : false
+  const greeting = buildVoiceGreeting(definition.snapshot.name, config.greeting, transcriptRecorded)
   const started = await deps.provider.startBrowserSession({
     apiKey,
     sdpOffer: sdp,
@@ -124,6 +131,19 @@ export async function startVoiceSession(
   return { ok: true, sessionId: started.sessionId, sdpAnswer: started.sdpAnswer, greeting, maxSeconds: VOICE_MAX_SESSION_SECONDS }
 }
 
+const transcriptSchema = z
+  .array(
+    z.object({
+      role: z.enum(['user', 'assistant', 'tool']),
+      text: z.string().max(8000),
+      atSeconds: z.number().min(0).max(86_400).optional(),
+    }),
+  )
+  .min(1)
+  .max(300)
+
+const backendWaitsSchema = z.array(z.number().min(0).max(3_600_000)).max(100)
+
 const boundedNumber = (value: unknown, max: number): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max ? Math.round(value) : null
 
@@ -135,6 +155,14 @@ export async function recordVoiceSessionEnd(
   deps: {
     audit?: AuditSink
     sessionAwaitsEnd: (input: { tenantId: string; userId: string; agentId: string; sessionId: string }) => Promise<boolean>
+    recordTranscript?: (input: {
+      tenantId: string
+      userId: string
+      agentId: string
+      sessionId: string
+      lines: unknown[]
+      meta: Record<string, unknown>
+    }) => Promise<void>
   },
   input: { userId: string; tenantId: string; body: unknown },
 ): Promise<{ ok: boolean }> {
@@ -149,6 +177,12 @@ export async function recordVoiceSessionEnd(
   }
   const scope = { tenantId: input.tenantId, userId: input.userId, agentId: b.agentId, sessionId: b.sessionId }
   if (!(await deps.sessionAwaitsEnd(scope))) return { ok: false }
+  const measured = {
+    seconds: boundedNumber(b.seconds, 86_400),
+    backendCalls: boundedNumber(b.backendCalls, 10_000),
+    avgBackendWaitMs: boundedNumber(b.avgBackendWaitMs, 3_600_000),
+    maxBackendWaitMs: boundedNumber(b.maxBackendWaitMs, 3_600_000),
+  }
   await writeAudit(deps.audit, {
     actorType: 'human',
     actorId: input.userId,
@@ -160,12 +194,26 @@ export async function recordVoiceSessionEnd(
       reportedBy: 'browser',
       sessionId: b.sessionId,
       closeReason: typeof b.reason === 'string' ? b.reason.slice(0, 40) : null,
-      seconds: boundedNumber(b.seconds, 86_400),
-      backendCalls: boundedNumber(b.backendCalls, 10_000),
-      avgBackendWaitMs: boundedNumber(b.avgBackendWaitMs, 3_600_000),
-      maxBackendWaitMs: boundedNumber(b.maxBackendWaitMs, 3_600_000),
+      ...measured,
     },
     tenantId: input.tenantId,
   })
+  // Az átirat a böngésző jelentése, és csak az AI-naplóba kerül, titkosítva. A hibája nem bukhat el a lezárást.
+  const transcript = transcriptSchema.safeParse(b.transcript)
+  if (transcript.success && deps.recordTranscript) {
+    const waits = backendWaitsSchema.safeParse(b.backendWaitsMs)
+    await deps
+      .recordTranscript({
+        ...scope,
+        lines: transcript.data,
+        meta: {
+          ...measured,
+          reportedBy: 'browser',
+          truncated: b.transcriptTruncated === true,
+          backendWaitsMs: waits.success ? waits.data.map(Math.round) : [],
+        },
+      })
+      .catch((error: unknown) => console.warn('[voice] saving the transcript failed', error instanceof Error ? error.name : 'unknown'))
+  }
   return { ok: true }
 }
