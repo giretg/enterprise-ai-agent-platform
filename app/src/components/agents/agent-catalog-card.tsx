@@ -125,9 +125,9 @@ export async function AgentCatalogCard({
         </div>
       </Link>
       {showStartChat || showVoiceCall ? (
-        <div className="mt-4 flex h-7 items-center gap-2">
-          {showStartChat ? <StartPlatformChatLink agentId={agent.id} /> : null}
-          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} variant="icon" /> : null}
+        <div className="mt-4 flex items-center gap-2">
+          {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
+          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} /> : null}
         </div>
       ) : null}
     </Card>

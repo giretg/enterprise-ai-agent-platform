@@ -39,7 +39,7 @@ const ROLE_LABEL = { user: 'Te', assistant: 'Munkatárs' } as const
 
 const VOICE_CALL_HINT = 'Böngészőben beszélhetsz a munkatárssal, mintha felhívtad volna. Telefonszám nem kell.'
 
-/** Hullámforma-ikon a chat beviteli dobozába és a munkatárs-kártyára. */
+/** Hullámforma-ikon a chat beviteli dobozába, a munkatárs-kártyára és az adatlapra. */
 export function VoiceCallIconButton({ agentName, onClick }: { agentName: string; onClick: () => void }) {
   return (
     <button
@@ -57,30 +57,11 @@ export function VoiceCallIconButton({ agentName, onClick }: { agentName: string;
 }
 
 /** #1111 hang-pilot: a gomb és az ablak együtt, ahol a gomb helye a hívás alatt biztosan nem változik. */
-export function VoiceCallButton({
-  agentId,
-  agentName,
-  variant = 'text',
-}: {
-  agentId: string
-  agentName: string
-  variant?: 'text' | 'icon'
-}) {
+export function VoiceCallButton({ agentId, agentName }: { agentId: string; agentName: string }) {
   const [open, setOpen] = useState(false)
   return (
     <>
-      {variant === 'icon' ? (
-        <VoiceCallIconButton agentName={agentName} onClick={() => setOpen(true)} />
-      ) : (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          title={VOICE_CALL_HINT}
-          className="inline-flex items-center rounded-full border border-coral px-4 py-1.5 text-sm font-semibold text-coral-deep hover:bg-coral/10"
-        >
-          Beszélgetés hangon
-        </button>
-      )}
+      <VoiceCallIconButton agentName={agentName} onClick={() => setOpen(true)} />
       {open ? <VoiceCallDialog agentId={agentId} agentName={agentName} onClose={() => setOpen(false)} /> : null}
     </>
   )

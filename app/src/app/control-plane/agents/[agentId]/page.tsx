@@ -478,7 +478,7 @@ export default async function AgentDetailPage({
             <p className="mt-1 text-sm text-ink-soft" title="A munkatárs saját e-mail címe">✉ {mailboxRes.data.primaryAddress}</p>
           ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
+            {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
             {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} /> : null}
             <AgentIdCopyButton agentId={agent.id} />
             {canManage ? (
