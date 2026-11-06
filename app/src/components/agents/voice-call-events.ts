@@ -44,6 +44,7 @@ const TOOL_LABELS: Record<string, string> = {
   kb_search: 'A munkatárs keresett a tudásbázisban.',
   kb_list_index: 'A munkatárs megnézte a tudásbázis tartalomjegyzékét.',
   kb_get_page: 'A munkatárs elolvasott egy tudásbázis-oldalt.',
+  kb_get_document: 'A munkatárs elolvasott egy tudásbázis-dokumentumot.',
   platform__project_memory__read: 'A munkatárs megnézte a memóriáját.',
   platform__work_file__list: 'A munkatárs megnézte a munkafájlokat.',
   platform__work_file__read: 'A munkatárs elolvasott egy munkafájlt.',

@@ -9,6 +9,7 @@ const VOICE_ALLOWED_TOOLS = new Set<string>([
   'kb_search',
   'kb_list_index',
   'kb_get_page',
+  'kb_get_document',
   'platform.project_memory.read',
   'platform.work_file.list',
   'platform.work_file.read',
@@ -34,8 +35,11 @@ export function voiceAllowedToolAliases(): string[] {
   return [...VOICE_ALLOWED_TOOLS].map(voiceToolAlias)
 }
 
-export function voiceBlocksTool(principal: { voiceCall?: true }, toolName: string): boolean {
-  return principal.voiceCall === true && !VOICE_ALLOWED_TOOLS.has(toolName)
+export function voiceBlocksTool(principal: { voiceCall?: true }, toolName: string, args?: Record<string, unknown>): boolean {
+  if (principal.voiceCall !== true) return false
+  // A dokumentum olvasása engedett, de ez a kapcsoló egy wiki-tálca tételét le is foglalná, ami már írás.
+  if (toolName === 'kb_get_document' && args?.claimForWiki !== undefined) return true
+  return !VOICE_ALLOWED_TOOLS.has(toolName)
 }
 
 type VoiceLimitableServer = {
