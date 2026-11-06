@@ -201,11 +201,11 @@ async function main() {
     assert.equal(JSON.stringify(summary).includes('Kiss Anna'), false)
     const audits: Array<{ action: string; actorId?: string | null; targetId?: string | null; metadata?: unknown }> = []
     const reader = { store, audit: { append: async (entry: (typeof audits)[number]) => void audits.push(entry) } }
-    const opening = { tenantId: TENANT, agentId: AGENT, id: summary.id, actorId: USER }
+    const opening = { tenantId: TENANT, agentId: AGENT, id: summary.id, actorId: USER, assumed: true }
     assert.deepEqual(await openVoiceTranscript(reader, opening), { lines: [{ role: 'user', text: 'Kiss Anna' }] })
     assert.deepEqual(
       audits.map((a) => [a.action, a.actorId, a.targetId, a.metadata]),
-      [['ai_audit.voice_transcript.read', USER, summary.id, { agentId: AGENT, sessionId: 'live_1' }]],
+      [['ai_audit.voice_transcript.read', USER, summary.id, { agentId: AGENT, sessionId: 'live_1', assumed: true }]],
     )
     await assert.rejects(openVoiceTranscript({ store, audit: { append: async () => Promise.reject(new Error('audit_down')) } }, opening), /audit_down/)
     assert.equal(await openVoiceTranscript(reader, { ...opening, agentId: USER }), null)
@@ -241,6 +241,26 @@ async function main() {
     assert.equal(saved.length, 1)
     const failing = async () => { throw new Error('nem érhető el') }
     assert.deepEqual(await end({ recordTranscript: failing }, { transcript }), { ok: true })
+  })
+
+  await check('lezárás: a kártyaszám nem kerül a naplóba, a név és a telefonszám megmarad', async () => {
+    const saved: Array<{ lines: unknown[] }> = []
+    await recordVoiceSessionEnd(
+      { sessionAwaitsEnd: async () => true, recordTranscript: async (row: { lines: unknown[] }) => void saved.push(row) } as never,
+      {
+        userId: USER,
+        tenantId: TENANT,
+        body: {
+          agentId: AGENT,
+          sessionId: 'live_1',
+          transcript: [{ role: 'user', text: 'Kiss Anna, 06 30 123 4567, a kártyám 4111 1111 1111 1111', atSeconds: 3 }],
+        },
+      },
+    )
+    const [line] = saved[0].lines as Array<{ text: string; atSeconds: number }>
+    assert.equal(line.text.includes('4111'), false)
+    assert.match(line.text, /^Kiss Anna, 06 30 123 4567, a kártyám «redaktált:/)
+    assert.equal(line.atSeconds, 3)
   })
 
   await check('első mondat: a rögzítésről csak akkor szól, ha az átirat tényleg a naplóba kerül; hibánál inkább szól', async () => {

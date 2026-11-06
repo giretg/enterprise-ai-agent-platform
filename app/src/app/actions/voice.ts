@@ -73,6 +73,7 @@ export async function readVoiceTranscriptAction(input: { agentId: string; id: st
         agentId: z.string().uuid().parse(input.agentId),
         id: z.string().uuid().parse(input.id),
         actorId: ctx.user.id,
+        assumed: ctx.assumed,
       },
     )
     if (!transcript) return fail('Ehhez a beszélgetéshez nincs elmentett szöveg.')

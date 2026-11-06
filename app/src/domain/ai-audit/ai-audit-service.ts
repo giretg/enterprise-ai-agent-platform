@@ -296,9 +296,9 @@ export async function listVoiceTranscripts(
  */
 export async function openVoiceTranscript(
   deps: { store: Pick<AiInteractionStore, 'list'>; audit: AuditSink },
-  input: { tenantId: string; agentId: string; id: string; actorId: string },
+  input: { tenantId: string; agentId: string; id: string; actorId: string; assumed: boolean },
 ): Promise<{ lines: unknown[] } | null> {
-  const { tenantId, agentId, id, actorId } = input
+  const { tenantId, agentId, id, actorId, assumed } = input
   const [row] = await deps.store.list({ tenantId, agentId, id, kind: 'voice_transcript', limit: 1 })
   if (!row?.content) return null
   const content = JSON.parse(decryptContent(row.tenantId, row.content)) as { lines?: unknown }
@@ -313,7 +313,7 @@ export async function openVoiceTranscript(
     inputRef: null,
     outputRef: null,
     policyDecision: 'allowed',
-    metadata: { agentId, sessionId: row.sessionId },
+    metadata: { agentId, sessionId: row.sessionId, assumed },
     tenantId,
   })
   return { lines: Array.isArray(content.lines) ? content.lines : [] }

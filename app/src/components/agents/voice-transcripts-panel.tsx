@@ -10,6 +10,8 @@ import type { VoiceTranscriptSummary } from '@/domain/ai-audit/ai-audit-service'
 type Listing = { items: VoiceTranscriptSummary[]; hasMore: boolean }
 type Reader = { id: string; lines: VoiceTranscriptLine[] } | { id: string; error: string }
 
+const UNREACHABLE_MESSAGE = 'Nem sikerült elérni a szervert. Ellenőrizd a kapcsolatot, majd frissítsd az oldalt.'
+
 function formatDate(value: Date | string): string {
   return new Date(value).toLocaleString('hu-HU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Budapest' })
 }
@@ -30,8 +32,8 @@ function summaryText(meta: Record<string, unknown>): string {
 
 function missingTextReason(meta: Record<string, unknown>): string {
   return meta.contentDropped === 'too_large'
-    ? 'A szöveg túl hosszú volt a mentéshez, csak a mérések maradtak meg.'
-    : 'A szervezet naplózási beállítása miatt csak a mérések maradtak meg.'
+    ? 'A szöveg túl hosszú volt a mentéshez, csak a hívás hossza és a várakozási idők maradtak meg.'
+    : 'A szervezet naplózási beállítása miatt a szöveget nem mentettük, csak a hívás hosszát és a várakozási időket.'
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -81,11 +83,13 @@ export function VoiceTranscriptsPanel({ agentId, agentName }: { agentId: string;
 
   useEffect(() => {
     let active = true
-    void listVoiceTranscriptsAction({ agentId }).then((res) => {
-      if (!active) return
-      if (res.success) setListing(res.data)
-      else setListError(res.error)
-    })
+    void listVoiceTranscriptsAction({ agentId })
+      .catch(() => ({ success: false as const, error: UNREACHABLE_MESSAGE }))
+      .then((res) => {
+        if (!active) return
+        if (res.success) setListing(res.data)
+        else setListError(res.error)
+      })
     return () => {
       active = false
     }
@@ -98,7 +102,7 @@ export function VoiceTranscriptsPanel({ agentId, agentName }: { agentId: string;
     }
     setLoadingId(id)
     startTransition(async () => {
-      const res = await readVoiceTranscriptAction({ agentId, id })
+      const res = await readVoiceTranscriptAction({ agentId, id }).catch(() => ({ success: false as const, error: UNREACHABLE_MESSAGE }))
       setReader(res.success ? { id, lines: res.data.lines as VoiceTranscriptLine[] } : { id, error: res.error })
       setLoadingId(null)
     })

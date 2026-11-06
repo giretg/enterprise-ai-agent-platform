@@ -1,4 +1,4 @@
-/** Run against a migrated PostgreSQL database: npm run test:ai-audit-db. */
+/** Run against a disposable, migrated PostgreSQL database, because it writes wherever DATABASE_URL points: npm run test:ai-audit-db. */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import {
@@ -50,7 +50,7 @@ async function main() {
 
     const audits: string[] = []
     const reader = { store, audit: { append: async (entry: { action: string }) => void audits.push(entry.action) } }
-    const opening = { ...scope, id: items[0].id, actorId: userId }
+    const opening = { ...scope, id: items[0].id, actorId: userId, assumed: false }
     assert.deepEqual(await openVoiceTranscript(reader, opening), { lines })
     assert.deepEqual(audits, ['ai_audit.voice_transcript.read'])
     assert.equal(await openVoiceTranscript(reader, { ...opening, agentId: randomUUID() }), null)
