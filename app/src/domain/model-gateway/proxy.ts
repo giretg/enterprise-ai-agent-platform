@@ -9,7 +9,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { logger } from '@/lib/observability'
-import { parseAgentModelConfig, resolveAgentPrimary } from '@/lib/agent-model-config'
+import { parseAgentModelConfig, resolveAgentPrimary, type ReasoningEffort } from '@/lib/agent-model-config'
 import { modelRefKey, sameModel, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
 import {
   buildEffectiveFallbackChain,
@@ -32,6 +32,12 @@ export const SESSION_HEADER = 'x-excellence-session'
 export const TURN_HEADER = 'x-excellence-turn'
 export const MAX_REQUEST_BYTES = 16 * 1024 * 1024
 const PROVIDER_CONNECT_TIMEOUT_MS = 120_000
+
+/** Az OpenRouter a `reasoning` objektumot várja, az Ollama OpenAI-felülete nem vállal ilyen mezőt. */
+export function reasoningEffortParams(provider: string, effort: ReasoningEffort): Record<string, unknown> {
+  if (provider === 'ollama') return {}
+  return provider === 'openrouter' ? { reasoning: { effort } } : { reasoning_effort: effort }
+}
 
 /**
  * Amit a kliens küldhet. Allowlist, mert az OpenRouter-specifikus `models`/`route`/`provider`/`plugins`
@@ -501,6 +507,12 @@ export async function handleChatCompletion(deps: ModelGatewayDeps, request: Requ
     if (config && sameModel(candidate, config) && !substituted) {
       out.temperature ??= config.temperature
       if (out.max_completion_tokens === undefined) out.max_tokens ??= config.maxTokens
+      // A kreativitással szemben ez adminisztrátori döntés: a kliens alapértéke nem írhatja felül.
+      if (config.reasoningEffort) {
+        delete out.reasoning
+        delete out.reasoning_effort
+        Object.assign(out, reasoningEffortParams(candidate.provider, config.reasoningEffort))
+      }
     }
     // #1004 D14: a platform-chat napi kerete a tényleges OpenRouter-költségből számol.
     const costAccounting = ctx.installId === PLATFORM_CHAT_INSTALL_ID && candidate.provider === 'openrouter'

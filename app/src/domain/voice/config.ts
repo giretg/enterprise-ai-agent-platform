@@ -9,6 +9,8 @@ export const VOICE_ROLE_MAX_CHARS = 8000
 /** Egy beszélgetés leghosszabb ideje. A böngésző tartja be, ezért a token is ehhez igazodik. */
 export const VOICE_MAX_SESSION_SECONDS = 600
 export const VOICE_TOKEN_TTL_SECONDS = VOICE_MAX_SESSION_SECONDS + 120
+/** Élő beszélgetésben a hívó vár a háttérre, ezért beállítás nélkül is a gyors változat fut. */
+export const VOICE_DEFAULT_REASONING_EFFORT = 'low'
 
 const schema = z.object({
   enabled: z.boolean(),

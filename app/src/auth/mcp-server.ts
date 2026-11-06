@@ -2406,7 +2406,7 @@ async function createMcpResourceHandler(
 
       server.server.setRequestHandler('tools/call', async (request, ctx) => {
         const toolName = principal.voiceCall ? toolNameFromVoiceAlias(request.params.name) : request.params.name
-        if (voiceBlocksTool(principal, toolName)) {
+        if (voiceBlocksTool(principal, toolName, request.params.arguments)) {
           await auditMcpToolDenied(deps, principal, toolName, 'voice_tool_blocked')
           return textResult({ code: 'voice_tool_blocked', message: VOICE_TOOL_BLOCKED_MESSAGE }, true)
         }

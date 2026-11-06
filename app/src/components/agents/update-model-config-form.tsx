@@ -7,7 +7,7 @@ import { updateAgentModelConfig } from '@/app/actions/model-config'
 import { OrderedModelList } from '@/components/agents/ordered-model-list'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
-import { MAX_FALLBACK_MODELS, type AgentModelConfig } from '@/lib/agent-model-config'
+import { MAX_FALLBACK_MODELS, REASONING_EFFORTS, type AgentModelConfig, type ReasoningEffort } from '@/lib/agent-model-config'
 import { fallbackPreviewSteps } from '@/lib/model-fallback-preview'
 import { MODEL_TYPES, DEFAULT_MODEL_TYPE, providerUsesThinkingProfile, type ModelType } from '@/lib/model-providers'
 import { modelDisplayName, modelRefKey, type ModelPolicy, type ModelRef } from '@/lib/model-policy'
@@ -50,6 +50,7 @@ export function UpdateModelConfigForm({
   const [fallbacks, setFallbacks] = useState<ModelRef[]>(config?.fallbackModels ?? [])
   const [addKey, setAddKey] = useState('')
   const [modelType, setModelType] = useState<ModelType>(config?.modelType ?? DEFAULT_MODEL_TYPE)
+  const [effort, setEffort] = useState<ReasoningEffort | ''>(config?.reasoningEffort ?? '')
   const [temperature, setTemperature] = useState(String(config?.temperature ?? 0.2))
   const [maxTokens, setMaxTokens] = useState(config?.maxTokens ? String(config.maxTokens) : '')
 
@@ -85,6 +86,7 @@ export function UpdateModelConfigForm({
         modelConfig: {
           ...primary,
           ...(providerUsesThinkingProfile(primary.provider) ? { modelType } : {}),
+          ...(effort ? { reasoningEffort: effort } : {}),
           ...(Number.isFinite(temp) ? { temperature: temp } : {}),
           ...(Number.isInteger(tokens) && tokens > 0 ? { maxTokens: tokens } : {}),
           fallbackModels: fallbacks,
@@ -207,6 +209,25 @@ export function UpdateModelConfigForm({
                     </option>
                   ))}
                 </select>
+              </label>
+            ) : null}
+            {primary && primary.provider !== 'ollama' ? (
+              <label className="block text-sm sm:col-span-2">
+                <span className="text-ink-soft">{t('effort')}</span>
+                <select
+                  value={effort}
+                  disabled={!canEdit || pending}
+                  onChange={(e) => setEffort(e.target.value as ReasoningEffort | '')}
+                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+                >
+                  <option value="">{t('effortDefault')}</option>
+                  {REASONING_EFFORTS.map((value) => (
+                    <option key={value} value={value}>
+                      {t(`effort_${value}`)}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs text-ink-faint">{t('effortHelp')}</span>
               </label>
             ) : null}
             <label className="block text-sm">

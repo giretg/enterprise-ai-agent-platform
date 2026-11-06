@@ -24,6 +24,7 @@ import {
 import { issueGatewayToken } from '../src/domain/model-gateway-token/gateway-token'
 import { PLATFORM_CHAT_INSTALL_ID } from '../src/domain/platform-chat/gateway'
 import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
+import { decryptContent, recordVoiceTranscript, voiceTranscriptAllowed, type AiInteractionRow } from '../src/domain/ai-audit/ai-audit-service'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { canStartVoiceCall, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS } from '../src/domain/voice/config'
 import { buildLiveSessionRequest, createOpenAiLiveProvider, mapLiveFailure } from '../src/domain/voice/openai-live'
@@ -57,6 +58,7 @@ const sessionInput: VoiceBrowserSessionInput = {
   voiceInstructions: 'beszéd',
   backendInstructions: 'háttér',
   greeting: 'Jó napot!',
+  backendReasoningEffort: 'low',
   mcp: {
     serverUrl: 'https://app.example.com/api/mcp/acme',
     token: 'mcp-token',
@@ -148,9 +150,74 @@ async function main() {
     }
   })
 
+  await check('átirat: a lezáró kérésbe csak annyi fér, amennyit a böngésző elküld, a legfrissebb sorok maradnak', () => {
+    const lines = Array.from({ length: 200 }, (_, index) => ({ role: 'user' as const, text: `${index} ${'ő'.repeat(400)}` }))
+    const report = voiceEndReport({ ...INITIAL_VOICE_CALL_VIEW, lines })
+    assert.equal(report.transcriptTruncated, true)
+    assert.ok(new TextEncoder().encode(JSON.stringify(report)).length < 60_000)
+    assert.equal(report.transcript.at(-1)?.text, lines.at(-1)?.text)
+  })
+
+  await check('átirat: titkosítva az AI-naplóba kerül, a naplózási mélység szerint, és a tartalom nem megy az audit-sorba', async () => {
+    const rows: AiInteractionRow[] = []
+    const store = { insertMany: async (next: AiInteractionRow[]) => (rows.push(...next), next.length) } as never
+    const input = { tenantId: TENANT, userId: USER, agentId: AGENT, sessionId: 'live_1', lines: [{ role: 'user', text: 'Kiss Anna vagyok' }], meta: { seconds: 5 } }
+    await recordVoiceTranscript({ store, depthFor: async () => 'prompt_and_response', now: () => NOW, retentionDays: () => 90 }, input)
+    assert.equal(rows[0].kind, 'voice_transcript')
+    assert.equal(rows[0].source, 'voice')
+    assert.equal(rows[0].sessionId, 'live_1')
+    assert.equal(rows[0].expiresAt.getTime(), NOW.getTime() + 90 * 86_400_000)
+    assert.equal(rows[0].content?.includes('Kiss Anna'), false)
+    assert.deepEqual(JSON.parse(decryptContent(TENANT, rows[0].content as string)), { lines: input.lines })
+    await recordVoiceTranscript({ store, depthFor: async () => 'metadata', now: () => NOW, retentionDays: () => 90 }, input)
+    assert.equal(rows[1].content, null)
+    assert.equal(rows[1].meta.lineCount, 1)
+    assert.equal(voiceTranscriptAllowed('metadata'), false)
+    assert.equal(voiceTranscriptAllowed('prompt_and_response'), true)
+  })
+
+  await check('lezárás: az átirat érvényes jelentésnél mentődik, a hibája vagy a hibás formája nem bukhat el', async () => {
+    const audits: Array<{ metadata?: unknown }> = []
+    const saved: Array<{ lines: unknown[]; meta: Record<string, unknown> }> = []
+    const base = { audit: { append: async (a: { metadata?: unknown }) => void audits.push(a) }, sessionAwaitsEnd: async () => true }
+    const end = (deps: object, body: object) =>
+      recordVoiceSessionEnd({ ...base, ...deps } as never, { userId: USER, tenantId: TENANT, body: { agentId: AGENT, sessionId: 'live_1', ...body } })
+    const recordTranscript = async (row: { lines: unknown[]; meta: Record<string, unknown> }) => void saved.push(row)
+    const transcript = [{ role: 'user', text: 'Kiss Anna vagyok', atSeconds: 3 }]
+    assert.deepEqual(await end({ recordTranscript }, { transcript, backendWaitsMs: [1200.4], transcriptTruncated: true }), { ok: true })
+    assert.deepEqual(saved[0].lines, transcript)
+    assert.deepEqual(saved[0].meta.backendWaitsMs, [1200])
+    assert.equal(saved[0].meta.truncated, true)
+    assert.equal(JSON.stringify(audits).includes('Kiss Anna'), false)
+    assert.deepEqual(await end({ recordTranscript }, { transcript: [{ role: 'admin', text: 'x' }] }), { ok: true })
+    assert.deepEqual(await end({ recordTranscript }, { transcript: Array(301).fill(transcript[0]) }), { ok: true })
+    assert.equal(saved.length, 1)
+    const failing = async () => { throw new Error('nem érhető el') }
+    assert.deepEqual(await end({ recordTranscript: failing }, { transcript }), { ok: true })
+  })
+
+  await check('első mondat: a rögzítésről csak akkor szól, ha az átirat tényleg a naplóba kerül; hibánál inkább szól', async () => {
+    assert.equal(buildVoiceGreeting('Réka', '').includes('minőségbiztosítási'), false)
+    assert.match(buildVoiceGreeting('Réka', '', true), /mesterséges intelligenciával beszél\. A beszélgetés szövegét minőségbiztosítási céllal rögzítjük\.$/)
+    const on = sessionDeps({ transcriptRecorded: async () => true })
+    assert.ok((await start(on.deps)).ok)
+    assert.match(on.calls[0].greeting, /minőségbiztosítási/)
+    const off = sessionDeps({ transcriptRecorded: async () => false })
+    assert.ok((await start(off.deps)).ok)
+    assert.equal(off.calls[0].greeting.includes('minőségbiztosítási'), false)
+    const broken = sessionDeps({ transcriptRecorded: async () => { throw new Error('nem érhető el') } })
+    assert.ok((await start(broken.deps)).ok)
+    assert.match(broken.calls[0].greeting, /minőségbiztosítási/)
+  })
+
+  await check('hang-szabály: visszahívást csak a munkaköri leírás engedélyével ígérhet', () => {
+    assert.match(buildVoiceInstructions({ name: 'Réka', roleInstruction: 'x', rules: [] }).voice, /csak akkor ígérj, ha a munkaköri leírásod kifejezetten megengedi/)
+  })
+
   await check('OpenAI-kérés: MCP a háttérmodellnél, a böngésző nem írhatja át a beállításokat', () => {
     const body = buildLiveSessionRequest(sessionInput)
     assert.equal(body.session.model, 'gpt-live-1')
+    assert.deepEqual(body.session.delegation.responses.reasoning, { effort: 'low' })
     assert.deepEqual(body.transport, { type: 'webrtc', sdp: 'v=0 offer' })
     assert.equal(body.session.audio.output.voice, 'cedar')
     assert.equal('format' in body.session.audio, false)
@@ -175,6 +242,16 @@ async function main() {
     assert.equal(mapLiveFailure(400, 'model_not_found'), 'provider_no_access')
     const thrown = createOpenAiLiveProvider({ fetchImpl: (async () => { throw new Error('net') }) as typeof fetch })
     assert.deepEqual(await thrown.startBrowserSession(sessionInput), { ok: false, code: 'provider_error' })
+  })
+
+  await check('indítás: a háttérmodell gondolkodási mélysége a munkatárs beállítása, beállítás nélkül a gyors', async () => {
+    const plain = sessionDeps()
+    assert.ok((await start(plain.deps)).ok)
+    assert.equal(plain.calls[0].backendReasoningEffort, 'low')
+    const modelConfig = { provider: 'openrouter', model: 'vendor/model', reasoningEffort: 'high', fallbackModels: [] }
+    const set = sessionDeps({ loadAgent: async () => ({ kind: 'internal', voiceConfig: ENABLED, modelConfig }) })
+    assert.ok((await start(set.deps)).ok)
+    assert.equal(set.calls[0].backendReasoningEffort, 'high')
   })
 
   await check('indítás: a kulcs és a token nem kerül a böngészőnek szánt válaszba, a token szűk', async () => {
@@ -294,6 +371,10 @@ async function main() {
       assert.ok((MCP_ALLOWED_TOOLS as readonly string[]).includes(toolNameFromVoiceAlias(alias)), alias)
     }
     assert.equal(voiceToolAlias('platform.work_file.append'), 'platform__work_file__append')
+    assert.equal(voiceBlocksTool({ voiceCall: true }, 'kb_get_document', { documentId: 'x', section: 'Dió torta' }), false)
+    assert.equal(voiceBlocksTool({ voiceCall: true }, 'kb_get_document', { documentId: 'x', claimForWiki: true }), true)
+    assert.equal(voiceBlocksTool({ voiceCall: true }, 'kb_get_document', { documentId: 'x', claimForWiki: false }), true)
+    assert.equal(voiceBlocksTool({}, 'kb_get_document', { documentId: 'x', claimForWiki: true }), false)
     assert.equal(toolNameFromVoiceAlias('platform__work_file__append'), 'platform.work_file.append')
     const voice = { voiceCall: true as const }
     for (const blocked of ['mail_send', 'http_api_request', 'sandbox_run', 'mcp_call', 'platform.agent.publish', 'platform.work_file.delete', 'platform.work_file.write', 'új_eszköz']) {
@@ -385,15 +466,22 @@ async function main() {
       [{ type: 'session.closed', reason: 'close_requested', usage: { seconds: 45 } }, 4000],
     ])
     assert.deepEqual(view.lines, [
-      { role: 'assistant', text: 'Jó napot.' },
-      { role: 'user', text: 'Két láda bort.' },
-      { role: 'tool', text: 'A munkatárs hozzáírt egy munkafájlhoz.' },
+      { role: 'assistant', text: 'Jó napot.', atSeconds: 0 },
+      { role: 'user', text: 'Két láda bort.', atSeconds: 0 },
+      { role: 'tool', text: 'A munkatárs hozzáírt egy munkafájlhoz.', atSeconds: 2 },
     ])
+    assert.deepEqual(view.backendWaitsMs, [2500])
+    const report = voiceEndReport(view)
+    assert.deepEqual(report.transcript, view.lines)
+    assert.equal(report.transcriptTruncated, false)
     assert.equal(view.lastBackendWaitMs, 2500)
     assert.equal(view.backendSince, null)
     assert.equal(view.providerError, 'Hibás eszköz')
     assert.equal(view.closedReason, 'close_requested')
-    assert.deepEqual(voiceEndReport(view), { reason: 'close_requested', seconds: 45, backendCalls: 1, avgBackendWaitMs: 2500, maxBackendWaitMs: 2500 })
+    assert.deepEqual(voiceEndReport(view), {
+      transcript: view.lines,
+      transcriptTruncated: false,
+      backendWaitsMs: [2500], reason: 'close_requested', seconds: 45, backendCalls: 1, avgBackendWaitMs: 2500, maxBackendWaitMs: 2500 })
     assert.equal(voiceEndReport(INITIAL_VOICE_CALL_VIEW).avgBackendWaitMs, null)
   })
 
