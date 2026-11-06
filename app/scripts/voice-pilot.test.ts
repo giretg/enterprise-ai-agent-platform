@@ -294,6 +294,10 @@ async function main() {
       assert.ok((MCP_ALLOWED_TOOLS as readonly string[]).includes(toolNameFromVoiceAlias(alias)), alias)
     }
     assert.equal(voiceToolAlias('platform.work_file.append'), 'platform__work_file__append')
+    assert.equal(voiceBlocksTool({ voiceCall: true }, 'kb_get_document', { documentId: 'x', section: 'Dió torta' }), false)
+    assert.equal(voiceBlocksTool({ voiceCall: true }, 'kb_get_document', { documentId: 'x', claimForWiki: true }), true)
+    assert.equal(voiceBlocksTool({ voiceCall: true }, 'kb_get_document', { documentId: 'x', claimForWiki: false }), true)
+    assert.equal(voiceBlocksTool({}, 'kb_get_document', { documentId: 'x', claimForWiki: true }), false)
     assert.equal(toolNameFromVoiceAlias('platform__work_file__append'), 'platform.work_file.append')
     const voice = { voiceCall: true as const }
     for (const blocked of ['mail_send', 'http_api_request', 'sandbox_run', 'mcp_call', 'platform.agent.publish', 'platform.work_file.delete', 'platform.work_file.write', 'új_eszköz']) {
