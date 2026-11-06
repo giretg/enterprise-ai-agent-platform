@@ -77,6 +77,7 @@ export async function startVoiceSession(
   if (!apiKey) return { ok: false, code: 'key_missing' }
 
   const turnId = `voice-${randomUUID()}`
+  const now = (deps.now ?? (() => new Date()))()
   const { token, claims } = signChatToken(
     {
       aud: CHAT_TURN_TOKEN_AUDIENCE,
@@ -90,10 +91,10 @@ export async function startVoiceSession(
       voice: true,
     },
     signingKey,
-    (deps.now ?? (() => new Date()))(),
+    now,
     VOICE_TOKEN_TTL_SECONDS,
   )
-  const instructions = buildVoiceInstructions(definition.snapshot)
+  const instructions = buildVoiceInstructions(definition.snapshot, now)
   const greeting = buildVoiceGreeting(definition.snapshot.name, config.greeting)
   const started = await deps.provider.startBrowserSession({
     apiKey,

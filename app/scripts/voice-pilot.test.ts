@@ -139,6 +139,15 @@ async function main() {
     assert.match(buildVoiceGreeting('Réka', 'Szia!'), /^Szia! .*mesterséges intelligenciával/)
   })
 
+  await check('utasítás: mindkét modell megkapja a mai napot magyar idő szerint', () => {
+    // UTC szerint még november 6., Budapesten már november 7., szombat.
+    const built = buildVoiceInstructions({ name: 'Réka', roleInstruction: 'x', rules: [] }, new Date('2026-11-06T23:30:00Z'))
+    for (const text of [built.voice, built.backend]) {
+      assert.match(text, /Most: 2026\. november 7\., szombat/)
+      assert.match(text, /szombat 0:30/)
+    }
+  })
+
   await check('OpenAI-kérés: MCP a háttérmodellnél, a böngésző nem írhatja át a beállításokat', () => {
     const body = buildLiveSessionRequest(sessionInput)
     assert.equal(body.session.model, 'gpt-live-1')
