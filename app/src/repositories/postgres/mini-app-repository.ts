@@ -262,6 +262,24 @@ function scopeFilter(
 }
 
 /** Control Plane: egy agent saját appjai + a neki megosztottak + a szervezetiek (HTML nélkül). */
+/** A munkatárs-doboz gombjához: az agentek aktív saját és velük megosztott appjai, megosztásokkal együtt. */
+export async function listActiveMiniAppsForAgents(
+  tenantId: string,
+  agentIds: string[],
+): Promise<Array<MiniAppRecord & { activeShareAgentIds: string[] }>> {
+  const rows = await prisma.miniApp.findMany({
+    where: {
+      tenantId,
+      status: 'active',
+      OR: [{ ownerAgentId: { in: agentIds } }, { shares: { some: { agentId: { in: agentIds }, revokedAt: null } } }],
+    },
+    orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+    take: 500,
+    select: { ...appSelect, shares: { where: { revokedAt: null }, select: { agentId: true } } },
+  })
+  return rows.map(({ shares, ...app }) => ({ ...app, activeShareAgentIds: shares.map((share) => share.agentId) }))
+}
+
 export async function listMiniAppsForAgentPage(tenantId: string, agentId: string): Promise<MiniAppRecord[]> {
   return prisma.miniApp.findMany({
     where: {

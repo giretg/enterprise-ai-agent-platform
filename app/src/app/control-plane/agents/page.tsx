@@ -4,6 +4,7 @@ import { listAgentsForCatalog } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
 import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
 import { Card } from '@/components/ui/shell'
+import { loadAgentProductLinks } from '@/lib/agent-product-links-loader'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import { repositories } from '@/repositories/postgres'
@@ -19,6 +20,7 @@ export default async function AgentsIndexPage() {
   const agents = agentsRes.success ? agentsRes.data : []
   const loadError = agentsRes.success ? null : agentsRes.error
   const canCreateAgent = hasMinimumRole(ctx.activeTenantRole, 'admin')
+  const productLinks = await loadAgentProductLinks(ctx, agents)
   const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
   const t = await getTranslations('ControlPlane.agents')
 
@@ -52,6 +54,7 @@ export default async function AgentsIndexPage() {
               agent={agent}
               canResumeHire={canCreateAgent}
               tenantChatEnabled={tenantChatEnabled}
+              productLinks={productLinks[agent.id]}
             />
           ))}
           {agents.length === 0 ? (

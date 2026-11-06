@@ -239,6 +239,8 @@
   },
   "ControlPlane": {
     "scheduledTasks": {
+      "filteredBy": "Showing only {agent}'s tasks.",
+      "clearFilter": "All tasks",
       "title": "Scheduled tasks",
       "body": "Recurring or one-time work the AI teammate does on your machine or in the cloud — for example every weekday morning. The platform only records and coordinates it; your AI client runs it.",
       "helpLabel": "How does it work?",
@@ -1555,7 +1557,20 @@
       "halfFinished": "Half-finished",
       "halfFinishedHint": "Hiring was left unfinished — click to continue where you left off.",
       "startChat": "Start conversation",
-      "startChatHint": "Chat with this teammate on the platform"
+      "startChatHint": "Chat with this teammate on the platform",
+      "products": {
+        "aria": "{name}'s materials",
+        "miniApps": "Mini apps",
+        "miniAppsHint": "Small apps and reports you can open.",
+        "knowledge": "Knowledge",
+        "knowledgeHint": "The wiki and documents this teammate works from.",
+        "workFiles": "Work files",
+        "workFilesHint": "Your organization's shared plans, notes and drafts. They are not separated by teammate yet.",
+        "scheduledTasks": "Scheduled",
+        "scheduledTasksHint": "Tasks that start on their own at a set time.",
+        "companyKnowledge": "Company knowledge base",
+        "showAll": "Open all ({count})"
+      }
     },
     "dashboard": {
       "mailboxBroken": "The shared mailbox {address} is disconnected — agents cannot reach it right now. Reconnect it.",

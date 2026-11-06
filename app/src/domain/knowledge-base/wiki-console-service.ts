@@ -1181,14 +1181,7 @@ export class WikiConsoleService {
           connectorId: row.connectorId,
           kind,
           own: ownerAgent === agent.id.toLowerCase(),
-          name:
-            kind === 'private'
-              ? privateKnowledgeBaseDisplayName({ config: row.config }) ?? 'Private knowledge base'
-              : kind === 'catalog'
-                ? 'Company knowledge base'
-                : kind === 'agent'
-                  ? agentNames.get(ownerAgent!) ?? 'Agent knowledge base'
-                  : configDisplayName(row.config) ?? row.name,
+          name: agentWikiName(row, kind, agentNames),
           template: configTemplate(row.config),
           access: binding ? effectiveWikiAccess(binding) : ('none' as const),
           writeMode: binding ? effectiveWikiWriteMode(binding) : kind === 'private' ? ('direct' as const) : ('approval' as const),
@@ -1200,6 +1193,34 @@ export class WikiConsoleService {
         }
       })
       .sort((a, b) => Number(b.own) - Number(a.own) || kindOrder(a.kind) - kindOrder(b.kind) || a.name.localeCompare(b.name))
+  }
+
+  /**
+   * A munkatárs-doboz gombjához: a kötött tudástárak, amelyeket a néző meg is nyithat. Szigorúbb a
+   * `listAgentWikiLinks`-nél, ami a beállításhoz a nem kötött és a csak névről ismert tudástárat is mutatja.
+   */
+  async listOpenableAgentWikis(actor: WikiConsoleActor, agentIds: string[]) {
+    const rows = await this.deps.console.listAgentKnowledgeBindings(actor.tenantId, agentIds)
+    const openable = rows.filter(
+      (row) => effectiveWikiAccess(row) !== 'none' && accessFor(actor, row).view,
+    )
+    const agentNames = await this.deps.console.agentNames(
+      actor.tenantId,
+      openable.map((row) => ownerAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id),
+    )
+    const byAgent = new Map<string, Array<{ connectorId: string; kind: WikiKbKind; name: string; hasPages: boolean }>>()
+    for (const row of openable) {
+      const kind = wikiKbKind(row)
+      const entry = {
+        connectorId: row.connectorId,
+        kind,
+        name: agentWikiName(row, kind, agentNames),
+        hasPages: row.pageCount > 0,
+      }
+      byAgent.set(row.agentId, [...(byAgent.get(row.agentId) ?? []), entry])
+    }
+    for (const list of byAgent.values()) list.sort((a, b) => kindOrder(a.kind) - kindOrder(b.kind) || a.name.localeCompare(b.name))
+    return byAgent
   }
 
   async setAgentWikiLink(
@@ -1379,6 +1400,13 @@ function dedupeSources(refs: WikiSourceRef[]): WikiSourceRef[] {
     seen.add(key)
     return true
   })
+}
+
+function agentWikiName(row: Pick<Connector, 'name' | 'config'>, kind: WikiKbKind, agentNames: Map<string, string>): string {
+  if (kind === 'private') return privateKnowledgeBaseDisplayName({ config: row.config }) ?? 'Private knowledge base'
+  if (kind === 'catalog') return 'Company knowledge base'
+  if (kind === 'agent') return agentNames.get(ownerAgentIdForKnowledgeBase(row.name)!) ?? 'Agent knowledge base'
+  return configDisplayName(row.config) ?? row.name
 }
 
 function kindOrder(kind: WikiKbKind): number {

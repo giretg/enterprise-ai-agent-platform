@@ -239,6 +239,8 @@
   },
   "ControlPlane": {
     "scheduledTasks": {
+      "filteredBy": "Csak {agent} feladatai látszanak.",
+      "clearFilter": "Minden feladat",
       "title": "Ütemezett feladatok",
       "body": "Ismétlődő vagy egyszeri munka, amit az AI-munkatárs a saját gépeden vagy a felhőben végez el — például minden hétköznap reggel. A platform csak nyilvántartja és összehangolja; a futtatást a te AI-kliensed végzi.",
       "helpLabel": "Hogyan működik?",
@@ -1555,7 +1557,20 @@
       "halfFinished": "Félkész",
       "halfFinishedHint": "A felvétel félbemaradt — kattints, és ott folytathatod, ahol abbahagytad.",
       "startChat": "Beszélgetés indítása",
-      "startChatHint": "Beszélgetés ezzel a munkatárssal a platformon"
+      "startChatHint": "Beszélgetés ezzel a munkatárssal a platformon",
+      "products": {
+        "aria": "{name} anyagai",
+        "miniApps": "Mini appok",
+        "miniAppsHint": "A kis alkalmazásai és riportjai, amelyeket megnyithatsz.",
+        "knowledge": "Tudásbázis",
+        "knowledgeHint": "A wiki és a dokumentumok, amelyekből ez a munkatárs dolgozik.",
+        "workFiles": "Munkafájlok",
+        "workFilesHint": "A szervezet közös tervei, jegyzetei és vázlatai. Még nincsenek munkatársanként szétválasztva.",
+        "scheduledTasks": "Ütemezett",
+        "scheduledTasksHint": "A feladatai, amelyek megadott időben maguktól elindulnak.",
+        "companyKnowledge": "Céges tudásbázis",
+        "showAll": "Összes megnyitása ({count})"
+      }
     },
     "dashboard": {
       "mailboxBroken": "A(z) {address} közös postafiók kapcsolata megszakadt — az agentek most nem érik el. Csatlakoztasd újra.",

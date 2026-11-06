@@ -13,6 +13,11 @@ export function workFilePagePath(projectKey: string | null | undefined, path: st
   return `/control-plane/projects?${query}`
 }
 
+/** A projekt munkafájl-listája, megnyitott fájl nélkül. */
+export function workFilesPagePath(projectKey: string | null | undefined): string {
+  return `/control-plane/projects?project=${encodeURIComponent(effectiveWorkProjectKey(projectKey))}&tab=files`
+}
+
 /** Abszolút link az agentnek, hogy megoszthassa az emberrel (MCP-válaszban). */
 export function workFileUrl(origin: string, projectKey: string | null | undefined, path: string): string {
   return `${origin.replace(/\/+$/, '')}${workFilePagePath(projectKey, path)}`

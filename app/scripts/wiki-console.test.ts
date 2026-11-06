@@ -107,6 +107,8 @@ function setup() {
   let schemaMd = '# Wiki rules'
   let docSeq = 0
 
+  const agentBindings: Array<{ agentId: string; connectorId: string; wikiAccess: 'none' | 'read' }> = []
+
   const consoleRepo: WikiConsoleRepository = {
     async listKnowledgeBases(): Promise<WikiConsoleKbRow[]> {
       return [...connectors.values()].map((c) => ({
@@ -165,6 +167,25 @@ function setup() {
     },
     async agentNames(_tenantId, ids) {
       return new Map(ids.filter((id) => id === AGENT).map((id) => [id, 'Réka']))
+    },
+    async listAgentKnowledgeBindings(_tenantId, agentIds) {
+      return agentBindings
+        .filter((binding) => agentIds.includes(binding.agentId))
+        .map(({ agentId, connectorId, wikiAccess }) => {
+          const c = connectors.get(connectorId)!
+          return {
+            agentId,
+            connectorId,
+            wikiAccess,
+            accessMode: 'read' as const,
+            name: c.name,
+            config: c.config,
+            visibility: c.visibility,
+            ownerUserId: c.ownerUserId,
+            kbMemberUserIds: [],
+            pageCount: connectorId === KB_PRIV ? pages.length : 0,
+          }
+        })
     },
   }
 
@@ -323,7 +344,7 @@ function setup() {
     audit: { append: async (entry: any) => void audit.push(entry) },
     now: () => new Date('2026-10-10T00:00:00Z'),
   })
-  return { service, connectors, documents, audit, calls }
+  return { service, connectors, documents, audit, calls, agentBindings }
 }
 
 async function main() {
@@ -555,6 +576,25 @@ async function main() {
     const forAdmin = await service.listAgentWikiLinks(admin, AGENT)
     assert.ok(!forAdmin.some((row) => row.connectorId === KB_PRIV))
     assert.equal(forAdmin.find((row) => row.connectorId === KB_SHARED)!.canEdit, true)
+  })
+
+  await check('munkatárs-doboz gombja: csak a kötött és a néző által megnyitható tudástárat mutatja', async () => {
+    const { service, agentBindings } = setup()
+    agentBindings.push(
+      { agentId: AGENT, connectorId: KB_SHARED, wikiAccess: 'read' },
+      { agentId: AGENT, connectorId: KB_PRIV, wikiAccess: 'read' },
+      { agentId: OTHER_AGENT, connectorId: KB_SHARED, wikiAccess: 'none' },
+    )
+    const ids = async (actor: WikiConsoleActor) =>
+      ((await service.listOpenableAgentWikis(actor, [AGENT, OTHER_AGENT])).get(AGENT) ?? []).map((row) => row.connectorId).sort()
+    assert.deepEqual(await ids(owner), [KB_PRIV, KB_SHARED].sort(), 'a tulajdonos a privátját is látja')
+    assert.deepEqual(await ids(admin), [KB_SHARED], 'admin sem kap gombot más privát wikijéhez')
+    assert.deepEqual(await ids(operator), [KB_SHARED])
+    assert.deepEqual(await ids(viewer), [], 'megfigyelő a közös wikit nem nyithatja meg, gombot sem kap')
+    const forOwner = await service.listOpenableAgentWikis(owner, [AGENT, OTHER_AGENT])
+    assert.equal(forOwner.has(OTHER_AGENT), false, 'a „nincs jog” kötés nem számít')
+    assert.equal(forOwner.get(AGENT)!.find((row) => row.connectorId === KB_PRIV)!.hasPages, true)
+    assert.equal(forOwner.get(AGENT)!.find((row) => row.connectorId === KB_SHARED)!.name, 'Termékismeret')
   })
 
   await check('setAgentWikiLinkAction: új kapcsolat írásnál write accessModdal jön létre; none + nincs kötés = nincs teendő', async () => {

@@ -8,6 +8,7 @@ import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
 import { DashboardChatLauncher } from '@/components/platform-chat/dashboard-chat-launcher'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
+import { loadAgentProductLinks } from '@/lib/agent-product-links-loader'
 import { requireControlPlaneTenantViewer } from '@/lib/default-agent-workspace'
 import { canStartPlatformChat } from '@/lib/platform-chat-href'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
@@ -63,6 +64,7 @@ export default async function DashboardPage() {
   ])
   const agents = agentsRes.success ? agentsRes.data : []
   const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
+  const productLinks = await loadAgentProductLinks(ctx, agents)
   // Ugyanaz a feltétel, mint a kártya „Beszélgetés indítása” gombján.
   const chatAgents = agents
     .filter(
@@ -228,6 +230,7 @@ export default async function DashboardPage() {
                 agent={agent}
                 canResumeHire={canCreateAgent}
                 tenantChatEnabled={tenantChatEnabled}
+                productLinks={productLinks[agent.id]}
               />
             ))}
             {agents.length === 0 ? (
