@@ -261,25 +261,27 @@ function scopeFilter(
   return { OR: [mine, ...sharedWithMe] }
 }
 
-/** Control Plane: egy agent saját appjai + a neki megosztottak + a szervezetiek (HTML nélkül). */
 /** A munkatárs-doboz gombjához: az agentek aktív saját és velük megosztott appjai, megosztásokkal együtt. */
 export async function listActiveMiniAppsForAgents(
   tenantId: string,
   agentIds: string[],
 ): Promise<Array<MiniAppRecord & { activeShareAgentIds: string[] }>> {
+  // Ugyanaz a megosztás-kör, mint a `listActiveShares`-ben: nyugdíjazott címzett nem ad hozzáférést.
+  const activeShare = { revokedAt: null, agent: { retiredAt: null } }
   const rows = await prisma.miniApp.findMany({
     where: {
       tenantId,
       status: 'active',
-      OR: [{ ownerAgentId: { in: agentIds } }, { shares: { some: { agentId: { in: agentIds }, revokedAt: null } } }],
+      OR: [{ ownerAgentId: { in: agentIds } }, { shares: { some: { agentId: { in: agentIds }, ...activeShare } } }],
     },
     orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
     take: 500,
-    select: { ...appSelect, shares: { where: { revokedAt: null }, select: { agentId: true } } },
+    select: { ...appSelect, shares: { where: activeShare, select: { agentId: true } } },
   })
   return rows.map(({ shares, ...app }) => ({ ...app, activeShareAgentIds: shares.map((share) => share.agentId) }))
 }
 
+/** Control Plane: egy agent saját appjai + a neki megosztottak + a szervezetiek (HTML nélkül). */
 export async function listMiniAppsForAgentPage(tenantId: string, agentId: string): Promise<MiniAppRecord[]> {
   return prisma.miniApp.findMany({
     where: {

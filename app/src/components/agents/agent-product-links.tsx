@@ -76,13 +76,15 @@ function ProductButtonContent({ link, layout }: { link: AgentProductLink; layout
   )
 }
 
-function Tooltip({ children }: { children: ReactNode }) {
+function ProductTooltip({ kind }: { kind: AgentProductKind }) {
+  const t = useTranslations('ControlPlane.agents.products')
   return (
     <span
       role="tooltip"
       className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 w-max max-w-56 rounded-lg bg-ink px-2.5 py-1.5 text-left text-xs font-normal leading-snug text-white opacity-0 shadow-lg transition-opacity delay-150 group-hover/product:opacity-100 group-focus-visible/product:opacity-100"
     >
-      {children}
+      <span className="block font-semibold">{t(TEXT[kind].label)}</span>
+      {t(TEXT[kind].hint)}
     </span>
   )
 }
@@ -119,7 +121,7 @@ function ProductMenu({ link, layout, label }: { link: AgentProductLink; layout: 
         className={`group/product ${BUTTON} ${LAYOUTS[layout].button}`}
       >
         <ProductButtonContent link={link} layout={layout} />
-        {open ? null : <Tooltip>{t(TEXT[link.kind].hint)}</Tooltip>}
+        {open ? null : <ProductTooltip kind={link.kind} />}
       </button>
       {open ? (
         <div
@@ -170,7 +172,7 @@ export function AgentProductLinks({
             className={`group/product ${BUTTON} ${LAYOUTS[layout].button}`}
           >
             <ProductButtonContent link={link} layout={layout} />
-            <Tooltip>{t(TEXT[link.kind].hint)}</Tooltip>
+            <ProductTooltip kind={link.kind} />
           </Link>
         )
       })}

@@ -5,7 +5,7 @@ import { miniAppHumanAccess } from '@/domain/mini-app/human-access'
 import { buildAgentProductLinks, type AgentProductLink } from '@/lib/agent-product-links'
 import { prisma } from '@/lib/db'
 import { hasMinimumRole } from '@/lib/iam-policy'
-import { isNavKeyHiddenFor, readNavVisibilityPolicy } from '@/lib/nav-visibility'
+import { isNavChildHiddenFor, readNavVisibilityPolicy } from '@/lib/nav-visibility'
 import { repositories } from '@/repositories/postgres'
 import { listActiveMiniAppsForAgents } from '@/repositories/postgres/mini-app-repository'
 
@@ -15,17 +15,13 @@ type OpenableWikis = Awaited<ReturnType<typeof services.wikiConsole.listOpenable
 
 /** Az agentek saját és velük megosztott mini appjai, amelyeket a néző meg is nyithat. */
 async function openableMiniApps(ctx: Ctx, agentIds: string[]): Promise<Map<string, NamedApp[]>> {
-  const apps = await listActiveMiniAppsForAgents(ctx.activeTenantId, agentIds)
-  const grants = new Map<string, Promise<{ accessLevel: string } | null>>()
+  const [apps, grants] = await Promise.all([
+    listActiveMiniAppsForAgents(ctx.activeTenantId, agentIds),
+    repositories.resourceGrants.listAgentGrantsForUser({ tenantId: ctx.activeTenantId, userId: ctx.user.id }),
+  ])
   const deps = {
-    findAgentGrant(input: { tenantId: string; userId: string; agentId: string }) {
-      let grant = grants.get(input.agentId)
-      if (!grant) {
-        grant = repositories.resourceGrants.findAgentGrant(input)
-        grants.set(input.agentId, grant)
-      }
-      return grant
-    },
+    findAgentGrant: async (input: { agentId: string }) =>
+      grants.find((grant) => grant.resourceId === input.agentId) ?? null,
     listActiveShareAgentIds: async (appId: string) =>
       apps.find((app) => app.id === appId)?.activeShareAgentIds ?? [],
   }
@@ -80,9 +76,11 @@ export async function loadAgentProductLinks(
     console.warn('[agent-product-links] source failed:', error instanceof Error ? error.message : error)
     return value
   }
-  const tenant = await repositories.tenants.findById(ctx.activeTenantId)
-  const policy = readNavVisibilityPolicy(tenant?.settings)
-  const shows = (navKey: string) => !isNavKeyHiddenFor(policy, ctx.activeTenantRole, navKey)
+  // A menü-beállítás nélkül nem tudjuk, mi van elrejtve: ilyenkor nincs gomb, de az oldal betölt.
+  const tenant = await repositories.tenants.findById(ctx.activeTenantId).catch(fallback(null))
+  if (!tenant) return {}
+  const policy = readNavVisibilityPolicy(tenant.settings)
+  const shows = (navKey: string) => !isNavChildHiddenFor(policy, ctx.activeTenantRole, 'staff', navKey)
   const actor = { userId: ctx.user.id, tenantId: ctx.activeTenantId, role: ctx.activeTenantRole, assumed: ctx.assumed }
   const [miniApps, wikis, workFileProject, taskCounts, t] = await Promise.all([
     openableMiniApps(ctx, agentIds).catch(fallback(new Map<string, NamedApp[]>())),

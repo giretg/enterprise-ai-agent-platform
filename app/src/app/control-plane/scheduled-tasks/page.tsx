@@ -19,15 +19,15 @@ export default async function ScheduledTasksPage({ searchParams }: { searchParam
   }
   await requireTenantRole('viewer')
   const [result, options, t] = await Promise.all([
-    listScheduledTasksAction(archived),
+    listScheduledTasksAction(archived, agentFilter ?? undefined),
     scheduledTaskFormOptionsAction(),
     getTranslations('ControlPlane.scheduledTasks'),
   ])
-  const tasks = result.success
-    ? result.data.tasks.filter((task) => !agentFilter || task.agentId === agentFilter)
-    : []
-  const filteredAgentName =
-    agentFilter && options.success ? (options.data.agents.find((agent) => agent.id === agentFilter)?.name ?? null) : null
+  const tasks = result.success ? result.data.tasks : []
+  // Az űrlap csak a működtethető munkatársakat ismeri, a megfigyelőnek a feladat sorából jön a név.
+  const filteredAgentName = agentFilter
+    ? (tasks[0]?.agentName ?? (options.success ? options.data.agents.find((agent) => agent.id === agentFilter)?.name : null) ?? null)
+    : null
   return (
     <div className="space-y-6">
       <div>

@@ -110,6 +110,16 @@ export function isNavKeyHiddenFor(
   return keys.some((k) => policy[role].includes(k))
 }
 
+/** Egy csoport menüpontja akkor is rejtett, ha nem maga, hanem az egész csoportja van elrejtve. */
+export function isNavChildHiddenFor(
+  policy: NavVisibilityPolicy,
+  role: UserRole | null | undefined,
+  groupKey: string,
+  childKey: string,
+): boolean {
+  return isNavKeyHiddenFor(policy, role, groupKey) || isNavKeyHiddenFor(policy, role, childKey)
+}
+
 /** Igaz, ha a policy egyetlen szerepkörnél sem rejt el semmit. */
 export function isNavVisibilityPolicyEmpty(policy: NavVisibilityPolicy): boolean {
   return NAV_VISIBILITY_ROLES.every((role) => policy[role].length === 0)

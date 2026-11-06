@@ -7,7 +7,21 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { buildAgentProductLinks } from '../src/lib/agent-product-links'
+import { emptyNavVisibilityPolicy, isNavChildHiddenFor } from '../src/lib/nav-visibility'
 import { parseWorkFileDeepLink } from '../src/lib/work-file-link'
+
+// A gomb nem visz olyan oldalra, amit a menüből elrejtettek: se a pontot, se az egész csoportját.
+const groupHidden = { ...emptyNavVisibilityPolicy(), viewer: ['staff'] }
+const childHidden = { ...emptyNavVisibilityPolicy(), viewer: ['staff.knowledge'] }
+assert.equal(isNavChildHiddenFor(groupHidden, 'viewer', 'staff', 'staff.knowledge'), true, 'rejtett csoport')
+assert.equal(isNavChildHiddenFor(childHidden, 'viewer', 'staff', 'staff.knowledge'), true, 'rejtett menüpont')
+assert.equal(isNavChildHiddenFor(childHidden, 'viewer', 'staff', 'staff.projects'), false, 'más menüpont látszik')
+assert.equal(isNavChildHiddenFor(groupHidden, 'operator', 'staff', 'staff.knowledge'), false, 'más szerepkörnél látszik')
+assert.equal(
+  isNavChildHiddenFor({ ...emptyNavVisibilityPolicy(), viewer: ['projects'] }, 'viewer', 'staff', 'staff.projects'),
+  true,
+  'a régi menükulcs továbbra is rejt',
+)
 
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const base = { agentId: AGENT, miniApps: [], wikis: [], scheduledTaskCount: 0 }
@@ -60,10 +74,23 @@ const root = resolve(import.meta.dirname, '..')
 const read = (rel: string) => readFileSync(resolve(root, rel), 'utf8')
 for (const language of ['hu', 'en']) {
   const messages = JSON.parse(read(`src/messages/${language}.json`)).ControlPlane
-  for (const key of ['aria', 'miniApps', 'knowledge', 'workFiles', 'scheduledTasks', 'companyKnowledge', 'showAll']) {
+  for (const key of [
+    'aria',
+    'miniApps',
+    'miniAppsHint',
+    'knowledge',
+    'knowledgeHint',
+    'workFiles',
+    'workFilesHint',
+    'scheduledTasks',
+    'scheduledTasksHint',
+    'companyKnowledge',
+    'showAll',
+  ]) {
     assert.ok(messages.agents.products[key], `${language}: products.${key}`)
   }
   assert.ok(messages.scheduledTasks.clearFilter, `${language}: scheduledTasks.clearFilter`)
+  assert.ok(messages.scheduledTasks.filteredBy, `${language}: scheduledTasks.filteredBy`)
 }
 for (const page of [
   'src/components/agents/agent-catalog-card.tsx',

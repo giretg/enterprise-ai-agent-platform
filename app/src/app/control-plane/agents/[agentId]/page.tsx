@@ -470,7 +470,7 @@ export default async function AgentDetailPage({
         {t('back')}
       </Link>
       <div className="flex flex-wrap items-start gap-4">
-        <AgentAvatar name={agent.name} avatarUrl={agent.avatarUrl} size="lg" />
+        <AgentAvatar name={agent.name} status={agent.status} avatarUrl={agent.avatarUrl} size="lg" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
           <h1 className="mt-1 font-display text-3xl font-semibold">{agent.name}</h1>
