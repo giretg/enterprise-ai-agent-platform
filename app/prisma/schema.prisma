@@ -705,6 +705,8 @@ model Agent {
   placementOverrides         Json?           @map("placement_overrides")
   /// Elérhető-e a beépített platform-chatben (#1004 D3); a tenant-kapcsoló is kell hozzá.
   platformChatEnabled        Boolean         @default(true) @map("platform_chat_enabled")
+  /// #1111 hang-pilot: { enabled, voice, greeting }. NULL = nincs hang-képesség. Nem része a publikált snapshotnak.
+  voiceConfig                Json?           @map("voice_config")
   /// #1016 D1: létrehozáskor dől el; `public` agent sosem publikálható MCP-re / Hermesbe / platform-chatbe.
   kind                       AgentKind       @default(internal)
   /// #1029: az agent saját címe — egy hozzá `write` módban kötött postafiók-konnektor; egy postafiók legfeljebb egy agenté (részleges egyedi index, 0043).

@@ -43,6 +43,10 @@ import { UpdateInstructionForm } from '@/components/agents/update-instruction-fo
 import { UpdateWriteApprovalForm } from '@/components/agents/update-write-approval-form'
 import { UpdateOutputFolderForm } from '@/components/agents/update-output-folder-form'
 import { UpdatePlatformChatForm } from '@/components/agents/update-platform-chat-form'
+import { VoiceCallButton } from '@/components/agents/voice-call-button'
+import { VoiceSettingsForm } from '@/components/agents/voice-settings-form'
+import { canStartVoiceCall, readVoiceConfig } from '@/domain/voice/config'
+import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
@@ -177,6 +181,14 @@ export default async function AgentDetailPage({
     status: agent.status,
     currentDefinitionVersionId: agent.currentDefinitionVersionId,
   })
+  const showVoiceCall = canStartVoiceCall({
+    kind: agent.kind,
+    voiceConfig: agent.voiceConfig,
+    status: agent.status,
+    currentDefinitionVersionId: agent.currentDefinitionVersionId,
+  })
+  // #1111: a hang-beállítást csak platform-adminisztrátor látja, a titoktárat is csak neki kérdezzük.
+  const voiceKeyConfigured = canDelete ? await loadOpenAiTenantKey(ctx.activeTenantId).then(Boolean, () => false) : false
   const t = await getTranslations('ControlPlane.agentDetail')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
   const sectionDesc = (id: AgentDetailSectionId) => {
@@ -267,6 +279,11 @@ export default async function AgentDetailPage({
                 <Card title="Platform-chat">
                   <UpdatePlatformChatForm agentId={agent.id} enabled={agent.platformChatEnabled} canEdit={canManage} />
                 </Card>
+                {canDelete && agent.kind === 'internal' ? (
+                  <Card title="Hang-beszélgetés (próba)">
+                    <VoiceSettingsForm agentId={agent.id} config={readVoiceConfig(agent.voiceConfig)} keyConfigured={voiceKeyConfigured} />
+                  </Card>
+                ) : null}
               </div>
             ),
           },
@@ -455,6 +472,7 @@ export default async function AgentDetailPage({
           ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {showStartChat ? <StartPlatformChatLink agentId={agent.id} size="md" /> : null}
+            {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} /> : null}
             <AgentIdCopyButton agentId={agent.id} />
             {canManage ? (
               <Link

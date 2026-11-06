@@ -18,7 +18,7 @@ import { SCHEDULED_TASK_TOOLS } from '@/domain/scheduled-task/mcp'
 import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '@/domain/mini-app/mcp'
 import { WAREHOUSE_TOOLS } from '@/domain/warehouse/mcp'
-import type { ChatTokenClaims } from '@/domain/platform-chat/chat-token'
+import { CHAT_TURN_TOKEN_AUDIENCE, type ChatTokenClaims } from '@/domain/platform-chat/chat-token'
 
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
@@ -70,6 +70,8 @@ export type McpPrincipal = {
   background?: true
   /** Bejövő levél feldolgozása: minden írás jóváhagyásra vár (kivéve, ha a szabály engedi). */
   forceWriteApproval?: true
+  /** #1111: böngészős hang-beszélgetés; csak a hang-engedélylista eszközei érhetők el. */
+  voiceCall?: true
 }
 
 export type McpPrincipalFailureCode =
@@ -283,6 +285,8 @@ async function resolveChatPrincipal(
   }
   const resolved = await resolvePrincipalForUser(await deps.users.findById(chat.sub), tenantSlug, deps)
   if (!resolved.ok) return resolved
+  // A hang-token csak folytatási tokenként érvényes: egy munkatárshoz és egy beszélgetéshez kötött.
+  const voiceCall = chat.voice === true && chat.aud === CHAT_TURN_TOKEN_AUDIENCE
   const background = Boolean(chat.origin || chat.bg)
   // A háttérfutás ma csak bejövő levélből indul: írás alapból jóváhagyással, hacsak a szabály nem engedi.
   const forceWriteApproval =
@@ -298,6 +302,8 @@ async function resolveChatPrincipal(
       ...(chat.turnId ? { turnId: chat.turnId } : {}),
       ...(background ? { background: true as const } : {}),
       ...(forceWriteApproval ? { forceWriteApproval: true as const } : {}),
+      // Hang közben nincs, aki jóváhagyási űrlapot kitöltsön, ezért nem interaktív a futás.
+      ...(voiceCall ? { voiceCall: true as const, background: true as const } : {}),
     },
   }
 }

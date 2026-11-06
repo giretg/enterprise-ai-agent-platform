@@ -1,0 +1,356 @@
+/**
+ * #1111 hang-pilot — DB-mentes stub-tesztek: beállítás, OpenAI-kérés, indítási kapuk, token,
+ * eszköz-engedélylista, átirat-feldolgozás. Futtatás: npm run test:voice-pilot
+ */
+import assert from 'node:assert/strict'
+import { MCP_ALLOWED_TOOLS, resolveMcpPrincipal, type McpPrincipalDeps } from '../src/auth/mcp-principal'
+import {
+  limitServerToVoiceTools,
+  toolNameFromVoiceAlias,
+  voiceAllowedToolAliases,
+  voiceBlocksTool,
+  voiceToolAlias,
+} from '../src/auth/voice-tool-guard'
+import {
+  applyVoiceEvent,
+  INITIAL_VOICE_CALL_VIEW,
+  voiceEndReport,
+  voiceFailureMessage,
+  type VoiceCallView,
+} from '../src/components/agents/voice-call-events'
+import { issueGatewayToken } from '../src/domain/model-gateway-token/gateway-token'
+import { PLATFORM_CHAT_INSTALL_ID } from '../src/domain/platform-chat/gateway'
+import { CHAT_TOKEN_AUDIENCE, CHAT_TURN_TOKEN_AUDIENCE, signChatToken, verifyChatToken } from '../src/domain/platform-chat/chat-token'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
+import { canStartVoiceCall, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS } from '../src/domain/voice/config'
+import { buildLiveSessionRequest, createOpenAiLiveProvider, mapLiveFailure } from '../src/domain/voice/openai-live'
+import { buildVoiceGreeting, buildVoiceInstructions } from '../src/domain/voice/prompt'
+import type { VoiceBrowserSessionInput, VoiceProvider } from '../src/domain/voice/provider'
+import { recordVoiceSessionEnd, startVoiceSession, type VoiceSessionDeps } from '../src/domain/voice/session'
+
+const KEY = 'v'.repeat(40)
+const USER = '11111111-1111-4111-8111-111111111111'
+const TENANT = '22222222-2222-4222-8222-222222222222'
+const AGENT = '33333333-3333-4333-8333-333333333333'
+const NOW = new Date('2026-11-06T10:00:00Z')
+const nowS = Math.floor(NOW.getTime() / 1000)
+const ENABLED = { enabled: true, voice: 'cedar', greeting: '' }
+
+let failures = 0
+async function check(name: string, fn: () => void | Promise<void>) {
+  try {
+    await fn()
+    console.log(`  ok  ${name}`)
+  } catch (error) {
+    failures += 1
+    console.error(`  FAIL ${name}\n`, error)
+  }
+}
+
+const sessionInput: VoiceBrowserSessionInput = {
+  apiKey: 'sk-test',
+  sdpOffer: 'v=0 offer',
+  voice: 'cedar',
+  voiceInstructions: 'beszéd',
+  backendInstructions: 'háttér',
+  greeting: 'Jó napot!',
+  mcp: {
+    serverUrl: 'https://app.example.com/api/mcp/acme',
+    token: 'mcp-token',
+    headers: { 'x-excellence-agent-id': AGENT },
+    allowedTools: ['kb_search'],
+  },
+}
+
+function principalDeps(): McpPrincipalDeps {
+  return {
+    verifyOAuthToken: async () => null,
+    verifyChatToken: (t) => verifyChatToken(t, KEY, nowS),
+    users: {
+      findByExternalAuthId: async () => null,
+      findById: async (id: string) => (id === USER ? ({ id: USER, status: 'active' } as never) : null),
+    },
+    tenants: {
+      findBySlug: async (s: string) => (s === 'acme' ? ({ id: TENANT, slug: 'acme', status: 'active' } as never) : null),
+      findById: async () => null,
+    },
+    memberships: { findByTenantAndUser: async () => ({ status: 'active', role: 'operator' }) as never },
+    platformMemberships: { findByUser: async () => [] },
+  }
+}
+
+function sessionDeps(over: Partial<VoiceSessionDeps> = {}) {
+  const calls: VoiceBrowserSessionInput[] = []
+  const audits: Array<{ action: string; metadata?: unknown }> = []
+  const provider: VoiceProvider = {
+    id: 'fake',
+    model: 'fake-model',
+    startBrowserSession: async (input) => {
+      calls.push(input)
+      return { ok: true, sessionId: 'live_1', sdpAnswer: 'v=0 answer' }
+    },
+  }
+  const deps: VoiceSessionDeps = {
+    signingKey: KEY,
+    publicOrigin: 'https://app.example.com',
+    agentHeaderName: 'x-excellence-agent-id',
+    allowedTools: voiceAllowedToolAliases(),
+    provider,
+    loadTenantSlug: async () => 'acme',
+    loadAgent: async () => ({ kind: 'internal', voiceConfig: ENABLED }),
+    loadUsableDefinition: async () => ({ snapshot: { name: 'Réka', roleInstruction: 'Rendelést veszel fel.', rules: [{ text: 'Nem adsz kedvezményt.', source: 'hard' as const }] } }),
+    loadApiKey: async () => 'sk-tenant',
+    audit: { append: async (a) => void audits.push(a) },
+    now: () => NOW,
+    ...over,
+  }
+  return { deps, calls, audits }
+}
+
+const start = (deps: VoiceSessionDeps, body: unknown = { agentId: AGENT, sdp: 'v=0 offer' }) =>
+  startVoiceSession(deps, { userId: USER, tenantId: TENANT, role: 'operator', body })
+
+async function main() {
+  await check('beállítás: hibás vagy hiányzó érték kikapcsolt állapot', () => {
+    assert.equal(readVoiceConfig(null).enabled, false)
+    assert.equal(readVoiceConfig({ enabled: true, voice: 'nincs-ilyen', greeting: '' }).enabled, false)
+    assert.equal(readVoiceConfig(ENABLED).voice, 'cedar')
+  })
+
+  await check('gomb: csak belső, bekapcsolt, publikált, aktív munkatárson', () => {
+    const base = { kind: 'internal', voiceConfig: ENABLED, status: 'active', currentDefinitionVersionId: 'v1' }
+    assert.equal(canStartVoiceCall(base), true)
+    assert.equal(canStartVoiceCall({ ...base, kind: 'public' }), false)
+    assert.equal(canStartVoiceCall({ ...base, voiceConfig: { ...ENABLED, enabled: false } }), false)
+    assert.equal(canStartVoiceCall({ ...base, status: 'paused' }), false)
+    assert.equal(canStartVoiceCall({ ...base, currentDefinitionVersionId: null }), false)
+  })
+
+  await check('utasítás: a munkaköri leírás és a szabályok mindkét modellnek mennek; az AI-tájékoztatás nem hagyható el', () => {
+    const built = buildVoiceInstructions({ name: 'Réka', roleInstruction: 'Rendelést veszel fel.', rules: [{ text: 'Nem adsz kedvezményt.', source: 'hard' }] })
+    for (const text of [built.voice, built.backend]) {
+      assert.match(text, /Rendelést veszel fel/)
+      assert.match(text, /Nem adsz kedvezményt/)
+    }
+    assert.match(buildVoiceGreeting('Réka', ''), /Réka vagyok.*mesterséges intelligenciával/)
+    assert.match(buildVoiceGreeting('Réka', 'Szia!'), /^Szia! .*mesterséges intelligenciával/)
+  })
+
+  await check('OpenAI-kérés: MCP a háttérmodellnél, a böngésző nem írhatja át a beállításokat', () => {
+    const body = buildLiveSessionRequest(sessionInput)
+    assert.equal(body.session.model, 'gpt-live-1')
+    assert.deepEqual(body.transport, { type: 'webrtc', sdp: 'v=0 offer' })
+    assert.equal(body.session.audio.output.voice, 'cedar')
+    assert.equal('format' in body.session.audio, false)
+    assert.deepEqual(body.session.client.data_channel.allowed_client_events, ['session.close', 'session.commentary.append'])
+    const [tool] = body.session.delegation.responses.tools
+    assert.equal(tool.type, 'mcp')
+    assert.equal(tool.authorization, 'mcp-token')
+    assert.equal(tool.require_approval, 'never')
+    assert.deepEqual(tool.allowed_tools, ['kb_search'])
+    assert.deepEqual(tool.headers, { 'x-excellence-agent-id': AGENT })
+  })
+
+  await check('OpenAI-válasz: siker, hibák érthető kódra, hiányos válasz nem siker', async () => {
+    const respond = (status: number, body: unknown) =>
+      createOpenAiLiveProvider({ fetchImpl: (async () => new Response(JSON.stringify(body), { status })) as typeof fetch }).startBrowserSession(sessionInput)
+    assert.deepEqual(await respond(201, { session: { id: 'live_9' }, transport: { type: 'webrtc', sdp: 'v=0 a' } }), { ok: true, sessionId: 'live_9', sdpAnswer: 'v=0 a' })
+    assert.deepEqual(await respond(401, { error: { code: 'invalid_api_key' } }), { ok: false, code: 'provider_key_rejected' })
+    assert.deepEqual(await respond(403, {}), { ok: false, code: 'provider_no_access' })
+    assert.deepEqual(await respond(429, {}), { ok: false, code: 'provider_quota' })
+    assert.deepEqual(await respond(500, {}), { ok: false, code: 'provider_error' })
+    assert.deepEqual(await respond(201, { session: { id: 'x' } }), { ok: false, code: 'provider_error' })
+    assert.equal(mapLiveFailure(400, 'model_not_found'), 'provider_no_access')
+    const thrown = createOpenAiLiveProvider({ fetchImpl: (async () => { throw new Error('net') }) as typeof fetch })
+    assert.deepEqual(await thrown.startBrowserSession(sessionInput), { ok: false, code: 'provider_error' })
+  })
+
+  await check('indítás: a kulcs és a token nem kerül a böngészőnek szánt válaszba, a token szűk', async () => {
+    const { deps, calls, audits } = sessionDeps()
+    const result = await start(deps)
+    assert.ok(result.ok)
+    const visible = JSON.stringify(result)
+    assert.equal(visible.includes('sk-tenant'), false)
+    assert.equal(visible.includes(calls[0].mcp.token), false)
+    assert.equal(calls[0].apiKey, 'sk-tenant')
+    assert.equal(calls[0].voice, 'cedar')
+    assert.equal(calls[0].mcp.serverUrl, 'https://app.example.com/api/mcp/acme')
+    assert.deepEqual(calls[0].mcp.headers, { 'x-excellence-agent-id': AGENT })
+    assert.deepEqual(calls[0].mcp.allowedTools, voiceAllowedToolAliases())
+    const claims = verifyChatToken(calls[0].mcp.token, KEY, nowS)
+    assert.ok(claims)
+    assert.equal(claims.aud, CHAT_TURN_TOKEN_AUDIENCE)
+    assert.equal(claims.voice, true)
+    assert.equal(claims.agentId, AGENT)
+    assert.equal(claims.adminInsight, false)
+    assert.equal(claims.exp - claims.iat, VOICE_TOKEN_TTL_SECONDS)
+    assert.equal(verifyChatToken(calls[0].mcp.token, KEY, nowS + VOICE_TOKEN_TTL_SECONDS + 1), null)
+    assert.equal(audits[0].action, 'voice.session_started')
+    assert.equal((audits[0].metadata as { sessionId: string }).sessionId, 'live_1')
+    assertAuditMetadataSafe(audits[0].metadata)
+  })
+
+  await check('indítás: kapuk', async () => {
+    const code = async (over: Partial<VoiceSessionDeps>, body?: unknown) => {
+      const { deps, calls } = sessionDeps(over)
+      const result = await start(deps, body ?? { agentId: AGENT, sdp: 'v=0 offer' })
+      assert.equal(result.ok, false)
+      assert.equal(calls.length, 0, 'a szolgáltató nem hívható')
+      return result.ok ? null : result.code
+    }
+    assert.equal(await code({ signingKey: undefined }), 'not_configured')
+    assert.equal(await code({}, { agentId: 'nem-uuid', sdp: 'v=0' }), 'bad_request')
+    assert.equal(await code({}, { agentId: AGENT, sdp: 'nem sdp' }), 'bad_request')
+    assert.equal(await code({}, { agentId: AGENT, sdp: `v=0${'x'.repeat(70_000)}` }), 'bad_request')
+    assert.equal(await code({ loadAgent: async () => null }), 'agent_unavailable')
+    assert.equal(await code({ loadAgent: async () => ({ kind: 'public', voiceConfig: ENABLED }) }), 'agent_unavailable')
+    assert.equal(await code({ loadAgent: async () => ({ kind: 'internal', voiceConfig: null }) }), 'voice_disabled')
+    assert.equal(await code({ loadUsableDefinition: async () => null }), 'agent_unavailable')
+    assert.equal(await code({ loadApiKey: async () => null }), 'key_missing')
+  })
+
+  await check('indítás: szolgáltatói hiba eljut a felületig, audit nem készül', async () => {
+    const { deps, audits } = sessionDeps()
+    deps.provider = { id: 'x', model: 'x', startBrowserSession: async () => ({ ok: false, code: 'provider_no_access' }) }
+    assert.deepEqual(await start(deps), { ok: false, code: 'provider_no_access' })
+    assert.equal(audits.length, 0)
+    assert.match(voiceFailureMessage('provider_no_access'), /hangmodell/)
+    assert.match(voiceFailureMessage('ismeretlen'), /próbáld újra/i)
+  })
+
+  await check('lezárás: a böngésző adata korlátozott, hibás kérés nem naplózódik', async () => {
+    const audits: Array<{ action: string; metadata?: unknown }> = []
+    const deps = { audit: { append: async (a: { action: string; metadata?: unknown }) => void audits.push(a) } }
+    assert.deepEqual(await recordVoiceSessionEnd(deps as never, { userId: USER, tenantId: TENANT, body: { agentId: 'x', sessionId: 'live_1' } }), { ok: false })
+    assert.deepEqual(await recordVoiceSessionEnd(deps as never, { userId: USER, tenantId: TENANT, body: { agentId: AGENT, sessionId: '<script>' } }), { ok: false })
+    assert.equal(audits.length, 0)
+    const ended = await recordVoiceSessionEnd(deps as never, {
+      userId: USER,
+      tenantId: TENANT,
+      body: { agentId: AGENT, sessionId: 'live_1', reason: 'close_requested', seconds: 61.4, maxBackendWaitMs: -5, extra: 'x' },
+    })
+    assert.deepEqual(ended, { ok: true })
+    const meta = audits[0].metadata as Record<string, unknown>
+    assert.equal(meta.reportedBy, 'browser')
+    assert.equal(meta.seconds, 61)
+    assert.equal(meta.closeReason, 'close_requested')
+    // A valódi audit-tároló visszadobja a tiltott kulcsokat, ezért a tesztben is ugyanaz az ellenőrzés fut.
+    assertAuditMetadataSafe(meta)
+    assert.equal(meta.maxBackendWaitMs, null)
+    assert.equal('extra' in meta, false)
+  })
+
+  await check('engedélylista: csak létező eszközök; nincs köztük levél, kapcsolat vagy publikálás; alias oda-vissza', () => {
+    for (const alias of voiceAllowedToolAliases()) {
+      assert.match(alias, /^[a-zA-Z0-9_-]+$/)
+      assert.ok((MCP_ALLOWED_TOOLS as readonly string[]).includes(toolNameFromVoiceAlias(alias)), alias)
+    }
+    assert.equal(voiceToolAlias('platform.work_file.append'), 'platform__work_file__append')
+    assert.equal(toolNameFromVoiceAlias('platform__work_file__append'), 'platform.work_file.append')
+    const voice = { voiceCall: true as const }
+    for (const blocked of ['mail_send', 'http_api_request', 'sandbox_run', 'mcp_call', 'platform.agent.publish', 'platform.work_file.delete', 'platform.work_file.write', 'új_eszköz']) {
+      assert.equal(voiceBlocksTool(voice, blocked), true, blocked)
+    }
+    assert.equal(voiceBlocksTool(voice, 'kb_search'), false)
+    assert.equal(voiceBlocksTool({}, 'mail_send'), false)
+  })
+
+  await check('engedélylista: a listán kívüli eszköz fel sem kerül a szerverre', () => {
+    const registered: string[] = []
+    const server = { registerTool: (name: string) => void registered.push(name) }
+    limitServerToVoiceTools(server as never)
+    server.registerTool('mail_send')
+    server.registerTool('kb_search')
+    server.registerTool('platform.work_file.append')
+    assert.deepEqual(registered, ['kb_search', 'platform__work_file__append'])
+  })
+
+  const voiceToken = () =>
+    signChatToken(
+      { aud: CHAT_TURN_TOKEN_AUDIENCE, sub: USER, tenant: 'acme', tid: TENANT, role: 'operator', adminInsight: false, turnId: 'voice-1', agentId: AGENT, voice: true },
+      KEY,
+      NOW,
+      VOICE_TOKEN_TTL_SECONDS,
+    ).token
+
+  await check('principal: a hang-token nem interaktív, az agentjéhez kötött, de nem kötelező jóváhagyású', async () => {
+    const r = await resolveMcpPrincipal(
+      { authorizationHeader: `Bearer ${voiceToken()}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' },
+      principalDeps(),
+    )
+    assert.ok(r.ok)
+    assert.equal(r.principal.voiceCall, true)
+    assert.equal(r.principal.background, true)
+    assert.equal(r.principal.boundAgentId, AGENT)
+    assert.equal(r.principal.forceWriteApproval, undefined)
+  })
+
+  await check('principal: böngésző-tokenben a voice jelölés nem ad hang-módot, és más szervezetnél érvénytelen', async () => {
+    const browser = signChatToken(
+      { aud: CHAT_TOKEN_AUDIENCE, sub: USER, tenant: 'acme', tid: TENANT, role: 'operator', adminInsight: false, voice: true },
+      KEY,
+      NOW,
+    ).token
+    const r = await resolveMcpPrincipal({ authorizationHeader: `Bearer ${browser}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' }, principalDeps())
+    assert.ok(r.ok && !r.principal.voiceCall)
+    const other = await resolveMcpPrincipal({ authorizationHeader: `Bearer ${voiceToken()}`, tenantSlug: 'masik', resourceOrigin: 'https://app.example.com' }, principalDeps())
+    assert.equal(other.ok, false)
+  })
+
+  await check('Model Gateway: hang-tokennel nem kérhető gateway-token', async () => {
+    const result = await issueGatewayToken(
+      {
+        ...principalDeps(),
+        signingKey: 'g'.repeat(40),
+        now: () => NOW,
+        loadDefinition: async ({ agentId }) => ({ agentId, status: 'active' }) as never,
+        canViewAgent: async () => true,
+        policyVersion: async () => 'pv1',
+        listAgentIds: async () => [AGENT],
+        platformChat: { loadAccess: async () => ({ tenantEnabled: true, agentEnabled: true, dailyBudgetUsd: 10 }), registerSession: async () => undefined },
+      },
+      {
+        authorizationHeader: `Bearer ${voiceToken()}`,
+        resourceOrigin: 'https://app.example.com',
+        body: { tenantSlug: 'acme', agentId: AGENT, installId: PLATFORM_CHAT_INSTALL_ID, sessionId: 'v1' },
+      },
+    )
+    assert.deepEqual(result, { ok: false, code: 'forbidden' })
+  })
+
+  await check('átirat: szereplőnként összefűz, eszközhívást és várakozást mér, hibát megmutat', () => {
+    const run = (events: Array<[unknown, number]>): VoiceCallView =>
+      events.reduce((view, [event, at]) => applyVoiceEvent(view, event, at), INITIAL_VOICE_CALL_VIEW)
+    const view = run([
+      [{ type: 'session.started' }, 0],
+      [{ type: 'session.output_transcript.delta', delta: 'Jó ' }, 10],
+      [{ type: 'session.output_transcript.delta', delta: 'napot.' }, 20],
+      [{ type: 'session.input_transcript.delta', delta: 'Két láda bort.' }, 30],
+      [{ type: 'session.delegation.created', target: 'responses' }, 1000],
+      [{ type: 'response.event', event: { type: 'response.output_item.done', item: { type: 'mcp_call', name: 'platform__work_file__append' } } }, 2000],
+      [{ type: 'response.event', event: { type: 'response.output_item.done', item: { type: 'message' } } }, 2100],
+      [{ type: 'response.event', event: { type: 'response.completed' } }, 3500],
+      [{ type: 'session.usage.updated', usage: { seconds: 42 } }, 3600],
+      [{ type: 'error', error: { code: 'responses_validation_failed', message: 'Hibás eszköz' } }, 3700],
+      [{ type: 'ismeretlen' }, 3800],
+      ['nem objektum', 3900],
+      [{ type: 'session.closed', reason: 'close_requested', usage: { seconds: 45 } }, 4000],
+    ])
+    assert.deepEqual(view.lines, [
+      { role: 'assistant', text: 'Jó napot.' },
+      { role: 'user', text: 'Két láda bort.' },
+      { role: 'tool', text: 'Eszköz: platform.work_file.append' },
+    ])
+    assert.equal(view.lastBackendWaitMs, 2500)
+    assert.equal(view.backendSince, null)
+    assert.equal(view.providerError, 'Hibás eszköz')
+    assert.equal(view.closedReason, 'close_requested')
+    assert.deepEqual(voiceEndReport(view), { reason: 'close_requested', seconds: 45, backendCalls: 1, avgBackendWaitMs: 2500, maxBackendWaitMs: 2500 })
+    assert.equal(voiceEndReport(INITIAL_VOICE_CALL_VIEW).avgBackendWaitMs, null)
+  })
+
+  console.log(`\n${failures === 0 ? 'voice-pilot: ok' : `voice-pilot: ${failures} failed`}`)
+  if (failures > 0) process.exit(1)
+}
+
+void main()

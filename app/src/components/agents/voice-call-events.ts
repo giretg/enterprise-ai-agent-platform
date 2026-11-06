@@ -1,0 +1,134 @@
+/** #1111: a hangszolgáltató adatcsatorna-eseményeiből készül az átirat és a várakozási mérés. */
+export type VoiceTranscriptLine = { role: 'user' | 'assistant' | 'tool'; text: string }
+
+export type VoiceCallView = {
+  lines: VoiceTranscriptLine[]
+  started: boolean
+  seconds: number
+  closedReason: string | null
+  /** Utolsó nem végzetes szolgáltatói hibaüzenet, például ha az eszközök beállítása nem érvényes. */
+  providerError: string | null
+  backendSince: number | null
+  backendCalls: number
+  lastBackendWaitMs: number | null
+  maxBackendWaitMs: number
+  totalBackendWaitMs: number
+  completedBackendCalls: number
+}
+
+const MAX_LINES = 300
+
+export const INITIAL_VOICE_CALL_VIEW: VoiceCallView = {
+  lines: [],
+  started: false,
+  seconds: 0,
+  closedReason: null,
+  providerError: null,
+  backendSince: null,
+  backendCalls: 0,
+  lastBackendWaitMs: null,
+  maxBackendWaitMs: 0,
+  totalBackendWaitMs: 0,
+  completedBackendCalls: 0,
+}
+
+function appendText(lines: VoiceTranscriptLine[], role: 'user' | 'assistant', delta: string): VoiceTranscriptLine[] {
+  const last = lines.at(-1)
+  if (last?.role === role) return [...lines.slice(0, -1), { role, text: last.text + delta }]
+  return [...lines, { role, text: delta }].slice(-MAX_LINES)
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
+}
+
+function usageSeconds(event: Record<string, unknown>): number | null {
+  const seconds = asRecord(event.usage)?.seconds
+  return typeof seconds === 'number' ? seconds : null
+}
+
+function applyBackendEvent(view: VoiceCallView, nested: Record<string, unknown>, nowMs: number): VoiceCallView {
+  if (nested.type === 'response.output_item.done') {
+    const item = asRecord(nested.item)
+    if (item?.type !== 'mcp_call' || typeof item.name !== 'string') return view
+    const failed = item.error ? ' (sikertelen)' : ''
+    const line: VoiceTranscriptLine = { role: 'tool', text: `Eszköz: ${item.name.replaceAll('__', '.')}${failed}` }
+    return { ...view, lines: [...view.lines, line].slice(-MAX_LINES) }
+  }
+  if (nested.type === 'response.completed' && view.backendSince !== null) {
+    const waited = Math.max(0, nowMs - view.backendSince)
+    return {
+      ...view,
+      backendSince: null,
+      lastBackendWaitMs: waited,
+      maxBackendWaitMs: Math.max(view.maxBackendWaitMs, waited),
+      totalBackendWaitMs: view.totalBackendWaitMs + waited,
+      completedBackendCalls: view.completedBackendCalls + 1,
+    }
+  }
+  return view
+}
+
+export function applyVoiceEvent(view: VoiceCallView, event: unknown, nowMs: number): VoiceCallView {
+  const e = asRecord(event)
+  if (!e) return view
+  switch (e.type) {
+    case 'session.started':
+      return { ...view, started: true }
+    case 'session.input_transcript.delta':
+      return typeof e.delta === 'string' ? { ...view, lines: appendText(view.lines, 'user', e.delta) } : view
+    case 'session.output_transcript.delta':
+      return typeof e.delta === 'string' ? { ...view, lines: appendText(view.lines, 'assistant', e.delta) } : view
+    case 'session.delegation.created':
+      return { ...view, backendCalls: view.backendCalls + 1, backendSince: view.backendSince ?? nowMs }
+    case 'response.event': {
+      const nested = asRecord(e.event)
+      return nested ? applyBackendEvent(view, nested, nowMs) : view
+    }
+    case 'session.usage.updated':
+      return { ...view, seconds: usageSeconds(e) ?? view.seconds }
+    case 'session.closed':
+      return { ...view, closedReason: typeof e.reason === 'string' ? e.reason : 'unknown', seconds: usageSeconds(e) ?? view.seconds }
+    case 'error': {
+      const error = asRecord(e.error)
+      const text = typeof error?.message === 'string' ? error.message : typeof error?.code === 'string' ? error.code : 'ismeretlen hiba'
+      return { ...view, providerError: text.slice(0, 300) }
+    }
+    default:
+      return view
+  }
+}
+
+export function voiceEndReport(view: VoiceCallView) {
+  return {
+    reason: view.closedReason,
+    seconds: view.seconds,
+    backendCalls: view.backendCalls,
+    avgBackendWaitMs: view.completedBackendCalls > 0 ? view.totalBackendWaitMs / view.completedBackendCalls : null,
+    maxBackendWaitMs: view.completedBackendCalls > 0 ? view.maxBackendWaitMs : null,
+  }
+}
+
+const FAILURE_MESSAGES: Record<string, string> = {
+  bad_request: 'A beszélgetést nem sikerült elindítani. Frissítsd az oldalt, és próbáld újra.',
+  bad_origin: 'A kérés nem erről az oldalról érkezett. Frissítsd az oldalt, és próbáld újra.',
+  unauthenticated: 'Lejárt a belépésed. Lépj be újra, és próbáld újra.',
+  agent_unavailable: 'Ez a munkatárs most nem érhető el neked: nincs publikálva, vagy nincs hozzá jogosultságod.',
+  voice_disabled: 'Ennél a munkatársnál a hang-beszélgetés ki van kapcsolva.',
+  key_missing: 'Nincs céges OpenAI-kulcs. A kulcsot egy adminisztrátor adhatja meg a Beállítások → Céges kulcsok oldalon.',
+  not_configured: 'A platformon hiányzik a hang-beszélgetés beállítása. Szólj a rendszergazdának.',
+  provider_key_rejected: 'Az OpenAI nem fogadta el a céges kulcsot. Ellenőrizd a kulcsot a Beállítások → Céges kulcsok oldalon.',
+  provider_no_access: 'Ez az OpenAI-projekt nem éri el a hangmodellt. Ellenőrizd az OpenAI-fiók jogosultságát.',
+  provider_quota: 'Az OpenAI-fiókban elfogyott a keret, vagy túl sok a kérés. Ellenőrizd az egyenleget, majd próbáld újra később.',
+  provider_error: 'Az OpenAI most nem indította el a beszélgetést. Próbáld újra pár perc múlva.',
+}
+
+export function voiceFailureMessage(code: string): string {
+  return FAILURE_MESSAGES[code] ?? 'A beszélgetést nem sikerült elindítani. Próbáld újra pár perc múlva.'
+}
+
+export function microphoneFailureMessage(errorName: string): string {
+  return errorName === 'NotAllowedError'
+    ? 'A böngésző nem kapott engedélyt a mikrofonra. Engedélyezd a címsorban, majd próbáld újra.'
+    : 'Nem sikerült elérni a mikrofont. Ellenőrizd, hogy csatlakoztatva van-e, és más program nem használja-e.'
+}
