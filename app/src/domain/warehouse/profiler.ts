@@ -71,13 +71,13 @@ function isTextOnly(cells: RawCell[]): boolean {
   return filled.length > 0 && filled.every((c) => typeof c === 'string' && guessCellType(c) === 'text')
 }
 
-function horizontalMergeRows(grid: SheetGrid): Set<number> {
+function horizontalMergeRows(grid: SheetGrid, candidates: number[]): Set<number> {
   const rows = new Set<number>()
   for (const range of grid.merges) {
     const [a, b] = range.split(':')
     const s = a ? parseCellRef(a) : null
     const e = b ? parseCellRef(b) : null
-    if (s && e && e.col > s.col) for (let r = s.row; r <= e.row; r++) rows.add(r)
+    if (s && e && e.col > s.col) for (const row of candidates) if (row >= s.row && row <= e.row) rows.add(row)
   }
   return rows
 }
@@ -100,7 +100,7 @@ export function detectLayout(grid: SheetGrid, override?: { headerRow?: number; h
     if (startIdx < 0) startIdx = 0
     endIdx = startIdx
     // Több fejlécsor csak akkor, ha a felső sorban vízszintesen összevont csoportfejléc van.
-    const merged = horizontalMergeRows(grid)
+    const merged = horizontalMergeRows(grid, probe.map((row) => row.rowNumber))
     while (
       endIdx - startIdx < 2 &&
       merged.has(rows[endIdx]!.rowNumber) &&

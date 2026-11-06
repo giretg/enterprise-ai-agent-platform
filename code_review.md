@@ -1,5 +1,15 @@
 # Enterprise code review log
 
+## 2026-11-06 01:35 Europe/Budapest - Adattárház XLSX-profilozás: távoli összevonás miatti lassulás
+
+- Külön vizsgált, a 2026-11-02-i lekérdezési review-ból kimaradt komponens: az **Excel-forrásfájl beolvasása és profilozása**. Pontos modulok: `app/src/domain/warehouse/{excel-reader,profiler,warehouse-service,plan,transform}.ts`, `app/src/lib/office-archive-guard.ts`, `app/src/domain/warehouse/mcp.ts`, `app/src/app/actions/warehouse.ts` és `app/scripts/warehouse.test.ts`; az import jóváhagyásáig követtem a hívási utat. A teljes importtranzakció versenyhelyzeteit külön review-n kell vizsgálni.
+- Rendben talált kontrollok: 10 MB feltöltési plafon; ZIP tartalom ellenőrzése kitömörítés előtt; lap-, sor-, oszlop- és szintetizáltcellakorlát; szerveroldali tenant és szerepkör; új adatkészlethez és mezőhöz emberi jóváhagyás. Ebben az útban cross-tenant hozzáférési rést nem találtam.
+- **Lelet (magas, rendelkezésre állás):** a `readWorkbookGrid` korlátozta az összevont tartomány kitöltését, de a `profiler.horizontalMergeRows` minden összevonásnál az XLSX által megadott teljes sortartományon iterált. Egy néhány bájtos `A1:B9999999` tartomány így milliónyi iterációt és nagy `Set`-et okozhatott a közös processzben.
+- Javítás: a profilozó az összevonást csak a fejlécfelismerésben ténylegesen vizsgált, legfeljebb 50 sorra ellenőrzi. Nincs új függőség vagy migráció.
+- Üzleti hatás: egy rossz vagy rosszindulatú Excel nem köti le aránytalanul a közös szervert, miközben a több soros üzleti fejlécek felismerése megmarad.
+- Ellenőrzés: szélsőséges, ismételt 9 999 999 soros tartományra regresszió, `test:warehouse` zöld; célzott ESLint és `git diff --check` zöld. A teljes TypeScript a worktree-ben megosztott, elavult Prisma kliens miatt más modulokban hibázik, így az itt nem értékelhető. Éles terheléspróba nem futott.
+- Korlát: ez a célzott review nem igazolja a teljes adattárház és a platform enterprise alkalmasságát. Issue: [#1108](https://github.com/giretg/enterprise-ai-agent-platform/issues/1108).
+
 ## 2026-11-02 01:31 Europe/Budapest - AI-adattárház lekérdezési határ: hibás csoportosított rendezés
 
 - Korábban külön nem naplózott komponens: az **AI-adattárház adatkatalógus- és lekérdezési útja**. Áttekintett modulok: `app/src/domain/warehouse/{mcp,permissions,query,sql,store,warehouse-service,plan,provisioner}.ts`, `app/src/lib/{warehouse,warehouse-settings}.ts`, `app/src/app/actions/warehouse.ts`, `app/src/app/api/control-plane/warehouse/export/[dataset]/route.ts`, `app/src/auth/mcp-server.ts`, `app/src/domain/gateway-services.ts`, valamint `app/scripts/{warehouse,warehouse-db}.test.ts`. A forrásfájl importparszere és a teljes betöltési állapotgép nem része ennek a részletes lekérdezési review-nak.
