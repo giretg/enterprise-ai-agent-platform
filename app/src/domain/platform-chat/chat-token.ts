@@ -43,6 +43,8 @@ export type ChatTokenClaims = {
    * így emberi rögzítés (`human_note`) sem jöhet létre vele.
    */
   bg?: true
+  /** #1111: böngészős hang-beszélgetés tokenje; szűk eszköz-engedélylistát és rövid élettartamot jelent. */
+  voice?: true
   jti: string
   iat: number
   exp: number
@@ -58,9 +60,10 @@ export function signChatToken(
   input: Omit<ChatTokenClaims, 'jti' | 'iat' | 'exp'>,
   key: string,
   now: Date,
+  ttlSeconds?: number,
 ): { token: string; claims: ChatTokenClaims } {
   const iat = Math.floor(now.getTime() / 1000)
-  const ttl = input.aud === CHAT_TURN_TOKEN_AUDIENCE ? CHAT_TURN_TOKEN_TTL_SECONDS : CHAT_TOKEN_TTL_SECONDS
+  const ttl = ttlSeconds ?? (input.aud === CHAT_TURN_TOKEN_AUDIENCE ? CHAT_TURN_TOKEN_TTL_SECONDS : CHAT_TOKEN_TTL_SECONDS)
   const claims: ChatTokenClaims = { ...input, jti: randomUUID(), iat, exp: iat + ttl }
   const head = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
   const body = b64u(JSON.stringify(claims))

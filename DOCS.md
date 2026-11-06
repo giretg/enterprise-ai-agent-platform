@@ -196,7 +196,7 @@ Számlafeldolgozó és könyvelési egyeztetési agent. Dokumentumok szövegét 
 
 **Fájl:** `src/domain/gateway/model-gateway.ts`
 
-Minden LLM-hívás egyetlen ponton megy át. Felelőssége:
+Minden LLM-hívás egyetlen ponton megy át. **Kivétel (#1111 hang-pilot):** a böngészős hang-beszélgetés közvetlenül az OpenAI GPT-Live-ot hívja a céges kulccsal, ezért nincs hozzá `ModelCall`, tartalomszűrő és költségkeret. Csak platform-adminisztrátor kapcsolhatja be, munkatársanként, próbára. Felelőssége:
 
 - **Provider routing**: `chatgpt-oauth`, `claude-code-oauth`, `grok-cli-oauth`, `gemini`, `ollama`, `openrouter`
 - **Per-ticket guardrail**: `GATEWAY_MAX_CALLS_PER_TICKET` (alapértelmezés: 30) — egy elszabaduló loop nem fogyaszthatja el a napi budgetet

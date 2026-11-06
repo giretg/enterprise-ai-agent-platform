@@ -154,6 +154,11 @@ export async function issueGatewayToken(
   }
   const p = resolved.principal
 
+  // #1111: a hang-token az OpenAI-hoz is eljut, ezért Model Gateway tokent nem kérhet.
+  if (p.voiceCall) {
+    return deny(deps.audit, { ok: false, code: 'forbidden' }, { tenantId: p.tenantId, userId: p.userId, installId, reason: 'voice_call' })
+  }
+
   // #1004: a platform-chat principal csak a saját szerveroldali installjára kaphat tokent,
   // Hermes kliens pedig nem bújhat ennek a nevébe (különben megkerülné a Guard-kaput).
   const chat = p.client === 'platform_chat'

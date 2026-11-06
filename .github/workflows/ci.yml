@@ -107,6 +107,7 @@ jobs:
           npm run test:client-policy-tool-catalog
           npm run test:client-install
           npm run test:platform-chat
+          npm run test:voice-pilot
           npm run test:public-chat
           npm run test:machine-floor
           npm run test:hermes-installer

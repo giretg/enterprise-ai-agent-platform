@@ -39,6 +39,7 @@ export type McpClientName =
   | 'goose'
   | 'hermes'
   | 'platform_chat'
+  | 'voice'
   | 'other'
   | 'unknown'
 

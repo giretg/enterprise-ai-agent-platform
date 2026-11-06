@@ -13,6 +13,8 @@ import type {
 } from '@prisma/client'
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
+import { voiceAllowedToolAliases } from '../src/auth/voice-tool-guard'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { PRESETS } from '../src/domain/client-policy/capabilities'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
 import type { McpSkillPackage } from '../src/lib/skill/mcp-skill'
@@ -2837,6 +2839,57 @@ async function main() {
     const tools = ((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []
     assert.ok(tools.some((t) => t.name === MCP_AGENTS_LIST_TOOL))
     assert.ok(tools.some((t) => t.name === DOCUMENT_EXPORT_TOOL), 'platform-chat: document export needs no agent capability')
+  })
+
+  await check('#1111 hang-token: csak az engedélylista látszik alias néven; más eszköz nem hívható; audit kliens = voice', async () => {
+    const { deps: base, audit } = runtimeDeps({ grantedAgentIds: new Set([AGENT_ID]) })
+    const chatKey = 'p'.repeat(40)
+    const voice = signChatToken({ aud: CHAT_TURN_TOKEN_AUDIENCE, sub: USER_ID, tenant: 'acme', tid: TENANT_ID, role: 'operator', adminInsight: false, turnId: 'voice-1', agentId: AGENT_ID, voice: true }, chatKey, new Date(), 720).token
+    const deps: McpRuntimeDeps = {
+      ...base,
+      verifyChatToken: (t) => verifyChatToken(t, chatKey, Math.floor(Date.now() / 1000)),
+      users: { ...base.users, findById: async () => user() },
+    }
+    const headers = { authorization: `Bearer ${voice}`, 'x-excellence-agent-id': AGENT_ID }
+    const meta = {
+      'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+      'io.modelcontextprotocol/clientInfo': { name: 'openai-mcp', version: '1.0.0' },
+      'io.modelcontextprotocol/clientCapabilities': {},
+    }
+    const envelope = { 'mcp-protocol-version': '2026-07-28' }
+    const list = await post('acme', { jsonrpc: '2.0', id: 11, method: 'tools/list', params: { _meta: meta } }, { ...headers, ...envelope, 'mcp-method': 'tools/list' }, deps)
+    assert.equal(list.status, 200)
+    const names = (((await readJson(list)) as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? []).map((t) => t.name).sort()
+    assert.deepEqual(names, [...voiceAllowedToolAliases()].sort())
+    const call = async (name: string) => {
+      const res = await post('acme', { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name, arguments: {}, _meta: meta } }, { ...headers, ...envelope, 'mcp-method': 'tools/call', 'mcp-name': name }, deps)
+      assert.equal(res.status, 200, name)
+      return ((await readJson(res)) as { result?: { isError?: boolean; content?: Array<{ text: string }> } }).result
+    }
+    for (const blocked of ['mail_send', 'platform__agents__list', MCP_AGENTS_LIST_TOOL, 'platform__work_file__delete']) {
+      const result = await call(blocked)
+      assert.equal(result?.isError, true, blocked)
+      assert.match(result?.content?.[0]?.text ?? '', /voice_tool_blocked/, blocked)
+    }
+    const allowed = await call('platform__work_file__list')
+    assert.doesNotMatch(allowed?.content?.[0]?.text ?? '', /voice_tool_blocked|tool_not_allowed/)
+    assert.ok(audit.some((a) => a.action === 'mcp.tools.call.deny' && (a.metadata as Record<string, unknown> | undefined)?.clientName === 'voice'))
+    // A sikeres eszközhívás is a hang-jelöléssel kerül az auditba, a beszélgetéshez kötve.
+    const marked = audit.find((a) => a.action === 'voice.tool_call')
+    const markedMeta = marked?.metadata as Record<string, unknown> | undefined
+    assert.equal(markedMeta?.clientName, 'voice')
+    assert.equal(markedMeta?.toolName, 'platform.work_file.list')
+    assert.equal(markedMeta?.turnId, 'voice-1')
+    assert.equal(marked?.targetId, AGENT_ID)
+    assertAuditMetadataSafe(markedMeta)
+    // Az engedélylistán kívül a skillek, a promptok és az erőforrások sem érhetők el.
+    const rpc = async (id: number, method: string, params: Record<string, unknown> = {}) => {
+      const res = await post('acme', { jsonrpc: '2.0', id, method, params: { ...params, _meta: meta } }, { ...headers, ...envelope, 'mcp-method': method }, deps)
+      return (await readJson(res)) as { result?: Record<string, unknown[]>; error?: unknown }
+    }
+    assert.deepEqual((await rpc(13, 'skills/list')).result?.skills ?? [], [])
+    assert.deepEqual((await rpc(14, 'resources/list')).result?.resources ?? [], [])
+    assert.deepEqual((await rpc(15, 'prompts/list')).result?.prompts ?? [], [])
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)
