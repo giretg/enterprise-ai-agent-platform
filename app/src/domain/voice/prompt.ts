@@ -36,8 +36,17 @@ function jobDescription(snapshot: Pick<AgentDefinitionSnapshot, 'name' | 'roleIn
   return parts.join('\n\n')
 }
 
-export function buildVoiceInstructions(snapshot: Pick<AgentDefinitionSnapshot, 'name' | 'roleInstruction' | 'rules'>) {
-  const job = jobDescription(snapshot)
+/** A modell nem tudja a mai napot, a határidős szabályokhoz viszont kell. A beszélgetés rövid, ezért az indításkori idő elég. */
+function currentTimeLine(now: Date): string {
+  const text = new Intl.DateTimeFormat('hu-HU', { timeZone: 'Europe/Budapest', dateStyle: 'full', timeStyle: 'short' }).format(now)
+  return `Most: ${text} (magyar idő szerint).`
+}
+
+export function buildVoiceInstructions(
+  snapshot: Pick<AgentDefinitionSnapshot, 'name' | 'roleInstruction' | 'rules'>,
+  now: Date = new Date(),
+) {
+  const job = `${currentTimeLine(now)}\n\n${jobDescription(snapshot)}`
   return {
     voice: `${VOICE_RULES}\n\n${job}`,
     backend: `${BACKEND_RULES}\n\n${job}`,
