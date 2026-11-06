@@ -37,9 +37,38 @@ function formatClock(seconds: number): string {
 
 const ROLE_LABEL = { user: 'Te', assistant: 'Munkatárs' } as const
 
-/** #1111 hang-pilot: böngészős beszélgetés a munkatárssal, mintha felhívtuk volna. */
+const VOICE_CALL_HINT = 'Böngészőben beszélhetsz a munkatárssal, mintha felhívtad volna. Telefonszám nem kell.'
+
+/** Hullámforma-ikon a chat beviteli dobozába, a munkatárs-kártyára és az adatlapra. */
+export function VoiceCallIconButton({ agentName, onClick }: { agentName: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`Beszélgetés hangon: ${agentName}`}
+      title={VOICE_CALL_HINT}
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-coral/10 text-coral-deep transition hover:bg-coral/20"
+    >
+      <svg aria-hidden viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 7.5v9M20 10.5v3" />
+      </svg>
+    </button>
+  )
+}
+
+/** #1111 hang-pilot: a gomb és az ablak együtt, ahol a gomb helye a hívás alatt biztosan nem változik. */
 export function VoiceCallButton({ agentId, agentName }: { agentId: string; agentName: string }) {
   const [open, setOpen] = useState(false)
+  return (
+    <>
+      <VoiceCallIconButton agentName={agentName} onClick={() => setOpen(true)} />
+      {open ? <VoiceCallDialog agentId={agentId} agentName={agentName} onClose={() => setOpen(false)} /> : null}
+    </>
+  )
+}
+
+/** Böngészős beszélgetés a munkatárssal, mintha felhívtuk volna. Eltávolításkor lecsatol, ezért a hívás alatt a helyén kell maradnia. */
+export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: string; agentName: string; onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [failure, setFailure] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
@@ -251,109 +280,97 @@ export function VoiceCallButton({ agentId, agentName }: { agentId: string; agent
 
   function closeDialog() {
     if (phase === 'live' || phase === 'closing' || phase === 'connecting') return
-    setOpen(false)
-    setPhase('idle')
+    onClose()
   }
 
   const busy = phase === 'connecting' || phase === 'live' || phase === 'closing'
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title="Böngészőben beszélhetsz a munkatárssal, mintha felhívtad volna. Telefonszám nem kell."
-        className="inline-flex items-center rounded-full border border-coral px-4 py-1.5 text-sm font-semibold text-coral-deep hover:bg-coral/10"
-      >
-        Beszélgetés hangon
-      </button>
-      {open ? (
-        <div className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]">
-          <div role="dialog" aria-modal="true" aria-label={`Hangos beszélgetés: ${agentName}`} className="atelier-card flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden p-0 shadow-2xl">
-            <div className="border-b border-line px-5 py-4">
-              <h3 className="font-display text-lg font-semibold text-ink">Hangos beszélgetés: {agentName}</h3>
-              <p className="mt-1 text-sm text-ink-soft">
-                Úgy működik, mintha felhívnád: te szólsz, a munkatárs válaszol. A hang és a szöveg az OpenAI-hoz kerül, ezért
-                ne mondj valódi ügyféladatot. Legfeljebb 10 percig tart. Hangfelvétel nem készül. Ha a szervezet naplózási beállítása engedi, az átirat
-                minőségbiztosítási célból titkosítva a platform naplójába kerül, és alapból 90 napig őrizzük.
+    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]">
+      <div role="dialog" aria-modal="true" aria-label={`Hangos beszélgetés: ${agentName}`} className="atelier-card flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden p-0 shadow-2xl">
+        <div className="border-b border-line px-5 py-4">
+          <h3 className="font-display text-lg font-semibold text-ink">Hangos beszélgetés: {agentName}</h3>
+          <p className="mt-1 text-sm text-ink-soft">
+            Úgy működik, mintha felhívnád: te szólsz, a munkatárs válaszol. A hang és a szöveg az OpenAI-hoz kerül, ezért
+            ne mondj valódi ügyféladatot. Legfeljebb 10 percig tart. Hangfelvétel nem készül. Ha a szervezet naplózási beállítása engedi, az átirat
+            minőségbiztosítási célból titkosítva a platform naplójába kerül, és alapból 90 napig őrizzük.
+          </p>
+          <p className="mt-1 text-sm text-ink-soft">Ez külön beszélgetés: a munkatárs nem látja a szöveges chatet, és a hangos beszélgetés sem kerül be oda.</p>
+        </div>
+
+        <div className="min-h-40 flex-1 space-y-2 overflow-y-auto px-5 py-4 text-sm" aria-live="polite">
+          {view.lines.length === 0 ? (
+            <p className="text-ink-soft">
+              {phase === 'idle' ? 'Még nem indult el a beszélgetés. Az Indítás után kéri a böngésző a mikrofon-engedélyt.' : null}
+              {phase === 'connecting' ? 'Kapcsolódás… Ha a böngésző mikrofon-engedélyt kér, engedélyezd.' : null}
+              {phase === 'live' ? 'A munkatárs mindjárt megszólal. Ha néhány másodpercig csend van, köszönj neki te. Az elhangzott szöveg itt jelenik meg.' : null}
+            </p>
+          ) : null}
+          {view.lines.map((line, index) =>
+            line.role === 'tool' ? (
+              <p key={index} className="text-xs text-ink-soft">
+                {line.text}
               </p>
-            </div>
+            ) : (
+              <p key={index}>
+                <span className="font-semibold text-ink">{ROLE_LABEL[line.role]}: </span>
+                <span className="text-ink">{line.text}</span>
+              </p>
+            ),
+          )}
+          {view.backendSince !== null ? <p className="text-xs text-ink-soft">A munkatárs utánanéz…</p> : null}
+          {failure ? <p className="text-coral-deep">{failure}</p> : null}
+          {view.providerError ? <p className="text-coral-deep">{voiceProviderErrorMessage(view.providerError)}</p> : null}
+          {phase === 'ended' ? (
+            <p className="text-ink-soft">{voiceEndedMessage(view.closedReason, limitReached)} Ez a nézet az ablak bezárásával eltűnik.</p>
+          ) : null}
+        </div>
 
-            <div className="min-h-40 flex-1 space-y-2 overflow-y-auto px-5 py-4 text-sm" aria-live="polite">
-              {view.lines.length === 0 ? (
-                <p className="text-ink-soft">
-                  {phase === 'idle' ? 'Még nem indult el a beszélgetés. Az Indítás után kéri a böngésző a mikrofon-engedélyt.' : null}
-                  {phase === 'connecting' ? 'Kapcsolódás… Ha a böngésző mikrofon-engedélyt kér, engedélyezd.' : null}
-                  {phase === 'live' ? 'A munkatárs mindjárt megszólal. Ha néhány másodpercig csend van, köszönj neki te. Az elhangzott szöveg itt jelenik meg.' : null}
-                </p>
-              ) : null}
-              {view.lines.map((line, index) =>
-                line.role === 'tool' ? (
-                  <p key={index} className="text-xs text-ink-soft">
-                    {line.text}
-                  </p>
-                ) : (
-                  <p key={index}>
-                    <span className="font-semibold text-ink">{ROLE_LABEL[line.role]}: </span>
-                    <span className="text-ink">{line.text}</span>
-                  </p>
-                ),
-              )}
-              {view.backendSince !== null ? <p className="text-xs text-ink-soft">A munkatárs utánanéz…</p> : null}
-              {failure ? <p className="text-coral-deep">{failure}</p> : null}
-              {view.providerError ? <p className="text-coral-deep">{voiceProviderErrorMessage(view.providerError)}</p> : null}
-              {phase === 'ended' ? (
-                <p className="text-ink-soft">{voiceEndedMessage(view.closedReason, limitReached)} Ez a nézet az ablak bezárásával eltűnik.</p>
-              ) : null}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-4 text-sm">
-              <div className="text-ink-soft">
-                {busy || phase === 'ended' ? <span title="Eltelt idő és a beszélgetés leghosszabb ideje">{formatClock(Math.max(elapsed, view.seconds))} / {formatClock(maxSeconds)}</span> : null}
-                {view.lastBackendWaitMs !== null ? (
-                  <span
-                    className="ml-3"
-                    title="Ennyi ideig tartott, amíg a háttér válaszolt, például amíg a munkatárs a tudásbázisban keresett."
-                  >
-                    Utolsó háttérválasz: {(view.lastBackendWaitMs / 1000).toFixed(1)} mp
-                  </span>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-4 text-sm">
+          <div className="text-ink-soft">
+            {busy || phase === 'ended' ? <span title="Eltelt idő és a beszélgetés leghosszabb ideje">{formatClock(Math.max(elapsed, view.seconds))} / {formatClock(maxSeconds)}</span> : null}
+            {view.lastBackendWaitMs !== null ? (
+              <span
+                className="ml-3"
+                title="Ennyi ideig tartott, amíg a háttér válaszolt, például amíg a munkatárs a tudásbázisban keresett."
+              >
+                Utolsó háttérválasz: {(view.lastBackendWaitMs / 1000).toFixed(1)} mp
+              </span>
+            ) : null}
+          </div>
+          <div className="flex gap-2">
+            {phase === 'connecting' ? (
+              <button type="button" onClick={cancelConnecting} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
+                Mégse
+              </button>
+            ) : busy ? (
+              <button
+                type="button"
+                onClick={requestClose}
+                disabled={phase !== 'live'}
+                className="rounded-full bg-coral px-4 py-2 font-semibold text-white hover:bg-coral/90 disabled:opacity-60"
+              >
+                {phase === 'closing' ? 'Befejezés…' : 'Befejezés'}
+              </button>
+            ) : (
+              <>
+                {phase === 'ended' && view.lines.length > 0 ? (
+                  <button type="button" onClick={() => void copyTranscript()} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
+                    {copied ? 'Kimásolva' : 'Átirat másolása'}
+                  </button>
                 ) : null}
-              </div>
-              <div className="flex gap-2">
-                {phase === 'connecting' ? (
-                  <button type="button" onClick={cancelConnecting} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
-                    Mégse
-                  </button>
-                ) : busy ? (
-                  <button
-                    type="button"
-                    onClick={requestClose}
-                    disabled={phase !== 'live'}
-                    className="rounded-full bg-coral px-4 py-2 font-semibold text-white hover:bg-coral/90 disabled:opacity-60"
-                  >
-                    {phase === 'closing' ? 'Befejezés…' : 'Befejezés'}
-                  </button>
-                ) : (
-                  <>
-                    {phase === 'ended' && view.lines.length > 0 ? (
-                      <button type="button" onClick={() => void copyTranscript()} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
-                        {copied ? 'Kimásolva' : 'Átirat másolása'}
-                      </button>
-                    ) : null}
-                    <button type="button" onClick={closeDialog} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
-                      Bezárás
-                    </button>
-                    <button type="button" onClick={() => void start()} className="rounded-full bg-coral px-4 py-2 font-semibold text-white hover:bg-coral/90">
-                      {phase === 'idle' ? 'Indítás' : 'Újra'}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            <audio ref={audioRef} autoPlay className="hidden" />
+                <button type="button" onClick={closeDialog} className="rounded-full border border-line px-4 py-2 font-semibold text-ink-soft hover:bg-night-2">
+                  Bezárás
+                </button>
+                <button type="button" onClick={() => void start()} className="rounded-full bg-coral px-4 py-2 font-semibold text-white hover:bg-coral/90">
+                  {phase === 'idle' ? 'Indítás' : 'Újra'}
+                </button>
+              </>
+            )}
           </div>
         </div>
-      ) : null}
-    </>
+        <audio ref={audioRef} autoPlay className="hidden" />
+      </div>
+    </div>
   )
 }
