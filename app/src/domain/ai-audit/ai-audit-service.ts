@@ -23,8 +23,8 @@ export const MAX_LIST_LIMIT = 500
 
 export type AuditDepth = 'metadata' | 'prompt_and_response' | 'plus_tool_results'
 /** `tool_unclassified` (#872): a Guard a katalógusban nem szereplő eszközt blokkolta; tartalom soha. */
-export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final' | 'tool_unclassified'
-export type AuditSource = 'gateway' | 'guard'
+export type AuditKind = 'user_prompt' | 'model_call' | 'tool_call' | 'final' | 'tool_unclassified' | 'voice_transcript'
+export type AuditSource = 'gateway' | 'guard' | 'voice'
 
 const DEPTH_RANK: Record<AuditDepth, number> = { metadata: 0, prompt_and_response: 1, plus_tool_results: 2 }
 
@@ -228,6 +228,46 @@ export function createGatewayAuditSink(deps: AiAuditDeps): ModelCallAuditSink {
       await deps.store.insertMany([row])
     },
   }
+}
+
+// --- Hang-beszélgetés átirata (minőségbiztosítás) ---
+const VOICE_INSTALL_ID = 'voice-browser'
+const VOICE_POLICY_VERSION = 'voice'
+
+/** A szervezet naplózási mélysége engedi-e az átirat szövegének tárolását. */
+export const voiceTranscriptAllowed = (depth: AuditDepth): boolean => contentAllowed(depth, 'voice_transcript')
+
+export async function recordVoiceTranscript(
+  deps: AiAuditDeps,
+  input: {
+    tenantId: string
+    userId: string
+    agentId: string
+    sessionId: string
+    lines: unknown[]
+    meta: Record<string, unknown>
+  },
+): Promise<void> {
+  const ctx = {
+    tenantId: input.tenantId,
+    userId: input.userId,
+    agentId: input.agentId,
+    installId: VOICE_INSTALL_ID,
+    policyVersion: VOICE_POLICY_VERSION,
+  }
+  const content = { lines: input.lines }
+  const fits = byteLength(serialize(content)) <= MAX_CONTENT_BYTES
+  const row = buildRow(deps, await deps.depthFor(ctx), {
+    id: randomUUID(),
+    ctx,
+    sessionId: input.sessionId,
+    turnId: null,
+    kind: 'voice_transcript',
+    source: 'voice',
+    content: fits ? content : null,
+    meta: { ...input.meta, lineCount: input.lines.length, ...(fits ? {} : { contentDropped: 'too_large' }) },
+  })
+  await deps.store.insertMany([row])
 }
 
 // --- Admin olvasás ---

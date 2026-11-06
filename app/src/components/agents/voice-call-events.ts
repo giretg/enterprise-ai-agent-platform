@@ -1,9 +1,10 @@
 /** #1111: a hangszolgáltató adatcsatorna-eseményeiből készül az átirat és a várakozási mérés. */
-export type VoiceTranscriptLine = { role: 'user' | 'assistant' | 'tool'; text: string }
+export type VoiceTranscriptLine = { role: 'user' | 'assistant' | 'tool'; text: string; atSeconds?: number }
 
 export type VoiceCallView = {
   lines: VoiceTranscriptLine[]
   started: boolean
+  startedAtMs: number | null
   seconds: number
   closedReason: string | null
   /** Utolsó nem végzetes szolgáltatói hibaüzenet, például ha az eszközök beállítása nem érvényes. */
@@ -14,13 +15,18 @@ export type VoiceCallView = {
   maxBackendWaitMs: number
   totalBackendWaitMs: number
   completedBackendCalls: number
+  backendWaitsMs: number[]
 }
 
 const MAX_LINES = 300
+const MAX_REPORTED_WAITS = 100
+/** A `keepalive` kérés törzse legfeljebb 64 KB lehet, és a mérések is ebben mennek. */
+const MAX_REPORTED_TRANSCRIPT_BYTES = 48_000
 
 export const INITIAL_VOICE_CALL_VIEW: VoiceCallView = {
   lines: [],
   started: false,
+  startedAtMs: null,
   seconds: 0,
   closedReason: null,
   providerError: null,
@@ -30,6 +36,7 @@ export const INITIAL_VOICE_CALL_VIEW: VoiceCallView = {
   maxBackendWaitMs: 0,
   totalBackendWaitMs: 0,
   completedBackendCalls: 0,
+  backendWaitsMs: [],
 }
 
 /** Az átiratban a hang-engedélylista eszközei, hétköznapi szöveggel (a hang közben használt alias néven). */
@@ -43,10 +50,14 @@ const TOOL_LABELS: Record<string, string> = {
   platform__work_file__append: 'A munkatárs hozzáírt egy munkafájlhoz.',
 }
 
-function appendText(lines: VoiceTranscriptLine[], role: 'user' | 'assistant', delta: string): VoiceTranscriptLine[] {
-  const last = lines.at(-1)
-  if (last?.role === role) return [...lines.slice(0, -1), { role, text: last.text + delta }]
-  return [...lines, { role, text: delta }].slice(-MAX_LINES)
+function elapsedSeconds(view: VoiceCallView, nowMs: number): { atSeconds?: number } {
+  return view.startedAtMs === null ? {} : { atSeconds: Math.max(0, Math.round((nowMs - view.startedAtMs) / 1000)) }
+}
+
+function appendText(view: VoiceCallView, role: 'user' | 'assistant', delta: string, nowMs: number): VoiceTranscriptLine[] {
+  const last = view.lines.at(-1)
+  if (last?.role === role) return [...view.lines.slice(0, -1), { ...last, text: last.text + delta }]
+  return [...view.lines, { role, text: delta, ...elapsedSeconds(view, nowMs) }].slice(-MAX_LINES)
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -63,7 +74,11 @@ function applyBackendEvent(view: VoiceCallView, nested: Record<string, unknown>,
     const item = asRecord(nested.item)
     if (item?.type !== 'mcp_call' || typeof item.name !== 'string') return view
     const failed = item.error ? ' Ez nem sikerült.' : ''
-    const line: VoiceTranscriptLine = { role: 'tool', text: `${TOOL_LABELS[item.name] ?? 'A munkatárs használt egy eszközt.'}${failed}` }
+    const line: VoiceTranscriptLine = {
+      role: 'tool',
+      text: `${TOOL_LABELS[item.name] ?? 'A munkatárs használt egy eszközt.'}${failed}`,
+      ...elapsedSeconds(view, nowMs),
+    }
     return { ...view, lines: [...view.lines, line].slice(-MAX_LINES) }
   }
   if (nested.type === 'response.completed' && view.backendSince !== null) {
@@ -75,6 +90,7 @@ function applyBackendEvent(view: VoiceCallView, nested: Record<string, unknown>,
       maxBackendWaitMs: Math.max(view.maxBackendWaitMs, waited),
       totalBackendWaitMs: view.totalBackendWaitMs + waited,
       completedBackendCalls: view.completedBackendCalls + 1,
+      backendWaitsMs: [...view.backendWaitsMs, waited].slice(-MAX_REPORTED_WAITS),
     }
   }
   return view
@@ -85,11 +101,11 @@ export function applyVoiceEvent(view: VoiceCallView, event: unknown, nowMs: numb
   if (!e) return view
   switch (e.type) {
     case 'session.started':
-      return { ...view, started: true }
+      return { ...view, started: true, startedAtMs: view.startedAtMs ?? nowMs }
     case 'session.input_transcript.delta':
-      return typeof e.delta === 'string' ? { ...view, lines: appendText(view.lines, 'user', e.delta) } : view
+      return typeof e.delta === 'string' ? { ...view, lines: appendText(view, 'user', e.delta, nowMs) } : view
     case 'session.output_transcript.delta':
-      return typeof e.delta === 'string' ? { ...view, lines: appendText(view.lines, 'assistant', e.delta) } : view
+      return typeof e.delta === 'string' ? { ...view, lines: appendText(view, 'assistant', e.delta, nowMs) } : view
     case 'session.delegation.created':
       return { ...view, backendCalls: view.backendCalls + 1, backendSince: view.backendSince ?? nowMs }
     case 'response.event': {
@@ -110,8 +126,25 @@ export function applyVoiceEvent(view: VoiceCallView, event: unknown, nowMs: numb
   }
 }
 
+/** A legfrissebb sorok maradnak meg, ha az átirat nem férne bele a lezáró kérésbe. */
+function reportableLines(lines: VoiceTranscriptLine[]): VoiceTranscriptLine[] {
+  const encoder = new TextEncoder()
+  const kept: VoiceTranscriptLine[] = []
+  let bytes = 0
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    bytes += encoder.encode(JSON.stringify(lines[index])).length + 1
+    if (bytes > MAX_REPORTED_TRANSCRIPT_BYTES) break
+    kept.unshift(lines[index])
+  }
+  return kept
+}
+
 export function voiceEndReport(view: VoiceCallView) {
+  const transcript = reportableLines(view.lines)
   return {
+    transcript,
+    transcriptTruncated: transcript.length < view.lines.length,
+    backendWaitsMs: view.backendWaitsMs,
     reason: view.closedReason,
     seconds: view.seconds,
     backendCalls: view.backendCalls,

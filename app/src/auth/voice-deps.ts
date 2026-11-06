@@ -1,5 +1,7 @@
+import { productionAiAuditDeps } from '@/auth/ai-audit-deps'
 import { canViewAgent, MCP_AGENT_ID_HEADER } from '@/auth/mcp-server'
 import { voiceAllowedToolAliases } from '@/auth/voice-tool-guard'
+import { recordVoiceTranscript, voiceTranscriptAllowed } from '@/domain/ai-audit/ai-audit-service'
 import { services } from '@/domain/gateway-services'
 import { chatTokenKeyFromEnv } from '@/domain/platform-chat/chat-token'
 import { createOpenAiLiveProvider } from '@/domain/voice/openai-live'
@@ -24,6 +26,7 @@ export function voiceSessionDeps(publicOrigin: string): VoiceSessionDeps {
       return { snapshot: definition.snapshot }
     },
     loadApiKey: loadOpenAiTenantKey,
+    transcriptRecorded: async (input) => voiceTranscriptAllowed(await productionAiAuditDeps().depthFor(input)),
     audit: repositories.audit,
   }
 }
@@ -34,6 +37,7 @@ const VOICE_SESSION_LOOKBACK_MS = 3 * 60 * 60 * 1000
 export function voiceSessionEndDeps() {
   return {
     audit: repositories.audit,
+    recordTranscript: (input: Parameters<typeof recordVoiceTranscript>[1]) => recordVoiceTranscript(productionAiAuditDeps(), input),
     sessionAwaitsEnd: async (input: { tenantId: string; userId: string; agentId: string; sessionId: string }) => {
       const rows = await prisma.auditLog.findMany({
         where: {
