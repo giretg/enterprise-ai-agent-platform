@@ -784,6 +784,55 @@ await check('invalid_args lists the bad fields', async () => {
   assert.ok((payload.issues as Array<{ path: string }>).some((issue) => issue.path === 'path'))
 })
 
+await check('work file tools return a deep link the agent can hand to the user', async () => {
+  const { svc } = harness('direct')
+  await svc.createProject({ tenantId: TENANT, name: 'Átvilágítás', createdById: ANNA, key: 'atvilagitas' })
+  const deps = {
+    loadDefinition: async () => definition,
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const origin = 'https://app.example.test/'
+  const call = async (toolName: string, args: Record<string, unknown>, withOrigin = true) =>
+    parsePayload(
+      await invokeProjectWork(deps, {
+        principal,
+        toolName,
+        args: { definitionId: DEF, projectKey: 'atvilagitas', ...args },
+        ...(withOrigin ? { origin } : {}),
+      }),
+    )
+  const expected =
+    'https://app.example.test/control-plane/projects?project=atvilagitas&tab=files&file=demand-cards%2Fbrd%20%C3%A1.md'
+  const written = await call('platform.work_file.write', { path: 'demand-cards/brd á.md', content: '# Cím' })
+  assert.equal((written.file as { url: string }).url, expected)
+  const appended = await call('platform.work_file.append', { path: 'demand-cards/brd á.md', content: '\nsor' })
+  assert.equal((appended.file as { url: string }).url, expected)
+  const read = await call('platform.work_file.read', { path: 'demand-cards/brd á.md' })
+  assert.equal((read.file as { url: string; createdAt: string }).url, expected)
+  assert.ok((read.file as { createdAt: string }).createdAt)
+  const list = await call('platform.work_file.list', {})
+  assert.deepEqual((list.files as Array<{ url: string }>).map((f) => f.url), [expected])
+  // Origin nélkül nincs link (nem találunk ki hamis címet), a válasz egyébként változatlan.
+  const bare = await call('platform.work_file.read', { path: 'demand-cards/brd á.md' }, false)
+  assert.equal((bare.file as { url?: string }).url, undefined)
+  // A __general__ projekt is megkapja a projekt-paramétert.
+  const general = parsePayload(
+    await invokeProjectWork(deps, {
+      principal,
+      toolName: 'platform.work_file.write',
+      args: { definitionId: DEF, path: 'a.md', content: 'x' },
+      origin,
+    }),
+  )
+  assert.equal(
+    (general.file as { url: string }).url,
+    'https://app.example.test/control-plane/projects?project=__general__&tab=files&file=a.md',
+  )
+})
+
   console.log(failures === 0 ? '\nOK project-work' : `\nFAIL ${failures}`)
   if (failures > 0) process.exit(1)
 }

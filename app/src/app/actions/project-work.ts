@@ -10,6 +10,14 @@ import { fail, ok, type ActionResult } from '@/lib/result'
 import { isSuperadmin } from '@/lib/tenant-policy'
 import type { ProjectListItem, MemoryView } from '@/domain/project-work/project-work-service'
 import { effectiveWorkProjectKey } from '@/lib/work-project'
+import {
+  exportBaseName,
+  isMarkdownPath,
+  markdownToDocxBuffer,
+  markdownToHtmlDocument,
+  plainTextToDocxBuffer,
+  plainTextToHtmlDocument,
+} from '@/lib/markdown-export'
 
 const projectKeySchema = z.string().min(1).max(120)
 const filePathSchema = z.string().min(1).max(500)
@@ -22,6 +30,11 @@ const saveFileSchema = z.object({
   content: z.string().max(200_000),
 })
 const deleteFileSchema = z.object({ projectKey: projectKeySchema, path: filePathSchema })
+const exportFileSchema = z.object({
+  projectKey: projectKeySchema,
+  path: filePathSchema,
+  format: z.enum(['original', 'html', 'docx']),
+})
 
 const agentIdSchema = z.object({ agentId: z.string().uuid() })
 const listMemorySchema = agentIdSchema.extend({ projectKey: projectKeySchema })
@@ -53,7 +66,7 @@ const createProjectSchema = z.object({
   description: z.string().trim().max(500).optional(),
 })
 
-export type WorkFileListItem = { path: string; byteSize: number; updatedAt: string }
+export type WorkFileListItem = { path: string; byteSize: number; createdAt: string; updatedAt: string }
 
 function mapActionError(error: unknown): ActionResult<never> {
   if (error instanceof TenantAuthError && error.code === 'INSUFFICIENT_ROLE') {
@@ -133,7 +146,7 @@ export async function listWorkFilesAction(
 
 export async function readWorkFileAction(
   input: z.infer<typeof readFileSchema>,
-): Promise<ActionResult<{ path: string; content: string; updatedAt: string }>> {
+): Promise<ActionResult<{ path: string; content: string; createdAt: string; updatedAt: string }>> {
   try {
     const parsed = readFileSchema.parse(input)
     const ctx = await requireTenantRole('viewer')
@@ -144,6 +157,54 @@ export async function readWorkFileAction(
     })
     if (!found.ok) return fail(found.code)
     return ok(found.file)
+  } catch (error) {
+    return mapActionError(error)
+  }
+}
+
+export type WorkFileDownload = { filename: string; mime: string; base64: string }
+
+/**
+ * Letöltés a böngészőnek: eredeti fájl, önálló HTML vagy Word. A kliens a
+ * base64-ből Blobot csinál. A fájl legfeljebb 200 ezer karakter, ez belefér.
+ */
+export async function exportWorkFileAction(
+  input: z.infer<typeof exportFileSchema>,
+): Promise<ActionResult<WorkFileDownload>> {
+  try {
+    const parsed = exportFileSchema.parse(input)
+    const ctx = await requireTenantRole('viewer')
+    const found = await services.projectWork.service.readFile({
+      tenantId: ctx.activeTenantId,
+      projectKey: parsed.projectKey,
+      path: parsed.path,
+    })
+    if (!found.ok) return fail(found.code)
+    const { path, content, updatedAt } = found.file
+    const meta = { path, updatedAt }
+    const markdown = isMarkdownPath(path)
+    if (parsed.format === 'original') {
+      const last = path.split('/').filter(Boolean).pop() ?? 'munkafajl.txt'
+      return ok({
+        filename: last,
+        mime: markdown ? 'text/markdown; charset=utf-8' : 'text/plain; charset=utf-8',
+        base64: Buffer.from(content, 'utf8').toString('base64'),
+      })
+    }
+    if (parsed.format === 'html') {
+      const html = markdown ? markdownToHtmlDocument(content, meta) : plainTextToHtmlDocument(content, meta)
+      return ok({
+        filename: `${exportBaseName(path)}.html`,
+        mime: 'text/html; charset=utf-8',
+        base64: Buffer.from(html, 'utf8').toString('base64'),
+      })
+    }
+    const buffer = markdown ? await markdownToDocxBuffer(content, meta) : await plainTextToDocxBuffer(content, meta)
+    return ok({
+      filename: `${exportBaseName(path)}.docx`,
+      mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      base64: buffer.toString('base64'),
+    })
   } catch (error) {
     return mapActionError(error)
   }
