@@ -17,6 +17,8 @@ import {
 } from '@/domain/enterprise-tools'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import { writeAudit, type AuditSink } from '@/lib/audit/types'
+import { effectiveWorkProjectKey } from '@/lib/work-project'
+import { workFileUrl } from '@/lib/work-file-link'
 import { ProjectWorkService } from './project-work-service'
 
 export const MCP_PROJECTS_LIST_TOOL = 'platform.projects.list'
@@ -641,7 +643,38 @@ export async function invokeProjectWork(
     return errorResult(outcome.code)
   }
   await auditOk(deps, principal, toolName, definition.definitionId, definition.agentId)
-  return textResult(outcome)
+  return textResult(origin ? withWorkFileLinks(outcome, toolName, projectKey, origin) : outcome)
+}
+
+const WORK_FILE_LINK_TOOLS = new Set<string>([
+  MCP_WORK_FILE_LIST_TOOL,
+  MCP_WORK_FILE_READ_TOOL,
+  MCP_WORK_FILE_WRITE_TOOL,
+  MCP_WORK_FILE_APPEND_TOOL,
+])
+
+/**
+ * A munkafájl-eszközök válaszába `url` kerül: az emberi felület közvetlen linkje
+ * (a Projektek oldal megnyitja a projektet és a fájlt). Az agent ezt adhatja
+ * oda a felhasználónak a chatben, ahelyett hogy a fájl tartalmát másolná be.
+ */
+function withWorkFileLinks<T extends { ok: true; [k: string]: unknown }>(
+  outcome: T,
+  toolName: string,
+  projectKey: string | undefined,
+  origin: string,
+): T {
+  if (!WORK_FILE_LINK_TOOLS.has(toolName)) return outcome
+  const key = effectiveWorkProjectKey(projectKey)
+  const linked = <F extends { path: string }>(file: F) => ({ ...file, url: workFileUrl(origin, key, file.path) })
+  if (Array.isArray(outcome.files)) {
+    return { ...outcome, files: (outcome.files as Array<{ path: string }>).map(linked) }
+  }
+  const file = outcome.file as { path?: unknown } | undefined
+  if (file && typeof file.path === 'string') {
+    return { ...outcome, file: linked(file as { path: string }) }
+  }
+  return outcome
 }
 
 async function invokeHandoff(

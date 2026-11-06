@@ -207,6 +207,7 @@
     "test:project-memory-delete": "tsx scripts/project-memory-delete.test.ts",
     "test:memory-ui-labels": "tsx scripts/memory-ui-labels.test.ts",
     "test:work-project": "tsx scripts/work-project.test.ts",
+    "test:work-files-ui": "tsx scripts/work-files-ui.test.ts",
     "test:agent-chat-stream-input": "tsx scripts/agent-chat-stream-input.test.ts",
     "test:create-agent-wizard": "tsx scripts/create-agent-wizard.test.ts",
     "test:agent-setting-sections": "tsx scripts/agent-setting-sections.test.ts",
