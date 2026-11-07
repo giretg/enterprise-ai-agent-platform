@@ -172,6 +172,7 @@
     "test:mcp-principal": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-principal.test.ts",
     "test:feature-flags": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/feature-flags.test.ts",
     "test:feature-flags-db": "tsx scripts/feature-flags-db.test.ts",
+    "test:migration-guard": "tsx scripts/migration-guard.test.ts",
     "test:mcp-http": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/mcp-http.test.ts",
     "test:project-work": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/project-work.test.ts",
     "test:project-work-file-db": "tsx scripts/project-work-file-db.test.ts",

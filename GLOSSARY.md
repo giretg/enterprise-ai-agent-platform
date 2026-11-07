@@ -123,6 +123,20 @@ Egy már közzétett importterv a fájl szerkezeti ujjlenyomatához kötve; az u
 **Kivétel (adattárház)**:
 Emberi döntésre váró tétel: bizonytalan / nem talált kapcsolat, hibás érték, ismétlődő azonosító. Bizonytalan egyezésből soha nem lesz magától kapcsolat.
 
+## Fokozatos bevezetés
+
+**Feature flag**:
+Ideiglenes kapcsoló egy új, kockázatos működés kiadásához, cégenként. A bevezetés után törlendő, a platform admin kezeli.
+_Avoid_: cégbeállítás, szabályzat, környezeti kapcsoló
+
+**Azonnali leállítás**:
+A flag **Ki** állapotba tétele új kiadás nélkül. A cégek listája megmarad, így a bevezetés onnan folytatható.
+_Avoid_: kill switch (a szabályzat tiltó szabályával ütközik), rollback
+
+**Felvett cég / kizárt cég**:
+A felvett cégnél a „Kiválasztott cégeknél” állapotban aktív a funkció, a kizárt cégnél a „Mindenkinek” állapotban sem.
+_Avoid_: engedélyezett tenant, tiltott tenant
+
 ## Ütemezett feladat
 
 **Ütemezett feladat**:
