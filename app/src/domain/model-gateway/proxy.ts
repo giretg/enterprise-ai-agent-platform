@@ -386,6 +386,9 @@ async function peekFirstData(
     if (done) throw new Error(`${provider} provider failed: empty stream`)
     buffered.push(value)
     text += decoder.decode(value, { stream: true })
+    if (text.length > 1024 * 1024) {
+      throw new Error(`${provider} provider failed: SSE preamble exceeds limit`)
+    }
     const first = /(?:^|\n)data:[ \t]*([^\n]*)/.exec(text)
     if (!first || !text.includes('\n', first.index + first[0].length - 1)) continue // a sor még csonka
     const data = first[1].trim()

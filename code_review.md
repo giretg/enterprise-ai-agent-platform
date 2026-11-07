@@ -1,5 +1,17 @@
 # Enterprise code review log
 
+## 2026-11-07 01:32 Europe/Budapest - Model Gateway streamelt válasz: korlátlan SSE-előszöveg és sor
+
+- Korábban nem naplózott komponens: a **Model Gateway szolgáltatói stream-válaszának fogadása és álneveinek visszaállítása**. Áttekintett modulok: `app/src/domain/model-gateway/{provider-call,proxy,response-restorer,content-filter}.ts`, a `SurrogateSession` és `app/scripts/model-gateway-content-filter.test.ts`. A chatből és ticketből indított modellhívás ugyanabba a válaszútba kerül.
+- Rendben talált kontrollok: a kérés érzékeny értékei a provider előtt álneveződnek; a válasz csak a session ismert álneveit állítja vissza; a hibás első adatsor a kliensnek való átadás előtt felismerhető. A normál, bájthatárokon szétszakadt SSE- és tool-argumentum visszaállítás tesztelve van.
+- **Lelet (magas, rendelkezésre állás):** a `peekFirstData` korlátlanul gyűjtötte a `data:` előtti bájtokat, az álnév-visszaállító pedig a későbbi, sortörés nélküli SSE-sort. Hibás upstream válasz a Node-folyamat memóriáját kimeríthette, más ügyfelek feladatait is megszakítva.
+- Javítás: az első értelmezhető `data:` előtti puffer és minden későbbi SSE-sor legfeljebb 1 MiB lehet. Az első határ túllépése szolgáltatói hibát ad; a későbbi túllépés megszakítja a streamet. Nincs új függőség vagy migráció.
+- Üzleti hatás: egy hibás modell-szolgáltatói stream nem foglalhat korlátlan memóriát a közös AI-átjárón. A normál válaszok változatlanul működnek.
+- Ellenőrzés: regresszió a hosszú első sorra, sok rövid előszöveg-sorra és a megkezdett stream későbbi túl hosszú sorára; `test:model-gateway-content-filter`, célzott ESLint, `git diff --check` zöld. A teljes TypeScript-ellenőrzés a symlinkelt, elavult Prisma-kliens miatt más modulokban hibázik; a módosított fájlokban nem jelzett hibát.
+- Fennmaradó korlát: a nem streamelt szolgáltatói válasz, a hibatest és a szabályos stream auditba gyűjtött összméretének korlátozása külön vizsgálatot igényel. Ez nem igazolja a teljes platform enterprise alkalmasságát.
+- Issue: [#1122](https://github.com/giretg/enterprise-ai-agent-platform/issues/1122).
+- PR: [#1123](https://github.com/giretg/enterprise-ai-agent-platform/pull/1123) (`codex`, `codex-automation`, `bug`).
+
 ## 2026-11-02 01:31 Europe/Budapest - AI-adattárház lekérdezési határ: hibás csoportosított rendezés
 
 - Korábban külön nem naplózott komponens: az **AI-adattárház adatkatalógus- és lekérdezési útja**. Áttekintett modulok: `app/src/domain/warehouse/{mcp,permissions,query,sql,store,warehouse-service,plan,provisioner}.ts`, `app/src/lib/{warehouse,warehouse-settings}.ts`, `app/src/app/actions/warehouse.ts`, `app/src/app/api/control-plane/warehouse/export/[dataset]/route.ts`, `app/src/auth/mcp-server.ts`, `app/src/domain/gateway-services.ts`, valamint `app/scripts/{warehouse,warehouse-db}.test.ts`. A forrásfájl importparszere és a teljes betöltési állapotgép nem része ennek a részletes lekérdezési review-nak.
