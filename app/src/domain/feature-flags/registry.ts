@@ -38,6 +38,20 @@ export type FeatureFlagDefinition = {
 
 /** A kulcs formája `terület.funkció`, pl. `chat.resumable_pause`. */
 export const FEATURE_FLAGS = {
+  'knowledge.file_download': {
+    title: { hu: 'Tudásbázis-fájlok letöltése', en: 'Knowledge base file download' },
+    whatChanges: {
+      hu: 'A tudásbázis Fájlok fülén soronként Letöltés gomb jelenik meg azoknak, akik az adott tudásbázist láthatják. Minden letöltés naplózva van.',
+      en: 'A Download button appears on each row of the Files tab for everyone who can see that knowledge base. Every download is logged.',
+    },
+    whenOff: {
+      hu: 'A gomb eltűnik, és a letöltési cím „nem található” választ ad. A teljes tudásbázis ZIP-letöltése az adminoknak továbbra is működik. Adat nem változik.',
+      en: 'The button disappears and the download address answers "not found". Admins can still download the whole knowledge base as a ZIP. No data changes.',
+    },
+    owner: 'Giret Gergely',
+    issue: 1139,
+    reviewBy: '2027-03-01',
+  },
   'wiki.comments': {
     title: { hu: 'Wiki-kommentek', en: 'Wiki comments' },
     whatChanges: {

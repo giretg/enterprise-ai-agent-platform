@@ -130,6 +130,8 @@ async function main() {
         assert.equal(files.find((file) => file.id === withPurpose.id)?.purpose, 'Árlista')
         assert.equal(files.find((file) => file.id === withPurpose.id)?.bytes, 4, 'eredeti nélkül a szöveg mérete')
         assert.equal(files.find((file) => file.id === withOriginal.id)?.bytes, 1234, 'eredetivel annak mérete')
+        assert.equal(files.find((file) => file.id === withOriginal.id)?.hasOriginal, true)
+        assert.equal(files.find((file) => file.id === withPurpose.id)?.hasOriginal, false)
         assert.equal((await repo.listFiles(priv.id, 1)).length, 1)
         assert.deepEqual(await repo.listFiles(randomUUID(), 1000), [])
       } finally {

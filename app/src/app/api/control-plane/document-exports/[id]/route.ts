@@ -1,6 +1,7 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { decideExportDownload } from '@/domain/document-export/document-export-store'
 import { writeAudit } from '@/lib/audit/types'
+import { attachmentContentDisposition } from '@/lib/content-disposition'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import { repositories } from '@/repositories/postgres'
 import { PostgresDocumentExportRepository } from '@/repositories/postgres/document-export-repository'
@@ -15,12 +16,6 @@ const EXPIRED_PAGE = `<!doctype html><html lang="hu"><head><meta charset="utf-8"
 <h1 style="font-size:1.25rem">A fájl lejárt</h1>
 <p>A munkatárs által készített fájlok 7 napig tölthetők le. Kérd meg a munkatársat, hogy készítse el újra.</p>
 </body></html>`
-
-/** Fájlnév a fejlécben: ASCII tartalék + UTF-8 (RFC 6266/5987), hogy az ékezet is megmaradjon. */
-function contentDisposition(fileName: string): string {
-  const ascii = fileName.normalize('NFD').replace(/[^\x20-\x7e]/g, '').replace(/["\\]/g, '') || 'dokumentum'
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`
-}
 
 /**
  * #1024: a munkatárs által készített fájl letöltése. Csak a kérő (és admin-betekintésnél a tenant
@@ -67,7 +62,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     status: 200,
     headers: {
       'Content-Type': exp!.mimeType,
-      'Content-Disposition': contentDisposition(exp!.fileName),
+      'Content-Disposition': attachmentContentDisposition(exp!.fileName),
       'Content-Length': String(data.length),
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',

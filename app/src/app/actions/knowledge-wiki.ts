@@ -72,7 +72,9 @@ export async function ensureKnowledgeCatalogAction() {
 
 export async function listWikiFilesAction(input: { connectorId: string }) {
   try {
-    return ok(await services.wikiConsole.listFiles(await actor(), uuid.parse(input.connectorId)))
+    const who = await actor()
+    const data = await services.wikiConsole.listFiles(who, uuid.parse(input.connectorId))
+    return ok({ ...data, canDownload: await isFeatureEnabled('knowledge.file_download', { tenantId: who.tenantId }) })
   } catch (e) {
     return failFrom(e, 'Failed to list files')
   }

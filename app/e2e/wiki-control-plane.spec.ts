@@ -659,6 +659,42 @@ test('#1139 fájlok: a csak feltöltött fájl is látszik, a közös tudásbáz
   await prisma.document.delete({ where: { id: raw.id } })
 })
 
+test('#1139 letöltés: kikapcsolva nincs gomb és nincs fájl, cégenként bekapcsolva naplózott letöltés', async ({ page, request }) => {
+  test.setTimeout(120_000)
+  const doc = await prisma.document.create({
+    data: { tenantId, filename: `árlista-${suffix}.docx`, extractedText: 'Dobos torta 100', connectorId: sharedKbId, uploadedById: devUserId, status: 'processed', processingMode: 'raw_text_only' },
+  })
+  const fileUrl = `/api/control-plane/knowledge/${sharedKbId}/files/${doc.id}`
+  await page.goto(`/control-plane/knowledge/${sharedKbId}`)
+  await expect(page.getByTestId('wiki-file-row').filter({ hasText: 'árlista' })).toBeVisible()
+  await expect(page.getByTestId('wiki-file-download')).toHaveCount(0)
+  expect((await request.get(fileUrl)).status()).toBe(404)
+
+  await prisma.featureFlag.create({
+    data: { key: 'knowledge.file_download', mode: 'selected', tenants: { create: { tenantId, access: 'included' } } },
+  })
+  try {
+    await expect.poll(async () => (await request.get(fileUrl)).status(), { timeout: 60_000, intervals: [2000] }).toBe(200)
+    const response = await request.get(fileUrl)
+    expect(await response.text()).toBe('Dobos torta 100')
+    expect(response.headers()['content-disposition']).toContain(encodeURIComponent(`árlista-${suffix}.docx.txt`))
+    expect(response.headers()['x-content-type-options']).toBe('nosniff')
+
+    await page.reload()
+    const row = page.getByTestId('wiki-file-row').filter({ hasText: 'árlista' })
+    await expect(row.getByTestId('wiki-file-download')).toContainText('Letöltés szövegként')
+    expect(await prisma.auditLog.count({ where: { tenantId, action: 'kb.document.downloaded', targetId: doc.id } })).toBeGreaterThan(0)
+
+    // Bekapcsolva sem ad ki mást: más privát tudásbázisa és nem létező fájl is 404.
+    const secret = await prisma.document.findFirstOrThrow({ where: { connectorId: otherPrivateKbId } })
+    expect((await request.get(`/api/control-plane/knowledge/${otherPrivateKbId}/files/${secret.id}`)).status()).toBe(404)
+    expect((await request.get(`/api/control-plane/knowledge/${sharedKbId}/files/${secret.id}`)).status()).toBe(404)
+  } finally {
+    await prisma.featureFlag.delete({ where: { key: 'knowledge.file_download' } })
+    await prisma.document.delete({ where: { id: doc.id } })
+  }
+})
+
 test('privát nézet admin szemmel: csak metaadat-sor, a tartalom és a letöltés nem érhető el', async ({ page, request }) => {
   await page.goto('/control-plane/knowledge')
   const meta = page.getByTestId('kb-row-private-meta')

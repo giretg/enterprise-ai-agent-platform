@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import { KnowledgeCatalogFileControls, KnowledgeCatalogUploadForm } from '@/components/knowledge/knowledge-catalog-manager'
+import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Card } from '@/components/ui/shell'
 import { formatBytes, formatWhen, wikiHref } from './wiki-format'
 
@@ -13,6 +14,8 @@ export type WikiFileRow = {
   bytes: number
   createdAt: string
   kbLanguageOverride: string | null
+  /** Az eredeti nincs meg, ezért a letöltés a kinyert szöveget adja. */
+  downloadsAsText: boolean
   wikiState: 'none' | 'paged' | 'pending' | 'in_progress' | 'processed' | 'skipped'
 }
 
@@ -24,6 +27,7 @@ export function WikiFilesPanel({
   canManage,
   files,
   truncated,
+  canDownload,
 }: {
   connectorId: string
   kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
@@ -31,6 +35,7 @@ export function WikiFilesPanel({
   canManage: boolean
   files: WikiFileRow[]
   truncated: boolean
+  canDownload: boolean
 }) {
   const t = useTranslations('ControlPlane.wiki.files')
   const locale = useLocale()
@@ -61,9 +66,24 @@ export function WikiFilesPanel({
                   {formatWhen(file.createdAt, locale)} · {formatBytes(file.bytes, locale)} · {t(`wikiState.${file.wikiState}`)}
                 </span>
               </span>
-              {managesCatalog ? (
-                <KnowledgeCatalogFileControls documentId={file.id} filename={file.filename} kbLanguageOverride={file.kbLanguageOverride} />
-              ) : null}
+              <span className="flex flex-wrap items-center gap-3">
+                {canDownload ? (
+                  <span className="inline-flex items-center">
+                    <a
+                      href={`/api/control-plane/knowledge/${connectorId}/files/${file.id}`}
+                      download
+                      data-testid="wiki-file-download"
+                      className="text-xs font-medium text-coral hover:text-coral-deep"
+                    >
+                      {t(file.downloadsAsText ? 'downloadAsText' : 'download')}
+                    </a>
+                    {file.downloadsAsText ? <HelpHint>{t('downloadAsTextHelp')}</HelpHint> : null}
+                  </span>
+                ) : null}
+                {managesCatalog ? (
+                  <KnowledgeCatalogFileControls documentId={file.id} filename={file.filename} kbLanguageOverride={file.kbLanguageOverride} />
+                ) : null}
+              </span>
             </li>
           ))}
         </ul>

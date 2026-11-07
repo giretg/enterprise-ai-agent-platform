@@ -76,6 +76,7 @@ import {
   publicAssistantAgentIdForKnowledgeBase,
   type WikiDecider,
 } from '@/lib/wiki-access'
+import { kbFileDownload } from '@/lib/kb-file-download'
 import { normalizeKbPurpose } from '@/lib/kb-retrieval'
 import { KB_MAX_FILE_BYTES, type KnowledgeBaseService } from './knowledge-base-service'
 import { commentsRequestingChange } from '@/lib/wiki-comments'
@@ -722,12 +723,35 @@ export class WikiConsoleService {
         bytes: row.bytes,
         createdAt: row.createdAt.toISOString(),
         kbLanguageOverride: row.kbLanguageOverride,
+        downloadsAsText: kbFileDownload({ filename: row.filename, hasOriginal: row.hasOriginal }).asText,
         // Ugyanaz a szabály, mint a tálcánál: a lejárt foglalás újra várakozik.
         wikiState:
           row.wikiStatus === 'in_progress' && row.wikiClaimExpiresAt && row.wikiClaimExpiresAt <= now
             ? ('pending' as const)
             : row.wikiStatus ?? (row.processingMode === 'okf' ? ('paged' as const) : ('none' as const)),
       })),
+    }
+  }
+
+  /** #1139: aki a tudásbázist látja, letöltheti a fájlt; eredeti híján a kinyert szöveget kapja. */
+  async downloadFile(actor: WikiConsoleActor, connectorId: string, documentId: string) {
+    const { connector } = await this.load(actor, connectorId, 'view')
+    const doc = await this.deps.console.findSourceDocument(connector.id, documentId)
+    if (!doc) throw new WikiConsoleError('not_found')
+    const original = await this.deps.documents.readSource(doc.id)
+    if (!original && doc.extractedText === null) throw new WikiConsoleError('not_found')
+    const bytes = original ?? Buffer.from(doc.extractedText ?? '', 'utf8')
+    // Fájlnév nem kerül a naplóba, így a privát tudásbázisnál sem kell külön kezelni.
+    await this.audit(connector, actor, 'kb.document.downloaded', doc.id, 'document', {
+      documentId: doc.id,
+      original: !!original,
+      byteSize: bytes.byteLength,
+      ...(actor.assumed ? { assumed: true } : {}),
+    })
+    return {
+      filename: kbFileDownload({ filename: doc.filename, hasOriginal: !!original }).filename,
+      original: !!original,
+      bytes,
     }
   }
 
