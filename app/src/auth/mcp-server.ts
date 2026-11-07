@@ -2159,7 +2159,7 @@ async function createMcpResourceHandler(
         {
           title: 'Search knowledge base',
           description:
-            'Keyword search when kb_list_index does not name the source. Returns short snippets, not full documents; card numbers, PINs and keys are masked in snippets; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
+            'Keyword search when kb_list_index does not name the source. Accents and word endings mostly do not matter, and a word found only inside a longer word still counts. Returns short snippets, not full documents; card numbers, PINs and keys are masked in snippets; wiki pages come back with kind wiki_page and their path. Pass wikiId when several knowledge bases are bound. Omit definitionId when this client is bound; otherwise pass it from platform.agent.get_definition.',
           inputSchema: kbSearchInputSchema,
         },
         async (args) => enterpriseToolResult(principal, KB_SEARCH_TOOL, args, deps),

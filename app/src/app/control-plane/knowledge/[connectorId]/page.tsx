@@ -38,6 +38,8 @@ import { WikiMetadataPanel } from '@/components/knowledge/wiki/wiki-metadata-pan
 import { WikiPageMeta } from '@/components/knowledge/wiki/wiki-page-meta'
 import { WikiMenu } from '@/components/knowledge/wiki/wiki-menu'
 import { WikiReaderBack } from '@/components/knowledge/wiki/wiki-reader-back'
+import { WikiSearch } from '@/components/knowledge/wiki/wiki-search'
+import { WikiSearchHighlight } from '@/components/knowledge/wiki/wiki-search-highlight'
 import {
   ChangesTab,
   PageHistoryPanel,
@@ -300,7 +302,10 @@ async function WikiTab({
   ) : null
   const toc = (
     // Az olvasó nézetben a hosszú tartalomjegyzék önállóan görgethető, a szöveg mellett végig elérhető.
-    <Card className={`lg:sticky lg:top-4 ${reader ? 'lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto' : ''}`}>
+    // A kereső gomb a kártyán kívül áll, különben a tartalomjegyzékkel együtt kigörgetődne.
+    <div className={`space-y-2 lg:sticky lg:top-[calc(var(--app-header-h,0px)+1rem)] ${reader ? 'lg:flex lg:max-h-[calc(100dvh-var(--app-header-h,0px)-2rem)] lg:flex-col lg:space-y-0 lg:gap-2' : ''}`}>
+      {wiki.pageCount > 0 && !query.asOf ? <WikiSearch connectorId={connectorId} linkQuery={linkQuery} /> : null}
+      <Card className={reader ? 'lg:min-h-0 lg:overflow-y-auto' : ''}>
       <div className="mb-2 flex items-center">
         <h2 className="font-display text-lg font-semibold">{t('toc.title')}</h2>
         <HelpHint>{t('toc.help')}</HelpHint>
@@ -313,7 +318,8 @@ async function WikiTab({
           <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} linkedWikis={wiki.linkedWikis} linkQuery={linkQuery} />
         </>
       )}
-    </Card>
+      </Card>
+    </div>
   )
 
   let main: React.ReactNode
@@ -339,11 +345,12 @@ async function WikiTab({
     const pageComments = commentsRes?.success ? commentsRes.data : null
     main = res.success ? (
       <Card>
+        <WikiSearchHighlight key={res.data.path} connectorId={connectorId} path={res.data.path} />
         {backControl}
         <article data-testid="wiki-page">
           {reader ? null : <p className="text-xs text-ink-faint">{res.data.path}</p>}
-          <h2 className="mt-1 font-display text-2xl font-semibold">{res.data.title}</h2>
-          {res.data.summary ? <p className="mt-1 text-ink-soft">{res.data.summary}</p> : null}
+          <h2 data-wiki-search-scope className="mt-1 font-display text-2xl font-semibold">{res.data.title}</h2>
+          {res.data.summary ? <p data-wiki-search-scope className="mt-1 text-ink-soft">{res.data.summary}</p> : null}
           <p className="mt-2 text-xs text-ink-faint">
             {res.data.categoryName ? `${t('page.category', { name: res.data.categoryName })} · ` : null}
             {res.data.author
@@ -365,7 +372,7 @@ async function WikiTab({
             ) : null}
           </p>
           {pageMeta && !reader ? <WikiPageMeta connectorId={connectorId} path={res.data.path} data={pageMeta} locale={locale} /> : null}
-          <div className="mt-4" data-wiki-comment-scope>
+          <div className="mt-4" data-wiki-comment-scope data-wiki-search-scope>
             <WikiMarkdown
               connectorId={connectorId}
               body={res.data.body}

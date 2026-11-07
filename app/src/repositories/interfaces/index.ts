@@ -4,6 +4,7 @@ import type { WikiEffectiveInboxStatus, WikiReprocessMarker } from '@/lib/wiki-a
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
 import type { WikiConfigState } from '@/lib/wiki-config'
 import type { WikiFieldDef } from '@/lib/wiki-metadata'
+import type { KbTextTerm } from '@/lib/kb-text-match'
 import type {
   Agent,
   AgentDefinitionVersion,
@@ -777,6 +778,8 @@ export type KnowledgeCatalogDocument = {
   chars: number
 }
 
+export type KbFallbackMode = 'literal' | 'stem'
+
 export type KnowledgeRawHit = {
   id: string
   filename: string
@@ -811,6 +814,8 @@ export interface DocumentRepository {
   listByConnectorId(connectorId: string): Promise<DocumentListItem[]>
   listCatalog(connectorId: string): Promise<KnowledgeCatalogDocument[]>
   searchRaw(connectorId: string, query: string, limit: number): Promise<KnowledgeRawHit[]>
+  /** #1136 K2: tartalék a `searchRaw`-ból kimaradt szavakra: betű szerint, vagy a szó tőalakjával. */
+  searchRawFallback(connectorId: string, terms: string[], mode: KbFallbackMode, limit: number): Promise<KnowledgeRawHit[]>
   update(
     id: string,
     data: {
@@ -863,6 +868,8 @@ export interface KnowledgeChunkRepository {
     }>,
   ): Promise<number>
   searchChunks(connectorIds: string[], query: string, limit: number): Promise<KnowledgeChunkSearchHit[]>
+  /** #1136 K2: tartalék a `searchChunks`-ból kimaradt szavakra: betű szerint, vagy a szó tőalakjával. */
+  searchChunksFallback(connectorIds: string[], terms: string[], mode: KbFallbackMode, limit: number): Promise<KnowledgeChunkSearchHit[]>
   listIndex(
     connectorIds: string[],
     pathPrefix?: string,
@@ -1073,6 +1080,19 @@ export interface WikiConfigRepository {
   setCollectFocus(wikiId: string, collect: string | null): Promise<void>
 }
 
+export type WikiPageSearchHit = {
+  path: string
+  title: string
+  summary: string
+  category: string | null
+  body: string
+  /** A `terms` indexei, amelyek illeszkednek az oldalra. */
+  matchedTerms: number[]
+  occurrences: number
+}
+
+export type WikiPageSearchResult = { terms: KbTextTerm[]; total: number; hits: WikiPageSearchHit[] }
+
 export interface WikiRepository {
   findById(wikiId: string): Promise<AgentWiki | null>
   findByConnectorId(connectorId: string): Promise<AgentWiki | null>
@@ -1107,6 +1127,8 @@ export interface WikiRepository {
     input: Partial<WikiPageWrite> & { contentHash: string; updatedByAgentId?: string | null; changeSetId?: string | null },
   ): Promise<WikiPage | null>
   listRevisions(pageId: string): Promise<WikiPageRevision[]>
+  /** #1136: a közzétett oldalak, ahol legalább egy szó illeszkedik; a legjobb találat elöl. */
+  searchPages(connectorId: string, query: { terms: string[]; language: string; limit: number }): Promise<WikiPageSearchResult>
 
   createChangeSet(input: {
     wikiId: string

@@ -505,6 +505,33 @@
           "inboxLink": "open the Inbox tab"
         }
       },
+      "search": {
+        "button": "Search this wiki",
+        "title": "Search this wiki",
+        "inputLabel": "Search words",
+        "placeholder": "Type one or more words",
+        "clear": "Clear search",
+        "close": "Close",
+        "hint": "Type one or more words. Accents and word endings mostly don't matter.",
+        "count": "{count, plural, one {# page} other {# pages}}",
+        "empty": "No results for: {query}. Try a shorter form or fewer words.",
+        "partialHeading": "Matches only some of the words ({count})",
+        "missing": "Missing: {words}",
+        "occurrences": "{count, plural, one {# match on the page} other {# matches on the page}}",
+        "more": "{count, plural, one {# more page} other {# more pages}}. Narrow your search.",
+        "error": "The search didn't work this time.",
+        "retry": "Try again",
+        "loading": "Searching…",
+        "resultsLabel": "Results",
+        "footer": "↑↓ move · Enter open · Esc close",
+        "bar": {
+          "position": "“{query}” · {current}/{total}",
+          "previous": "Previous match",
+          "next": "Next match",
+          "results": "Results",
+          "clear": "Turn off highlighting"
+        }
+      },
       "reader": {
         "exit": "Close reader view",
         "back": "Back",

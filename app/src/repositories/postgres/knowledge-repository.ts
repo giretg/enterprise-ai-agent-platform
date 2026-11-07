@@ -1,9 +1,23 @@
 import { Prisma, type Document, type KnowledgeArtifact, type KnowledgeArtifactStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import { isKbLanguage, kbPgConfig, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
+import { isKbLanguage, kbPgConfig, kbPgStemDict, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import { KB_SECTION_SPLIT_SQL, kbSectionForSegment, readKbPurpose, snippet } from '@/lib/kb-retrieval'
+import {
+  KB_FOLD_FROM,
+  KB_FOLD_TO,
+  kbCombinedTsQuery,
+  kbFallbackTerms,
+  kbLiteralPattern,
+  kbQueryTerms,
+  kbSnippet,
+  kbStemForm,
+  kbTermTsQuery,
+  kbTextTerm,
+  type KbTextTerm,
+} from '@/lib/kb-text-match'
 import type {
   DocumentListItem,
+  KbFallbackMode,
   DocumentRepository,
   KnowledgeArtifactRepository,
   KnowledgeCatalogDocument,
@@ -13,21 +27,6 @@ import type {
   KnowledgePageChunk,
   KnowledgeRawHit,
 } from '../interfaces'
-
-/** A keresőkifejezés szavai: kisbetű, nem-betű/szám karakternél vágva, dedup, min. 2 karakter. */
-export function kbQueryTerms(query: string): string[] {
-  const seen = new Set<string>()
-  for (const token of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
-    if (token.length >= 2) seen.add(token)
-  }
-  return [...seen]
-}
-
-export function toKbTsQuery(query: string): string {
-  return kbQueryTerms(query)
-    .map((token) => `${token}:*`)
-    .join(' | ')
-}
 
 /**
  * #717 A réteg: a `regconfig` nem paraméterezhető, ezért kizárólag a
@@ -51,23 +50,90 @@ export function kbRegconfig(language: unknown): Prisma.Sql {
   return Prisma.raw(`'${pg}'::regconfig`)
 }
 
+/** A szavak szótövezése a nyelv szótárával (`null` = a szótár nem ismeri; üres tömb = stopszó). */
+async function kbLexemes(terms: string[], language: KbLanguage): Promise<Map<string, string[] | null>> {
+  // ponytail: Prisma.raw, mert az érték a nyelvi registry allowlistjéből jön, nem a hívótól.
+  const dictionary = Prisma.raw(`'${kbPgStemDict(language)}'::regdictionary`)
+  const rows = await prisma.$queryRaw<Array<{ term: string; lexemes: string[] | null }>>`
+    SELECT t.term, ts_lexize(${dictionary}, t.term) AS lexemes
+    FROM unnest(${terms}::text[]) AS t(term)
+  `
+  return new Map(rows.map((row) => [row.term, row.lexemes]))
+}
+
+type KbTermQueries = { terms: string[]; queries: string[]; combined: string }
+
+/** #1136 K1: a kérdésszavak szavankénti `tsquery`-je; a stopszavak kiesnek. */
+async function kbTermQueries(terms: string[], language: KbLanguage): Promise<KbTermQueries> {
+  const lexemes = await kbLexemes(terms, language)
+  const kept = terms.flatMap((term) => {
+    const query = kbTermTsQuery(term, lexemes.get(term))
+    return query ? [{ term, query }] : []
+  })
+  const queries = kept.map((row) => row.query)
+  return { terms: kept.map((row) => row.term), queries, combined: kbCombinedTsQuery(queries) }
+}
+
 /** A kérdésszavak közül azok, amelyek a szakaszban szerepelnek (IDF-újrarangsoroláshoz). */
-function kbMatchedTermsSql(vector: Prisma.Sql, terms: string[], reg: Prisma.Sql): Prisma.Sql {
+function kbMatchedTermsSql(vector: Prisma.Sql, query: KbTermQueries): Prisma.Sql {
   return Prisma.sql`ARRAY(
-    SELECT t.term FROM unnest(${terms}::text[]) AS t(term)
-    WHERE ${vector} @@ to_tsquery(${reg}, t.term || ':*')
+    SELECT t.term FROM unnest(${query.terms}::text[], ${query.queries}::text[]) AS t(term, q)
+    WHERE ${vector} @@ t.q::tsquery
   )`
 }
 
 /** Jelölt-sorrend: több fedett kérdésszó előbb, holtversenyben ts_rank. */
-function kbCandidateOrderSql(
-  vector: Prisma.Sql,
-  terms: string[],
-  tsquery: string,
-  reg: Prisma.Sql,
-): Prisma.Sql {
-  return Prisma.sql`cardinality(${kbMatchedTermsSql(vector, terms, reg)}) DESC,
-    ts_rank(${vector}, to_tsquery(${reg}, ${tsquery})) DESC`
+function kbCandidateOrderSql(vector: Prisma.Sql, query: KbTermQueries): Prisma.Sql {
+  return Prisma.sql`cardinality(${kbMatchedTermsSql(vector, query)}) DESC,
+    ts_rank(${vector}, ${query.combined}::tsquery) DESC`
+}
+
+/** Nagyjából a `ts_headline` 40 szavas részlete. */
+const KB_FALLBACK_SNIPPET_CHARS = 320
+
+/** K2 felső korlátja: a tartalék nem tarthatja fel a keresést (a szolgáltatás is levágja). */
+const KB_FALLBACK_STATEMENT_TIMEOUT_MS = 2_000
+
+type KbFallbackTerm = { term: string; text: KbTextTerm; pattern: string; needle: string }
+
+/**
+ * K2: a tartalék szavai. Stopszó nem kerül bele; `literal` a §6 betű szerinti illesztése,
+ * `stem` a tőalak (a szó eleje). Tőalak nélküli szó a második körben kimarad.
+ */
+async function kbFallbackPlan(terms: string[], language: KbLanguage, mode: KbFallbackMode): Promise<KbFallbackTerm[]> {
+  const lexemes = await kbLexemes(terms, language)
+  const usable = kbFallbackTerms(
+    terms.filter((term) => lexemes.get(term)?.length !== 0).map((term) => ({ term })),
+  )
+  return usable.flatMap(({ term }): KbFallbackTerm[] => {
+    const lexeme = lexemes.get(term)?.[0]
+    const text = kbTextTerm(term, lexeme)
+    if (mode === 'literal') return [{ term, text, pattern: kbLiteralPattern(text), needle: text.folded }]
+    const stem = kbStemForm(term, lexeme)
+    return stem ? [{ term, text, pattern: `\\m${stem}`, needle: stem }] : []
+  })
+}
+
+/** Melyik tartalék-szó illeszkedik a hajtogatott `f.hay` szövegre. */
+function kbFallbackMatchedSql(plan: KbFallbackTerm[]): Prisma.Sql {
+  return Prisma.sql`ARRAY(
+    SELECT t.term
+    FROM unnest(${plan.map((row) => row.term)}::text[], ${plan.map((row) => row.pattern)}::text[], ${plan.map((row) => row.needle)}::text[])
+      AS t(term, pattern, needle)
+    WHERE position(t.needle IN f.hay) > 0 AND f.hay ~ t.pattern
+  )`
+}
+
+function kbFoldSql(text: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`translate(lower(${text}), ${KB_FOLD_FROM}, ${KB_FOLD_TO})`
+}
+
+/** Saját kapcsolaton, időkorláttal: a futó pásztázást a Postgres is leállítja. */
+function kbWithFallbackTimeout<T>(run: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw(Prisma.raw(`SET LOCAL statement_timeout = ${KB_FALLBACK_STATEMENT_TIMEOUT_MS}`))
+    return run(tx)
+  })
 }
 
 /**
@@ -229,8 +295,7 @@ export class PostgresDocumentRepository implements DocumentRepository {
 
   async searchRaw(connectorId: string, query: string, limit: number): Promise<KnowledgeRawHit[]> {
     const terms = kbQueryTerms(query)
-    const tsquery = toKbTsQuery(query)
-    if (!tsquery || limit <= 0) return []
+    if (terms.length === 0 || limit <= 0) return []
     // Szakasz-szintű keresés: a raw fájl heading-szakaszai külön versenyeznek,
     // hogy egy hosszú fájl ne nyerjen pusztán a hossza miatt.
     // ponytail: sequential scan + futásidejű vágás; GIN/tárolt szakaszok, ha a raw korpusz nő.
@@ -239,6 +304,8 @@ export class PostgresDocumentRepository implements DocumentRepository {
     const groups = await kbLanguageGroups([connectorId])
     const perGroup: KnowledgeRawHit[][] = await Promise.all(
       groups.map(async ({ language, connectorIds: ids }) => {
+        const query = await kbTermQueries(terms, language)
+        if (query.terms.length === 0) return []
         const reg = kbRegconfig(language)
         const vector = Prisma.sql`to_tsvector(${reg}, s.body)`
         const rows = await prisma.$queryRaw<
@@ -253,12 +320,12 @@ export class PostgresDocumentRepository implements DocumentRepository {
           }>
         >`
           SELECT d.id, d.filename, d.extracted_text, s.ord,
-                 ts_rank(${vector}, to_tsquery(${reg}, ${tsquery})) AS score,
-                 ${kbMatchedTermsSql(vector, terms, reg)} AS matched,
+                 ts_rank(${vector}, ${query.combined}::tsquery) AS score,
+                 ${kbMatchedTermsSql(vector, query)} AS matched,
                  ts_headline(
                    ${reg},
                    s.body,
-                   to_tsquery(${reg}, ${tsquery}),
+                   ${query.combined}::tsquery,
                    'MaxWords=40, MinWords=12, MaxFragments=1, StartSel="", StopSel=""'
                  ) AS snippet
           FROM documents d
@@ -273,8 +340,8 @@ export class PostgresDocumentRepository implements DocumentRepository {
               WHERE a.source_document_id = d.id
                 AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
             )
-            AND ${vector} @@ to_tsquery(${reg}, ${tsquery})
-          ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery, reg)}
+            AND ${vector} @@ ${query.combined}::tsquery
+          ORDER BY ${kbCandidateOrderSql(vector, query)}
           LIMIT ${limit}
         `
         return rows.map((row) => ({
@@ -292,6 +359,49 @@ export class PostgresDocumentRepository implements DocumentRepository {
       .flat()
       .sort((a, b) => (b.matched?.length ?? 0) - (a.matched?.length ?? 0) || b.score - a.score)
       .slice(0, limit)
+  }
+
+  async searchRawFallback(connectorId: string, terms: string[], mode: KbFallbackMode, limit: number): Promise<KnowledgeRawHit[]> {
+    if (terms.length === 0 || limit <= 0) return []
+    const groups = await kbLanguageGroups([connectorId])
+    const perGroup = await Promise.all(
+      groups.map(async ({ language, connectorIds: ids }) => {
+        const plan = await kbFallbackPlan(terms, language, mode)
+        if (plan.length === 0) return []
+        const rows = await kbWithFallbackTimeout((tx) => tx.$queryRaw<
+          Array<{ id: string; filename: string; extracted_text: string; ord: bigint; body: string; matched: string[] }>
+        >`
+          SELECT d.id, d.filename, d.extracted_text, s.ord, s.body, m.matched
+          FROM documents d
+          INNER JOIN connectors co ON co.id = d.connector_id
+          CROSS JOIN LATERAL regexp_split_to_table(coalesce(d.extracted_text, ''), ${KB_SECTION_SPLIT_SQL})
+            WITH ORDINALITY AS s(body, ord)
+          CROSS JOIN LATERAL (SELECT ${kbFoldSql(Prisma.sql`s.body`)} AS hay OFFSET 0) f
+          CROSS JOIN LATERAL (SELECT ${kbFallbackMatchedSql(plan)} AS matched) m
+          WHERE d.connector_id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+            AND COALESCE(d.kb_language_override, co.kb_language, 'hu') = ${language}
+            AND d.status = CAST('processed' AS "DocumentStatus")
+            AND NOT EXISTS (
+              SELECT 1 FROM knowledge_artifacts a
+              WHERE a.source_document_id = d.id
+                AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
+            )
+            AND cardinality(m.matched) > 0
+          ORDER BY cardinality(m.matched) DESC, d.created_at DESC, s.ord ASC
+          LIMIT ${limit}
+        `)
+        const textTerms = plan.map((row) => row.text)
+        return rows.map((row) => ({
+          id: row.id,
+          filename: row.filename,
+          section: kbSectionForSegment(row.extracted_text, Number(row.ord) - 1),
+          snippet: snippet(kbSnippet({ body: row.body, fallback: row.filename, terms: textTerms, size: KB_FALLBACK_SNIPPET_CHARS }).text),
+          score: 0,
+          matched: row.matched,
+        }))
+      }),
+    )
+    return perGroup.flat().slice(0, limit)
   }
 
   async update(id: string, data: Parameters<DocumentRepository['update']>[1]): Promise<Document> {
@@ -363,8 +473,7 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
     limit: number,
   ): Promise<KnowledgeChunkSearchHit[]> {
     const terms = kbQueryTerms(query)
-    const tsquery = toKbTsQuery(query)
-    if (!tsquery || connectorIds.length === 0 || limit <= 0) return []
+    if (terms.length === 0 || connectorIds.length === 0 || limit <= 0) return []
     // #717: nyelvi csoportonként külön SQL (egy csoport = egy nyelv = egy élő
     // GIN-index), majd összefésülés limitig. A csoport-kulcs = amit a
     // `COALESCE(d.kb_language_override, co.kb_language, 'hu')` lát
@@ -372,6 +481,8 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
     const groups = await kbLanguageGroups(connectorIds)
     const perGroup = await Promise.all(
       groups.map(async ({ language, connectorIds: ids }) => {
+        const query = await kbTermQueries(terms, language)
+        if (query.terms.length === 0) return []
         const reg = kbRegconfig(language)
         const vector = Prisma.sql`to_tsvector(${reg}, coalesce(c.title, '') || ' ' || c.text)`
         return prisma.$queryRaw<
@@ -389,8 +500,8 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
           }>
         >`
           SELECT c.artifact_id, c.connector_id, c.path, c.title, c.type, c.section, c.text, c.source_ref,
-                 ts_rank(${vector}, to_tsquery(${reg}, ${tsquery})) AS score,
-                 ${kbMatchedTermsSql(vector, terms, reg)} AS matched
+                 ts_rank(${vector}, ${query.combined}::tsquery) AS score,
+                 ${kbMatchedTermsSql(vector, query)} AS matched
           FROM knowledge_chunks c
           INNER JOIN knowledge_artifacts a ON a.id = c.artifact_id
           INNER JOIN connectors co ON co.id = c.connector_id
@@ -398,8 +509,8 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
           WHERE c.connector_id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
             AND COALESCE(d.kb_language_override, co.kb_language, 'hu') = ${language}
             AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
-            AND ${vector} @@ to_tsquery(${reg}, ${tsquery})
-          ORDER BY ${kbCandidateOrderSql(vector, terms, tsquery, reg)}
+            AND ${vector} @@ ${query.combined}::tsquery
+          ORDER BY ${kbCandidateOrderSql(vector, query)}
           LIMIT ${limit}
         `
       }),
@@ -423,6 +534,64 @@ export class PostgresKnowledgeChunkRepository implements KnowledgeChunkRepositor
       score: Number(row.score),
       matched: row.matched,
     }))
+  }
+
+  async searchChunksFallback(
+    connectorIds: string[],
+    terms: string[],
+    mode: KbFallbackMode,
+    limit: number,
+  ): Promise<KnowledgeChunkSearchHit[]> {
+    if (terms.length === 0 || connectorIds.length === 0 || limit <= 0) return []
+    const groups = await kbLanguageGroups(connectorIds)
+    const perGroup = await Promise.all(
+      groups.map(async ({ language, connectorIds: ids }) => {
+        const plan = await kbFallbackPlan(terms, language, mode)
+        if (plan.length === 0) return []
+        return kbWithFallbackTimeout((tx) => tx.$queryRaw<
+          Array<{
+            artifact_id: string
+            connector_id: string
+            path: string
+            title: string
+            type: string
+            section: string | null
+            text: string
+            source_ref: Prisma.JsonValue
+            matched: string[]
+          }>
+        >`
+          SELECT c.artifact_id, c.connector_id, c.path, c.title, c.type, c.section, c.text, c.source_ref, m.matched
+          FROM knowledge_chunks c
+          INNER JOIN knowledge_artifacts a ON a.id = c.artifact_id
+          INNER JOIN connectors co ON co.id = c.connector_id
+          LEFT JOIN documents d ON d.id = a.source_document_id
+          CROSS JOIN LATERAL (SELECT ${kbFoldSql(Prisma.sql`coalesce(c.title, '') || ' ' || c.text`)} AS hay OFFSET 0) f
+          CROSS JOIN LATERAL (SELECT ${kbFallbackMatchedSql(plan)} AS matched) m
+          WHERE c.connector_id IN (${Prisma.join(ids.map((id) => Prisma.sql`${id}::uuid`))})
+            AND COALESCE(d.kb_language_override, co.kb_language, 'hu') = ${language}
+            AND a.status = CAST('published' AS "KnowledgeArtifactStatus")
+            AND cardinality(m.matched) > 0
+          ORDER BY cardinality(m.matched) DESC, c.path ASC, c.chunk_index ASC
+          LIMIT ${limit}
+        `)
+      }),
+    )
+    return perGroup
+      .flat()
+      .slice(0, limit)
+      .map((row) => ({
+        artifactId: row.artifact_id,
+        connectorId: row.connector_id,
+        path: row.path,
+        title: row.title,
+        type: row.type,
+        section: row.section,
+        text: row.text,
+        sourceRef: row.source_ref,
+        score: 0,
+        matched: row.matched,
+      }))
   }
 
   async listIndex(

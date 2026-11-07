@@ -2,7 +2,7 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { useClerkEnabled } from '@/components/auth/providers'
@@ -61,6 +61,21 @@ export function AppShell({
     setMenuPathname(pathname)
     setMobileMenuOpen(false)
   }
+
+  const headerRef = useRef<HTMLElement>(null)
+
+  // A menü sortörhet, ezért a magasság változik. A ragadós elemek ehhez igazodnak: `--app-header-h`.
+  useEffect(() => {
+    const header = headerRef.current
+    if (layout === 'rail' || !header) return
+    const root = document.documentElement
+    const observer = new ResizeObserver(() => root.style.setProperty('--app-header-h', `${header.offsetHeight}px`))
+    observer.observe(header)
+    return () => {
+      observer.disconnect()
+      root.style.removeProperty('--app-header-h')
+    }
+  }, [layout])
 
   useEffect(() => {
     if (!openGroup) return
@@ -135,6 +150,7 @@ export function AppShell({
       }
     >
       <header
+        ref={headerRef}
         className={`z-20 shrink-0 border-b border-line bg-night/80 backdrop-blur-xl ${
           railLayout ? '' : 'sticky top-0'
         }`}

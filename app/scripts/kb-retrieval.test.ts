@@ -1,6 +1,6 @@
 /**
  * Determinisztikus teszt a KB-v3 §10 retrieval-összeállításhoz (`assembleKbHits`)
- * és a full-text tsquery-építőhöz (`toKbTsQuery`). DB NÉLKÜL fut — a `searchChunks`
+ * és a full-text tsquery-építőhöz (`kbTermTsQuery`). DB NÉLKÜL fut — a `searchChunks`
  * Postgres-oldali eredményét kész `KnowledgeChunkSearchHit[]`-ként adjuk be, így a
  * merge / superseded / fallback / citation logika izoláltan igazolható.
  *
@@ -20,7 +20,7 @@ import {
   splitKbSegments,
   okfIndexFile,
 } from '../src/lib/kb-retrieval'
-import { toKbTsQuery } from '../src/repositories/postgres/knowledge-repository'
+import { kbCombinedTsQuery, kbFallbackTerms, kbMergeFallbackHits, kbQueryTerms, kbTermTsQuery } from '../src/lib/kb-text-match'
 import type {
   KnowledgeChunkSearchHit,
   KnowledgeIndexEntry,
@@ -54,7 +54,7 @@ function okfChunk(over: Partial<KnowledgeChunkSearchHit> = {}): KnowledgeChunkSe
 }
 
 async function run() {
-  console.log('=== KB-v3 retrieval (assembleKbHits / toKbTsQuery) teszt ===')
+  console.log('=== KB-v3 retrieval (assembleKbHits / kbTermTsQuery) teszt ===')
 
   await check('OKF chunk-találat elöl, navigálható path + oldal-szintű forrás-linkkel', () => {
     const hits = assembleKbHits({
@@ -191,19 +191,48 @@ async function run() {
     assert.equal(hits[0].source?.page, undefined)
   })
 
-  // ── toKbTsQuery ───────────────────────────────────────────────────────────
+  // ── kbTermTsQuery (#1136 K1) ──────────────────────────────────────────────
 
-  await check('toKbTsQuery: prefix-OR kifejezés, kisbetűsítve, ékezettartással', () => {
-    assert.equal(toKbTsQuery('Remote Work'), 'remote:* | work:*')
-    // Ékezet MEGMARAD (a simple tsvector sem ékezettelenít — a két oldalnak egyeznie kell).
-    assert.equal(toKbTsQuery('Szabályzat'), 'szabályzat:*')
+  await check('kbTermTsQuery: tőalaknál a tő és a nyers szó is prefix', () => {
+    assert.equal(kbTermTsQuery('kártyát', ['kárty']), "'kárty':* | 'kártyát':*")
+    assert.equal(kbTermTsQuery('szerződésben', ['szerződés']), "'szerződés':* | 'szerződésben':*")
   })
 
-  await check('toKbTsQuery: rövid/üres tokenek kiesnek, dedup', () => {
-    assert.equal(toKbTsQuery('a az work work'), 'az:* | work:*')
-    assert.equal(toKbTsQuery('   '), '')
-    assert.equal(toKbTsQuery('!!! ???'), '')
-    assert.equal(toKbTsQuery('4 éves TCO-t'), 'éves:* | tco:*', 'kötőjelnél vág, nem tapaszt')
+  await check('kbTermTsQuery: a túl rövid tő csak pontos lexéma (bank ≠ barát)', () => {
+    assert.equal(kbTermTsQuery('bank', ['ba']), "'ba' | 'bank':*")
+    assert.equal(kbTermTsQuery('terminál', ['term']), "'term' | 'terminál':*")
+    assert.equal(kbTermTsQuery('visa', ['vis']), "'vis' | 'visa':*")
+    assert.equal(kbTermTsQuery('fizetés', ['fizetés']), "'fizetés' | 'fizetés':*")
+  })
+
+  await check('kbTermTsQuery: a stopszó kiesik, az ismeretlen szó nyers prefix, a kifejezés nem törhet', () => {
+    assert.equal(kbTermTsQuery('nem', []), null)
+    assert.equal(kbTermTsQuery('remote', null), "'remote':*")
+    assert.equal(kbTermTsQuery("o'neil\\", null), "'o''neil\\\\':*")
+    assert.equal(kbCombinedTsQuery(["'a':*", "'b' | 'c':*"]), "('a':*) | ('b' | 'c':*)")
+  })
+
+  await check('kbQueryTerms: rövid/üres tokenek kiesnek, dedup, kötőjelnél vág', () => {
+    assert.deepEqual(kbQueryTerms('a az work work'), ['az', 'work'])
+    assert.deepEqual(kbQueryTerms('!!! ???'), [])
+    assert.deepEqual(kbQueryTerms('4 éves TCO-t'), ['éves', 'tco'])
+  })
+
+  await check('kbFallbackTerms: legalább 3 karakter, legfeljebb 8, a leghosszabbak', () => {
+    const terms = ['az', 'abc', 'abcd', ...Array.from({ length: 9 }, (_, i) => `hosszuszo${i}`)].map((term) => ({ term }))
+    const picked = kbFallbackTerms(terms).map((row) => row.term)
+    assert.equal(picked.length, 8)
+    assert.ok(picked.every((term) => term.startsWith('hosszuszo')))
+    assert.deepEqual(kbFallbackTerms([{ term: 'az' }, { term: 'abc' }]).map((row) => row.term), ['abc'])
+  })
+
+  await check('kbMergeFallbackHits: ugyanazon a helyen a matched összevonódik, új hely score 0-val jön', () => {
+    const merged = kbMergeFallbackHits(
+      [{ id: 'a', matched: ['x'], score: 0.5 }],
+      [{ id: 'a', matched: ['y', 'x'], score: 0 }, { id: 'b', matched: ['y'], score: 9 }],
+      (hit) => hit.id,
+    )
+    assert.deepEqual(merged, [{ id: 'a', matched: ['x', 'y'], score: 0.5 }, { id: 'b', matched: ['y'], score: 0 }])
   })
 
   // ── kb_list_index (assembleKbIndex, §9.3) ─────────────────────────────────

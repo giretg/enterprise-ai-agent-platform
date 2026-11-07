@@ -160,6 +160,7 @@ jobs:
           npm run test:agent-product-links
           npm run test:wiki-inbox-upload
           npm run test:wiki-reader-trail
+          npm run test:kb-text-match
           npm run test:wiki-categories
           npm run test:wiki-sources
           npm run test:wiki-metadata
@@ -349,6 +350,14 @@ jobs:
       # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
       - name: Wiki console queries (Postgres)
         run: npm run test:wiki-console-db
+
+      # #1136: wiki-keresés az illesztési szabállyal, sorrenddel és jogokkal valódi Postgresen.
+      - name: Wiki search (Postgres)
+        run: npm run test:wiki-search-db
+
+      # #1136 F3: a kb_search illesztése és tartaléka a §5 táblázatokra, valódi szótárral.
+      - name: KB search matching (Postgres)
+        run: npm run test:kb-search-matching-db
 
       # #947: lelet-forgatókönyv végponttól végpontig (MCP HTTP + privát KB + törlés) valódi Postgresen.
       - name: Wiki end-to-end (Postgres + MCP)

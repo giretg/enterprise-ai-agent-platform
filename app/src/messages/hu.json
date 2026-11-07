@@ -505,6 +505,33 @@
           "inboxLink": "a Tálca fülön"
         }
       },
+      "search": {
+        "button": "Keresés a wikiben",
+        "title": "Keresés a wikiben",
+        "inputLabel": "Keresett szavak",
+        "placeholder": "Írj be egy vagy több szót",
+        "clear": "Keresés törlése",
+        "close": "Bezárás",
+        "hint": "Írj be egy vagy több szót. Az ékezet és a toldalék többnyire nem számít.",
+        "count": "{count} oldal",
+        "empty": "Nincs találat erre: {query}. Próbálj rövidebb alakot vagy kevesebb szót.",
+        "partialHeading": "Csak néhány szóra illik ({count})",
+        "missing": "Hiányzik: {words}",
+        "occurrences": "{count} találat a lapon",
+        "more": "További {count} oldal, szűkítsd a keresést.",
+        "error": "A keresés most nem sikerült.",
+        "retry": "Újra",
+        "loading": "Keresés…",
+        "resultsLabel": "Találatok",
+        "footer": "↑↓ léptetés · Enter megnyitás · Esc bezárás",
+        "bar": {
+          "position": "„{query}” · {current}/{total}",
+          "previous": "Előző találat",
+          "next": "Következő találat",
+          "results": "Találatok",
+          "clear": "Kiemelés kikapcsolása"
+        }
+      },
       "reader": {
         "exit": "Olvasó nézet bezárása",
         "back": "Vissza",

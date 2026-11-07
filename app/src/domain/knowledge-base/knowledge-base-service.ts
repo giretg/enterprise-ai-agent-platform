@@ -5,8 +5,11 @@ import type {
   AuditRepository,
   ConnectorRepository,
   DocumentRepository,
+  KbFallbackMode,
   KnowledgeArtifactRepository,
   KnowledgeChunkRepository,
+  KnowledgeChunkSearchHit,
+  KnowledgeRawHit,
 } from '@/repositories/interfaces'
 import {
   ensureAgentKnowledgeBase,
@@ -37,6 +40,7 @@ import {
   readKbPurpose,
   type KbGetPageResult,
 } from '@/lib/kb-retrieval'
+import { kbMergeFallbackHits, kbQueryTerms } from '@/lib/kb-text-match'
 import { buildOkfBundle, chunkOkfBundle } from '@/lib/kb-v3'
 import { validateOkfBundle } from '@/lib/kb-validator'
 import { renderPdfPages, PdfPageImageError } from '@/lib/kb-pdf-images'
@@ -44,6 +48,10 @@ import { isKnowledgeBaseVisibleTo } from '@/lib/wiki-access'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
 
 export const KB_MAX_FILE_BYTES = 25 * 1024 * 1024
+
+/** #1136 K2: a tartalék legfeljebb ennyit tehet hozzá egy kereséshez. */
+const KB_FALLBACK_TIMEOUT_MS = 2_000
+const KB_FALLBACK_TIMED_OUT = Symbol('kb-fallback-timeout')
 
 export type KnowledgeBaseDeps = {
   documents: DocumentRepository
@@ -610,11 +618,18 @@ export class KnowledgeBaseService {
     // Bővebb jelölt-halmaz, hogy az IDF-rangsor legyen miből válogasson.
     const candidates = Math.max(k * 4, 20)
     const connectorIds = [input.connectorId]
-    const [okfChunkHits, rawHits, artifacts] = await Promise.all([
+    const [directChunkHits, directRawHits, artifacts] = await Promise.all([
       this.deps.chunks.searchChunks(connectorIds, input.query, candidates),
       this.deps.documents.searchRaw(input.connectorId, input.query, candidates),
       this.deps.artifacts.findByConnector(input.connectorId, 'published'),
     ])
+    const { chunks: okfChunkHits, raw: rawHits } = await this.withFallbackHits({
+      connectorId: input.connectorId,
+      query: input.query,
+      limit: candidates,
+      chunks: directChunkHits,
+      raw: directRawHits,
+    })
     // #943: a wiki-konténer chunkjai wiki-oldalak — a találat ezt jelzi (kb_get_page path).
     const wikiArtifactIds = new Set(artifacts.filter((row) => row.format === 'llm_wiki').map((row) => row.id))
     const okfHits = assembleKbHits({
@@ -661,6 +676,61 @@ export class KnowledgeBaseService {
         ...(hit.source.filename ? { filename: maskKbSensitiveText(hit.source.filename) } : {}),
       } } : {}),
     }))
+  }
+
+  /**
+   * #1136 K2: a találat nélküli szavak tartaléka. Csak az ilyen szóra fut, előbb betű szerint,
+   * ami így sem talált, az tőalakkal. A hibája nem töri a keresést: marad, amit a fő keresés
+   * talált, a napló pedig szavak nélkül jelzi (a szó lehet személyes adat).
+   */
+  private async withFallbackHits(input: {
+    connectorId: string
+    query: string
+    limit: number
+    chunks: KnowledgeChunkSearchHit[]
+    raw: KnowledgeRawHit[]
+  }): Promise<{ chunks: KnowledgeChunkSearchHit[]; raw: KnowledgeRawHit[] }> {
+    const { connectorId, limit } = input
+    const missingFrom = (chunks: KnowledgeChunkSearchHit[], raw: KnowledgeRawHit[], terms: string[]) => {
+      const found = new Set([...chunks, ...raw].flatMap((hit) => hit.matched ?? []))
+      return terms.filter((term) => !found.has(term))
+    }
+    const missing = missingFrom(input.chunks, input.raw, kbQueryTerms(input.query))
+    if (missing.length === 0) return input
+    const merge = (chunks: KnowledgeChunkSearchHit[], raw: KnowledgeRawHit[]) => ({
+      chunks: kbMergeFallbackHits(input.chunks, chunks, (hit) => `${hit.artifactId}|${hit.path}|${hit.text}`),
+      raw: kbMergeFallbackHits(input.raw, raw, (hit) => `${hit.id}|${hit.section ?? ''}`),
+    })
+    /** A betű szerinti kör eredménye a tőalakos kör időtúllépésekor sem vész el. */
+    let best: { chunks: KnowledgeChunkSearchHit[]; raw: KnowledgeRawHit[] } = input
+    const run = async () => {
+      const scan = (terms: string[], mode: KbFallbackMode) =>
+        Promise.all([
+          this.deps.chunks.searchChunksFallback([connectorId], terms, mode, limit),
+          this.deps.documents.searchRawFallback(connectorId, terms, mode, limit),
+        ])
+      const [literalChunks, literalRaw] = await scan(missing, 'literal')
+      best = merge(literalChunks, literalRaw)
+      const stillMissing = missingFrom(literalChunks, literalRaw, missing)
+      if (stillMissing.length === 0) return best
+      const [stemChunks, stemRaw] = await scan(stillMissing, 'stem')
+      return merge([...literalChunks, ...stemChunks], [...literalRaw, ...stemRaw])
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        run(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(KB_FALLBACK_TIMED_OUT), KB_FALLBACK_TIMEOUT_MS)
+        }),
+      ])
+    } catch (error) {
+      const reason = error === KB_FALLBACK_TIMED_OUT ? 'timeout' : error instanceof Error ? error.name : 'unknown'
+      console.warn('[kb-search] a tartalék kimaradt', { reason, terms: missing.length })
+      return best
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   async listIndex(input: {

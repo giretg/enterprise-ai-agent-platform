@@ -2,6 +2,8 @@ import { parseWikiReprocess } from '@/lib/wiki-access'
 import { Prisma, type AgentWiki, type WikiChangeSet, type WikiPage } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { readKbPurpose } from '@/lib/kb-retrieval'
+import { kbPgStemDict } from '@/lib/kb-language'
+import { KB_FOLD_FROM, KB_FOLD_TO, kbLiteralPattern, kbTermNeedle, kbTermPattern, kbTextTerm } from '@/lib/kb-text-match'
 import type {
   PrivateKnowledgeBasePurgeCounts,
   PrivateKnowledgeBaseRow,
@@ -16,6 +18,7 @@ import type {
   WikiConfigApplyPlan,
   WikiConfigRepository,
   WikiInboxSummary,
+  WikiPageSearchResult,
   WikiRepository,
   WikiStructureRepository,
 } from '../interfaces'
@@ -180,6 +183,83 @@ export class PostgresWikiRepository implements WikiRepository {
       orderBy: [{ category: 'asc' }, { path: 'asc' }],
       ...(filter.limit ? { take: filter.limit } : {}),
     })
+  }
+
+  async searchPages(connectorId: string, query: { terms: string[]; language: string; limit: number }): Promise<WikiPageSearchResult> {
+    if (query.terms.length === 0) return { terms: [], total: 0, hits: [] }
+    const dictionary = Prisma.raw(`'${kbPgStemDict(query.language)}'::regdictionary`)
+    const lexemes = await prisma.$queryRaw<Array<{ term: string; lexemes: string[] | null }>>`
+      SELECT t.term, ts_lexize(${dictionary}, t.term) AS lexemes
+      FROM unnest(${query.terms}::text[]) AS t(term)
+    `
+    const lexemeOf = new Map(lexemes.map((row) => [row.term, row.lexemes?.[0] ?? null]))
+    const terms = query.terms.map((term) => kbTextTerm(term, lexemeOf.get(term)))
+    const fold = (text: Prisma.Sql) => Prisma.sql`translate(lower(${text}), ${KB_FOLD_FROM}, ${KB_FOLD_TO})`
+    const phrase = terms.map((term) => term.folded).join(' ')
+    // ponytail: pásztázás index nélkül (#1136 D5); ha kinövi a keretet, pg_trgm GIN a hajtogatott kifejezésre.
+    const rows = await prisma.$queryRaw<
+      Array<{
+        path: string
+        title: string
+        summary: string
+        category: string | null
+        body: string
+        matched: bigint[]
+        occurrences: bigint
+        total: bigint
+      }>
+    >`
+      SELECT p.path, p.title, p.summary, p.category, p.body, m.matched, m.occurrences,
+             count(*) OVER () AS total
+      FROM wiki_pages p
+      -- OFFSET 0: e nélkül a tervező beinline-olja, és szavanként újra hajtogatná a szöveget.
+      CROSS JOIN LATERAL (
+        SELECT ${fold(Prisma.sql`p.title`)} AS title,
+               ${fold(Prisma.sql`p.summary`)} AS summary,
+               ${fold(Prisma.sql`p.title || E'\n' || p.summary || E'\n' || p.body`)} AS hay
+        OFFSET 0
+      ) f
+      CROSS JOIN LATERAL (
+        SELECT coalesce(array_agg(t.ord ORDER BY t.ord) FILTER (WHERE c.n > 0), '{}') AS matched,
+               coalesce(sum(c.n), 0)::bigint AS occurrences,
+               count(*) FILTER (WHERE c.n > 0 AND f.title ~ t.pattern) AS in_title,
+               count(*) FILTER (WHERE c.n > 0 AND f.summary ~ t.pattern) AS in_summary,
+               count(*) FILTER (WHERE c.n > 0 AND f.hay ~ t.literal) AS literal
+        FROM unnest(${terms.map(kbTermPattern)}::text[], ${terms.map(kbLiteralPattern)}::text[], ${terms.map(kbTermNeedle)}::text[])
+          WITH ORDINALITY AS t(pattern, literal, needle, ord)
+        CROSS JOIN LATERAL (
+          SELECT CASE WHEN position(t.needle IN f.hay) > 0 THEN regexp_count(f.hay, t.pattern) ELSE 0 END AS n
+        ) c
+      ) m
+      WHERE p.connector_id = ${connectorId}::uuid
+        AND p.status = CAST('published' AS "WikiPageStatus")
+        AND cardinality(m.matched) > 0
+      ORDER BY cardinality(m.matched) DESC,
+               (position(${phrase} IN f.title) > 0) DESC,
+               (m.in_title = ${terms.length}) DESC,
+               m.in_title DESC,
+               m.in_summary DESC,
+               -- A szintetizált oldal előzze a forrás-kivonatot.
+               (p.type <> CAST('source' AS "WikiPageType")) DESC,
+               m.literal DESC,
+               m.occurrences DESC,
+               p.updated_at DESC,
+               p.path ASC
+      LIMIT ${query.limit}
+    `
+    return {
+      terms,
+      total: Number(rows[0]?.total ?? 0),
+      hits: rows.map((row) => ({
+        path: row.path,
+        title: row.title,
+        summary: row.summary,
+        category: row.category,
+        body: row.body,
+        matchedTerms: row.matched.map((ord) => Number(ord) - 1),
+        occurrences: Number(row.occurrences),
+      })),
+    }
   }
 
   async createPage(input: Parameters<WikiRepository['createPage']>[0]): Promise<WikiPage> {
