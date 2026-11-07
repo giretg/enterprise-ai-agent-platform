@@ -1,0 +1,35 @@
+name: PR-leírás
+
+# Külön workflow: az `edited` esemény a leírás javításakor is újrafuttatja,
+# a nagy CI-t viszont nem indítja el újra.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  merge-danger:
+    name: Merge Danger és kockázat
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kötelező sorok ellenőrzése
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          status=0
+          require() {
+            if ! printf '%s\n' "$PR_BODY" | grep -qE "$1"; then
+              echo "::error::Hiányzik a PR leírásából: $2"
+              status=1
+            fi
+          }
+          require '\*\*Door:\*\* *`?(one-way|two-way)' '**Door:** one-way vagy two-way'
+          require '\*\*Blast Radius:\*\* *[^ ]' '**Blast Radius:** <hatás>'
+          require '\*\*Kockázat:\*\* *(zöld|sárga|piros)' '**Kockázat:** <zöld|sárga|piros> – <kiváltó ok>'
+          if [ "$status" -ne 0 ]; then
+            echo "A szabály: app/AGENTS.md (PR készítés) és docs/agents/pr-risk.md"
+          fi
+          exit "$status"
