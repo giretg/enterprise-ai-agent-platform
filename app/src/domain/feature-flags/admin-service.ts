@@ -315,7 +315,8 @@ export class FeatureFlagAdminService {
       this.deps.logAuditFailure?.(input.key, error)
       // Bővítés nem történhet audit nélkül. A leállítás és a szűkítés igen: a védelem nem állhat meg az audit miatt.
       const stopping = current.mode !== 'off' && next.mode === 'off'
-      const narrowing = plan.gains.length === 0 && (stopping || plan.loses.length > 0)
+      const expandsToFutureTenants = current.mode !== 'all' && next.mode === 'all'
+      const narrowing = !expandsToFutureTenants && plan.gains.length === 0 && (stopping || plan.loses.length > 0)
       if (!narrowing) return { status: 'audit_failed' }
       const result = await this.deps.store.commit({ ...commit, audit: [] })
       if (result === 'conflict') return { status: 'conflict' }

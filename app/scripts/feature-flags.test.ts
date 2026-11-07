@@ -19,6 +19,7 @@ import { createFeatureFlagGateClosed, createFeatureGates, createToolFeatureGate,
 import {
   FEATURE_FLAGS,
   RETIRED_FEATURE_FLAG_KEYS,
+  isRealDate,
   validateFeatureFlagRegistry,
   type FeatureFlagDefinition,
 } from '../src/domain/feature-flags/registry'
@@ -349,6 +350,12 @@ async function main() {
   })
 
   console.log('Törlési határidő (60 nap)')
+  await check('Nem létező naptári nap nem értelmezhető át más határidővé', () => {
+    assert.equal(isRealDate('2027-02-31'), false)
+    assert.equal(isRealDate('2027-02-29'), false)
+    assert.equal(isRealDate('2028-02-29'), true)
+    assert.equal(isRealDate('2027-03-03'), true)
+  })
   await check('Az első Mindenkinek állapot indítja, újabb teljes bevezetés nem tolja el', async () => {
     const { service, store } = setup()
     await service.apply({ key: KEY, expectedVersion: 0, mode: 'all', justification: 'teljes', actor: superadmin })
@@ -432,6 +439,15 @@ async function main() {
     const result = await service.apply({ key: KEY, expectedVersion: 0, tenantAccess: [{ tenantId: A, access: 'included' }], justification: 'előkészítés', actor: operator })
     assert.equal(result.status, 'audit_failed')
     assert.equal(store.rows.size, 0)
+  })
+  await check('Új cégekre bővítés sem megy át audit nélkül, ha minden jelenlegi céget kizárnak', async () => {
+    const { service, store, tenants } = setup()
+    await service.apply({ key: KEY, expectedVersion: 0, mode: 'selected', tenantAccess: [{ tenantId: A, access: 'included' }], justification: 'indul', actor: operator })
+    const before = await store.find(KEY)
+    store.failAudit = true
+    const result = await service.apply({ key: KEY, expectedVersion: 1, mode: 'all', tenantAccess: tenants.map(({ id }) => ({ tenantId: id, access: 'excluded' })), justification: 'új cégeknek', actor: superadmin })
+    assert.equal(result.status, 'audit_failed')
+    assert.deepEqual(await store.find(KEY), before)
   })
   await check('Leállítás és szűkítés audit-kiesésnél is érvényesül, de látható hibát ad', async () => {
     const { service, store, invalidations } = setup()

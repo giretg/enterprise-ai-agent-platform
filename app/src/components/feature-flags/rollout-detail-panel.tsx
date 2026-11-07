@@ -361,12 +361,13 @@ export function RolloutDetailPanel(props: {
 
       <dialog
         ref={dialogRef}
+        aria-labelledby="rollout-review-title"
         onClose={() => setReview(null)}
         className="m-auto w-[min(36rem,calc(100vw-2rem))] rounded-xl border border-line bg-paper p-5 text-ink backdrop:bg-ink/40"
       >
         {review ? (
           <div className="space-y-4">
-            <h2 className="font-display text-lg font-semibold tracking-tight">{review.stop ? t('stop.title') : t('review.title')}</h2>
+            <h2 id="rollout-review-title" className="font-display text-lg font-semibold tracking-tight">{review.stop ? t('stop.title') : t('review.title')}</h2>
             {review.gains.length === 0 && review.loses.length === 0 ? (
               <p className="text-sm text-ink-soft">{t('review.none')}</p>
             ) : null}

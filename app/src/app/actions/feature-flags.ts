@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { requirePlatformRole } from '@/auth/tenant-context'
 import { services } from '@/domain/gateway-services'
+import { isRealDate } from '@/domain/feature-flags/registry'
 import { fail, ok } from '@/lib/result'
 import { repositories } from '@/repositories/postgres'
 
@@ -94,8 +95,8 @@ export async function extendRolloutDeadlineAction(input: z.infer<typeof extendSc
   try {
     const ctx = await requirePlatformRole('platform_operator')
     const parsed = extendSchema.parse(input)
+    if (!isRealDate(parsed.removeBy)) return ok({ status: 'invalid_date' as const })
     const removeBy = new Date(`${parsed.removeBy}T23:59:59Z`)
-    if (Number.isNaN(removeBy.getTime())) return ok({ status: 'invalid_date' as const })
     const result = await services.featureFlags.extendDeadline({
       ...parsed,
       removeBy,
