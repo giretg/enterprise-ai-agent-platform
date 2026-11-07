@@ -483,6 +483,7 @@ const REDACTION_CATEGORY_LABELS: Record<string, string> = {
   taj: 'TAJ',
   adoszam: 'adószám',
   email: 'email',
+  account: 'bankszámlaszám',
 }
 
 type RedactionSpan = TextSpan & { category: string }
@@ -575,6 +576,15 @@ function collectRedactionSpans(text: string): RedactionSpan[] {
 
   for (const { re, category } of SENSITIVE_PATTERNS) {
     for (const span of collectTextSpans(text, re)) spans.push({ ...span, category })
+  }
+
+  // A formázott GIRO bankszámlaszám (8-8 / 8-8-8) ma is felismert (ACCOUNT_RE), de eddig csak a
+  // gateway tokenize-útján (collectSensitivityMatchSpans); a redakciós úton nyersen maradt, így a
+  // hang-átirat egyetlen kapuján (redactSensitiveText) átcsúszott. A telefonszám SZÁNDÉKOSAN kimarad
+  // (visszahíváshoz kell, tokenize-kategória), ezért csak az account-mintát vesszük ide.
+  for (const span of collectTextSpans(text, ACCOUNT_RE)) {
+    if (isWithinSpan(span.start, span.end, spans)) continue
+    spans.push({ ...span, category: 'account' })
   }
 
   return spans

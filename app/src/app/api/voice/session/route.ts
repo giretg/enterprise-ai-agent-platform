@@ -42,7 +42,7 @@ export async function POST(request: Request): Promise<Response> {
     body = await readBoundedJson(request, VOICE_SESSION_MAX_BODY_BYTES)
   } catch (error) {
     // Túl nagy törzs → 413 (OOM ellen); érvénytelen JSON → null, a domain bad_request-ként kezeli.
-    if (error instanceof RequestTooLargeError) return NextResponse.json({ error: 'bad_request' }, { status: 413 })
+    if (error instanceof RequestTooLargeError) return NextResponse.json({ error: 'request_too_large' }, { status: 413 })
     body = null
   }
   const result = await startVoiceSession(voiceSessionDeps(origin), {

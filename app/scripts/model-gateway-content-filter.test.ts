@@ -349,6 +349,17 @@ async function main() {
     }
   })
 
+  await check('redakció: a formázott GIRO bankszámlaszám is kimarad; a telefonszám szándékosan megmarad', () => {
+    // A számlaszám a hang-átirat egyetlen kapuján (redactSensitiveText) eddig átcsúszott.
+    for (const value of ['11773016-12345678', '11773016-12345678-00000000']) {
+      const { text, redactedCount } = redactSensitiveText(`utald a ${value} számlára`)
+      assert.equal(redactedCount, 1, value)
+      assert.ok(!text.includes(value) && text.includes('«redaktált:bankszámlaszám»'), value)
+    }
+    // A telefonszám tokenize-kategória (visszahíváshoz kell) — a redaktor NEM takarja ki.
+    assert.equal(redactSensitiveText('hívj a 06 30 123 4567 számon').redactedCount, 0)
+  })
+
   await check('letöltő-URL ?token= nem titok; ismert prefix, JWT, PEM, Bearer igen', async () => {
     const download =
       'https://crm.example.com/reports/exports/11111111-1111-4111-8111-111111111111/download?token=D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ'
