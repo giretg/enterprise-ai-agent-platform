@@ -137,13 +137,14 @@ export class WikiCommentNotOpenError extends Error {
   }
 }
 
-/** A jóváhagyó és a változásnézet: a módosítást kérő kommentek a teljes szöveggel. */
+/** A jóváhagyó és a változásnézet: a módosítást kérő vagy benne forrásként új kommentek a teljes szöveggel. */
 export async function commentsRequestingChange(
   deps: { comments: Pick<WikiCommentRepository, 'listForChangeSet'>; userLabels(ids: string[]): Promise<Map<string, string>> },
   connectorId: string,
   changeSetId: string,
+  citedCommentIds: string[] = [],
 ) {
-  const rows = await deps.comments.listForChangeSet(connectorId, changeSetId)
+  const rows = await deps.comments.listForChangeSet(connectorId, changeSetId, citedCommentIds)
   const users = await deps.userLabels(rows.map((row) => row.authorUserId))
   return rows.map((row) => ({
     id: row.id,

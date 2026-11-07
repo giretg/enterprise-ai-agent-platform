@@ -99,7 +99,7 @@ export interface WikiCommentRepository {
   activeRoles(tenantId: string, userIds: string[]): Promise<Map<string, string>>
   findForWrite(wikiId: string, ids: string[]): Promise<WikiCommentForWrite[]>
   /** A jóváhagyó kártyához és a változásnézethez: a módosítást kérő kommentek. */
-  listForChangeSet(connectorId: string, changeSetId: string): Promise<WikiCommentRow[]>
+  listForChangeSet(connectorId: string, changeSetId: string, citedCommentIds?: string[]): Promise<WikiCommentRow[]>
   boundToChangeSet(changeSetId: string): Promise<string[]>
   /** A „Módosítás megnyitása” linkhez: az alkalmazott change-setek sorszáma. */
   changeSeqs(changeSetIds: string[]): Promise<Map<string, number | null>>
@@ -521,9 +521,9 @@ export class PostgresWikiCommentRepository implements WikiCommentRepository {
     }))
   }
 
-  listForChangeSet(connectorId: string, changeSetId: string): Promise<WikiCommentRow[]> {
+  listForChangeSet(connectorId: string, changeSetId: string, citedCommentIds: string[] = []): Promise<WikiCommentRow[]> {
     return prisma.wikiComment.findMany({
-      where: { connectorId, OR: [{ changeSetId }, { events: { some: { changeSetId } } }] },
+      where: { connectorId, OR: [{ changeSetId }, { events: { some: { changeSetId } } }, { id: { in: citedCommentIds } }] },
       include: withPageAndEvents,
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       take: 50,

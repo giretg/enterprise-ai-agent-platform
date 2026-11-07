@@ -38,6 +38,7 @@ import {
   isDocumentSource,
   isHumanNoteSource,
   isWikiCommentSource,
+  newlyCitedCommentIds,
   readWikiSources,
   visibleWikiSources,
   renderWikiIndex,
@@ -1400,8 +1401,9 @@ export class WikiConsoleService {
       preview.pages.map((page) => this.describeSources(actor, preview.connector.id, dedupeSources(page.after.sources))),
     )
     const agentNames = await this.deps.console.agentNames(actor.tenantId, preview.changeSet.agentId ? [preview.changeSet.agentId] : [])
+    const citedCommentIds = preview.pages.flatMap((page) => newlyCitedCommentIds(page.before?.sources ?? [], page.after.sources))
     const comments = this.deps.comments
-      ? await commentsRequestingChange({ comments: this.deps.comments, userLabels: (ids) => this.deps.console.userLabels(ids) }, preview.connector.id, changeSetId)
+      ? await commentsRequestingChange({ comments: this.deps.comments, userLabels: (ids) => this.deps.console.userLabels(ids) }, preview.connector.id, changeSetId, citedCommentIds)
       : []
     return {
       /** #1129 S3: a jóváhagyó a kérést és a módosítást együtt látja. */
