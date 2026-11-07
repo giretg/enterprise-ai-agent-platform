@@ -68,8 +68,10 @@ import {
   isMembersKnowledgeBase,
   isPrivateKnowledgeBase,
   ownerAgentIdForKnowledgeBase,
+  publicAssistantAgentIdForKnowledgeBase,
   type WikiDecider,
 } from '@/lib/wiki-access'
+import { normalizeKbPurpose } from '@/lib/kb-retrieval'
 import { KB_MAX_FILE_BYTES, type KnowledgeBaseService } from './knowledge-base-service'
 import { privateKnowledgeBaseDisplayName, type WikiAccessService } from './wiki-access-service'
 import type { WikiService } from './wiki-service'
@@ -81,6 +83,9 @@ export const MAX_WIKI_SCHEMA_CHARS = WIKI_MD_MAX_CHARS
 /** D17: ennyi után a váró tétel kiemelt a wiki gazdájának. */
 export const WIKI_INBOX_STALE_MS = 3 * 24 * 60 * 60 * 1000
 const MAX_KB_NAME = 120
+const KB_FILES_LIMIT = 1000
+/** A nevet a felület fordítja, ez a tartalék, ha a nyilvános asszisztens már nem található. */
+export const PUBLIC_KB_FALLBACK_NAME = 'Public knowledge base'
 
 export type WikiConsoleActor = { userId: string; tenantId: string; role: UserRole | string; assumed?: boolean }
 
@@ -91,7 +96,7 @@ export class WikiConsoleError extends Error {
   }
 }
 
-export type WikiKbKind = 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+export type WikiKbKind = 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
 
 /** #1061 F2: egy forrás a felületen (dokumentum, emberi rögzítés, vagy nem látható másik tudástár). */
 export type WikiSourceView =
@@ -180,6 +185,7 @@ function accessFor(
 export function wikiKbKind(connector: Pick<Connector, 'name' | 'visibility'>): WikiKbKind {
   if (isPrivateKnowledgeBase(connector)) return 'private'
   if (isMembersKnowledgeBase(connector)) return 'members'
+  if (publicAssistantAgentIdForKnowledgeBase(connector.name)) return 'public'
   if (connector.name === KB_CATALOG_CONNECTOR_NAME) return 'catalog'
   if (ownerAgentIdForKnowledgeBase(connector.name)) return 'agent'
   return 'shared'
@@ -277,6 +283,10 @@ export class WikiConsoleService {
       const agent = await this.deps.agents.findById(agentId, connector.tenantId)
       return agent?.name ?? 'Agent knowledge base'
     }
+    if (kind === 'public') {
+      const agent = await this.deps.agents.findById(publicAssistantAgentIdForKnowledgeBase(connector.name)!, connector.tenantId)
+      return agent?.name ?? PUBLIC_KB_FALLBACK_NAME
+    }
     const config = connector.config && typeof connector.config === 'object' && !Array.isArray(connector.config)
       ? (connector.config as Record<string, unknown>)
       : {}
@@ -296,8 +306,11 @@ export class WikiConsoleService {
       visible.filter((row) => accessFor(actor, row).view).map((row) => row.connectorId),
       { now: this.now() },
     )
-    const agentIds = visible.map((row) => ownerAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id)
-    const agentNames = await this.deps.console.agentNames(actor.tenantId, agentIds)
+    const agentIds = visible.map((row) => namedAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id)
+    const [agentNames, agentUsers] = await Promise.all([
+      this.deps.console.agentNames(actor.tenantId, agentIds),
+      this.deps.console.listKnowledgeBaseAgents(actor.tenantId),
+    ])
     return visible.map((row) => {
       const access = accessFor(actor, row)
       const kind = wikiKbKind(row)
@@ -307,15 +320,10 @@ export class WikiConsoleService {
         return { connectorId: row.connectorId, kind, metadataOnly: true as const, ownerLabel: row.ownerLabel, ...stats }
       }
       const counts = summary.wikis.find((item) => item.connectorId === row.connectorId)
-      const agentId = ownerAgentIdForKnowledgeBase(row.name)
-      const name =
-        kind === 'private'
-          ? privateKnowledgeBaseDisplayName({ config: row.config }) ?? 'Private knowledge base'
-          : kind === 'catalog'
-            ? 'Company knowledge base'
-            : kind === 'agent'
-              ? agentNames.get(agentId!) ?? 'Agent knowledge base'
-              : configDisplayName(row.config) ?? row.name
+      const name = agentWikiName(row, kind, agentNames)
+      const users = agentUsers.filter((user) => user.connectorId === row.connectorId && effectiveWikiAccess(user) !== 'none')
+      // A nyilvános asszisztens nem kötésen át éri el a saját tudásbázisát, ezért külön számít.
+      const usedBy = [...new Set([...(kind === 'public' && name !== PUBLIC_KB_FALLBACK_NAME ? [name] : []), ...users.map((user) => user.agentName)])]
       return {
         connectorId: row.connectorId,
         kind,
@@ -324,6 +332,7 @@ export class WikiConsoleService {
         ownerLabel: kind === 'private' ? row.ownerLabel : null,
         template: configTemplate(row.config),
         canManage: access.manage,
+        usedBy,
         // A lista-jelvény a tennivalót számolja, ebbe az újrafeldolgozásra várók is beletartoznak.
         inbox: { pending: (counts?.pending ?? 0) + (counts?.reprocess ?? 0), inProgress: counts?.inProgress ?? 0 },
         ...stats,
@@ -416,6 +425,8 @@ export class WikiConsoleService {
       wikiId,
       kind: wikiKbKind(connector),
       name: await this.displayName(connector),
+      /** A munkatárs, akinek az adatlapján a fájlok kezelhetők (saját vagy nyilvános tudásbázisnál). */
+      ownerAgentId: namedAgentIdForKnowledgeBase(connector.name),
       private: isPrivateKnowledgeBase(connector),
       template: configTemplate(connector.config),
       canManage: access.manage,
@@ -613,6 +624,32 @@ export class WikiConsoleService {
     const doc = await this.deps.console.findSourceDocument(connector.id, documentId)
     if (!doc) throw new WikiConsoleError('not_found')
     return { documentId: doc.id, filename: doc.filename, text: doc.extractedText ?? '', createdAt: doc.createdAt.toISOString() }
+  }
+
+  // -------------------------------------------------------------------------
+  // Fájlok
+
+  /** #1139: a tudásbázis összes fájlja, a wikibe szántak és a csak feltöltöttek is. */
+  async listFiles(actor: WikiConsoleActor, connectorId: string) {
+    const { connector } = await this.load(actor, connectorId, 'view')
+    const now = this.now()
+    const rows = await this.deps.console.listFiles(connector.id, KB_FILES_LIMIT)
+    return {
+      truncated: rows.length === KB_FILES_LIMIT,
+      files: rows.map((row) => ({
+        id: row.id,
+        filename: row.filename,
+        purpose: normalizeKbPurpose(row.purpose),
+        bytes: row.bytes,
+        createdAt: row.createdAt.toISOString(),
+        kbLanguageOverride: row.kbLanguageOverride,
+        // Ugyanaz a szabály, mint a tálcánál: a lejárt foglalás újra várakozik.
+        wikiState:
+          row.wikiStatus === 'in_progress' && row.wikiClaimExpiresAt && row.wikiClaimExpiresAt <= now
+            ? ('pending' as const)
+            : row.wikiStatus ?? (row.processingMode === 'okf' ? ('paged' as const) : ('none' as const)),
+      })),
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1157,7 +1194,7 @@ export class WikiConsoleService {
     ])
     const agentNames = await this.deps.console.agentNames(
       actor.tenantId,
-      rows.map((row) => ownerAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id),
+      rows.map((row) => namedAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id),
     )
     return rows
       .filter((row) => row.lifecycleState === 'active')
@@ -1206,7 +1243,7 @@ export class WikiConsoleService {
     )
     const agentNames = await this.deps.console.agentNames(
       actor.tenantId,
-      openable.map((row) => ownerAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id),
+      openable.map((row) => namedAgentIdForKnowledgeBase(row.name)).filter((id): id is string => !!id),
     )
     const byAgent = new Map<string, Array<{ connectorId: string; kind: WikiKbKind; name: string; hasPages: boolean }>>()
     for (const row of openable) {
@@ -1402,15 +1439,21 @@ function dedupeSources(refs: WikiSourceRef[]): WikiSourceRef[] {
   })
 }
 
+/** A munkatárs, akiről a tudásbázis a nevét kapja. */
+function namedAgentIdForKnowledgeBase(connectorName: string): string | null {
+  return ownerAgentIdForKnowledgeBase(connectorName) ?? publicAssistantAgentIdForKnowledgeBase(connectorName)
+}
+
 function agentWikiName(row: Pick<Connector, 'name' | 'config'>, kind: WikiKbKind, agentNames: Map<string, string>): string {
   if (kind === 'private') return privateKnowledgeBaseDisplayName({ config: row.config }) ?? 'Private knowledge base'
   if (kind === 'catalog') return 'Company knowledge base'
   if (kind === 'agent') return agentNames.get(ownerAgentIdForKnowledgeBase(row.name)!) ?? 'Agent knowledge base'
+  if (kind === 'public') return agentNames.get(publicAssistantAgentIdForKnowledgeBase(row.name)!) ?? PUBLIC_KB_FALLBACK_NAME
   return configDisplayName(row.config) ?? row.name
 }
 
 function kindOrder(kind: WikiKbKind): number {
-  return { agent: 0, private: 1, members: 2, catalog: 3, shared: 4 }[kind]
+  return { agent: 0, private: 1, members: 2, catalog: 3, shared: 4, public: 5 }[kind]
 }
 
 const KB_NAME_PREFIX = { private: 'kb:private:', shared: 'kb:shared:', members: 'kb:members:' } as const

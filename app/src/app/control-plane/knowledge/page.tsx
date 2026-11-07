@@ -2,11 +2,7 @@ import { getTranslations } from 'next-intl/server'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
-import { getKnowledgeCatalogLanguage, listKnowledgeCatalog } from '@/app/actions/platform'
-import { KnowledgeCatalogManager } from '@/components/knowledge/knowledge-catalog-manager'
-import { KnowledgeLanguageCard } from '@/components/knowledge/knowledge-language-card'
-import { resolveKbLanguage } from '@/lib/kb-language'
-import { listKnowledgeBasesAction } from '@/app/actions/knowledge-wiki'
+import { ensureKnowledgeCatalogAction, listKnowledgeBasesAction } from '@/app/actions/knowledge-wiki'
 import { KnowledgeBasesList } from '@/components/knowledge/wiki/knowledge-bases-list'
 
 export const dynamic = 'force-dynamic'
@@ -15,11 +11,12 @@ export default async function KnowledgeCatalogPage() {
   const ctx = await getAuthContext()
   const t = await getTranslations('ControlPlane.knowledge')
   const canView = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const canManage = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  // #1139: a közös tudásbázis lazán jön létre, de a feltöltője már a saját Fájlok fülén van.
+  if (canManage) await ensureKnowledgeCatalogAction()
   // #946: a tudásbázis-lista (benne a saját privát tudásbázisok) mindenkinek látszik.
   const bases = await listKnowledgeBasesAction()
-  const basesCard = bases.success ? (
-    <KnowledgeBasesList rows={bases.data} canCreateShared={hasMinimumRole(ctx?.activeTenantRole, 'admin')} />
-  ) : null
+  const basesCard = bases.success ? <KnowledgeBasesList rows={bases.data} canCreateShared={canManage} /> : null
   if (!canView) {
     return (
       <div className="space-y-6">
@@ -30,9 +27,6 @@ export default async function KnowledgeCatalogPage() {
       </div>
     )
   }
-  const res = await listKnowledgeCatalog()
-  const lang = await getKnowledgeCatalogLanguage()
-  const canManage = hasMinimumRole(ctx?.activeTenantRole, 'admin')
 
   return (
     <div className="space-y-8">
@@ -42,22 +36,10 @@ export default async function KnowledgeCatalogPage() {
         <p className="mt-2 max-w-2xl text-ink-soft">{t('body')}</p>
       </div>
 
-      {basesCard}
-
-      {lang.success ? (
-        <KnowledgeLanguageCard
-          initialLanguage={resolveKbLanguage(lang.data.kbLanguage)}
-          tenantLanguage={resolveKbLanguage(lang.data.tenantLanguage)}
-          canManage={canManage}
-        />
-      ) : null}
-
-      {!res.success ? (
+      {basesCard ?? (
         <Card>
-          <p className="text-sm text-coral">{res.error ?? t('loadFailed')}</p>
+          <p className="text-sm text-coral">{t('loadFailed')}</p>
         </Card>
-      ) : (
-        <KnowledgeCatalogManager documents={res.data} canManage={canManage} />
       )}
     </div>
   )

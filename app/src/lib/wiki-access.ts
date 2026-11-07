@@ -24,6 +24,7 @@ export type KbVisibility = (typeof KB_VISIBILITIES)[number]
 
 export const KB_CATALOG_CONNECTOR_NAME = 'kb:catalog'
 const OWNED_KB_NAME = /^kb:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+const PUBLIC_KB_NAME = /^kb:public:([0-9a-f-]{36})$/i
 
 /** A snapshot `connectors[]` sorának a wikire vonatkozó része. */
 export type WikiSnapshotConnector = {
@@ -335,6 +336,12 @@ function deniedReason(need: WikiNeed): WikiTargetDenied['reason'] {
 export function ownerAgentIdForKnowledgeBase(connectorName: string | null | undefined): string | null {
   if (!connectorName) return null
   return OWNED_KB_NAME.exec(connectorName)?.[1]?.toLowerCase() ?? null
+}
+
+/** A nyilvános asszisztens automatikusan létrejött tudásbázisa `kb:public:<agentId>` néven él. */
+export function publicAssistantAgentIdForKnowledgeBase(connectorName: string | null | undefined): string | null {
+  if (!connectorName) return null
+  return PUBLIC_KB_NAME.exec(connectorName)?.[1]?.toLowerCase() ?? null
 }
 
 export type WikiApproverScope =

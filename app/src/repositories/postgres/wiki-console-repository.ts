@@ -66,8 +66,26 @@ export type WikiConsoleAgentBindingRow = {
   pageCount: number
 }
 
+export type WikiConsoleFileRow = {
+  id: string
+  filename: string
+  purpose: string | null
+  bytes: number
+  createdAt: Date
+  kbLanguageOverride: string | null
+  processingMode: string | null
+  wikiStatus: 'pending' | 'in_progress' | 'processed' | 'skipped' | null
+  wikiClaimExpiresAt: Date | null
+}
+
 export interface WikiConsoleRepository {
   listKnowledgeBases(tenantId: string): Promise<WikiConsoleKbRow[]>
+  /** A tenant nem nyugdíjazott munkatársainak tudástár-kötései; a lista „ki használja” oszlopához. */
+  listKnowledgeBaseAgents(
+    tenantId: string,
+  ): Promise<Array<{ connectorId: string; agentName: string; accessMode: 'read' | 'write'; wikiAccess: 'none' | 'read' | 'submit' | 'write' }>>
+  /** A legújabb elöl. A nagy mezőket (szöveg, kinyerési metaadat) nem tölti be. */
+  listFiles(connectorId: string, limit: number): Promise<WikiConsoleFileRow[]>
   /** A megadott agentek aktív tudástár-kötései (a munkatárs-kártyák egyszerre kérik). */
   listAgentKnowledgeBindings(tenantId: string, agentIds: string[]): Promise<WikiConsoleAgentBindingRow[]>
   listInboxItems(connectorId: string, input: { now: Date; limit?: number }): Promise<WikiConsoleInboxRow[]>
@@ -134,6 +152,55 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
       sourceCount: Number(row.source_count),
       pageCount: Number(row.page_count),
       bytes: Number(row.bytes ?? 0),
+    }))
+  }
+
+  async listKnowledgeBaseAgents(tenantId: string) {
+    const rows = await prisma.agentConnector.findMany({
+      where: {
+        connector: { tenantId, type: 'knowledge_base' },
+        agent: { tenantId, status: { not: 'retired' } },
+      },
+      select: { connectorId: true, accessMode: true, wikiAccess: true, agent: { select: { name: true } } },
+      orderBy: { agent: { name: 'asc' } },
+    })
+    return rows.map(({ agent, ...row }) => ({ ...row, agentName: agent.name }))
+  }
+
+  async listFiles(connectorId: string, limit: number): Promise<WikiConsoleFileRow[]> {
+    const rows = await prisma.$queryRaw<
+      Array<{
+        id: string
+        filename: string
+        purpose: string | null
+        bytes: bigint
+        created_at: Date
+        kb_language_override: string | null
+        processing_mode: string | null
+        wiki_status: WikiConsoleFileRow['wikiStatus']
+        wiki_claim_expires_at: Date | null
+      }>
+    >(Prisma.sql`
+      SELECT d.id, d.filename, d.metadata->>'purpose' AS purpose,
+             COALESCE(octet_length(s.data), octet_length(d.extracted_text), 0)::bigint AS bytes,
+             d.created_at, d.kb_language_override, d.processing_mode::text AS processing_mode,
+             d.wiki_status::text AS wiki_status, d.wiki_claim_expires_at
+      FROM documents d
+      LEFT JOIN document_source_files s ON s.document_id = d.id
+      WHERE d.connector_id = ${connectorId}::uuid
+      ORDER BY d.created_at DESC, d.id
+      LIMIT ${limit}
+    `)
+    return rows.map((row) => ({
+      id: row.id,
+      filename: row.filename,
+      purpose: row.purpose,
+      bytes: Number(row.bytes),
+      createdAt: row.created_at,
+      kbLanguageOverride: row.kb_language_override,
+      processingMode: row.processing_mode,
+      wikiStatus: row.wiki_status,
+      wikiClaimExpiresAt: row.wiki_claim_expires_at,
     }))
   }
 

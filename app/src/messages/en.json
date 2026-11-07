@@ -471,6 +471,37 @@
       "eyebrow": "Knowledge base",
       "back": "← Back to knowledge bases",
       "tabsAria": "Knowledge base sections",
+      "names": {
+        "catalog": "Shared knowledge base",
+        "agent": "{name}'s knowledge base",
+        "agentUnknown": "Teammate's knowledge base",
+        "public": "{name}'s public material",
+        "publicUnknown": "Public material"
+      },
+      "files": {
+        "title": "Files",
+        "intro": "Teammates with access to this knowledge base can search and read the files uploaded here. Click a file to open its text.",
+        "empty": "This knowledge base has no files yet, so teammates find nothing here.",
+        "back": "← Back to the files",
+        "truncated": "Showing the latest {count} files.",
+        "wikiState": {
+          "none": "Not in the wiki",
+          "paged": "Split into pages for search",
+          "pending": "Waiting to be processed for the wiki",
+          "in_progress": "Being processed for the wiki",
+          "processed": "Added to the wiki",
+          "skipped": "Skipped from the wiki"
+        },
+        "manage": {
+          "catalogAdminOnly": "Only an administrator can upload and delete files.",
+          "agent": "To upload or delete files:",
+          "agentLink": "open the teammate's page",
+          "public": "To upload or delete files:",
+          "publicLink": "open the public assistant's Public knowledge tab",
+          "inbox": "To upload a new file that can feed the wiki:",
+          "inboxLink": "open the Inbox tab"
+        }
+      },
       "reader": {
         "exit": "Close reader view",
         "back": "Back",
@@ -668,13 +699,14 @@
         }
       },
       "tabs": {
+        "files": "Files",
         "wiki": "Wiki",
         "reader": "Reader view",
         "views": "Views",
         "changes": "Changes",
         "inbox": "Inbox",
         "log": "Log",
-        "access": "Who has access",
+        "access": "Who uses it",
         "proposals": "Proposals",
         "settings": "Settings"
       },
@@ -799,7 +831,8 @@
           }
         },
       "kind": {
-        "catalog": "Shared catalog",
+        "catalog": "Shared knowledge base",
+        "public": "Public",
         "agent": "Teammate's own",
         "shared": "Shared",
         "private": "Private",
@@ -836,13 +869,16 @@
       "header": {
         "body": "AI teammates work from this knowledge base. The wiki is built from the material uploaded here: a teammate with write access organizes it into linked pages.",
         "privateBody": "Only you can see this knowledge base. When an AI teammate processes or reads it, the content is sent to the AI provider in use (e.g. Claude, OpenAI).",
-        "membersBody": "Only the people on the list can see this knowledge base. An AI teammate can only reach it while working with someone on the list."
+        "membersBody": "Only the people on the list can see this knowledge base. An AI teammate can only reach it while working with someone on the list.",
+        "publicBody": "Anything placed here can be seen by anyone through the public assistant. Only upload material meant for the public."
       },
       "list": {
-        "title": "Knowledge bases and wikis",
-        "intro": "Every knowledge base has a wiki: AI teammates turn the uploaded material into linked pages. Click a row to open its wiki, inbox and access settings.",
+        "title": "Knowledge bases",
+        "intro": "The number shows the uploaded files. AI teammates write the wiki from those files, so the wiki can be empty even when there are files. Click a row to open its files, wiki and access settings.",
         "empty": "No knowledge base yet. Create one below — or enable the knowledge base tool for a teammate and their own knowledge base is created automatically.",
-        "stats": "{sources} sources · {pages} pages · {size}",
+        "stats": "{files, plural, one {# file} other {# files}} · {pages, plural, =0 {no wiki} one {# wiki page} other {# wiki pages}} · {size}",
+        "usedBy": "Used by: {names}{more, plural, =0 {} other { +#}}",
+        "usedByNone": "No teammate uses it",
         "inboxBadge": "{count} waiting in inbox",
         "unknownOwner": "unknown owner",
         "privateMetaHelp": "This is someone else's private knowledge base. As an admin you only see that it exists and how big it is — you cannot open its content.",
@@ -887,7 +923,7 @@
       },
       "overview": {
         "title": "Overview",
-        "empty": "No pages yet. The wiki starts filling up when a teammate with write access processes the material waiting in the inbox.",
+        "empty": "No wiki pages yet. The wiki starts to fill up when an AI teammate with write access processes the material waiting in the inbox. You can find the uploaded files on the Files tab.",
         "body": "The wiki has {pages} pages. Pick one from the contents.",
         "inbox": "Inbox: {pending} waiting, {inProgress} in progress.",
         "writers": "{count, plural, =0 {No teammate can write this wiki — set it up on a teammate's page (Knowledge base section).} one {# teammate can write this wiki.} other {# teammates can write this wiki.}}"
@@ -1069,7 +1105,8 @@
           "catalog": "The organization's shared catalog. Operators, admins and users of the teammates linked to it see it.",
           "shared": "Shared knowledge base: operators, admins and users of the teammates linked to it see it. An admin can make it private on the wiki's Settings tab.",
           "private": "Private: only you see it, not even the admin. The teammate can only reach it when you are using it.",
-          "members": "Members only: the teammate can only reach it while working with someone on the list."
+          "members": "Members only: the teammate can only reach it while working with someone on the list.",
+          "public": "Public: anything placed here can be seen by anyone through the public assistant."
         },
         "membersOwnerOnly": "This is a members-only knowledge base; its owner or an admin on its list can link it."
       },
@@ -1077,6 +1114,7 @@
         "visibilityTitle": "Who can see it?",
         "nowPrivate": "Private: only you see it. The admin only sees that it exists and how big it is. AI teammates can only reach it when you are using them.",
         "nowShared": {
+          "public": "This is the public assistant's knowledge base, its visibility cannot be changed.",
           "shared": "Shared: the organization's operators and admins see it, plus anyone using a teammate linked to it.",
           "agent": "The teammate's own knowledge base: the organization's operators and admins see it, plus anyone who can use the teammate.",
           "catalog": "The organization's shared catalog: the organization's operators and admins see it, plus anyone using a teammate linked to it."
@@ -1911,7 +1949,7 @@
     "knowledge": {
       "eyebrow": "Catalog",
       "title": "Knowledge base",
-      "body": "A shared document library: upload once, then attach it on an agent’s page to whoever needs it. Attachment copies the document — later catalog updates do not overwrite the copy on the agent.",
+      "body": "Here you find all of your organization's knowledge bases. Each holds files and, if needed, a wiki built from them. Click a row and use the Who uses it tab to set which teammate can reach it.",
       "needOperator": "Viewing the knowledge base requires at least operator access.",
       "loadFailed": "The catalog could not be loaded."
     },
@@ -2420,13 +2458,11 @@
     "empty": "No writable file or folder selected yet."
   },
   "Knowledge": {
-    "title": "Catalog items",
     "chooseFile": "Choose file",
     "noFile": "No file selected",
     "purpose": "What it is for (one line, optional)",
     "upload": "Upload",
     "uploaded": "“{filename}” uploaded to the catalog.",
-    "empty": "No catalog items yet.",
     "deleteTitle": "Delete catalog item",
     "deleteBody": "Delete {filename}? Copies on agents are kept.",
     "delete": "Delete",

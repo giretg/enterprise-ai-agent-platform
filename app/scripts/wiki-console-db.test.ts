@@ -122,6 +122,33 @@ async function main() {
       await prisma.document.delete({ where: { id: results[0].document.id } })
     })
 
+    await check('#1139 listFiles: minden fájl, méret és mire-való; más tudásbázis fájlja nem kerül bele', async () => {
+      const withPurpose = await mk('mire-valo.md', { metadata: { purpose: 'Árlista' } })
+      const withOriginal = await mk('eredeti.pdf', { sourceFile: { create: { data: new Uint8Array(1234) } } })
+      try {
+        const files = await repo.listFiles(priv.id, 1000)
+        assert.equal(files.find((file) => file.id === withPurpose.id)?.purpose, 'Árlista')
+        assert.equal(files.find((file) => file.id === withPurpose.id)?.bytes, 4, 'eredeti nélkül a szöveg mérete')
+        assert.equal(files.find((file) => file.id === withOriginal.id)?.bytes, 1234, 'eredetivel annak mérete')
+        assert.equal((await repo.listFiles(priv.id, 1)).length, 1)
+        assert.deepEqual(await repo.listFiles(randomUUID(), 1000), [])
+      } finally {
+        await prisma.document.deleteMany({ where: { id: { in: [withPurpose.id, withOriginal.id] } } })
+      }
+    })
+
+    await check('#1139 listKnowledgeBaseAgents: csak a tenant nem nyugdíjazott munkatársai', async () => {
+      const retired = await prisma.agent.create({ data: { tenantId: tenant.id, name: 'Nyugdíjas', roleInstruction: 'x', status: 'retired' } })
+      await prisma.agentConnector.create({ data: { agentId: retired.id, connectorId: priv.id, accessMode: 'read', wikiAccess: 'read' } })
+      try {
+        const rows = await repo.listKnowledgeBaseAgents(tenant.id)
+        assert.deepEqual(rows, [{ connectorId: priv.id, agentName: 'Réka', accessMode: 'write', wikiAccess: 'write' }])
+        assert.deepEqual(await repo.listKnowledgeBaseAgents(randomUUID()), [])
+      } finally {
+        await prisma.agent.delete({ where: { id: retired.id } })
+      }
+    })
+
     await check('listBindingsForConnector + agentNames + userLabels + forrás-dokumentumok', async () => {
       const bindings = await repo.listBindingsForConnector(priv.id)
       assert.deepEqual(bindings, [

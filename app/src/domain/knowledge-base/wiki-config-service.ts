@@ -53,7 +53,7 @@ export function wikiConfigApprovalPath(connectorId: string, proposalId: string):
 
 function nameEditable(connector: Connector): boolean {
   const kind = wikiKbKind(connector)
-  return kind !== 'agent' && kind !== 'catalog'
+  return kind !== 'agent' && kind !== 'catalog' && kind !== 'public'
 }
 
 export class WikiConfigService {

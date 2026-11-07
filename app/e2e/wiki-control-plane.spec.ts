@@ -139,6 +139,8 @@ test('tömeges feltöltés: 30 fájl egy mozdulattal a privát tudásbázis tál
   await page.getByTestId('kb-create-private').check()
   await page.getByTestId('kb-create-submit').click()
   await expect(page.getByTestId('wiki-title')).toHaveText(`Leletek ${suffix}`)
+  await expect(page.getByTestId('wiki-files-empty')).toBeVisible()
+  await page.getByTestId('wiki-tab-wiki').click()
   await expect(page.getByTestId('wiki-empty')).toBeVisible()
 
   await page.getByTestId('wiki-tab-inbox').click()
@@ -227,12 +229,44 @@ test('jogbeállítás: egy agent két wikihez eltérő joggal és móddal', asyn
   expect([priv.wikiAccess, priv.wikiWriteMode, priv.wikiCollectFocus]).toEqual(['submit', 'direct', 'Leletek'])
 })
 
+test('#1139 fájlok: a csak feltöltött fájl is látszik, a közös tudásbázis a saját fülén kezelhető', async ({ page }) => {
+  // A wikibe nem szánt, egyszerű feltöltés: a tálcán és a wikiben nem jelenik meg.
+  const raw = await prisma.document.create({
+    data: { tenantId, filename: `tortak-${suffix}.md`, extractedText: 'Dobos torta', connectorId: sharedKbId, uploadedById: devUserId, status: 'processed', processingMode: 'raw_text_only', metadata: { purpose: 'Torták leírása' } },
+  })
+  await page.goto('/control-plane/knowledge')
+  await expect(page.getByTestId('kb-list')).not.toContainText('kb:')
+  const catalogRow = page.getByTestId('kb-row').filter({ hasText: 'Közös tudásbázis' })
+  await expect(catalogRow).toContainText('nincs wiki')
+  await expect(catalogRow).toContainText('Egy munkatárs sem használja')
+  // A lista oldalon nincs többé fájl-feltöltő.
+  await expect(page.getByTestId('kb-catalog-upload')).toHaveCount(0)
+
+  await catalogRow.click()
+  await expect(page.getByTestId('wiki-tab-files')).toHaveClass(/border-coral/)
+  await expect(page.getByTestId('kb-catalog-upload')).toBeVisible()
+  await page.getByTestId('wiki-tab-settings').click()
+  await expect(page.getByText('A tudástár nyelve')).toBeVisible()
+
+  await page.goto(`/control-plane/knowledge/${sharedKbId}`)
+  const row = page.getByTestId('wiki-file-row').filter({ hasText: `tortak-${suffix}.md` })
+  await expect(row).toContainText('Torták leírása')
+  await expect(row).toContainText('Nincs a wikiben')
+  await expect(page.getByTestId('wiki-files-manage-link')).toHaveAttribute('href', /tab=inbox/)
+
+  await row.getByRole('link', { name: `tortak-${suffix}.md` }).click()
+  await expect(page.getByTestId('wiki-source')).toContainText('Dobos torta')
+  await page.getByRole('link', { name: '← Vissza a fájlokhoz' }).click()
+  await expect(page.getByTestId('wiki-files')).toBeVisible()
+  await prisma.document.delete({ where: { id: raw.id } })
+})
+
 test('privát nézet admin szemmel: csak metaadat-sor, a tartalom és a letöltés nem érhető el', async ({ page, request }) => {
   await page.goto('/control-plane/knowledge')
   const meta = page.getByTestId('kb-row-private-meta')
   await expect(meta).toHaveCount(1)
   await expect(meta).toContainText('Másik Tulajdonos')
-  await expect(meta).toContainText('1 forrás · 1 oldal')
+  await expect(meta).toContainText('1 fájl · 1 wiki-oldal')
   await expect(page.locator('body')).not.toContainText('Titkos leletek')
 
   // A control-plane `loading.tsx` miatt a válasz streamelt (200), a tartalom a 404-es nézet.

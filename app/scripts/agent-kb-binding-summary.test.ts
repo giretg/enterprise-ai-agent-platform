@@ -66,6 +66,11 @@ assert.equal(other.unreachable, true)
 assert.equal(other.rights, '')
 assert.equal(other.contents, '31 dokumentum · 80 wiki-oldal')
 
+// A nyilvános tudásbázis érthető nevet és a tartalmat kimondó címkét kap (#1139).
+const publicKb = copyOf({ ...base, kind: 'public', name: 'Webes asszisztens' })
+assert.equal(publicKb.title, 'Webes asszisztens nyilvános anyagai')
+assert.equal(publicKb.kindLabel, 'Nyilvános')
+
 // A megosztott tudásbázis a saját nevén jelenik meg, a jog a tényleges szint szerint.
 const shared = copyOf(base, 'write')
 assert.equal(shared.title, 'Termékwiki')
@@ -75,7 +80,7 @@ assert.equal(copyOf({ ...base, writeMode: 'direct' }, 'write').rights, 'Írhatja
 assert.equal(copyOf({ ...base, access: 'submit' }, 'read').rights, 'Beküldhet a tálcára')
 
 // A szerviz belső angol tartaléknevei nem jutnak a felületre.
-assert.equal(copyOf({ ...base, kind: 'catalog', name: 'Company knowledge base' }, 'read').title, 'Közös katalógus')
+assert.equal(copyOf({ ...base, kind: 'catalog', name: 'Company knowledge base' }, 'read').title, 'Közös tudásbázis')
 assert.equal(copyOf({ ...base, kind: 'agent', name: 'Agent knowledge base' }, 'read').title, 'Másik munkatárs tudásbázisa')
 
 // Angolul is teljes a szöveg, helyes többes számmal.

@@ -218,6 +218,12 @@ export class KnowledgeBaseService {
     })
   }
 
+  async ensureCatalog(input: { tenantId: string }) {
+    return ensureCatalogKnowledgeBase(input.tenantId, this.deps, {
+      defaultKbLanguage: await this.tenantLanguage(input.tenantId),
+    })
+  }
+
   async listCatalogDocuments(input: { tenantId: string }) {
     const connector = await this.deps.connectors.findByTenantTypeAndName(
       input.tenantId,
