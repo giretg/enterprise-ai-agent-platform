@@ -10,6 +10,7 @@
 - Ellenőrzés: regresszió a hosszú első sorra, sok rövid előszöveg-sorra és a megkezdett stream későbbi túl hosszú sorára; `test:model-gateway-content-filter`, célzott ESLint, `git diff --check` zöld. A teljes TypeScript-ellenőrzés a symlinkelt, elavult Prisma-kliens miatt más modulokban hibázik; a módosított fájlokban nem jelzett hibát.
 - Fennmaradó korlát: a nem streamelt szolgáltatói válasz, a hibatest és a szabályos stream auditba gyűjtött összméretének korlátozása külön vizsgálatot igényel. Ez nem igazolja a teljes platform enterprise alkalmasságát.
 - Issue: [#1122](https://github.com/giretg/enterprise-ai-agent-platform/issues/1122).
+- PR: [#1123](https://github.com/giretg/enterprise-ai-agent-platform/pull/1123) (`codex`, `codex-automation`, `bug`).
 
 ## 2026-11-02 01:31 Europe/Budapest - AI-adattárház lekérdezési határ: hibás csoportosított rendezés
 
