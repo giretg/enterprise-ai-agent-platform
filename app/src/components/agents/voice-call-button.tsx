@@ -11,6 +11,7 @@ import {
   voiceFailureMessage,
   voiceProviderNotice,
 } from '@/components/agents/voice-call-events'
+import type { VoiceCallStyle } from '@/domain/voice/config'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'closing' | 'ended' | 'failed'
 
@@ -40,29 +41,49 @@ const ROLE_LABEL = { user: 'Te', assistant: 'Munkatárs' } as const
 
 const VOICE_CALL_HINT = 'Böngészőben beszélhetsz a munkatárssal, mintha felhívtad volna. Telefonszám nem kell.'
 
-/** Hullámforma-ikon a chat beviteli dobozába, a munkatárs-kártyára és az adatlapra. */
-export function VoiceCallIconButton({ agentName, onClick }: { agentName: string; onClick: () => void }) {
+/** A gomb színe és ikonja a hang-beállítás szerint; a beállító űrlap is ezt mutatja mintaként. */
+export function VoiceCallIcon({ callStyle }: { callStyle: VoiceCallStyle }) {
+  return (
+    <span
+      aria-hidden
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition ${
+        callStyle === 'phone' ? 'bg-emerald-600 text-white group-hover:bg-emerald-700' : 'bg-coral/10 text-coral-deep group-hover:bg-coral/20'
+      }`}
+    >
+      {callStyle === 'phone' ? (
+        <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="currentColor">
+          <path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 7.5v9M20 10.5v3" />
+        </svg>
+      )}
+    </span>
+  )
+}
+
+/** Hang-gomb a chat beviteli dobozába, a munkatárs-kártyára és az adatlapra. */
+export function VoiceCallIconButton({ agentName, callStyle, onClick }: { agentName: string; callStyle: VoiceCallStyle; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`Beszélgetés hangon: ${agentName}`}
+      aria-label={`${callStyle === 'phone' ? 'Hívás' : 'Beszélgetés hangon'}: ${agentName}`}
       title={VOICE_CALL_HINT}
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-coral/10 text-coral-deep transition hover:bg-coral/20"
+      className="group shrink-0 rounded-full"
     >
-      <svg aria-hidden viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-        <path d="M4 10.5v3M8 7.5v9M12 4.5v15M16 7.5v9M20 10.5v3" />
-      </svg>
+      <VoiceCallIcon callStyle={callStyle} />
     </button>
   )
 }
 
 /** #1111 hang-pilot: a gomb és az ablak együtt, ahol a gomb helye a hívás alatt biztosan nem változik. */
-export function VoiceCallButton({ agentId, agentName }: { agentId: string; agentName: string }) {
+export function VoiceCallButton({ agentId, agentName, callStyle }: { agentId: string; agentName: string; callStyle: VoiceCallStyle }) {
   const [open, setOpen] = useState(false)
   return (
     <>
-      <VoiceCallIconButton agentName={agentName} onClick={() => setOpen(true)} />
+      <VoiceCallIconButton agentName={agentName} callStyle={callStyle} onClick={() => setOpen(true)} />
       {open ? <VoiceCallDialog agentId={agentId} agentName={agentName} onClose={() => setOpen(false)} /> : null}
     </>
   )

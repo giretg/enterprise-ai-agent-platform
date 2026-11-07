@@ -5,7 +5,7 @@ import { AgentProductLinks } from '@/components/agents/agent-product-links'
 import { StartPlatformChatLink } from '@/components/agents/start-platform-chat-link'
 import { VoiceCallButton } from '@/components/agents/voice-call-button'
 import { Card } from '@/components/ui/shell'
-import { canStartVoiceCall } from '@/domain/voice/config'
+import { canStartVoiceCall, readVoiceConfig } from '@/domain/voice/config'
 import { personaFor } from '@/lib/agent-persona'
 import type { AgentProductLink } from '@/lib/agent-product-links'
 import { createAgentWizardContinueHref, isHalfFinishedAgent } from '@/lib/create-agent-wizard'
@@ -31,7 +31,7 @@ export type AgentCatalogCardModel = {
   kind?: string
   /** #1029: az agent saját e-mail címe (ha van). */
   mailboxAddress?: string | null
-  /** #1111: a hang-beállítás; a kártyáról csak a belőle számolt igen/nem jut tovább. */
+  /** #1111: a hang-beállítás; a kártyáról csak a belőle számolt igen/nem és a gomb kinézete jut tovább. */
   voiceConfig?: unknown
 }
 
@@ -134,7 +134,7 @@ export async function AgentCatalogCard({
       {showStartChat || showVoiceCall || visibleProductLinks.length > 0 ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
-          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} /> : null}
+          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} callStyle={readVoiceConfig(agent.voiceConfig).callStyle} /> : null}
           <AgentProductLinks agentName={agent.name} links={visibleProductLinks} className="ml-auto" />
         </div>
       ) : null}

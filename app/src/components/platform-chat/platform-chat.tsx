@@ -6,10 +6,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AgentProductLinks } from '@/components/agents/agent-product-links'
 import { VoiceCallDialog, VoiceCallIconButton } from '@/components/agents/voice-call-button'
+import type { VoiceCallStyle } from '@/domain/voice/config'
 import type { AgentProductLink } from '@/lib/agent-product-links'
 import { pickPlatformChatAgentId } from '@/lib/platform-chat-href'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
-import { takePendingPrompt } from './pending-prompt'
 import {
   ChatApiError,
   createWorkerClient,
@@ -416,15 +416,15 @@ function Message({
 export function PlatformChat({
   isAdmin,
   keyMissingForAdmin,
-  voiceAgentIds = [],
+  voiceCallStyles = {},
   productLinks = {},
   initialAgentId = null,
   initialConversationId = null,
 }: {
   isAdmin: boolean
   keyMissingForAdmin: boolean
-  /** #1111: azok a munkatársak, akikkel hangon is lehet beszélni. */
-  voiceAgentIds?: string[]
+  /** #1111: azok a munkatársak, akikkel hangon is lehet beszélni, és a hang-gombjuk kinézete. */
+  voiceCallStyles?: Record<string, VoiceCallStyle>
   /** A munkatárs mini appjai, tudásbázisa és társai; a listát a worker adja, ezeket csak a szerver látja. */
   productLinks?: Record<string, AgentProductLink[]>
   /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
@@ -468,7 +468,6 @@ export function PlatformChat({
   const atBottomRef = useRef(true)
   const refreshListRef = useRef<() => void>(() => {})
   const booted = useRef(false)
-  const pendingPrompt = useRef<{ agentId: string; text: string } | null>(null)
 
   const agent = useMemo(() => agents?.find((a) => a.agentId === agentId) ?? null, [agents, agentId])
 
@@ -479,12 +478,9 @@ export function PlatformChat({
         const c = createWorkerClient(session)
         const list = await c.agents()
         if (cancelled) return
-        // Az Áttekintés oldalról hozott kérdés: ezzel a munkatárssal indul, és azonnal elmegy.
-        const pending = takePendingPrompt()
-        pendingPrompt.current = pending && list.agents.some((a) => a.agentId === pending.agentId) ? pending : null
         setClient(c)
         setAgents(list.agents)
-        setAgentId(pendingPrompt.current?.agentId ?? pickPlatformChatAgentId(list.agents, initialAgentId))
+        setAgentId(pickPlatformChatAgentId(list.agents, initialAgentId))
       })
       .catch((e) => {
         if (cancelled) return
@@ -709,8 +705,8 @@ export function PlatformChat({
     return created.conversation.id
   }
 
-  async function send(text = draft, forAgent = agentId) {
-    if (!client || !forAgent || busy) return
+  async function send(text = draft) {
+    if (!client || !agentId || busy) return
     const content = text.trim()
     if (!content && files.length === 0) return
     setBusy(true)
@@ -718,7 +714,7 @@ export function PlatformChat({
     // #1025: nyitott kérdésnél a beírt szöveg a válasz — ugyanaz a forduló folytatódik.
     const answering = live?.question ? live : null
     try {
-      const id = await ensureConversation(client, forAgent)
+      const id = await ensureConversation(client, agentId)
       const { turnId } = await client.send(id, content, files.map((f) => f.id))
       setDraft('')
       setFiles([])
@@ -740,19 +736,15 @@ export function PlatformChat({
     }
   }
 
-  // Első betöltés: az Áttekintés oldalról hozott kérdés azonnal elmegy; a kártya gombja (`?agent=`)
-  // az adott munkatárssal folytatott utolsó beszélgetést nyitja (§2/3); egyébként üres új beszélgetés.
+  // Első betöltés: a kártya gombja (`?agent=`) az adott munkatárssal folytatott utolsó beszélgetést
+  // nyitja (§2/3); egyébként üres új beszélgetés.
   useEffect(() => {
     if (!client || !agents || booted.current) return
     booted.current = true
-    const pending = pendingPrompt.current
-    if (pending) {
-      pendingPrompt.current = null
-      void send(pending.text, pending.agentId)
-      return
-    }
     if (initialConversationId) {
-      void open(client, initialConversationId).catch(() => setNotice('Ezt a beszélgetést nem tudod megnyitni — lehet, hogy egy kollégád nevében futott.'))
+      void (async () => {
+        await open(client, initialConversationId)
+      })().catch(() => setNotice('Ezt a beszélgetést nem tudod megnyitni — lehet, hogy egy kollégád nevében futott.'))
       return
     }
     if (initialAgentId && agents.some((a) => a.agentId === initialAgentId)) {
@@ -764,7 +756,7 @@ export function PlatformChat({
       return
     }
     focusComposer()
-    // Egyszeri indítás — a `send` / `open` a pillanatnyi állapottal fut.
+    // Egyszeri indítás — az `open` a pillanatnyi állapottal fut.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, agents])
 
@@ -1157,7 +1149,7 @@ export function PlatformChat({
           ) : null}
         </div>
         <span className="flex-1" />
-        {agent && voiceAgentIds.includes(agent.agentId) ? <VoiceCallIconButton agentName={agent.name} onClick={() => setVoiceOpen(true)} /> : null}
+        {agent && voiceCallStyles[agent.agentId] ? <VoiceCallIconButton agentName={agent.name} callStyle={voiceCallStyles[agent.agentId]} onClick={() => setVoiceOpen(true)} /> : null}
         {working || live?.paused ? (
           <button
             type="button"

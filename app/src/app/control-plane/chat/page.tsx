@@ -1,6 +1,6 @@
 import { listAgents } from '@/app/actions/platform'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { canStartVoiceCall } from '@/domain/voice/config'
+import { canStartVoiceCall, readVoiceConfig } from '@/domain/voice/config'
 import { loadAgentProductLinks } from '@/lib/agent-product-links-loader'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { parsePlatformChatAgentParam } from '@/lib/platform-chat-href'
@@ -24,7 +24,11 @@ export default async function PlatformChatPage({
   const keyMissingForAdmin = isAdmin && !(await hasPlatformChatModelKey(ctx.activeTenantId))
   // A munkatárslistát a worker adja, a hang-beállítás viszont csak itt, a szerveren olvasható.
   const listed = await listAgents({ limit: 100 })
-  const voiceAgentIds = listed.success ? listed.data.filter((agent) => canStartVoiceCall(agent)).map((agent) => agent.id) : []
+  const voiceCallStyles = listed.success
+    ? Object.fromEntries(
+        listed.data.filter((agent) => canStartVoiceCall(agent)).map((agent) => [agent.id, readVoiceConfig(agent.voiceConfig).callStyle]),
+      )
+    : {}
   const productLinks = listed.success ? await loadAgentProductLinks(ctx, listed.data) : {}
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -32,7 +36,7 @@ export default async function PlatformChatPage({
       <PlatformChat
         isAdmin={isAdmin}
         keyMissingForAdmin={keyMissingForAdmin}
-        voiceAgentIds={voiceAgentIds}
+        voiceCallStyles={voiceCallStyles}
         productLinks={productLinks}
         initialAgentId={parsePlatformChatAgentParam(query.agent)}
         initialConversationId={parsePlatformChatAgentParam(query.conversation)}

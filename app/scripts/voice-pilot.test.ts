@@ -36,7 +36,10 @@ import {
   type AiInteractionRow,
 } from '../src/domain/ai-audit/ai-audit-service'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
-import { canStartVoiceCall, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS } from '../src/domain/voice/config'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { VoiceCallIconButton } from '../src/components/agents/voice-call-button'
+import { canStartVoiceCall, parseVoiceConfig, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS, type VoiceCallStyle } from '../src/domain/voice/config'
 import { buildLiveSessionRequest, createOpenAiLiveProvider, mapLiveFailure } from '../src/domain/voice/openai-live'
 import { buildVoiceGreeting, buildVoiceInstructions } from '../src/domain/voice/prompt'
 import type { VoiceBrowserSessionInput, VoiceProvider } from '../src/domain/voice/provider'
@@ -130,6 +133,28 @@ async function main() {
     assert.equal(readVoiceConfig(null).enabled, false)
     assert.equal(readVoiceConfig({ enabled: true, voice: 'nincs-ilyen', greeting: '' }).enabled, false)
     assert.equal(readVoiceConfig(ENABLED).voice, 'cedar')
+  })
+
+  await check('gomb kinézete: régi mentett beállítás bekapcsolva marad, hullámforma ikonnal', () => {
+    const saved = readVoiceConfig(ENABLED)
+    assert.equal(saved.enabled, true)
+    assert.equal(saved.callStyle, 'conversation')
+    assert.equal(readVoiceConfig({ ...ENABLED, callStyle: 'phone' }).callStyle, 'phone')
+    assert.equal(readVoiceConfig({ ...ENABLED, callStyle: 'nincs-ilyen' }).enabled, false)
+    assert.throws(() => parseVoiceConfig({ ...ENABLED, callStyle: 'nincs-ilyen' }))
+  })
+
+  await check('gomb kinézete: telefonos munkatárs zöld telefon ikont kap, a többi hullámformát', () => {
+    const render = (callStyle: VoiceCallStyle) =>
+      renderToStaticMarkup(createElement(VoiceCallIconButton, { agentName: 'Éva', callStyle, onClick: () => undefined }))
+    const phone = render('phone')
+    assert.match(phone, /aria-label="Hívás: Éva"/)
+    assert.match(phone, /bg-emerald-600/)
+    assert.doesNotMatch(phone, /M4 10\.5v3/)
+    const conversation = render('conversation')
+    assert.match(conversation, /aria-label="Beszélgetés hangon: Éva"/)
+    assert.match(conversation, /M4 10\.5v3/)
+    assert.doesNotMatch(conversation, /emerald/)
   })
 
   await check('gomb: csak belső, bekapcsolt, publikált, aktív munkatárson', () => {
