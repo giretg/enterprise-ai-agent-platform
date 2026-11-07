@@ -16,7 +16,7 @@ import { useTranslations } from 'next-intl'
 import type { WikiSearchHitView, WikiSearchResult } from '@/domain/knowledge-base/wiki-console-service'
 import type { KbSnippet } from '@/lib/kb-text-match'
 import { wikiHref } from './wiki-format'
-import { readWikiSearchState, writeWikiSearchState } from './wiki-search-state'
+import { readWikiSearchState, WIKI_SEARCH_HIGHLIGHT_EVENT, WIKI_SEARCH_OPEN_EVENT, writeWikiSearchState } from './wiki-search-state'
 
 const DEBOUNCE_MS = 250
 const SLOW_MS = 300
@@ -156,7 +156,7 @@ export function WikiSearch({ connectorId, linkQuery }: { connectorId: string; li
       setOpen(false)
       if (query.trim()) {
         const previous = readWikiSearchState(connectorId)
-        writeWikiSearchState(connectorId, { query, opened: previous?.query === query ? previous.opened : undefined })
+        writeWikiSearchState(connectorId, { ...previous, query, opened: previous?.query === query ? previous.opened : undefined })
       }
       if (restoreFocus) {
         const target = buttonRef.current?.offsetParent ? buttonRef.current : fabRef.current
@@ -174,7 +174,11 @@ export function WikiSearch({ connectorId, linkQuery }: { connectorId: string; li
       openDialog()
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener(WIKI_SEARCH_OPEN_EVENT, openDialog)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener(WIKI_SEARCH_OPEN_EVENT, openDialog)
+    }
   }, [openDialog])
 
   useEffect(() => {
@@ -209,9 +213,14 @@ export function WikiSearch({ connectorId, linkQuery }: { connectorId: string; li
   const onHitClick = (event: ReactMouseEvent, hit: WikiSearchHitView) => {
     // Ctrl-, ⌘- és Shift-kattintás új lapon nyit: a modal és a lista marad.
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return
-    writeWikiSearchState(connectorId, { query, opened: hit.path })
+    writeWikiSearchState(connectorId, {
+      query,
+      opened: hit.path,
+      highlight: { path: hit.path, terms: result?.terms ?? [] },
+    })
     selectPathRef.current = null
     closeDialog()
+    window.dispatchEvent(new Event(WIKI_SEARCH_HIGHLIGHT_EVENT))
   }
 
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {

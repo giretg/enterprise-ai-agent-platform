@@ -227,3 +227,14 @@
   .chat-typing-dot { animation: none; opacity: 0.6; }
   .animate-activity-run-row { background-color: rgba(77, 134, 166, 0.12); }
 }
+
+/* #1136: a keresett szó az oldalon. A Highlight API miatt nem kerül elem a szövegbe. */
+::highlight(wiki-search) {
+  background-color: color-mix(in srgb, var(--color-lime) 65%, transparent);
+  color: var(--color-ink);
+}
+
+::highlight(wiki-search-current) {
+  background-color: var(--color-honey);
+  color: var(--color-ink);
+}
