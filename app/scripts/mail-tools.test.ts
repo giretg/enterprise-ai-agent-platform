@@ -15,7 +15,7 @@ import {
   type LiveGrantRow,
   type ToolCallPrincipal,
 } from '../src/domain/enterprise-tools'
-import { composeFromReply, gmailSearchQuery, resolveMailAccounts, type MailAccount } from '../src/domain/mail/mail'
+import { composeFromReply, gmailSearchQuery, listMailAccounts, resolveMailAccounts, type MailAccount } from '../src/domain/mail/mail'
 import { GMAIL_SCOPES } from '../src/domain/connector-grant/gmail-scopes'
 
 const USER_ID = '11111111-1111-4111-8111-111111111111'
@@ -136,6 +136,27 @@ async function main() {
     const ambiguous = resolveMailAccounts(accounts, undefined, { write: false })
     // primary wins even with two accounts
     assert.equal(ambiguous.ok, true)
+  })
+
+  await check('élő read-only postafiók felülírja a publikált írási jogot', async () => {
+    const connector: LiveConnectorRow = {
+      id: GMAIL_ID, tenantId: TENANT_ID, type: 'gmail', authMode: 'service',
+      lifecycleState: 'active', name: 'Közös Gmail', secretAlias: null,
+      config: { mailbox: { source: 'google', address: 'kozos@ceg.hu', readOnly: true } },
+    }
+    const listed = await listMailAccounts({
+      definition: definition([{ connectorId: GMAIL_ID, type: 'gmail', accessMode: 'write', name: 'Közös Gmail' }], [MAIL_SEND_TOOL]),
+      primaryConnectorId: GMAIL_ID,
+      findConnector: async () => connector,
+      findActiveGrants: async () => [],
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+    })
+    assert.equal(listed[0]?.access, 'read')
+    assert.equal(listed[0]?.primary, false)
+    const send = resolveMailAccounts(listed, 'kozos@ceg.hu', { write: true, primaryConnectorId: GMAIL_ID })
+    assert.equal(send.ok, false)
+    if (!send.ok) assert.equal(send.reason, 'mailbox_read_only')
   })
 
   const gmailConnector: LiveConnectorRow = {
