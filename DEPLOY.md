@@ -163,12 +163,24 @@ A Hermes Managed Client prompt-naplója (`ai_interaction_events`) 90 nap után l
 (D5, `AI_AUDIT_RETENTION_DAYS`). A lejárat mező önmagában nem töröl — kell **élő hívó**,
 különben a tartalom a táblában marad (a legacy `retentionSweep never runs` tanulsága).
 
-Cloud Scheduler, naponta egyszer, az App Hosting URL-re:
+Cloud Scheduler, alapból naponta egyszer (`daily-maintenance`, `europe-west4`, 3:30 Europe/Budapest), az App Hosting URL-re:
 
 ```
 POST https://ai.excellencepay.com/api/v1/internal/ai-audit-retention
 Header: x-dispatcher-token: <DISPATCHER_CONTROL_TOKEN>
 ```
+
+Beállítás és gyakoriság (ismételten futtatható, a tokent nem írja ki):
+
+```bash
+bash ops/tools/daily-maintenance-scheduler.sh                              # létrehozás vagy frissítés
+bash ops/tools/daily-maintenance-scheduler.sh --schedule "30 3,15 * * *"   # más gyakoriság
+bash ops/tools/daily-maintenance-scheduler.sh --status                     # állapot, utolsó futás
+bash ops/tools/daily-maintenance-scheduler.sh --pause                      # leállítás (--resume: vissza)
+bash ops/tools/daily-maintenance-scheduler.sh --run-now                    # azonnali futás
+```
+
+Napinál ritkábbra ne állítsd: a levél-feliratkozások megújítása is ezen a hívásukon múlik (Gmail 7 nap, Microsoft 365 kb. 3 nap, lejárat előtt 1 nappal). Sűrítheted, a kapcsolatok ellenőrzése akkor is legfeljebb 20 óránként fut, de minden hívás felébreszti az adatbázist.
 
 Ugyanaz a `DISPATCHER_CONTROL_TOKEN` Secret Manager-titok, mint a 3.1-es ciklusé
 (opcionális felülírás: `AI_AUDIT_SWEEP_TOKEN`). A route a Clerk-kapu előtt publikus,
