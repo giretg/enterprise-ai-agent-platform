@@ -5,12 +5,16 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { CAPABILITY_KEYS } from '@/domain/client-policy/capabilities'
-import { resolveEffectivePolicy, TOOL_ACTIONS, type PolicyRow } from '@/domain/client-policy/resolve-effective-policy'
+import { policyVersionWithFeatureFlags, resolveEffectivePolicy, TOOL_ACTIONS, type PolicyRow } from '@/domain/client-policy/resolve-effective-policy'
 import { TOOL_CLASSES, effectiveToolCatalog, parseTenantToolCatalog, type ToolCatalogEntry } from '@/domain/client-policy/tool-catalog'
+import type { ExternalClientFlag } from '@/domain/feature-flags/external-client-flags'
+import { FEATURE_FLAG_STOP_BEHAVIORS } from '@/domain/feature-flags/registry'
 
 export interface ClientPolicyStore {
   /** A tenant-, a user- és (ha van) az agent-szintű sor; ami nincs, nem szerepel. */
   findRows(input: { tenantId: string; userId: string; agentId: string | null }): Promise<PolicyRow[]>
+  /** #1126 WP-5: a Hermesnek szánt, a cégnél aktív flagek. Hiányában minden flag Ki. */
+  activeFeatureFlags?(tenantId: string): Promise<ExternalClientFlag[]>
 }
 
 export const policySnapshotSchema = z.object({
@@ -34,6 +38,8 @@ export const policySnapshotSchema = z.object({
   /** #872: eszköz → osztály; a Guard ebből dönt, a saját listája csak offline tartalék. */
   toolCatalog: z.array(z.object({ pattern: z.string(), class: z.enum(TOOL_CLASSES) })),
   catalogVersion: z.string(),
+  /** #1126 WP-5: csak a cégnél aktív, Hermesnek szánt flagek; a kiadatlan funkciók nem derülnek ki belőle. */
+  featureFlags: z.array(z.object({ key: z.string(), onStop: z.enum(FEATURE_FLAG_STOP_BEHAVIORS) })),
 })
 export type PolicySnapshot = z.infer<typeof policySnapshotSchema>
 
@@ -47,7 +53,7 @@ export async function getPolicySnapshot(
   input: { tenantId: string; userId: string; agentId: string | null },
   now: () => Date = () => new Date(),
 ): Promise<PolicySnapshot> {
-  const rows = await store.findRows(input)
+  const [rows, featureFlags] = await Promise.all([store.findRows(input), store.activeFeatureFlags?.(input.tenantId) ?? []])
   const pick = (scope: PolicyRow['scope'], scopeId: string | null) =>
     (scopeId && rows.find((r) => r.scope === scope && r.scopeId === scopeId)) || null
   const tenant = pick('tenant', input.tenantId)
@@ -62,5 +68,7 @@ export async function getPolicySnapshot(
     tenantDeniedTools: resolveEffectivePolicy({ tenant, user: null, agent: null }).toolRules
       .filter((rule) => rule.action === 'deny').map((rule) => rule.pattern),
     toolCatalog, catalogVersion: catalogVersion(toolCatalog), issuedAt: now().toISOString(),
+    featureFlags,
+    policyVersion: policyVersionWithFeatureFlags(effective.policyVersion, featureFlags.map((flag) => flag.key)),
   })
 }

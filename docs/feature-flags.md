@@ -43,11 +43,53 @@ A döntés mindig a szerveren, a cégre vonatkoztatva születik. A tenant kötel
 | API | `const denied = await featureGuardResponse(key, { tenantId }); if (denied) return denied` |
 | MCP-eszköz | Egy sor a `domain/feature-flags/tool-flags.ts` listájában. A listázást és a hívást is ez kapuzza, a tiltott hívás `mcp.tools.call.deny` eseményt ír |
 | Ütemezett és háttérfutás | `isFeatureEnabled` az érintett tenantra, soronként |
+| Chat-worker és Hermes | Lásd a [Külső kliensek](#külső-kliensek-chat-worker-hermes) részt |
 
 A segédek helye `@/lib/feature-flags`. A `proxy.ts` nem használhatja, mert nem ér el adatbázist. A böngészőbe
 nem kerülhet flag-lista és `NEXT_PUBLIC_*` flag sem, mert az elárulná a kiadatlan funkciókat.
 
 A gomb elrejtése nem védelem: a műveletet és az API-t akkor is kapuzni kell, ha a felület el sem jut odáig.
+
+## Külső kliensek (chat-worker, Hermes)
+
+Ezek a kliensek nem érik el a kiértékelőt, ezért a szerver adja át nekik a döntést. Csak az a flag jut el hozzájuk,
+amelynek a bejegyzése ezt kéri, és csak akkor, ha a cégnél aktív, így a kiadatlan funkciók nem derülnek ki:
+
+```ts
+externalClients: {
+  clients: ['platform_chat'],   // vagy 'hermes', vagy mindkettő
+  onStop: 'old_path',           // mi a biztonságos, ha futás közben leállítják
+},
+```
+
+| `onStop` | Mikor válaszd | Mi történik leállításkor |
+|---|---|---|
+| `old_path` | A régi út félbehagyott munkánál is helyesen fut | A futás a régi úton megy tovább |
+| `finish_run` | A félbehagyott munka csak az új úton értelmes | A következő lépésnél érthető üzenettel lezárul, az eredmények megmaradnak |
+
+**Chat-worker.** A flagek a `/api/chat/continuation` válaszában érkeznek, a futás elején a `turns.context`-be
+kerülnek, és a `platform_chat.continuation_issued` audit is megőrzi őket. Folytatáskor új auditsor készül az akkor
+aktív flagekkel, a futásra viszont továbbra is a rögzítettek hatnak. A kapu a workerben
+`isTurnFeatureActive(context, kulcs)`. A futás közben nem vált működést: a később bekapcsolt flag a következő
+fordulótól hat, a leállított pedig a futás végéig Ki marad, akkor is, ha közben újra bekapcsolják. A worker minden
+lépés előtt ellenőrzi a leállítást a `/api/chat/feature-flags` végponton, de csak akkor, ha van rögzített flagje. A
+leállítás a következő lépésnél ér célt, a futó modellhívást vagy eszközhívást nem szakítja meg.
+
+A hiányzó flag azt jelenti, hogy leállították, ezért a hamis jelzést két szabály zárja ki:
+
+- A forduló első 45 másodpercében a worker nem ellenőriz, mert friss bekapcsolásnál egy másik szerverpéldány cache-e
+  még a régi állapotot mutathatja. Az ebben az időben történt leállítás a 45 másodperc utáni első lépésnél ér célt.
+- Ha a szerverpéldány még nem tudta betölteni a flagek állapotát, a végpont 503-at ad, nem üres listát. A worker
+  ilyenkor, és minden más hibánál vagy 10 másodperces időtúllépésnél, az utolsó ismert állapotnál marad.
+
+**Hermes.** A flagek a `client-policy/snapshot` válasz `featureFlags` mezőjében érkeznek, és beleszámítanak a
+`policyVersion`-be, így a változás a heartbeatben és a gateway-tokenben is látszik. A Guard 15 másodpercenként frissít,
+offline állapotban a tartalék snapshotban nincs flag, tehát minden Ki. A Guard ma még nem olvassa a mezőt: az olvasó
+az első Hermes-flaggel együtt készül el, a Guard verziójának emelésével, mert a kapu ott fut a telepített gépen. A régi
+Guard a mezőt figyelmen kívül hagyja, így ott a régi működés fut.
+
+A worker és a Guard frissítése a platformtól függetlenül érkezik. Új flagnél számolj azzal, hogy egy régi kliens a régi
+úton marad, és a régi útnak addig működnie kell.
 
 ## Állapotok és jogosultságok
 
@@ -100,5 +142,6 @@ A meglévő migrációkra az őr nem fut (`LAST_UNGUARDED_MIGRATION`).
 
 - A már kiosztott, gyorsítótárazott MCP-eszközlista a kliensnél addig látszik, amíg a kliens nem frissít. A hívást
   ettől függetlenül a szerver tiltja.
-- Hosszú futások, a chat-worker és a Hermes kapuzása még nincs kész (WP-5, első igényre). A chat-worker kódja nem
-  importálhat az appból, ezért ott `isFeatureEnabled` nem használható.
+- A chat-worker kódja nem importálhat az appból, ezért ott `isFeatureEnabled` nem használható, csak az
+  `isTurnFeatureActive`.
+- Külső mellékhatást a leállítás itt sem von vissza, és a már futó lépést sem szakítja meg.

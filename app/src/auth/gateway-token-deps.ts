@@ -2,13 +2,20 @@ import { isAvailableOnMcp } from '@/lib/agent-lifecycle'
 import { repositories } from '@/repositories/postgres'
 import { services } from '@/domain/gateway-services'
 import { PostgresClientPolicyRepository } from '@/repositories/postgres/client-policy-repository'
-import { getPolicySnapshot } from '@/domain/client-policy/policy-service'
+import { getPolicySnapshot, type ClientPolicyStore } from '@/domain/client-policy/policy-service'
 import type { GatewayTokenDeps } from '@/domain/model-gateway-token/gateway-token'
 import { canViewAgent, productionChatTokenVerifier, verifyClerkOAuthToken } from '@/auth/mcp-server'
 import { loadPlatformChatAccess, platformChatGatewayStore } from '@/auth/platform-chat-deps'
+import { activeExternalClientFlags } from '@/lib/feature-flags'
 import { resolveModelGatewayJwtKey } from '@/lib/model-gateway-jwt-key'
 
-const clientPolicy = new PostgresClientPolicyRepository()
+const policyRepository = new PostgresClientPolicyRepository()
+
+/** A snapshot és a gateway-token ugyanazt a `policyVersion`-t látja, ezért a flag ezen a közös tárolón megy át. */
+const clientPolicy: ClientPolicyStore = {
+  findRows: (input) => policyRepository.findRows(input),
+  activeFeatureFlags: (tenantId) => activeExternalClientFlags('hermes', tenantId),
+}
 
 /** Az aláíró kulcs a titoktárból (UI) vagy env-ből; hiányában a route fail-closed (503). */
 export async function productionGatewayTokenDeps(): Promise<GatewayTokenDeps> {

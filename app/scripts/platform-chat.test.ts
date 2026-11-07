@@ -11,7 +11,7 @@ import {
   signChatToken,
   verifyChatToken,
 } from '../src/domain/platform-chat/chat-token'
-import { issueChatSession, issueContinuationToken, type ChatSessionDeps } from '../src/domain/platform-chat/session'
+import { issueChatSession, issueContinuationToken, readTurnFeatureFlags, type ChatSessionDeps } from '../src/domain/platform-chat/session'
 import {
   BUDGET_BLOCK_REASON,
   costOfUsage,
@@ -38,6 +38,7 @@ import {
 } from '../src/lib/platform-chat-href'
 import type { GatewayCallContext, ModelCallEvent } from '../src/domain/model-gateway/proxy'
 import { readFileSync } from 'node:fs'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { resolve } from 'node:path'
 
 const KEY = 'c'.repeat(40)
@@ -204,8 +205,47 @@ async function main() {
     assert.equal(claims?.tid, TENANT)
   })
 
+  await check('#1126 folytatási token: a válasz és az audit megőrzi a futás flagjeit; flag nélkül az audit változatlan', async () => {
+    const metadata: Array<Record<string, unknown>> = []
+    const audit = { append: async (a: { metadata: Record<string, unknown> }) => void metadata.push(a.metadata) }
+    const flags = [{ key: 'chat.next', onStop: 'old_path' as const }]
+    const asked: string[] = []
+    const deps = { ...sessionDeps(), principal: principalDeps(), audit, activeFeatureFlags: async (tenantId: string) => (asked.push(tenantId), flags) }
+    const on = await issueContinuationToken(deps as never, { authorizationHeader: `Bearer ${chatToken()}`, body: { turnId: 'turn-1', agentId: AGENT } })
+    assert.ok(on.ok)
+    assert.deepEqual(on.featureFlags, flags)
+    assert.deepEqual(asked, [TENANT])
+    assert.deepEqual(metadata.at(-1)?.featureFlags, ['chat.next'])
+    const off = await issueContinuationToken({ ...deps, activeFeatureFlags: async () => [] } as never, { authorizationHeader: `Bearer ${chatToken()}`, body: { turnId: 'turn-1', agentId: AGENT } })
+    assert.ok(off.ok)
+    assert.deepEqual(off.featureFlags, [])
+    assert.equal('featureFlags' in (metadata.at(-1) ?? {}), false)
+    assertAuditMetadataSafe(metadata[0])
+  })
+
+  await check('#1126 leállítás-ellenőrzés: csak folytatási tokennel, és csak a token saját cégére', async () => {
+    const asked: string[] = []
+    const flags = [{ key: 'chat.next', onStop: 'finish_run' as const }]
+    const deps = { signingKey: KEY, now: () => NOW, featureFlagStateKnown: () => true, activeFeatureFlags: async (tenantId: string) => (asked.push(tenantId), flags) }
+    const claims ={ sub: USER, tenant: 'acme', tid: TENANT, role: 'operator' as const, adminInsight: false }
+    const turnToken = signChatToken({ ...claims, aud: CHAT_TURN_TOKEN_AUDIENCE, turnId: 't', agentId: AGENT }, KEY, NOW).token
+    assert.deepEqual(await readTurnFeatureFlags(deps, { authorizationHeader: `Bearer ${turnToken}` }), { ok: true, featureFlags: flags })
+    assert.deepEqual(asked, [TENANT])
+    const voiceToken = signChatToken({ ...claims, aud: CHAT_TURN_TOKEN_AUDIENCE, turnId: 't', agentId: AGENT, voice: true }, KEY, NOW).token
+    for (const header of [null, 'Bearer rossz', `Bearer ${chatToken()}`, `Bearer ${voiceToken}`]) {
+      assert.deepEqual(await readTurnFeatureFlags(deps, { authorizationHeader: header }), { ok: false, code: 'unauthenticated' })
+    }
+    assert.equal(asked.length, 1)
+    assert.deepEqual(await readTurnFeatureFlags({ ...deps, signingKey: undefined }, { authorizationHeader: `Bearer ${turnToken}` }), { ok: false, code: 'not_configured' })
+    // Betöltetlen állapotnál minden flag Ki lenne, a worker ezt leállításnak venné.
+    assert.deepEqual(
+      await readTurnFeatureFlags({ ...deps, activeFeatureFlags: async () => [], featureFlagStateKnown: () => false }, { authorizationHeader: `Bearer ${turnToken}` }),
+      { ok: false, code: 'unavailable' },
+    )
+  })
+
   await check('folytatási token: csak chat-tokennel, fordulóra + agentre szűkítve; láncolás tilos', async () => {
-    const deps = { ...sessionDeps(), principal: principalDeps(), audit: { append: async (a: { action: string }) => void audits.push(a.action) } }
+    const deps = { ...sessionDeps(), principal: principalDeps(), audit: { append: async (a: { action: string }) => void audits.push(a.action) }, activeFeatureFlags: async () => [] }
     const r = await issueContinuationToken(deps as never, {
       authorizationHeader: `Bearer ${chatToken()}`,
       body: { turnId: 'turn-1', agentId: AGENT },

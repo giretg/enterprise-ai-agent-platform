@@ -54,7 +54,8 @@ async function main() {
   let budgetNext = false
   const seenUserContent: string[] = []
   const platform: PlatformClient = {
-    continuationToken: async () => 'turn-token',
+    continuationToken: async () => ({ token: 'turn-token', featureFlags: [] }),
+    activeFeatureFlags: async () => [],
     listAgents: async () => [
       { agentId: AGENT, name: 'Réka', description: 'Pénzügy', platformChat: true },
       { agentId: OFF_AGENT, name: 'Kikapcsolt', platformChat: false },

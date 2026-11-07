@@ -131,8 +131,25 @@ getPolicySnapshot(store, { tenantId: T, userId: U, agentId: A }, () => new Date(
   assert.equal(snap.capabilities.browser, 'free')
   assert.equal(snap.issuedAt, '2026-10-01T00:00:00.000Z')
   assert.deepEqual(snap.agentCeilings.code_execution, 'sandbox_only')
-  return getPolicySnapshot(store, { tenantId: T, userId: U, agentId: null }).then((noAgent) => {
+  return getPolicySnapshot(store, { tenantId: T, userId: U, agentId: null }).then(async (noAgent) => {
     assert.equal(noAgent.capabilities.code_execution, 'local_free') // agent-sor nélkül nincs plafon
+
+    // #1126 WP-5: flag nélkül a verzió a korábbi; flag-változásra új verzió, különben a gép nem jelzi a frissülést.
+    const input = { tenantId: T, userId: U, agentId: A }
+    assert.deepEqual(snap.featureFlags, [])
+    const askedTenants: string[] = []
+    const withFlags = (keys: string[]) => getPolicySnapshot({
+      ...store,
+      activeFeatureFlags: async (tenantId) => (askedTenants.push(tenantId), keys.map((key) => ({ key, onStop: 'old_path' as const }))),
+    }, input)
+    const none = await withFlags([])
+    assert.equal(none.policyVersion, snap.policyVersion)
+    assert.deepEqual(askedTenants, [T])
+    const one = await withFlags(['a.one'])
+    assert.notEqual(one.policyVersion, snap.policyVersion)
+    assert.deepEqual(one.featureFlags, [{ key: 'a.one', onStop: 'old_path' }])
+    assert.notEqual((await withFlags(['a.one', 'b.two'])).policyVersion, one.policyVersion)
+    assert.equal((await withFlags(['b.two', 'a.one'])).policyVersion, (await withFlags(['a.one', 'b.two'])).policyVersion)
     console.log('client-policy-resolve.test.ts: OK')
   })
 })
