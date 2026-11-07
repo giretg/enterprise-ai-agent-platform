@@ -520,7 +520,14 @@
         "retry": "Try again",
         "loading": "Searching…",
         "resultsLabel": "Results",
-        "footer": "↑↓ move · Enter open · Esc close"
+        "footer": "↑↓ move · Enter open · Esc close",
+        "bar": {
+          "position": "“{query}” · {current}/{total}",
+          "previous": "Previous match",
+          "next": "Next match",
+          "results": "Results",
+          "clear": "Turn off highlighting"
+        }
       },
       "reader": {
         "exit": "Close reader view",

@@ -520,7 +520,14 @@
         "retry": "Újra",
         "loading": "Keresés…",
         "resultsLabel": "Találatok",
-        "footer": "↑↓ léptetés · Enter megnyitás · Esc bezárás"
+        "footer": "↑↓ léptetés · Enter megnyitás · Esc bezárás",
+        "bar": {
+          "position": "„{query}” · {current}/{total}",
+          "previous": "Előző találat",
+          "next": "Következő találat",
+          "results": "Találatok",
+          "clear": "Kiemelés kikapcsolása"
+        }
       },
       "reader": {
         "exit": "Olvasó nézet bezárása",

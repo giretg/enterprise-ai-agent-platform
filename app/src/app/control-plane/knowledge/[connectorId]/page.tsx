@@ -39,6 +39,7 @@ import { WikiPageMeta } from '@/components/knowledge/wiki/wiki-page-meta'
 import { WikiMenu } from '@/components/knowledge/wiki/wiki-menu'
 import { WikiReaderBack } from '@/components/knowledge/wiki/wiki-reader-back'
 import { WikiSearch } from '@/components/knowledge/wiki/wiki-search'
+import { WikiSearchHighlight } from '@/components/knowledge/wiki/wiki-search-highlight'
 import {
   ChangesTab,
   PageHistoryPanel,
@@ -343,11 +344,12 @@ async function WikiTab({
     const pageComments = commentsRes?.success ? commentsRes.data : null
     main = res.success ? (
       <Card>
+        <WikiSearchHighlight key={res.data.path} connectorId={connectorId} path={res.data.path} />
         {backControl}
         <article data-testid="wiki-page">
           {reader ? null : <p className="text-xs text-ink-faint">{res.data.path}</p>}
-          <h2 className="mt-1 font-display text-2xl font-semibold">{res.data.title}</h2>
-          {res.data.summary ? <p className="mt-1 text-ink-soft">{res.data.summary}</p> : null}
+          <h2 data-wiki-search-scope className="mt-1 font-display text-2xl font-semibold">{res.data.title}</h2>
+          {res.data.summary ? <p data-wiki-search-scope className="mt-1 text-ink-soft">{res.data.summary}</p> : null}
           <p className="mt-2 text-xs text-ink-faint">
             {res.data.categoryName ? `${t('page.category', { name: res.data.categoryName })} · ` : null}
             {res.data.author
@@ -369,7 +371,7 @@ async function WikiTab({
             ) : null}
           </p>
           {pageMeta && !reader ? <WikiPageMeta connectorId={connectorId} path={res.data.path} data={pageMeta} locale={locale} /> : null}
-          <div className="mt-4" data-wiki-comment-scope>
+          <div className="mt-4" data-wiki-comment-scope data-wiki-search-scope>
             <WikiMarkdown
               connectorId={connectorId}
               body={res.data.body}

@@ -252,6 +252,8 @@ test.describe('wiki-keresés (#1136)', () => {
         { ...wiki, path: 'a-szabalyzat.md', type: 'entity', title: 'Kártyaelfogadási szabályzat', summary: 'Szabályok', category: 'Termékek', body: `${filler}\n\nA kereskedő kártyát fogad el, és az elfogadás díjköteles. <script>alert(1)</script>`, contentHash: `s1-${suffix}` },
         { ...wiki, path: 'b-dijtablazat.md', type: 'entity', title: 'Díjtáblázat', summary: 'Díjak', body: 'A kártyaelfogadás költségét a kereskedő viseli.', contentHash: `s2-${suffix}` },
         { ...wiki, path: 'c-partnerek.md', type: 'entity', title: 'Partnerlista', summary: 'Partnerek', body: 'Minden kártya típus.', contentHash: `s3-${suffix}` },
+        { ...wiki, path: 'e-hosszu.md', type: 'entity', title: 'Hosszú oldal', summary: 'A hosszúoldal szabályzat', body: `${filler}\n\nItt vannak a szabályzatok.\n\n${filler}\n\nA hosszúoldal vége.`, contentHash: `s5-${suffix}` },
+        { ...wiki, path: 'f-levelek.md', type: 'entity', title: 'Tárgy', summary: 'Szöveg', body: 'Egy levél érkezett.', contentHash: `s6-${suffix}` },
         { ...wiki, path: 'd-tervezet.md', type: 'entity', title: 'Titkos tervezet', summary: 'x', body: 'kártya elfogadás', status: 'pending_approval', contentHash: `s4-${suffix}` },
       ],
     })
@@ -381,6 +383,99 @@ test.describe('wiki-keresés (#1136)', () => {
     await expect(page.getByTestId('wiki-page')).toContainText('Partnerlista')
     await expect(page).not.toHaveURL(/tab=reader/)
     await expect(page.getByTestId('wiki-tab-wiki')).toBeVisible()
+  })
+
+  const highlighted = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => [...(CSS.highlights.get('wiki-search') ?? [])].map((range) => (range as Range).toString()))
+  const openHit = async (page: import('@playwright/test').Page, query: string) => {
+    const input = page.getByTestId('wiki-search-input')
+    await expect(async () => {
+      await page.keyboard.press(`${mod}+k`)
+      await expect(input).toBeFocused({ timeout: 500 })
+    }).toPass()
+    await input.fill(query)
+    await expect(page.getByTestId('wiki-search-hit').first()).toBeVisible()
+    await expect(page.getByTestId('wiki-search-count')).not.toBeEmpty()
+    await page.waitForTimeout(350)
+    await input.press('Enter')
+  }
+
+  test('keresésből érkezve minden előfordulás kiemelve, a sáv léptet, görget, és visszanyitja a találatokat', async ({ page }) => {
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=reader&page=c-partnerek.md`)
+    await openHit(page, 'hosszuoldal szabalyzat')
+    const bar = page.getByTestId('wiki-search-bar')
+    await expect(bar).toBeVisible()
+    await expect(page.getByTestId('wiki-page')).toContainText('Hosszú oldal')
+    await expect(page.getByTestId('wiki-search-bar-position')).toHaveText('„hosszuoldal szabalyzat” · 1/4')
+    expect(await highlighted(page)).toEqual(['hosszúoldal', 'szabályzat', 'szabályzatok', 'hosszúoldal'])
+    // Az első találat az oldal tetején van, ehhez alig kell görgetni.
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(200)
+
+    await page.getByTestId('wiki-search-bar-next').click()
+    await page.getByTestId('wiki-search-bar-next').click()
+    await expect(page.getByTestId('wiki-search-bar-position')).toHaveText('„hosszuoldal szabalyzat” · 3/4')
+    await page.getByTestId('wiki-search-bar-next').click()
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(500)
+    // A ragadós sáv görgetés után is látszik, a fejléc alatt; a léptetés körbeér.
+    await expect(bar).toBeInViewport()
+    const headerBottom = await page.evaluate(() => document.querySelector('header')!.getBoundingClientRect().bottom)
+    expect((await bar.boundingBox())!.y).toBeGreaterThanOrEqual(headerBottom)
+    await page.getByTestId('wiki-search-open').click({ trial: true, timeout: 3_000 })
+    await page.getByTestId('wiki-search-bar-next').click()
+    await expect(page.getByTestId('wiki-search-bar-position')).toHaveText('„hosszuoldal szabalyzat” · 1/4')
+    await page.getByTestId('wiki-search-bar-prev').click()
+    await expect(page.getByTestId('wiki-search-bar-position')).toHaveText('„hosszuoldal szabalyzat” · 4/4')
+
+    await page.getByTestId('wiki-search-bar-results').click()
+    await expect(page.getByTestId('wiki-search-input')).toHaveValue('hosszuoldal szabalyzat')
+    await page.keyboard.press('Escape')
+
+    // ✕: kiemelés és sáv el, de a lap marad.
+    await page.getByTestId('wiki-search-bar-clear').click()
+    await expect(bar).toHaveCount(0)
+    expect(await highlighted(page)).toEqual([])
+    await expect(page.getByTestId('wiki-page')).toContainText('Hosszú oldal')
+  })
+
+  test('a toldalékos alak is kiemelődik; menüből érkezve és lapváltás után nincs kiemelés', async ({ page }) => {
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=wiki&page=a-szabalyzat.md`)
+    await openHit(page, 'levelek')
+    await expect(page.getByTestId('wiki-search-bar-position')).toContainText('1/1')
+    expect(await highlighted(page)).toEqual(['levél'])
+
+    // Lapváltás a menüből: a sáv eltűnik, és a kiemelés nem marad a másik lapon.
+    await page.getByTestId('wiki-toc').getByRole('link', { name: 'Partnerlista' }).click()
+    await expect(page.getByTestId('wiki-page')).toContainText('Partnerlista')
+    await expect(page.getByTestId('wiki-search-bar')).toHaveCount(0)
+    expect(await highlighted(page)).toEqual([])
+
+    // Ugyanarra a lapra menüből visszatérve sincs.
+    await page.getByTestId('wiki-toc').getByRole('link', { name: 'Tárgy' }).click()
+    await expect(page.getByTestId('wiki-page')).toContainText('Egy levél érkezett.')
+    await expect(page.getByTestId('wiki-search-bar')).toHaveCount(0)
+    expect(await highlighted(page)).toEqual([])
+
+    // A találat a már nyitott lapra is kiemel, lapváltás nélkül.
+    await openHit(page, 'levelek')
+    await expect(page.getByTestId('wiki-search-bar-position')).toContainText('1/1')
+  })
+
+  test('tiltott tárhely és hiányzó Highlight API mellett a lap hibátlanul olvasható', async ({ page }) => {
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    await page.addInitScript(() => {
+      delete (window as { Highlight?: unknown }).Highlight
+      Object.defineProperty(window, 'sessionStorage', {
+        get() {
+          throw new DOMException('A tárhely tiltva', 'SecurityError')
+        },
+      })
+    })
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=wiki&page=c-partnerek.md`)
+    await openHit(page, 'levelek')
+    await expect(page.getByTestId('wiki-page')).toContainText('Egy levél érkezett.')
+    await expect(page.getByTestId('wiki-search-bar')).toHaveCount(0)
+    expect(errors).toEqual([])
   })
 
   test('nincs gomb üres wikinél, időutazásnál és más fülön; kis kijelzőn lebegő gomb', async ({ page, request }) => {
