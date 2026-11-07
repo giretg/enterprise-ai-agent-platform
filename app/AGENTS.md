@@ -26,3 +26,14 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Specifikációt mindig GitHub issue-ként készíts (lásd `docs/agents/issue-tracker.md`), ne külön fájlként
 - Új feature-höz külön git worktree-t nyiss, hogy a párhuzamos fejlesztések ne zavarják egymást; a munkát PR-okba rendezve szállítsd
 - UI-szöveget üzleti felhasználónak írj: közérthetően, zsargon nélkül; bonyolult funkciónál adj magyarázatot (`?` ikon hover/kattintás szöveggel, vagy ha muszáj, közvetlenül a felületen)
+
+# PR készítés
+- A PR elkészítése előtt teszteld a kódot, és ha szükséges, a teszt alapján tegyél javaslatot arra is, hogyan lehetne javítani a tesztelés hatékonyságát (módszer, eszközök).
+- A PR-t sorold be kockázat szerint:
+  - zöld: csak nem érdemi UI-változtatás, nincs hatása az alkalmazás fő funkcióira, könnyen visszavonható
+  - sárga: könnyen visszavonható, nem nagy hatású változtatás
+  - piros: nagy hatású, nehezen vagy nem visszavonható változtatás
+- A piros PR-t lehetőség szerint feature flag mögött szállítsd, hogy tenantonként bevezethető és kikapcsolható legyen. A rendszer speceje: #1126. Amíg az alap nem készült el, a PR-ban jelezd, ha emiatt nincs flag.
+- Hibajavítás és biztonsági javítás ne kerüljön flag mögé, mert kikapcsolva a hiba élne tovább. A belépés, a tenant-elkülönítés és az audit se legyen flaggel kikapcsolható.
+- A migrációt a flag nem vonja vissza. Sorrend: bővítő migráció, flag mögötti kód, teljes bevezetés, végül külön PR-ban a régi út törlése.
+- A bekapcsolva írt adatot a régi kódnak is tudnia kell olvasni, és a flag mindkét állapotára legyen teszt.
