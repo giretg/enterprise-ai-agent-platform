@@ -6,6 +6,7 @@ import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresConnectorTemplateRepository } from './connector-template-repository'
 import { PostgresSelfUpdatingConnectorRepository } from './self-updating-connector-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
+import { PostgresFeatureFlagRepository } from './feature-flag-repository'
 import { PostgresAuditRepository } from './audit-repository'
 import { PostgresGatewayOperationRepository } from './gateway-operation-repository'
 import { PostgresResourceGrantRepository } from './resource-grant-repository'
@@ -36,6 +37,7 @@ import { PostgresPrivateKnowledgeBaseStore, PostgresWikiConfigRepository, Postgr
 import { PostgresWikiHistoryRepository } from './wiki-history-repository'
 
 export const repositories = {
+  featureFlags: new PostgresFeatureFlagRepository(),
   users: new PostgresUserRepository(),
   invitations: new PostgresInvitationRepository(),
   rolePermissions: new PostgresRolePermissionRepository(),
