@@ -1,5 +1,7 @@
 # Feature-spec — Platformszintű e-mail értesítések
 
+> **Felülírva (2026-11-07):** az érvényes spec a [#1135](https://github.com/giretg/enterprise-ai-agent-platform/issues/1135) leírása. Ez a dokumentum csak előzményként marad meg, ne ebből dolgozz.
+
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
 **Verzió:** 0.1 (grillezésre váró tervezet)
 **Dátum:** 2026-07-19
