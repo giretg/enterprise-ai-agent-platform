@@ -17,7 +17,7 @@ import {
   type SheetGrid,
 } from '../src/domain/warehouse/excel-reader'
 import { checkPlan, parseImportPlan, type CatalogDataset } from '../src/domain/warehouse/plan'
-import { profileWorkbook } from '../src/domain/warehouse/profiler'
+import { detectLayout, profileWorkbook } from '../src/domain/warehouse/profiler'
 import { buildQuerySpec, compileQuery, QueryError } from '../src/domain/warehouse/query'
 import { qi, UnsafeIdentifierError, warehouseSchemaName } from '../src/domain/warehouse/sql'
 import { buildLinkIndex, matchLink, prepareRows } from '../src/domain/warehouse/transform'
@@ -141,6 +141,18 @@ async function main() {
     assert.throws(() => assertWarehouseUpload(bomb, 'bomba.xlsx'), (e: unknown) => e instanceof WarehouseFileError && e.code === 'unsafe_archive')
     assert.throws(() => assertWarehouseUpload(Buffer.from('a,b\n1,2'), 'x.csv'), (e: unknown) => e instanceof WarehouseFileError && e.code === 'unsupported_format')
     assert.throws(() => assertWarehouseUpload(Buffer.alloc(11 * 1024 * 1024), 'x.xlsx'), (e: unknown) => e instanceof WarehouseFileError && e.code === 'file_too_large')
+  })
+
+  await check('AC12: távoli merge-tartomány nem futtat többmilliós fejlécvizsgálatot', () => {
+    const grid: SheetGrid = {
+      name: 'Távoli összevonás', state: 'visible',
+      rows: [{ rowNumber: 1, cells: ['Fejléc', 'Érték'] }, { rowNumber: 2, cells: ['A', 1] }],
+      merges: Array.from({ length: 20 }, () => 'A1:B9999999'), formulaCells: {}, errorCells: 0,
+      truncatedRows: false, truncatedColumns: false,
+    }
+    const started = Date.now()
+    assert.equal(detectLayout(grid)?.headerEndRow, 1)
+    assert.ok(Date.now() - started < 5_000, 'a vizsgálat csak a meglévő fejlécsorokat érinti')
   })
 
   await check('AC12b: összevont tartományok nem kerülik meg a sor-/cella-plafont (OOM-kapu)', () => {
