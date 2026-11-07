@@ -21,3 +21,10 @@ export function formatDateTime(value: Date | string | null | undefined, locale: 
     timeStyle: 'short',
   }).format(date)
 }
+
+/** Naptári nap (határidő): UTC szerint, hogy az időzóna ne tolja át a dátumot a következő napra. */
+export function formatCalendarDate(value: Date | string, locale: string): string {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat(locale === 'en' ? 'en-GB' : 'hu-HU', { timeZone: 'UTC', dateStyle: 'medium' }).format(date)
+}

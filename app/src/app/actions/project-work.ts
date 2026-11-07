@@ -8,6 +8,7 @@ import { repositories } from '@/repositories/postgres'
 import { hasMinimumRole } from '@/lib/iam-policy'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { isSuperadmin } from '@/lib/tenant-policy'
+import { findMemoryReadableAgent } from '@/domain/project-work/memory-access'
 import type { ProjectListItem, MemoryView } from '@/domain/project-work/project-work-service'
 import { effectiveWorkProjectKey } from '@/lib/work-project'
 import {
@@ -292,7 +293,10 @@ export async function listProjectMemoryAction(
   try {
     const parsed = listMemorySchema.parse(input)
     const ctx = await requireTenantRole('viewer')
-    const agent = await scopedAgent(parsed.agentId, ctx.activeTenantId)
+    const agent = await findMemoryReadableAgent(
+      { findAgent: (agentId, tenantId) => repositories.agents.findById(agentId, tenantId), findAgentGrant: (query) => repositories.resourceGrants.findAgentGrant(query) },
+      { tenantId: ctx.activeTenantId, userId: ctx.user.id, role: ctx.activeTenantRole, agentId: parsed.agentId },
+    )
     if (!agent) return fail('agent_not_found')
     const read = await services.projectWork.service.readMemory({
       tenantId: ctx.activeTenantId,

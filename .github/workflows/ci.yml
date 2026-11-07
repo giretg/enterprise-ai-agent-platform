@@ -84,6 +84,8 @@ jobs:
           npm run test:public-app-url
           npm run test:mcp-principal
           npm run test:mcp-http
+          npm run test:feature-flags
+          npm run test:migration-guard
           npm run test:mcp-parity
           npm run test:mcp-parity-eval
           npm run test:mcp-tenant-context
@@ -92,6 +94,7 @@ jobs:
           npm run test:agent-setting-sections
           npm run test:agent-hire
           npm run test:project-work
+          npm run test:project-memory-access
           npm run test:handoff
           npm run test:scheduled-task-sync-plan
           npm run test:scheduled-task-service
@@ -292,6 +295,9 @@ jobs:
         run: npm run test:project-work-file-db
 
       # #967: mini app repository (tranzakció, verzió-zár, láthatóság, purge) valódi Postgresen.
+      - name: Feature flags (Postgres)
+        run: npm run test:feature-flags-db
+
       - name: Mini app repository (Postgres)
         run: npm run test:mini-app-db
       - name: Public chat on Postgres (#1016)

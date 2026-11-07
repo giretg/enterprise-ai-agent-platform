@@ -57,6 +57,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'platform.role.grant',
   'platform.role.revoke',
+  // #1126 fokozatos bevezetés: a platform-sor mindent tartalmaz, a cég sora csak a nevet és az új állapotot.
+  'platform.feature_flag.mode_set',
+  'platform.feature_flag.tenant_access_set',
+  'platform.feature_flag.deadline_extended',
 
   'tenant.create',
   'tenant.suspend',
