@@ -207,3 +207,15 @@ env:
     value: "projects/346824017066/secrets"
     availability:
       - RUNTIME
+  # Nyilvános ügyfélchat robotvédelme (Cloudflare Turnstile). Élesben mindkettő kell új
+  # beszélgetéshez, különben a látogató 503-at kap. A titkok létrejötte ELŐTT nem szabad mergelni:
+  # nem létező secretre a rollout elbukik.
+  - variable: TURNSTILE_SECRET_KEY
+    secret: TURNSTILE_SECRET_KEY
+    availability:
+      - RUNTIME
+  - variable: NEXT_PUBLIC_TURNSTILE_SITE_KEY
+    secret: NEXT_PUBLIC_TURNSTILE_SITE_KEY
+    availability:
+      - BUILD
+      - RUNTIME
