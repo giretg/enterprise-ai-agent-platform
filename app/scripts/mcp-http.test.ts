@@ -14,6 +14,8 @@ import type {
 import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
 import { voiceAllowedToolAliases } from '../src/auth/voice-tool-guard'
+import { createStaticFeatureFlags } from '../src/domain/feature-flags/evaluator'
+import { createToolFeatureGate } from '../src/domain/feature-flags/gates'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { PRESETS } from '../src/domain/client-policy/capabilities'
 import type { McpRuntimeDeps } from '../src/auth/mcp-server'
@@ -2890,6 +2892,38 @@ async function main() {
     assert.deepEqual((await rpc(13, 'skills/list')).result?.skills ?? [], [])
     assert.deepEqual((await rpc(14, 'resources/list')).result?.resources ?? [], [])
     assert.deepEqual((await rpc(15, 'prompts/list')).result?.prompts ?? [], [])
+  })
+
+  await check('#1126 flag mögötti eszköz: a listából eltűnik, a hívás naplózva elutasul, másik cégnél nem változik semmi', async () => {
+    const FLAG = 'test.tool_gate'
+    const run = async (enabledFor: string[], gate = true) => {
+      const { deps, audit } = runtimeDeps({})
+      if (gate) {
+        deps.toolFeatureGate = createToolFeatureGate({ [MCP_AGENTS_LIST_TOOL]: FLAG }, createStaticFeatureFlags({ [FLAG]: enabledFor }))
+      }
+      const headers = { authorization: `Bearer ${TOKEN}` }
+      const listed = await readJson(await post('acme', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, headers, deps)) as { result?: { tools?: Array<{ name: string }> } }
+      const called = await readJson(await post('acme', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: MCP_AGENTS_LIST_TOOL, arguments: {} } }, headers, deps)) as { result?: { isError?: boolean; content?: Array<{ text: string }> } }
+      return { names: (listed.result?.tools ?? []).map((tool) => tool.name), called: called.result, audit }
+    }
+    const off = await run(['masik-ceg'])
+    assert.equal(off.names.includes(MCP_AGENTS_LIST_TOOL), false, 'a listában nem látszik')
+    assert.ok(off.names.includes(MCP_WHOAMI_TOOL), 'a többi eszköz marad')
+    assert.equal(off.called?.isError, true)
+    assert.match(off.called?.content?.[0]?.text ?? '', /feature_not_enabled/)
+    assert.doesNotMatch(off.called?.content?.[0]?.text ?? '', /test\.tool_gate/, 'a flag neve nem szivárog')
+    const denied = off.audit.find((row) => row.action === 'mcp.tools.call.deny')
+    assert.equal(denied?.inputRef, MCP_AGENTS_LIST_TOOL)
+    assert.equal((denied?.metadata as { code?: string } | undefined)?.code, 'feature_not_enabled')
+
+    const on = await run([TENANT_ID])
+    assert.ok(on.names.includes(MCP_AGENTS_LIST_TOOL))
+    assert.notEqual(on.called?.isError, true)
+    assert.equal(on.audit.some((row) => row.action === 'mcp.tools.call.deny'), false)
+
+    const noGate = await run([], false)
+    assert.ok(noGate.names.includes(MCP_AGENTS_LIST_TOOL), 'üres megfeleltetésnél minden a régi')
+    assert.notEqual(noGate.called?.isError, true)
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)
