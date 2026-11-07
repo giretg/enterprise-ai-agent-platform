@@ -13,6 +13,7 @@ const STATUS: Record<VoiceSessionFailureCode, number> = {
   voice_disabled: 403,
   key_missing: 403,
   not_configured: 503,
+  provider_disabled: 403,
   provider_key_rejected: 502,
   provider_no_access: 502,
   provider_quota: 502,
@@ -41,7 +42,14 @@ export async function POST(request: Request): Promise<Response> {
   })
   if (!result.ok) return NextResponse.json({ error: result.code }, { status: STATUS[result.code] })
   return NextResponse.json(
-    { sessionId: result.sessionId, sdpAnswer: result.sdpAnswer, greeting: result.greeting, maxSeconds: result.maxSeconds },
+    {
+      provider: result.provider,
+      sessionId: result.sessionId,
+      sdpAnswer: result.sdpAnswer,
+      conversationToken: result.conversationToken,
+      greeting: result.greeting,
+      maxSeconds: result.maxSeconds,
+    },
     { headers: { 'cache-control': 'no-store' } },
   )
 }

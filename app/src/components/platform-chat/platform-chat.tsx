@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AgentProductLinks } from '@/components/agents/agent-product-links'
 import { VoiceCallDialog, VoiceCallIconButton } from '@/components/agents/voice-call-button'
-import type { VoiceCallStyle } from '@/domain/voice/config'
+import type { VoiceCallStyle, VoiceProviderId } from '@/domain/voice/config'
 import type { AgentProductLink } from '@/lib/agent-product-links'
 import { pickPlatformChatAgentId } from '@/lib/platform-chat-href'
 import { getToolUiLabel } from '@/lib/tool-ui-labels'
@@ -417,6 +417,7 @@ export function PlatformChat({
   isAdmin,
   keyMissingForAdmin,
   voiceCallStyles = {},
+  voiceProviders = {},
   productLinks = {},
   initialAgentId = null,
   initialConversationId = null,
@@ -425,6 +426,7 @@ export function PlatformChat({
   keyMissingForAdmin: boolean
   /** #1111: azok a munkatársak, akikkel hangon is lehet beszélni, és a hang-gombjuk kinézete. */
   voiceCallStyles?: Record<string, VoiceCallStyle>
+  voiceProviders?: Record<string, VoiceProviderId>
   /** A munkatárs mini appjai, tudásbázisa és társai; a listát a worker adja, ezeket csak a szerver látja. */
   productLinks?: Record<string, AgentProductLink[]>
   /** A kártya / adatlap `?agent=` paramétere — ha a listában van, őt választjuk. */
@@ -1403,7 +1405,7 @@ export function PlatformChat({
         )}
       </section>
       {/* A beviteli doboz a beszélgetés indulásakor máshová kerül; az ablak azért itt él, hogy ez ne bontsa a hívást. */}
-      {voiceOpen && agent ? <VoiceCallDialog key={agent.agentId} agentId={agent.agentId} agentName={agent.name} onClose={() => setVoiceOpen(false)} /> : null}
+      {voiceOpen && agent ? <VoiceCallDialog key={agent.agentId} agentId={agent.agentId} agentName={agent.name} provider={voiceProviders[agent.agentId] ?? 'openai_live'} onClose={() => setVoiceOpen(false)} /> : null}
     </div>
   )
 }

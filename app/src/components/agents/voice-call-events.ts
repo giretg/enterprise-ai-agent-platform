@@ -1,4 +1,12 @@
 /** #1111: a hangszolgáltató adatcsatorna-eseményeiből készül az átirat és a várakozási mérés. */
+import type { VoiceProviderId } from '@/domain/voice/config'
+
+const PROVIDER_LABEL: Record<VoiceProviderId, string> = { openai_live: 'OpenAI', elevenlabs: 'ElevenLabs' }
+
+export function voiceProviderLabel(provider: VoiceProviderId): string {
+  return PROVIDER_LABEL[provider]
+}
+
 export type VoiceTranscriptLine = { role: 'user' | 'assistant' | 'tool'; text: string; atSeconds?: number }
 
 export type VoiceCallView = {
@@ -129,6 +137,46 @@ export function applyVoiceEvent(view: VoiceCallView, event: unknown, nowMs: numb
   }
 }
 
+/** Az ElevenLabs böngészős kliensének eseményei, az OpenAI-éval azonos nézetre leképezve. */
+export type ElevenLabsCallEvent =
+  | { type: 'connected' }
+  | { type: 'message'; role: 'user' | 'agent'; text: string }
+  | { type: 'tool_request'; toolName: string }
+  | { type: 'tool_response'; toolName: string; isError: boolean }
+  | { type: 'disconnected'; reason: 'user' | 'agent' | 'error' }
+  | { type: 'error'; message: string }
+
+export function applyElevenLabsEvent(view: VoiceCallView, event: ElevenLabsCallEvent, nowMs: number): VoiceCallView {
+  switch (event.type) {
+    case 'connected':
+      return { ...view, started: true, startedAtMs: view.startedAtMs ?? nowMs }
+    case 'message': {
+      // Itt kész mondatok érkeznek, ezért mindegyik külön sor, nem az előző folytatása.
+      const line: VoiceTranscriptLine = { role: event.role === 'user' ? 'user' : 'assistant', text: event.text, ...elapsedSeconds(view, nowMs) }
+      return { ...view, lines: [...view.lines, line].slice(-MAX_LINES) }
+    }
+    case 'tool_request':
+      return { ...view, backendCalls: view.backendCalls + 1, backendSince: view.backendSince ?? nowMs }
+    case 'tool_response': {
+      const line: VoiceTranscriptLine = {
+        role: 'tool',
+        text: `${TOOL_LABELS[event.toolName] ?? 'A munkatárs használt egy eszközt.'}${event.isError ? ' Ez nem sikerült.' : ''}`,
+        ...elapsedSeconds(view, nowMs),
+      }
+      const withLine = { ...view, lines: [...view.lines, line].slice(-MAX_LINES) }
+      return applyBackendEvent(withLine, { type: 'response.completed' }, nowMs)
+    }
+    case 'disconnected':
+      return {
+        ...view,
+        closedReason: event.reason === 'user' ? 'close_requested' : event.reason === 'agent' ? 'remote_hangup' : 'connection_lost',
+        seconds: view.startedAtMs === null ? view.seconds : Math.max(0, Math.round((nowMs - view.startedAtMs) / 1000)),
+      }
+    case 'error':
+      return { ...view, providerError: event.message.slice(0, 300), providerErrorCode: null }
+  }
+}
+
 /** A legfrissebb sorok maradnak meg, ha az átirat nem férne bele a lezáró kérésbe. */
 function reportableLines(lines: VoiceTranscriptLine[]): VoiceTranscriptLine[] {
   const encoder = new TextEncoder()
@@ -142,10 +190,10 @@ function reportableLines(lines: VoiceTranscriptLine[]): VoiceTranscriptLine[] {
   return kept
 }
 
-export function voiceEndReport(view: VoiceCallView) {
+export function voiceEndReport(view: VoiceCallView, provider: VoiceProviderId = 'openai_live') {
   // A szolgáltató hibaszövege nyers tartalom, ezért az átiratba kerül; az audit-sorba csak a kódja.
   const lines: VoiceTranscriptLine[] = view.providerError
-    ? [...view.lines, { role: 'tool', text: `Az OpenAI hibaüzenete: ${view.providerError}` }]
+    ? [...view.lines, { role: 'tool', text: `Az ${PROVIDER_LABEL[provider]} hibaüzenete: ${view.providerError}` }]
     : view.lines
   const transcript = reportableLines(lines.slice(-MAX_LINES))
   return {
@@ -162,14 +210,14 @@ export function voiceEndReport(view: VoiceCallView) {
 }
 
 /** A munkamenet közbeni szolgáltatói hiba szövege angol és technikai, ezért a teendő kerül elé. */
-export function voiceProviderErrorMessage(detail: string): string {
-  return `Az OpenAI hibát jelzett, ezért a munkatárs lehet, hogy nem éri el az adatokat. Próbáld újra, és ha ismétlődik, küldd el ezt a szöveget a rendszergazdának: ${detail}`
+export function voiceProviderErrorMessage(detail: string, provider: VoiceProviderId = 'openai_live'): string {
+  return `Az ${PROVIDER_LABEL[provider]} hibát jelzett, ezért a munkatárs lehet, hogy nem éri el az adatokat. Próbáld újra, és ha ismétlődik, küldd el ezt a szöveget a rendszergazdának: ${detail}`
 }
 
 /** A szűrő miatti lezárásnál a záró üzenet mondja meg a teendőt, az általános hibaszöveg félrevezetne. */
-export function voiceProviderNotice(view: Pick<VoiceCallView, 'providerError' | 'closedReason'>): string | null {
+export function voiceProviderNotice(view: Pick<VoiceCallView, 'providerError' | 'closedReason'>, provider: VoiceProviderId = 'openai_live'): string | null {
   if (!view.providerError || view.closedReason === 'content') return null
-  return voiceProviderErrorMessage(view.providerError)
+  return voiceProviderErrorMessage(view.providerError, provider)
 }
 
 /** A háttér befejezéséről lezárás után már nem jön esemény, ezért a jelzés csak élő beszélgetésben látszik. */
@@ -184,6 +232,15 @@ export function voiceEndedMessage(closedReason: string | null, limitReached: boo
   return 'A beszélgetés véget ért.'
 }
 
+/** Csak azok a szövegek, amelyek szolgáltatónként mást kérnek a felhasználótól. */
+const ELEVENLABS_FAILURE_MESSAGES: Record<string, string> = {
+  key_missing: 'Nincs céges ElevenLabs-kulcs. A kulcsot egy adminisztrátor adhatja meg a Beállítások → Céges modellkulcsok oldalon.',
+  provider_key_rejected: 'Az ElevenLabs nem fogadta el a céges kulcsot. Ellenőrizd a kulcsot és a jogosultságait a Beállítások → Céges modellkulcsok oldalon.',
+  provider_no_access: 'Ez az ElevenLabs-fiók nem érte el a szükséges funkciókat. Az ElevenLabs oldalán engedélyezni kell az MCP-kapcsolatokat, és a kulcsnak írnia kell az agenteket.',
+  provider_quota: 'Az ElevenLabs-fiókban elfogyott a keret, vagy túl sok a kérés. Ellenőrizd az egyenleget, majd próbáld újra később.',
+  provider_error: 'Az ElevenLabs most nem indította el a beszélgetést. Próbáld újra pár perc múlva.',
+}
+
 const FAILURE_MESSAGES: Record<string, string> = {
   bad_request: 'A beszélgetést nem sikerült elindítani. Frissítsd az oldalt, és próbáld újra.',
   bad_origin: 'A kérés nem erről az oldalról érkezett. Frissítsd az oldalt, és próbáld újra.',
@@ -193,14 +250,15 @@ const FAILURE_MESSAGES: Record<string, string> = {
   voice_disabled: 'Ennél a munkatársnál közben kikapcsolták a hang-beszélgetést. Frissítsd az oldalt, és ha újra kell, kérd egy platform-adminisztrátortól.',
   key_missing: 'Nincs céges OpenAI-kulcs. A kulcsot egy adminisztrátor adhatja meg a Beállítások → Céges modellkulcsok oldalon.',
   not_configured: 'A platformon hiányzik a hang-beszélgetés beállítása. Szólj a rendszergazdának.',
+  provider_disabled: 'Ennél a szervezetnél most nincs bekapcsolva a munkatárshoz választott hangszolgáltató. Szólj egy platform-adminisztrátornak.',
   provider_key_rejected: 'Az OpenAI nem fogadta el a céges kulcsot. Ellenőrizd a kulcsot a Beállítások → Céges modellkulcsok oldalon.',
   provider_no_access: 'Ez az OpenAI-projekt nem éri el a hangmodellt. Ellenőrizd az OpenAI-fiók jogosultságát.',
   provider_quota: 'Az OpenAI-fiókban elfogyott a keret, vagy túl sok a kérés. Ellenőrizd az egyenleget, majd próbáld újra később.',
   provider_error: 'Az OpenAI most nem indította el a beszélgetést. Próbáld újra pár perc múlva.',
 }
 
-export function voiceFailureMessage(code: string): string {
-  return FAILURE_MESSAGES[code] ?? 'A beszélgetést nem sikerült elindítani. Próbáld újra pár perc múlva.'
+export function voiceFailureMessage(code: string, provider: VoiceProviderId = 'openai_live'): string {
+  return (provider === 'elevenlabs' ? ELEVENLABS_FAILURE_MESSAGES[code] : undefined) ?? FAILURE_MESSAGES[code] ?? 'A beszélgetést nem sikerült elindítani. Próbáld újra pár perc múlva.'
 }
 
 export function microphoneFailureMessage(errorName: string): string {

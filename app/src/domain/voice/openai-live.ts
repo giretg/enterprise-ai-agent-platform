@@ -58,6 +58,7 @@ export function createOpenAiLiveProvider(options: { fetchImpl?: typeof fetch; ba
   return {
     id: 'openai_live',
     model: OPENAI_LIVE_MODEL,
+    needsSdpOffer: true,
     async startBrowserSession(input): Promise<VoiceBrowserSessionResult> {
       let response: Response
       try {

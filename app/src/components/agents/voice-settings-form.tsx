@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import { saveAgentVoiceConfigAction } from '@/app/actions/voice'
 import { VoiceCallIcon } from '@/components/agents/voice-call-button'
-import { VOICE_GREETING_MAX_CHARS, VOICE_NAMES, VOICE_ROLE_MAX_CHARS, type AgentVoiceConfig, type VoiceCallStyle } from '@/domain/voice/config'
+import { VOICE_GREETING_MAX_CHARS, VOICE_NAMES, VOICE_ROLE_MAX_CHARS, type AgentVoiceConfig, type VoiceCallStyle, type VoiceProviderId } from '@/domain/voice/config'
 
 /** A jelenlegi, mentett állapot egy mondatban: mit lát most a többi felhasználó, és mi a teendő. */
 function VoiceStatus({ config, keyConfigured, published }: { config: AgentVoiceConfig; keyConfigured: boolean; published: boolean }) {
@@ -33,6 +33,11 @@ function VoiceStatus({ config, keyConfigured, published }: { config: AgentVoiceC
   )
 }
 
+const PROVIDER_OPTIONS: { value: VoiceProviderId; title: string; hint: string }[] = [
+  { value: 'openai_live', title: 'OpenAI', hint: 'Külön beszélő és háttérmodell dolgozik. A céges OpenAI-kulcsot használja.' },
+  { value: 'elevenlabs', title: 'ElevenLabs', hint: 'Egy modell beszél, és közvetlenül éri el az adatokat. A céges ElevenLabs-kulcsot használja. Hangfelvétel nem készül, az átirat 30 napig marad az ElevenLabsnél.' },
+]
+
 const CALL_STYLE_OPTIONS: { value: VoiceCallStyle; title: string; hint: string }[] = [
   { value: 'conversation', title: 'Beszélgetős munkatárs', hint: 'Főleg írásban dolgozik, de hangon is lehet vele beszélni. Hullámforma ikont kap.' },
   { value: 'phone', title: 'Telefonos munkatárs', hint: 'Elsősorban hívásra való, például rendelésfelvételre. Zöld telefon ikont kap.' },
@@ -43,16 +48,22 @@ export function VoiceSettingsForm({
   agentId,
   config,
   keyConfigured,
+  elevenLabsAvailable,
+  elevenLabsKeyConfigured,
   published,
   roleClipped,
 }: {
   agentId: string
   config: AgentVoiceConfig
   keyConfigured: boolean
+  elevenLabsAvailable: boolean
+  elevenLabsKeyConfigured: boolean
   published: boolean
   roleClipped: boolean
 }) {
   const [enabled, setEnabled] = useState(config.enabled)
+  const [provider, setProvider] = useState<VoiceProviderId>(config.provider)
+  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState(config.elevenLabsVoiceId ?? '')
   const [voice, setVoice] = useState<string>(config.voice)
   const [greeting, setGreeting] = useState(config.greeting)
   const [callStyle, setCallStyle] = useState<VoiceCallStyle>(config.callStyle)
@@ -62,22 +73,29 @@ export function VoiceSettingsForm({
   function save() {
     startTransition(async () => {
       setMessage(null)
-      const res = await saveAgentVoiceConfigAction({ agentId, enabled, voice, greeting, callStyle })
+      const res = await saveAgentVoiceConfigAction({ agentId, enabled, provider, voice, elevenLabsVoiceId, greeting, callStyle })
       setMessage(res.success ? { tone: 'ok', text: 'Mentve.' } : { tone: 'error', text: res.error })
     })
   }
+
+  const onElevenLabs = provider === 'elevenlabs'
+  const providerName = onElevenLabs ? 'ElevenLabs' : 'OpenAI'
+  const selectedKeyConfigured = onElevenLabs ? elevenLabsKeyConfigured : keyConfigured
+  const savedKeyConfigured = config.provider === 'elevenlabs' ? elevenLabsKeyConfigured : keyConfigured
+  // A leállított szolgáltatóra mentett munkatárs is lássa a választását, különben a mentés csendben átállítaná.
+  const providerOptions = PROVIDER_OPTIONS.filter((option) => option.value !== 'elevenlabs' || elevenLabsAvailable || config.provider === 'elevenlabs')
 
   return (
     <div className="space-y-3 text-sm">
       <p className="text-ink-soft">
         Bekapcsolva a munkatársnál megjelenik egy hang-gomb, amellyel böngészőben, telefonszám nélkül lehet vele
-        beszélni. A hang és az elhangzott szöveg az OpenAI-hoz kerül, a céges kulcs számlájára. A platform
+        beszélni. A hang és az elhangzott szöveg az {providerName} szolgáltatóhoz kerül, a céges kulcs számlájára. A platform
         tartalomszűrője és költségkerete ezt nem látja, ezért csak próbára való, valódi ügyféladat nélkül.
       </p>
-      <VoiceStatus config={config} keyConfigured={keyConfigured} published={published} />
-      {keyConfigured ? null : (
+      <VoiceStatus config={config} keyConfigured={savedKeyConfigured} published={published} />
+      {selectedKeyConfigured ? null : (
         <p className="text-coral-deep">
-          Nincs céges OpenAI-kulcs, ezért a hang nem kapcsolható be. A kulcsot a{' '}
+          Nincs céges {providerName}-kulcs, ezért a hang nem kapcsolható be. A kulcsot a{' '}
           <Link href="/control-plane/settings?section=openrouter" className="underline">
             Beállítások → Céges modellkulcsok
           </Link>{' '}
@@ -88,6 +106,30 @@ export function VoiceSettingsForm({
         <input type="checkbox" className="mt-1" checked={enabled} disabled={pending} onChange={(e) => setEnabled(e.target.checked)} />
         <span className="font-medium text-ink">Hang-beszélgetés bekapcsolva</span>
       </label>
+      {providerOptions.length > 1 ? (
+        <fieldset>
+          <legend className="font-medium text-ink">Hangszolgáltató</legend>
+          <div className="mt-1 space-y-2">
+            {providerOptions.map((option) => (
+              <label key={option.value} className="flex items-start gap-3 rounded-lg border border-line px-3 py-2">
+                <input
+                  type="radio"
+                  name="voice-provider"
+                  className="mt-1"
+                  checked={provider === option.value}
+                  disabled={pending}
+                  onChange={() => setProvider(option.value)}
+                />
+                <span>
+                  <span className="block font-medium text-ink">{option.title}</span>
+                  <span className="block text-ink-soft">{option.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          <span className="mt-1 block text-ink-soft">A váltás a következő beszélgetéstől érvényes. A munkaköri leírás, a jogosultságok és az eszközök ugyanazok maradnak.</span>
+        </fieldset>
+      ) : null}
       <fieldset>
         <legend className="font-medium text-ink">Milyen munkatárs ez?</legend>
         <div className="mt-1 space-y-2">
@@ -112,6 +154,21 @@ export function VoiceSettingsForm({
           Csak a gomb kinézete változik. A beszélgetés mindkét esetben böngészőben fut, a munkatárs telefonszámot nem kap.
         </span>
       </fieldset>
+      {onElevenLabs ? (
+        <label className="block">
+          <span className="font-medium text-ink">Hang azonosítója</span>
+          <input
+            className="mt-1 block w-full max-w-md rounded-lg border border-line bg-transparent px-3 py-2"
+            value={elevenLabsVoiceId}
+            disabled={pending}
+            placeholder="Üresen az ElevenLabs alapértelmezett hangja szól"
+            onChange={(e) => setElevenLabsVoiceId(e.target.value)}
+          />
+          <span className="mt-1 block text-ink-soft">
+            Az ElevenLabs hangtárában a hang menüjéből másolható ki. A váltás a következő beszélgetéstől érvényes. Próbával válaszd ki, melyik szól jól magyarul.
+          </span>
+        </label>
+      ) : (
       <label className="block">
         <span className="font-medium text-ink">Hang</span>
         <select
@@ -130,6 +187,7 @@ export function VoiceSettingsForm({
           A nevek az OpenAI hangjait jelölik. A váltás a következő beszélgetéstől érvényes. Magyar hang nincs külön, ezért próbával válaszd ki, melyik szól a legjobban.
         </span>
       </label>
+      )}
       <label className="block">
         <span className="font-medium text-ink">Első mondat</span>
         <textarea
@@ -143,7 +201,7 @@ export function VoiceSettingsForm({
         />
         <span className="mt-1 block text-ink-soft">
           Mögé mindig odakerül: „Tájékoztatom, hogy mesterséges intelligenciával beszél.” Ezt a hívónak tudnia kell, ezért nem
-          kapcsolható ki. A modell a mondatot átfogalmazhatja, próba közben figyeld.
+          kapcsolható ki. {onElevenLabs ? 'Az ElevenLabs szó szerint mondja el, és közben nem lehet félbeszakítani.' : 'A modell a mondatot átfogalmazhatja, próba közben figyeld.'}
         </span>
       </label>
       <p className="text-ink-soft">

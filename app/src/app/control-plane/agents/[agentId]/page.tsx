@@ -49,6 +49,8 @@ import { VoiceCallButton } from '@/components/agents/voice-call-button'
 import { VoiceSettingsForm } from '@/components/agents/voice-settings-form'
 import { VoiceTranscriptsPanel } from '@/components/agents/voice-transcripts-panel'
 import { canStartVoiceCall, readVoiceConfig, VOICE_ROLE_MAX_CHARS } from '@/domain/voice/config'
+import { loadElevenLabsTenantKey } from '@/lib/elevenlabs-tenant-key'
+import { isFeatureEnabled } from '@/lib/feature-flags'
 import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { UpdateAgentProfileForm } from '@/components/agents/update-agent-profile-form'
 import { UpdateLocalRootsForm } from '@/components/agents/update-local-roots-form'
@@ -194,6 +196,8 @@ export default async function AgentDetailPage({
   const canConfigureVoice = isSuperadmin(ctx.platformRoles) && agent.kind === 'internal'
   const productLinks = (await loadAgentProductLinks(ctx, [agent]))[agent.id]
   const voiceKeyConfigured = canConfigureVoice ? await loadOpenAiTenantKey(ctx.activeTenantId).then(Boolean, () => false) : false
+  const elevenLabsAvailable = canConfigureVoice ? await isFeatureEnabled('voice.elevenlabs', { tenantId: ctx.activeTenantId }) : false
+  const elevenLabsKeyConfigured = elevenLabsAvailable ? await loadElevenLabsTenantKey(ctx.activeTenantId).then(Boolean, () => false) : false
   const t = await getTranslations('ControlPlane.agentDetail')
   const tAgents = await getTranslations('ControlPlane.agents')
   const sectionLabel = (id: AgentDetailSectionId) => t(`sections.${id}` as 'sections.elesites')
@@ -291,6 +295,8 @@ export default async function AgentDetailPage({
                       agentId={agent.id}
                       config={readVoiceConfig(agent.voiceConfig)}
                       keyConfigured={voiceKeyConfigured}
+                      elevenLabsAvailable={elevenLabsAvailable}
+                      elevenLabsKeyConfigured={elevenLabsKeyConfigured}
                       published={agent.status === 'active' && Boolean(agent.currentDefinitionVersionId)}
                       roleClipped={(agent.roleInstruction?.trim().length ?? 0) > VOICE_ROLE_MAX_CHARS}
                     />
@@ -502,7 +508,7 @@ export default async function AgentDetailPage({
           ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
-            {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} callStyle={readVoiceConfig(agent.voiceConfig).callStyle} /> : null}
+            {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} callStyle={readVoiceConfig(agent.voiceConfig).callStyle} provider={readVoiceConfig(agent.voiceConfig).provider} /> : null}
             <AgentProductLinks agentName={agent.name} links={productLinks} layout="wide" />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">

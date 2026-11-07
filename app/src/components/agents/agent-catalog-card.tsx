@@ -134,7 +134,7 @@ export async function AgentCatalogCard({
       {showStartChat || showVoiceCall || visibleProductLinks.length > 0 ? (
         <div className="mt-4 flex flex-wrap items-center gap-2">
           {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
-          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} callStyle={readVoiceConfig(agent.voiceConfig).callStyle} /> : null}
+          {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} callStyle={readVoiceConfig(agent.voiceConfig).callStyle} provider={readVoiceConfig(agent.voiceConfig).provider} /> : null}
           <AgentProductLinks agentName={agent.name} links={visibleProductLinks} className="ml-auto" />
         </div>
       ) : null}

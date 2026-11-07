@@ -20,6 +20,8 @@ import {
   saveModelGatewayJwtKey,
 } from '@/lib/model-gateway-jwt-key'
 import { loadGeminiTenantKey, parseGeminiApiKey, saveGeminiTenantKey } from '@/lib/gemini-tenant-key'
+import { loadElevenLabsTenantKey, parseElevenLabsApiKey, saveElevenLabsTenantKey } from '@/lib/elevenlabs-tenant-key'
+import { requireFeature } from '@/lib/feature-flags'
 import { loadOpenAiTenantKey, parseOpenAiApiKey, saveOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { loadOpenRouterTenantKey, parseOpenRouterApiKey, saveOpenRouterTenantKey } from '@/lib/openrouter-tenant-key'
 import { fail, ok } from '@/lib/result'
@@ -154,6 +156,50 @@ export async function setOpenAiApiKey(input: unknown) {
       actorId: ctx.user.id,
       agentVersion: null,
       action: 'model.openai_key.set',
+      targetType: 'model_policy',
+      targetId: ctx.activeTenantId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { configured: true },
+      tenantId: ctx.activeTenantId,
+    })
+    revalidatePath('/control-plane/settings')
+    return ok({ configured: true })
+  } catch (e) {
+    return actionFail(e, 'save_failed')
+  }
+}
+
+/** Csak azt mondja el, van-e tenant ElevenLabs-kulcs — a nyers értéket soha nem adja vissza. */
+export async function getElevenLabsKeyStatus() {
+  try {
+    const ctx = await requireTenantRole('admin')
+    return ok({ configured: Boolean(await loadElevenLabsTenantKey(ctx.activeTenantId)) })
+  } catch (e) {
+    return actionFail(e, 'load_failed')
+  }
+}
+
+export async function setElevenLabsApiKey(input: unknown) {
+  try {
+    const ctx = await requireTenantRole('admin')
+    await requireFeature('voice.elevenlabs', { tenantId: ctx.activeTenantId })
+    const parsed = z.object({ apiKey: z.string() }).safeParse(input)
+    if (!parsed.success) return fail('invalid_key')
+    let apiKey: string
+    try {
+      apiKey = parseElevenLabsApiKey(parsed.data.apiKey)
+    } catch {
+      return fail('invalid_key')
+    }
+    await saveElevenLabsTenantKey(ctx.activeTenantId, apiKey)
+    await services.audit.append({
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'model.elevenlabs_key.set',
       targetType: 'model_policy',
       targetId: ctx.activeTenantId,
       modelUsed: null,

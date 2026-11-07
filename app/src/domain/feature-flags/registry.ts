@@ -38,6 +38,20 @@ export type FeatureFlagDefinition = {
 
 /** A kulcs formája `terület.funkció`, pl. `chat.resumable_pause`. */
 export const FEATURE_FLAGS = {
+  'voice.elevenlabs': {
+    title: { hu: 'ElevenLabs hangszolgáltató', en: 'ElevenLabs voice provider' },
+    whatChanges: {
+      hu: 'A platform-adminisztrátor a munkatárs hang-beszélgetéséhez az OpenAI helyett az ElevenLabs szolgáltatást is választhatja, a cég saját ElevenLabs-kulcsával. A hang és az elhangzott szöveg ilyenkor az ElevenLabshez kerül.',
+      en: 'A platform admin can choose ElevenLabs instead of OpenAI for a teammate\'s voice conversations, using the company\'s own ElevenLabs key. The audio and the spoken text then go to ElevenLabs.',
+    },
+    whenOff: {
+      hu: 'Az ElevenLabsre állított munkatársnál új hang-beszélgetés nem indul, és a futó beszélgetés a következő eszközhívásnál elveszíti az adatok elérését. Az OpenAI-t használó munkatársakat ez nem érinti. A beállítás és a mentett átiratok megmaradnak.',
+      en: 'Teammates set to ElevenLabs cannot start new voice conversations, and a running one loses data access at its next tool call. Teammates on OpenAI are unaffected. The settings and saved transcripts remain.',
+    },
+    owner: 'Giret Gergely',
+    issue: 1107,
+    reviewBy: '2027-03-01',
+  },
   'knowledge.file_download': {
     title: { hu: 'Tudásbázis-fájlok letöltése', en: 'Knowledge base file download' },
     whatChanges: {

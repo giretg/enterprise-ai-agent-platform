@@ -1,6 +1,7 @@
 import { getTranslations } from 'next-intl/server'
+import { isFeatureEnabled } from '@/lib/feature-flags'
 import { requireTenantRole } from '@/auth/tenant-context'
-import { getGeminiKeyStatus, getOpenAiKeyStatus, getOpenRouterKeyStatus, getTenantModelPolicy } from '@/app/actions/model-config'
+import { getElevenLabsKeyStatus, getGeminiKeyStatus, getOpenAiKeyStatus, getOpenRouterKeyStatus, getTenantModelPolicy } from '@/app/actions/model-config'
 import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { getTenantAgentSettings } from '@/app/actions/tenant-agent-settings'
@@ -12,6 +13,7 @@ import { WarehouseAgentAccessPanel, WarehouseStorageCard } from '@/components/wa
 import Link from 'next/link'
 import { SettingsSectionShell } from '@/app/control-plane/system/system-settings-shell'
 import { GeminiKeyPanel } from './gemini-key-panel'
+import { ElevenLabsKeyPanel } from './elevenlabs-key-panel'
 import { OpenAiKeyPanel } from './openai-key-panel'
 import { OpenRouterKeyPanel } from './openrouter-key-panel'
 import { TenantAgentSettingsPanel } from './tenant-agent-settings-panel'
@@ -23,7 +25,7 @@ import { getWebSearchSettingsAction } from '@/app/actions/web-search'
 import { WebSearchSettingsPanel } from './web-search-settings-panel'
 
 export default async function TenantSettingsPage({ searchParams }: { searchParams: Promise<{ section?: string }> }) {
-  await requireTenantRole('admin')
+  const ctx = await requireTenantRole('admin')
   const { section } = await searchParams
   const [language, mcpIntro, modelPolicy, openRouterKey, geminiKey, openAiKey, agentSettings, miniAppSettings, warehouseAccess, platformChat, webSearch] = await Promise.all([
     getTenantLanguage(),
@@ -38,6 +40,7 @@ export default async function TenantSettingsPage({ searchParams }: { searchParam
     getPlatformChatSettingsAction(),
     getWebSearchSettingsAction(),
   ])
+  const elevenLabsKey = (await isFeatureEnabled('voice.elevenlabs', { tenantId: ctx.activeTenantId })) ? await getElevenLabsKeyStatus() : null
   const t = await getTranslations('ControlPlane.settings')
 
   return (
@@ -89,6 +92,13 @@ export default async function TenantSettingsPage({ searchParams }: { searchParam
                 ) : (
                   <p className="text-sm text-coral-deep">{t('openaiLoadFailed')}</p>
                 )}
+                {elevenLabsKey ? (
+                  elevenLabsKey.success ? (
+                    <ElevenLabsKeyPanel configured={elevenLabsKey.data.configured} canEdit />
+                  ) : (
+                    <p className="text-sm text-coral-deep">{t('elevenlabsLoadFailed')}</p>
+                  )
+                ) : null}
               </div>
             ),
           },
