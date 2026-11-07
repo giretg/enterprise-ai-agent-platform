@@ -19,6 +19,7 @@ import {
   type HttpApiConfig,
   type HttpApiCredentials,
 } from '../src/domain/connector/http-api-client'
+import { HTTP_API_RESPONSE_MAX_BYTES } from '../src/domain/connector/http-api-file'
 
 class HttpApiClient extends RuntimeHttpApiClient {
   constructor(config: HttpApiConfig, credentials: HttpApiCredentials) {
@@ -1411,6 +1412,66 @@ async function main() {
     assert.equal(capped.items, undefined)
     assert.equal(capped.error, 'page 7: 503')
     assert.match(capped.hint, /^retry later /)
+  })
+
+  // Regresszió (audit 2026-11-04): a nem-fájl törzs mérete korlátos. Korábban `res.text()` az egész
+  // választ plafon nélkül memóriába húzta → egy rosszindulatú/hibás kapcsolt rendszer tetszőlegesen
+  // nagy JSON-nal kiüthette a közös workert (OOM). A content-length-előszűrés és a folyam közbeni
+  // futó-összeg is a HTTP_API_RESPONSE_MAX_BYTES-nál áll meg, strukturált `response_too_large`-dzsel.
+  await test('valódi fetch: a content-length-ben bevallott túl nagy törzs response_too_large (a plafon fölött nem parse-olunk)', async () => {
+    // A tényleges törzs pici, de a content-length a plafon fölött van: az előszűrésnek a beolvasás ELŐTT
+    // kell blokkolnia. Ha mégis parse-olna, a „{over}” érvénytelen JSON-ként más hibát adna — a pontos
+    // response_too_large bizonyítja, hogy a content-length-kapu fogott.
+    const fakeFetch: typeof fetch = async () =>
+      new Response('{over}', {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(HTTP_API_RESPONSE_MAX_BYTES + 1),
+        },
+      })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks' }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'response_too_large',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: content-length NÉLKÜL is megáll a plafonnál (folyam közbeni futó összeg)', async () => {
+    const chunk = new Uint8Array(4 * 1024 * 1024) // 4 MB
+    let emitted = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Addig adagol, amíg a futó összeg át nem lépi a plafont; a readBodyBytes ekkor megszakítja.
+        if (emitted > HTTP_API_RESPONSE_MAX_BYTES + chunk.byteLength) {
+          controller.close()
+          return
+        }
+        emitted += chunk.byteLength
+        controller.enqueue(chunk)
+      },
+    })
+    const fakeFetch: typeof fetch = async () =>
+      new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'pn_live_key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks' }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'response_too_large',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    // A megszakítás a plafon közelében történt — nem az egész (elvileg végtelen) folyamot olvastuk be.
+    assert.ok(emitted <= HTTP_API_RESPONSE_MAX_BYTES + 2 * chunk.byteLength, `emitted=${emitted}`)
   })
 
   if (failures > 0) {
