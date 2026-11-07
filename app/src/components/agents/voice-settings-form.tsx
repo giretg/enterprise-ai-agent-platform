@@ -3,7 +3,8 @@
 import Link from 'next/link'
 import { useState, useTransition } from 'react'
 import { saveAgentVoiceConfigAction } from '@/app/actions/voice'
-import { VOICE_GREETING_MAX_CHARS, VOICE_NAMES, VOICE_ROLE_MAX_CHARS, type AgentVoiceConfig } from '@/domain/voice/config'
+import { VoiceCallIcon } from '@/components/agents/voice-call-button'
+import { VOICE_GREETING_MAX_CHARS, VOICE_NAMES, VOICE_ROLE_MAX_CHARS, type AgentVoiceConfig, type VoiceCallStyle } from '@/domain/voice/config'
 
 /** A jelenlegi, mentett állapot egy mondatban: mit lát most a többi felhasználó, és mi a teendő. */
 function VoiceStatus({ config, keyConfigured, published }: { config: AgentVoiceConfig; keyConfigured: boolean; published: boolean }) {
@@ -27,10 +28,15 @@ function VoiceStatus({ config, keyConfigured, published }: { config: AgentVoiceC
   }
   return (
     <p className="text-ink">
-      Be van kapcsolva: a „Beszélgetés hangon” gomb az oldal tetején, a munkatárs neve alatt látszik mindenkinek, aki láthatja ezt a munkatársat.
+      Be van kapcsolva: a {config.callStyle === 'phone' ? 'zöld telefon' : 'hullámforma'} gomb a munkatárs dobozán, az oldala tetején és a chatben látszik mindenkinek, aki láthatja ezt a munkatársat.
     </p>
   )
 }
+
+const CALL_STYLE_OPTIONS: { value: VoiceCallStyle; title: string; hint: string }[] = [
+  { value: 'conversation', title: 'Beszélgetős munkatárs', hint: 'Főleg írásban dolgozik, de hangon is lehet vele beszélni. Hullámforma ikont kap.' },
+  { value: 'phone', title: 'Telefonos munkatárs', hint: 'Elsősorban hívásra való, például rendelésfelvételre. Zöld telefon ikont kap.' },
+]
 
 /** #1111 hang-pilot: a munkatárs hang-beállítása, csak platform-adminisztrátornak. */
 export function VoiceSettingsForm({
@@ -49,13 +55,14 @@ export function VoiceSettingsForm({
   const [enabled, setEnabled] = useState(config.enabled)
   const [voice, setVoice] = useState<string>(config.voice)
   const [greeting, setGreeting] = useState(config.greeting)
+  const [callStyle, setCallStyle] = useState<VoiceCallStyle>(config.callStyle)
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
   function save() {
     startTransition(async () => {
       setMessage(null)
-      const res = await saveAgentVoiceConfigAction({ agentId, enabled, voice, greeting })
+      const res = await saveAgentVoiceConfigAction({ agentId, enabled, voice, greeting, callStyle })
       setMessage(res.success ? { tone: 'ok', text: 'Mentve.' } : { tone: 'error', text: res.error })
     })
   }
@@ -63,8 +70,8 @@ export function VoiceSettingsForm({
   return (
     <div className="space-y-3 text-sm">
       <p className="text-ink-soft">
-        Bekapcsolva a munkatárs oldalán megjelenik a „Beszélgetés hangon” gomb, amellyel böngészőben, telefonszám nélkül
-        lehet vele beszélni. A hang és az elhangzott szöveg az OpenAI-hoz kerül, a céges kulcs számlájára. A platform
+        Bekapcsolva a munkatársnál megjelenik egy hang-gomb, amellyel böngészőben, telefonszám nélkül lehet vele
+        beszélni. A hang és az elhangzott szöveg az OpenAI-hoz kerül, a céges kulcs számlájára. A platform
         tartalomszűrője és költségkerete ezt nem látja, ezért csak próbára való, valódi ügyféladat nélkül.
       </p>
       <VoiceStatus config={config} keyConfigured={keyConfigured} published={published} />
@@ -81,6 +88,30 @@ export function VoiceSettingsForm({
         <input type="checkbox" className="mt-1" checked={enabled} disabled={pending} onChange={(e) => setEnabled(e.target.checked)} />
         <span className="font-medium text-ink">Hang-beszélgetés bekapcsolva</span>
       </label>
+      <fieldset>
+        <legend className="font-medium text-ink">Milyen munkatárs ez?</legend>
+        <div className="mt-1 space-y-2">
+          {CALL_STYLE_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-center gap-3 rounded-lg border border-line px-3 py-2">
+              <input
+                type="radio"
+                name="voice-call-style"
+                checked={callStyle === option.value}
+                disabled={pending}
+                onChange={() => setCallStyle(option.value)}
+              />
+              <VoiceCallIcon callStyle={option.value} />
+              <span>
+                <span className="block font-medium text-ink">{option.title}</span>
+                <span className="block text-ink-soft">{option.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <span className="mt-1 block text-ink-soft">
+          Csak a gomb kinézete változik. A beszélgetés mindkét esetben böngészőben fut, a munkatárs telefonszámot nem kap.
+        </span>
+      </fieldset>
       <label className="block">
         <span className="font-medium text-ink">Hang</span>
         <select

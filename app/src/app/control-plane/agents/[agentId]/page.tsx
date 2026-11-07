@@ -502,7 +502,7 @@ export default async function AgentDetailPage({
           ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {showStartChat ? <StartPlatformChatLink agentId={agent.id} agentName={agent.name} /> : null}
-            {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} /> : null}
+            {showVoiceCall ? <VoiceCallButton agentId={agent.id} agentName={agent.name} callStyle={readVoiceConfig(agent.voiceConfig).callStyle} /> : null}
             <AgentProductLinks agentName={agent.name} links={productLinks} layout="wide" />
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">

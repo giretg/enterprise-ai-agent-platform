@@ -5,7 +5,6 @@ import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operat
 import { listAgentsForCatalog } from '@/app/actions/platform'
 import { hasMinimumRole } from '@/auth/types'
 import { AgentCatalogCard } from '@/components/agents/agent-catalog-card'
-import { DashboardChatLauncher } from '@/components/platform-chat/dashboard-chat-launcher'
 import { Card } from '@/components/ui/shell'
 import { asTranslate } from '@/i18n/translate'
 import { loadAgentProductLinks } from '@/lib/agent-product-links-loader'
@@ -65,19 +64,17 @@ export default async function DashboardPage() {
   const agents = agentsRes.success ? agentsRes.data : []
   const tenantChatEnabled = readPlatformChatSettings(tenant?.settings).enabled
   const productLinks = await loadAgentProductLinks(ctx, agents)
-  // Ugyanaz a feltétel, mint a kártya „Beszélgetés indítása” gombján.
-  const chatAgents = agents
-    .filter(
-      (agent) =>
-        agent.kind !== 'public' &&
-        canStartPlatformChat({
-          tenantEnabled: tenantChatEnabled,
-          platformChatEnabled: agent.platformChatEnabled !== false,
-          status: agent.status,
-          currentDefinitionVersionId: agent.currentDefinitionVersionId ?? null,
-        }),
-    )
-    .map((agent) => ({ id: agent.id, name: agent.name, description: agent.description ?? null }))
+  // Ugyanaz a feltétel, mint a kártya „Beszélgetés indítása” gombján: chat nélkül nincs kit kérdezni.
+  const hasChatAgent = agents.some(
+    (agent) =>
+      agent.kind !== 'public' &&
+      canStartPlatformChat({
+        tenantEnabled: tenantChatEnabled,
+        platformChatEnabled: agent.platformChatEnabled !== false,
+        status: agent.status,
+        currentDefinitionVersionId: agent.currentDefinitionVersionId ?? null,
+      }),
+  )
   const operations = listed.success ? listed.data.operations : []
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const t = await getTranslations('ControlPlane.dashboard')
@@ -121,7 +118,53 @@ export default async function DashboardPage() {
         </p>
       ))}
 
-      {chatAgents.length > 0 ? <DashboardChatLauncher agents={chatAgents} /> : null}
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display text-xl font-semibold">{hasChatAgent ? t('agentsAskTitle') : t('agentsTitle')}</h2>
+          <div className="flex flex-wrap items-center gap-4">
+            {hasChatAgent ? (
+              <Link href="/control-plane/chat" className="text-sm text-coral-deep hover:underline">
+                {t('chatHistory')}
+              </Link>
+            ) : null}
+            <Link href="/control-plane/agents" className="text-sm text-coral-deep hover:underline">
+              {t('agentsAll')}
+            </Link>
+            {canCreateAgent ? (
+              <Link
+                href="/control-plane/agents/new"
+                className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coral/90"
+              >
+                {tAgents('new')}
+              </Link>
+            ) : null}
+          </div>
+        </div>
+        {agentsRes.success ? (
+          <div className="grid gap-4 md:grid-cols-2">
+            {agents.map((agent) => (
+              <AgentCatalogCard
+                key={agent.id}
+                agent={agent}
+                canResumeHire={canCreateAgent}
+                tenantChatEnabled={tenantChatEnabled}
+                productLinks={productLinks[agent.id]}
+              />
+            ))}
+            {agents.length === 0 ? (
+              <Card title={tAgents('emptyTitle')}>
+                <p className="text-sm text-ink-soft">
+                  {canCreateAgent ? tAgents('emptyCanCreate') : tAgents('emptyNoCreate')}
+                </p>
+              </Card>
+            ) : null}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+            {tAgents('loadError')}
+          </div>
+        )}
+      </section>
 
       {doneCount < steps.length ? (
         <section className="space-y-4" aria-labelledby="onboarding-title">
@@ -203,49 +246,6 @@ export default async function DashboardPage() {
         {inbox.success && previewHandoffs.length > 0 ? (
           <HandoffsPanel handoffs={previewHandoffs} hideIntro />
         ) : null}
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-display text-xl font-semibold">{t('agentsTitle')}</h2>
-          <div className="flex flex-wrap items-center gap-4">
-            {canCreateAgent ? (
-              <Link
-                href="/control-plane/agents/new"
-                className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coral/90"
-              >
-                {tAgents('new')}
-              </Link>
-            ) : null}
-            <Link href="/control-plane/agents" className="text-sm text-coral-deep hover:underline">
-              {t('agentsAll')}
-            </Link>
-          </div>
-        </div>
-        {agentsRes.success ? (
-          <div className="grid gap-4 md:grid-cols-2">
-            {agents.map((agent) => (
-              <AgentCatalogCard
-                key={agent.id}
-                agent={agent}
-                canResumeHire={canCreateAgent}
-                tenantChatEnabled={tenantChatEnabled}
-                productLinks={productLinks[agent.id]}
-              />
-            ))}
-            {agents.length === 0 ? (
-              <Card title={tAgents('emptyTitle')}>
-                <p className="text-sm text-ink-soft">
-                  {canCreateAgent ? tAgents('emptyCanCreate') : tAgents('emptyNoCreate')}
-                </p>
-              </Card>
-            ) : null}
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-            {tAgents('loadError')}
-          </div>
-        )}
       </section>
 
       {isAdmin ? (

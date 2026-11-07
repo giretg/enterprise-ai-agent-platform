@@ -13,12 +13,12 @@ import { fail, ok } from '@/lib/result'
 import { isSuperadmin } from '@/lib/tenant-policy'
 
 /** #1111: a hang-beszélgetés megkerüli a Model Gateway-t, ezért a pilotban csak superadmin kapcsolhatja be. */
-export async function saveAgentVoiceConfigAction(input: { agentId: string; enabled: boolean; voice: string; greeting: string }) {
+export async function saveAgentVoiceConfigAction(input: { agentId: string; enabled: boolean; voice: string; greeting: string; callStyle: string }) {
   try {
     const ctx = await requireTenantRole('admin')
     if (!isSuperadmin(ctx.platformRoles)) return fail('A hang-beszélgetést csak platform-adminisztrátor állíthatja.')
     const agentId = z.string().uuid().parse(input.agentId)
-    const config = parseVoiceConfig({ enabled: input.enabled, voice: input.voice, greeting: input.greeting })
+    const config = parseVoiceConfig({ enabled: input.enabled, voice: input.voice, greeting: input.greeting, callStyle: input.callStyle })
     const agent = await prisma.agent.findFirst({ where: { id: agentId, tenantId: ctx.activeTenantId }, select: { kind: true } })
     if (!agent) return fail('A munkatárs nem található.')
     if (agent.kind !== 'internal') return fail('Nyilvános asszisztensnél a hang-beszélgetés nem kapcsolható be.')
@@ -37,13 +37,13 @@ export async function saveAgentVoiceConfigAction(input: { agentId: string; enabl
       inputRef: null,
       outputRef: String(config.enabled),
       policyDecision: 'updated',
-      metadata: { enabled: config.enabled, voice: config.voice, hasGreeting: config.greeting.length > 0 },
+      metadata: { enabled: config.enabled, voice: config.voice, hasGreeting: config.greeting.length > 0, callStyle: config.callStyle },
       tenantId: ctx.activeTenantId,
     })
     revalidatePath(`/control-plane/agents/${agentId}`)
     return ok(config)
   } catch (e) {
-    if (e instanceof z.ZodError) return fail('Az első mondat legfeljebb 300 karakter lehet, és létező hangot kell választani.')
+    if (e instanceof z.ZodError) return fail('Az első mondat legfeljebb 300 karakter lehet, és a felkínált hangok és gombok közül kell választani.')
     if (e instanceof TenantAuthError && e.code === 'INSUFFICIENT_ROLE') return fail('Ehhez ebben a szervezetben adminisztrátori szerep kell.')
     console.warn('[voice] saving the voice settings failed', e instanceof Error ? e.name : 'unknown')
     return fail('A mentés nem sikerült. Frissítsd az oldalt, és próbáld újra.')

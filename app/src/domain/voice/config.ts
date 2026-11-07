@@ -11,16 +11,21 @@ export const VOICE_MAX_SESSION_SECONDS = 600
 export const VOICE_TOKEN_TTL_SECONDS = VOICE_MAX_SESSION_SECONDS + 120
 /** Élő beszélgetésben a hívó vár a háttérre, ezért beállítás nélkül is a gyors változat fut. */
 export const VOICE_DEFAULT_REASONING_EFFORT = 'low'
+/** A hang-gomb kinézete: hullámforma (beszélgetős munkatárs) vagy zöld telefon (telefonos munkatárs). A hívást nem változtatja. */
+export const VOICE_CALL_STYLES = ['conversation', 'phone'] as const
+export type VoiceCallStyle = (typeof VOICE_CALL_STYLES)[number]
 
 const schema = z.object({
   enabled: z.boolean(),
   voice: z.enum(VOICE_NAMES),
   greeting: z.string().trim().max(VOICE_GREETING_MAX_CHARS),
+  // A mező előtt mentett beállítások is érvényesek maradnak, különben a hang kikapcsolna náluk.
+  callStyle: z.enum(VOICE_CALL_STYLES).default('conversation'),
 })
 
 export type AgentVoiceConfig = z.infer<typeof schema>
 
-export const DEFAULT_VOICE_CONFIG: AgentVoiceConfig = { enabled: false, voice: 'marin', greeting: '' }
+export const DEFAULT_VOICE_CONFIG: AgentVoiceConfig = { enabled: false, voice: 'marin', greeting: '', callStyle: 'conversation' }
 
 export function parseVoiceConfig(input: unknown): AgentVoiceConfig {
   return schema.parse(input)
