@@ -2,7 +2,7 @@
 
 Minden PR pontosan egy színt kap. A szín a legrosszabb következményt méri, ha a változás hibás, és azt, hogy ez teljesen helyreállítható-e. A méret nem számít.
 
-Besorolás: a piros listával kezdd, az első találat dönt. Kétség esetén a magasabb színt válaszd.
+Besorolás: a piros listával kezdd, az első találat dönt. Kétség esetén a magasabb színt válaszd. A feature flag nem csökkenti a színt: a szín a bekapcsolt állapotot méri.
 
 Helyreállítható: a kód visszaállítása vagy egy kapcsoló után minden a korábbi állapotba kerül, adatjavítás és ügyfél-értesítés nélkül. A migráció a build elején lefut, ezért a kód visszaállítása a sémát nem állítja vissza.
 

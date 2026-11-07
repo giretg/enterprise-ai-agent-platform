@@ -31,6 +31,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - A PR elkészítése előtt teszteld a kódot, és ha szükséges, a teszt alapján tegyél javaslatot arra is, hogyan lehetne javítani a tesztelés hatékonyságát (módszer, eszközök).
 - A PR leírásához használd a `pr` skillt. Ha nem érhető el, a szerkezet: `## Summary`, `## Evidence`, `## Merge Danger` (`**Door:**` és `**Blast Radius:**`).
 - A Merge Danger blokkba írd be: `**Kockázat:** <zöld|sárga|piros> – <kiváltó ok>`. A szín szabálya: `docs/agents/pr-risk.md`.
+- Merge: a zöld és a sárga PR-t zöld CI után az agent is mergelheti, a piros PR-t ember hagyja jóvá.
 - A piros PR-t lehetőség szerint feature flag mögött szállítsd, hogy tenantonként bevezethető és kikapcsolható legyen. A rendszer speceje: #1126. Amíg az alap nem készült el, a PR-ban jelezd, ha emiatt nincs flag.
 - Hibajavítás és biztonsági javítás ne kerüljön flag mögé, mert kikapcsolva a hiba élne tovább. A belépés, a tenant-elkülönítés és az audit se legyen flaggel kikapcsolható.
 - A migrációt a flag nem vonja vissza. Sorrend: bővítő migráció, flag mögötti kód, teljes bevezetés, végül külön PR-ban a régi út törlése.
