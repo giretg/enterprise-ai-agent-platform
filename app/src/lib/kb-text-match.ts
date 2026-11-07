@@ -246,3 +246,58 @@ export function kbSnippet(input: {
   }
   return { text: `${prefix}${visible.slice(start, end)}${end < visible.length ? '…' : ''}`, ranges }
 }
+
+function quoteTsLexeme(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
+}
+
+/**
+ * #1136 K1: egy szó explicit `tsquery`-je. A `lexemes` a `ts_lexize` eredménye: üres tömb =
+ * stopszó, a szó kiesik (`null`). A második ág nyers, szótövezetlen prefix; a mai `to_tsquery`
+ * a TÖVEZETT alakra tett prefixet, innen jött a torz egyezés (`bank` → `ba:*` → `barát`).
+ */
+export function kbTermTsQuery(term: string, lexemes: readonly string[] | null | undefined): string | null {
+  if (lexemes && lexemes.length === 0) return null
+  const lexeme = lexemes?.[0]
+  const raw = `${quoteTsLexeme(term)}:*`
+  if (!lexeme) return raw
+  return kbStemForm(term, lexeme) ? `${quoteTsLexeme(lexeme)}:* | ${raw}` : `${quoteTsLexeme(lexeme)} | ${raw}`
+}
+
+/** A szavankénti kifejezések VAGY-kapcsolata; a `kb_search` jelölt-sorrendjéhez is ez kell. */
+export function kbCombinedTsQuery(perTerm: readonly string[]): string {
+  return perTerm.map((query) => `(${query})`).join(' | ')
+}
+
+/** K2: a tartalék legfeljebb ennyi szóra fut, a leghosszabbakra (a ritka, tartalmi szavak). */
+const KB_FALLBACK_MAX_TERMS = 8
+const KB_FALLBACK_MIN_CHARS = 3
+
+export function kbFallbackTerms<T extends { term: string }>(terms: readonly T[]): T[] {
+  return terms
+    .filter((row) => row.term.length >= KB_FALLBACK_MIN_CHARS)
+    .sort((a, b) => b.term.length - a.term.length)
+    .slice(0, KB_FALLBACK_MAX_TERMS)
+}
+
+/**
+ * K2: a tartalék találatai a meglévő jelöltekhez: ugyanazon a helyen a `matched` összevonódik,
+ * új hely `score: 0`-val jön, így a sorrendet továbbra is a `rankKbHits` dönti el.
+ */
+export function kbMergeFallbackHits<T extends { matched?: string[]; score: number }>(
+  base: readonly T[],
+  extra: readonly T[],
+  key: (hit: T) => string,
+): T[] {
+  const merged = new Map<string, T>(base.map((hit) => [key(hit), hit]))
+  for (const hit of extra) {
+    const existing = merged.get(key(hit))
+    merged.set(
+      key(hit),
+      existing
+        ? { ...existing, matched: [...new Set([...(existing.matched ?? []), ...(hit.matched ?? [])])] }
+        : { ...hit, score: 0 },
+    )
+  }
+  return [...merged.values()]
+}

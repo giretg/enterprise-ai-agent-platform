@@ -355,6 +355,10 @@ jobs:
       - name: Wiki search (Postgres)
         run: npm run test:wiki-search-db
 
+      # #1136 F3: a kb_search illesztése és tartaléka a §5 táblázatokra, valódi szótárral.
+      - name: KB search matching (Postgres)
+        run: npm run test:kb-search-matching-db
+
       # #947: lelet-forgatókönyv végponttól végpontig (MCP HTTP + privát KB + törlés) valódi Postgresen.
       - name: Wiki end-to-end (Postgres + MCP)
         run: npm run test:kb-wiki-e2e

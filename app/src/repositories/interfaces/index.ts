@@ -778,6 +778,8 @@ export type KnowledgeCatalogDocument = {
   chars: number
 }
 
+export type KbFallbackMode = 'literal' | 'stem'
+
 export type KnowledgeRawHit = {
   id: string
   filename: string
@@ -812,6 +814,8 @@ export interface DocumentRepository {
   listByConnectorId(connectorId: string): Promise<DocumentListItem[]>
   listCatalog(connectorId: string): Promise<KnowledgeCatalogDocument[]>
   searchRaw(connectorId: string, query: string, limit: number): Promise<KnowledgeRawHit[]>
+  /** #1136 K2: tartalék a `searchRaw`-ból kimaradt szavakra: betű szerint, vagy a szó tőalakjával. */
+  searchRawFallback(connectorId: string, terms: string[], mode: KbFallbackMode, limit: number): Promise<KnowledgeRawHit[]>
   update(
     id: string,
     data: {
@@ -864,6 +868,8 @@ export interface KnowledgeChunkRepository {
     }>,
   ): Promise<number>
   searchChunks(connectorIds: string[], query: string, limit: number): Promise<KnowledgeChunkSearchHit[]>
+  /** #1136 K2: tartalék a `searchChunks`-ból kimaradt szavakra: betű szerint, vagy a szó tőalakjával. */
+  searchChunksFallback(connectorIds: string[], terms: string[], mode: KbFallbackMode, limit: number): Promise<KnowledgeChunkSearchHit[]>
   listIndex(
     connectorIds: string[],
     pathPrefix?: string,

@@ -356,6 +356,8 @@
     "test:wiki-reader-trail": "tsx scripts/wiki-reader-trail.test.ts",
     "test:kb-text-match": "tsx scripts/kb-text-match.test.ts",
     "test:wiki-search-db": "tsx scripts/wiki-search-db.test.ts",
+    "test:kb-search-matching-db": "tsx scripts/kb-search-matching-db.test.ts",
+    "kb:search-compare": "tsx scripts/kb-search-compare.ts",
     "test:wiki-inbox-upload": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-inbox-upload.test.ts",
     "test:wiki-console-db": "tsx scripts/wiki-console-db.test.ts",
     "test:wiki-foundation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-foundation.test.ts",
