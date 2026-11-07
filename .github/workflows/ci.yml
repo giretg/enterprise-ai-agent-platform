@@ -101,6 +101,7 @@ jobs:
           npm run test:mini-app
           npm run test:warehouse
           npm run test:work-file-output
+          npm run test:work-files-ui
           npm run test:mcp-skills
           npm run test:conversation-skill
           npm run test:agent-checkout

@@ -15,10 +15,13 @@ async function main() {
   const tenant = await prisma.tenant.create({ data: { slug: `work-file-review-${suffix}`, displayName: 'Work file review' } })
   const user = await prisma.user.create({ data: { externalAuthId: suffix, email: `${suffix}@example.invalid`, name: 'Work file reviewer' } })
   const files = new PostgresWorkFileRepository()
+  let createdAgentId: string | null = null
+  let secondAgentId: string | null = null
   const base = {
     tenantId: tenant.id,
     projectKey: '__general__',
     lastWriterUserId: user.id,
+    writerAgentId: null,
     append: false,
     maxFileBytes: 200_000,
     maxProjectBytes: 10,
@@ -51,9 +54,38 @@ async function main() {
     assert.equal(journal?.byteSize, 12)
     assert.equal(await files.delete(tenant.id, '__general__', 'journal.txt'), true)
     assert.equal(await files.delete(tenant.id, '__general__', 'journal.txt'), false)
+    const writerBase = { ...base, maxProjectBytes: 200_000, maxCount: 10, path: 'writer.md' }
+    const agentRow = await prisma.agent.create({
+      data: { tenantId: tenant.id, name: `Work file writer ${suffix}`, roleInstruction: 'x' },
+    })
+    createdAgentId = agentRow.id
+    const secondAgent = await prisma.agent.create({
+      data: { tenantId: tenant.id, name: `Work file writer 2 ${suffix}`, roleInstruction: 'x' },
+    })
+    secondAgentId = secondAgent.id
+    await files.save({ ...writerBase, content: 'a', writerAgentId: agentRow.id })
+    let row = await files.find(tenant.id, '__general__', 'writer.md')
+    assert.equal(row?.createdByAgentId, agentRow.id)
+    assert.equal(row?.lastWriterAgentId, agentRow.id)
+    await files.save({ ...writerBase, content: 'b', writerAgentId: secondAgent.id })
+    row = await files.find(tenant.id, '__general__', 'writer.md')
+    assert.equal(row?.createdByAgentId, agentRow.id, 'a létrehozó nem változik')
+    assert.equal(row?.lastWriterAgentId, secondAgent.id)
+    await files.save({ ...writerBase, content: 'c', writerAgentId: null })
+    row = await files.find(tenant.id, '__general__', 'writer.md')
+    assert.equal(row?.createdByAgentId, agentRow.id)
+    assert.equal(row?.lastWriterAgentId, null, 'emberi mentés után nincs agent-író')
+    const listed = await files.list(tenant.id, '__general__')
+    assert.equal(listed.find((item) => item.path === 'writer.md')?.createdByAgentId, agentRow.id)
+    await prisma.agent.delete({ where: { id: agentRow.id } })
+    createdAgentId = null
+    row = await files.find(tenant.id, '__general__', 'writer.md')
+    assert.equal(row?.content, 'c', 'az agent törlése nem viszi magával a fájlt')
+    assert.equal(row?.createdByAgentId, null)
     console.log('project-work-file-db: concurrent quota and append are atomic')
   } finally {
     await prisma.workFile.deleteMany({ where: { tenantId: tenant.id } })
+    await prisma.agent.deleteMany({ where: { id: { in: [createdAgentId, secondAgentId].filter((id): id is string => !!id) } } })
     await prisma.user.delete({ where: { id: user.id } })
     await prisma.tenant.delete({ where: { id: tenant.id } })
     await prisma.$disconnect()

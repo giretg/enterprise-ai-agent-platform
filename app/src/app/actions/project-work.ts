@@ -67,7 +67,14 @@ const createProjectSchema = z.object({
   description: z.string().trim().max(500).optional(),
 })
 
-export type WorkFileListItem = { path: string; byteSize: number; createdAt: string; updatedAt: string }
+export type WorkFileListItem = {
+  path: string
+  byteSize: number
+  createdByAgentId: string | null
+  lastWriterAgentId: string | null
+  createdAt: string
+  updatedAt: string
+}
 
 function mapActionError(error: unknown): ActionResult<never> {
   if (error instanceof TenantAuthError && error.code === 'INSUFFICIENT_ROLE') {
@@ -223,6 +230,7 @@ export async function saveWorkFileAction(
       path: parsed.path,
       content: parsed.content,
       userId: ctx.user.id,
+      agentId: null,
     })
     if (!saved.ok) return fail(saved.code)
     await services.audit.append({

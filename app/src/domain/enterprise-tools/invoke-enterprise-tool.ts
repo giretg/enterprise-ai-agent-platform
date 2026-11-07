@@ -1,3 +1,4 @@
+import { effectiveWorkProjectKey } from '@/lib/work-project'
 import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
@@ -309,6 +310,7 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   writeWorkFile?: (input: {
     tenantId: string
     userId: string
+    agentId: string
     projectKey?: string
     path: string
     contentBase64: string
@@ -2151,6 +2153,7 @@ async function invokeSandboxTool(
     return errorResult('invalid_args')
   }
   const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
+  const outputs: string[] = []
   try {
     const ran = await execute(
       {
@@ -2162,11 +2165,11 @@ async function invokeSandboxTool(
       authorized.connector,
     )
     const prefix = sandboxWorkFilePrefix(resolved.script.skillName)
-    const outputs: string[] = []
     for (const file of ran.outputFiles) {
       const written = await writeWorkFile({
         tenantId: principal.tenantId,
         userId: principal.userId,
+        agentId: definition.agentId,
         projectKey: parsedArgs.projectKey,
         path: `${prefix}/${file.path}`,
         contentBase64: Buffer.from(file.bytes).toString('base64'),
@@ -2196,7 +2199,8 @@ async function invokeSandboxTool(
       inputRef: toolName,
       outputRef: resolved.script.entry.sha256,
       policyDecision: 'allowed',
-      metadata: payload,
+      // Az útvonal csak a naplóba kerül, a konzolra nem: érzékeny lehet (például név a fájlnévben).
+      metadata: { ...payload, projectKey: effectiveWorkProjectKey(parsedArgs.projectKey), outputPaths: outputs },
       tenantId: principal.tenantId,
     })
     return textResult({
@@ -2243,7 +2247,10 @@ async function invokeSandboxTool(
       inputRef: toolName,
       outputRef: code,
       policyDecision: null,
-      metadata: payload,
+      // Részleges hibánál a korábbi kimenetek már mentve vannak, ezért a napló ezeket is megnevezi.
+      metadata: outputs.length
+        ? { ...payload, projectKey: effectiveWorkProjectKey(parsedArgs.projectKey), outputPaths: outputs }
+        : payload,
       tenantId: principal.tenantId,
     })
     return errorResult(code)

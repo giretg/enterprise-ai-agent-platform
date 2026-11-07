@@ -55,12 +55,15 @@ class MemFiles {
     content: string
     byteSize: number
     lastWriterUserId: string
+    writerAgentId?: string | null
   }) {
     const existing = this.rows.get(this.key(input.tenantId, input.projectKey, input.path))
     const now = new Date()
     const row: WorkFileRecord = {
       id: existing?.id ?? globalThis.crypto.randomUUID(),
       ...input,
+      createdByAgentId: existing ? existing.createdByAgentId : (input.writerAgentId ?? null),
+      lastWriterAgentId: input.writerAgentId ?? null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
@@ -152,9 +155,9 @@ await check('30 egymás utáni append sorrendhelyes', async () => {
 await check('append túllépéskor file_too_large, kvóta érvényesül', async () => {
   const svc = service()
   const big = 'x'.repeat(WORK_FILE_MAX_BYTES - 10)
-  const first = await svc.writeFile({ tenantId: TENANT, path: 'data/nagy.txt', content: big, userId: ANNA })
+  const first = await svc.writeFile({ tenantId: TENANT, path: 'data/nagy.txt', content: big, userId: ANNA, agentId: null })
   assert.equal(first.ok, true)
-  const over = await svc.appendFile({ tenantId: TENANT, path: 'data/nagy.txt', content: 'y'.repeat(20), userId: ANNA })
+  const over = await svc.appendFile({ tenantId: TENANT, path: 'data/nagy.txt', content: 'y'.repeat(20), userId: ANNA, agentId: null })
   assert.equal(over.ok, false)
   if (over.ok) return
   assert.equal(over.code, 'file_too_large')
@@ -165,7 +168,7 @@ await check('append túllépéskor file_too_large, kvóta érvényesül', async 
 await check('write contentBase64 roundtrip (HTML)', async () => {
   const svc = service()
   const html = '<html><body>Riport áéű</body></html>'
-  const res = await svc.writeFile({ tenantId: TENANT, path: 'riport.html', contentBase64: b64(html), userId: ANNA })
+  const res = await svc.writeFile({ tenantId: TENANT, path: 'riport.html', contentBase64: b64(html), userId: ANNA, agentId: null })
   assert.equal(res.ok, true)
   const read = await svc.readFile({ tenantId: TENANT, path: 'riport.html' })
   assert.equal(read.ok && read.file.content, html)
@@ -177,7 +180,7 @@ await check('érvénytelen törzs: üres / mindkettő / egyik sem / bináris →
   assert.equal(resolveWorkFileBody({ contentBase64: '!!!nem-base64!!!' }).ok, false)
   assert.equal(resolveWorkFileBody({ contentBase64: Buffer.from([0xff, 0xfe, 0x00]).toString('base64') }).ok, false)
   const svc = service()
-  const res = await svc.writeFile({ tenantId: TENANT, path: 'rossz.txt', userId: ANNA })
+  const res = await svc.writeFile({ tenantId: TENANT, path: 'rossz.txt', userId: ANNA, agentId: null })
   assert.equal(res.ok, false)
   if (res.ok) return
   assert.equal(res.code, 'invalid_content')

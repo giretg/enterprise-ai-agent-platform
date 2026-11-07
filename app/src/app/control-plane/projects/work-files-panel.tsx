@@ -19,15 +19,20 @@ import { isSafeMarkdownImageSrc } from '@/lib/markdown-url-policy'
 import { workFilePagePath } from '@/lib/work-file-link'
 import {
   WORK_FILE_SORT_KEYS,
+  WORK_FILE_WRITER_ALL,
+  WORK_FILE_WRITER_NONE,
   fileBaseName,
   fileExtension,
   fileFolder,
   filterWorkFiles,
+  filterWorkFilesByWriter,
   formatFileSize,
   groupByFolder,
   isMarkdownFile,
   sortWorkFiles,
   splitFrontmatter,
+  workFileWriterAgentId,
+  type AttributedWorkFile,
   type WorkFileSortKey,
 } from '@/lib/work-file-list'
 import { projectWorkErrorLabel } from './labels'
@@ -211,6 +216,7 @@ function DownloadMenu({
 type ViewerProps = {
   path: string
   meta: FileMeta | null
+  writerName: string | null
   draft: string
   dirty: boolean
   mode: Mode
@@ -270,6 +276,7 @@ function WorkFileViewer(props: ViewerProps) {
           <p className="text-xs text-ink-soft">
             {t('metaCreated')}: {formatDate(day, meta.createdAt)} · {t('metaUpdated')}: {formatDate(day, meta.updatedAt)} ·{' '}
             {t('metaSize')}: {formatFileSize(meta.byteSize)}
+            {props.writerName ? ` · ${t('metaWriter')}: ${props.writerName}` : ''}
           </p>
         ) : null}
       </div>
@@ -411,10 +418,13 @@ function LargeViewDialog({ title, onClose, children }: { title: string; onClose:
 
 export function WorkFilesPanel({
   projectKey,
+  agents,
   canEdit,
   initialFile,
 }: {
   projectKey: string
+  /** Az agentek, amelyeket a felhasználó láthat: csak ezek neve jelenik meg íróként. */
+  agents: Array<{ id: string; name: string }>
   canEdit: boolean
   /** Mélylinkből (pl. az agent által adott linkről) érkező fájl: betöltés után megnyílik. */
   initialFile?: string | null
@@ -427,6 +437,7 @@ export function WorkFilesPanel({
   const [filesLoading, setFilesLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<WorkFileSortKey>('path')
+  const [writer, setWriter] = useState<string>(WORK_FILE_WRITER_ALL)
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [saved, setSaved] = useState('')
@@ -473,7 +484,10 @@ export function WorkFilesPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- csak projektváltásra töltünk újra
   }, [projectKey])
 
-  const visible = useMemo(() => sortWorkFiles(filterWorkFiles(files, query), sort), [files, query, sort])
+  const visible = useMemo(
+    () => sortWorkFiles(filterWorkFiles(filterWorkFilesByWriter(files, writer), query), sort),
+    [files, query, writer, sort],
+  )
   const groups = useMemo(() => (sort === 'path' ? groupByFolder(visible) : null), [visible, sort])
 
   function syncUrl(path: string | null) {
@@ -628,6 +642,21 @@ export function WorkFilesPanel({
     })()
   }
 
+  const writerName = (file: AttributedWorkFile) => {
+    const agentId = workFileWriterAgentId(file)
+    if (!agentId) return t('writerNone')
+    // Akire a felhasználónak nincs joga, annak a nevét nem mutatjuk.
+    return agents.find((agent) => agent.id === agentId)?.name ?? t('writerOtherAgent')
+  }
+
+  const noMatchLabel = () => {
+    if (query.trim()) return t('noFileMatches')
+    if (writer === WORK_FILE_WRITER_NONE) return t('noFilesUnattributed')
+    return t('noFilesForWriter', { name: agents.find((agent) => agent.id === writer)?.name ?? '' })
+  }
+
+  const selectedRow = selectedPath ? files.find((file) => file.path === selectedPath) : undefined
+
   const dateLabel = (file: WorkFileListItem) =>
     sort === 'created_desc' || sort === 'created_asc'
       ? t('fileCreated', { date: formatDate(day, file.createdAt) })
@@ -637,6 +666,7 @@ export function WorkFilesPanel({
     ? {
         path: selectedPath,
         meta,
+        writerName: selectedRow ? writerName(selectedRow) : null,
         draft,
         dirty,
         mode,
@@ -720,6 +750,22 @@ export function WorkFilesPanel({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
+          <label className="block text-xs text-ink-soft" title={t('writerFilterHint')}>
+            {t('writerFilter')}
+            <select
+              className={projectWorkFieldClass + ' mt-1'}
+              value={writer}
+              onChange={(e) => setWriter(e.target.value)}
+            >
+              <option value={WORK_FILE_WRITER_ALL}>{t('writerFilterAll')}</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+              <option value={WORK_FILE_WRITER_NONE}>{t('writerNone')}</option>
+            </select>
+          </label>
           <label className="block text-xs text-ink-soft" title={t('sortHint')}>
             {t('fileSort')}
             <select
@@ -748,7 +794,7 @@ export function WorkFilesPanel({
             ) : files.length === 0 ? (
               <p className="text-sm text-ink-soft">{t('noFiles')}</p>
             ) : visible.length === 0 ? (
-              <p className="text-sm text-ink-soft">{t('noFileMatches')}</p>
+              <p className="text-sm text-ink-soft">{noMatchLabel()}</p>
             ) : (
               (groups ?? [{ folder: null as string | null, files: visible }]).map((group) => (
                 <div key={group.folder ?? '__flat__'} className="space-y-1">
@@ -780,6 +826,12 @@ export function WorkFilesPanel({
                         </span>
                         <span className="mt-0.5 block text-xs text-ink-soft">
                           {dateLabel(file)} · {formatFileSize(file.byteSize)}
+                        </span>
+                        <span
+                          className="block truncate text-xs text-ink-soft"
+                          title={workFileWriterAgentId(file) ? undefined : t('writerNoneHint')}
+                        >
+                          {t('writerLabel', { name: writerName(file) })}
                         </span>
                         {!groups && folder ? (
                           <span className="block truncate text-xs text-ink-faint">{folder}/</span>

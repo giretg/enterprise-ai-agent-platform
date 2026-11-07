@@ -153,23 +153,25 @@ export function ProjectsPanel({
 
         <div className="min-w-0 flex-1 space-y-4">
           <div className="flex flex-wrap items-end gap-3">
-            <label
-              className="min-w-52 flex-1 text-xs text-ink-soft"
-              title={t('teammateHint')}
-            >
-              {t('teammate')}
-              <select
-                className={projectWorkFieldClass + ' mt-1'}
-                value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
+            {tab === 'memory' ? (
+              <label
+                className="min-w-52 flex-1 text-xs text-ink-soft"
+                title={t('teammateHint')}
               >
-                {agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+                {t('teammate')}
+                <select
+                  className={projectWorkFieldClass + ' mt-1'}
+                  value={agentId}
+                  onChange={(e) => setAgentId(e.target.value)}
+                >
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             <div className="flex gap-1 rounded-full border border-line/60 bg-panel/40 p-1" role="tablist">
               {(
                 [
@@ -212,7 +214,13 @@ export function ProjectsPanel({
               canDeleteMemory={canDeleteMemory}
             />
           ) : (
-            <WorkFilesPanel key={projectKey} projectKey={projectKey} canEdit={canEdit} initialFile={deepLinkFile} />
+            <WorkFilesPanel
+              key={projectKey}
+              projectKey={projectKey}
+              agents={agents}
+              canEdit={canEdit}
+              initialFile={deepLinkFile}
+            />
           )}
         </div>
       </div>

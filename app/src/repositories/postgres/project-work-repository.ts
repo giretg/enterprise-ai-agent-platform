@@ -33,6 +33,8 @@ function mapFile(row: {
   content: string
   byteSize: number
   lastWriterUserId: string
+  createdByAgentId: string | null
+  lastWriterAgentId: string | null
   createdAt: Date
   updatedAt: Date
 }): WorkFileRecord {
@@ -104,6 +106,8 @@ export class PostgresWorkFileRepository implements WorkFileStore {
         path: true,
         byteSize: true,
         lastWriterUserId: true,
+        createdByAgentId: true,
+        lastWriterAgentId: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -136,8 +140,16 @@ export class PostgresWorkFileRepository implements WorkFileStore {
       }
       const row = await tx.workFile.upsert({
         where: key,
-        create: { ...where, path: input.path, content, byteSize, lastWriterUserId: input.lastWriterUserId },
-        update: { content, byteSize, lastWriterUserId: input.lastWriterUserId },
+        create: {
+          ...where,
+          path: input.path,
+          content,
+          byteSize,
+          lastWriterUserId: input.lastWriterUserId,
+          createdByAgentId: input.writerAgentId,
+          lastWriterAgentId: input.writerAgentId,
+        },
+        update: { content, byteSize, lastWriterUserId: input.lastWriterUserId, lastWriterAgentId: input.writerAgentId },
       })
       return mapFile(row)
     }, { timeout: 20_000 })

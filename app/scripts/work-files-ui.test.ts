@@ -4,16 +4,21 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  WORK_FILE_WRITER_ALL,
+  WORK_FILE_WRITER_NONE,
   filterWorkFiles,
+  filterWorkFilesByWriter,
   formatFileSize,
   groupByFolder,
   sortWorkFiles,
   splitFrontmatter,
+  workFileWriterAgentId,
 } from '../src/lib/work-file-list'
+import { estimateWorkFileWriter } from '../src/lib/work-file-writer-estimate'
 import { parseWorkFileDeepLink, workFilePagePath, workFileUrl } from '../src/lib/work-file-link'
 import {
   documentTitle,
@@ -80,6 +85,50 @@ async function main() {
     assert.deepEqual(paths(filterWorkFiles(files, 'DEMAND alma')), ['demand-cards/alma.md'])
     assert.equal(filterWorkFiles(files, '   ').length, 4)
     assert.equal(filterWorkFiles(files, 'nincs ilyen').length, 0)
+  })
+  await check('„Írta” szűrő: létrehozó vagy utolsó író, a rögzítetlen fájlok külön', () => {
+    const attributed = [
+      { path: 'hr.md', createdByAgentId: 'hr', lastWriterAgentId: 'hr' },
+      { path: 'atvett.md', createdByAgentId: 'hr', lastWriterAgentId: 'sales' },
+      { path: 'emberi.md', createdByAgentId: 'sales', lastWriterAgentId: null },
+      { path: 'regi.md', createdByAgentId: null, lastWriterAgentId: null },
+    ]
+    assert.equal(filterWorkFilesByWriter(attributed, WORK_FILE_WRITER_ALL).length, 4)
+    assert.deepEqual(paths(filterWorkFilesByWriter(attributed, 'hr')), ['hr.md', 'atvett.md'])
+    assert.deepEqual(paths(filterWorkFilesByWriter(attributed, 'sales')), ['atvett.md', 'emberi.md'])
+    assert.deepEqual(paths(filterWorkFilesByWriter(attributed, WORK_FILE_WRITER_NONE)), ['regi.md'])
+    assert.deepEqual(paths(filterWorkFilesByWriter(attributed, 'ismeretlen')), [])
+    assert.equal(workFileWriterAgentId(attributed[1]!), 'sales')
+    assert.equal(workFileWriterAgentId(attributed[2]!), 'sales')
+    assert.equal(workFileWriterAgentId(attributed[3]!), null)
+  })
+  await check('író becslése: csak egyértelmű találat, azonos ember, időablakon belül', () => {
+    const file = { path: 'a.md', updatedAt: new Date('2026-11-01T10:00:00Z'), lastWriterUserId: 'anna' }
+    const at = (seconds: number) => new Date(file.updatedAt.getTime() + seconds * 1000)
+    const agent = (agentId: string, seconds: number, actorId = 'anna') => ({ kind: 'agent' as const, at: at(seconds), actorId, agentId })
+    const human = (path: string, seconds: number) => ({ kind: 'human' as const, at: at(seconds), actorId: 'anna', path })
+    assert.deepEqual(estimateWorkFileWriter(file, [agent('hr', 1)]), { kind: 'agent', agentId: 'hr' })
+    assert.deepEqual(estimateWorkFileWriter(file, [agent('hr', 1), agent('hr', 2)]), { kind: 'agent', agentId: 'hr' })
+    assert.deepEqual(estimateWorkFileWriter(file, [agent('hr', 1), agent('sales', 2)]), { kind: 'ambiguous' })
+    assert.deepEqual(estimateWorkFileWriter(file, [human('a.md', 1)]), { kind: 'human' })
+    assert.deepEqual(estimateWorkFileWriter(file, [human('b.md', 1)]), { kind: 'none' })
+    assert.deepEqual(estimateWorkFileWriter(file, [human('a.md', 1), agent('hr', 1)]), { kind: 'ambiguous' })
+    assert.deepEqual(estimateWorkFileWriter(file, [agent('hr', 1, 'bela')]), { kind: 'none' })
+    assert.deepEqual(estimateWorkFileWriter(file, [agent('hr', 60)]), { kind: 'none' })
+    assert.deepEqual(estimateWorkFileWriter(file, [agent('hr', -60)]), { kind: 'none' })
+    assert.deepEqual(estimateWorkFileWriter(file, []), { kind: 'none' })
+  })
+  await check('a Munkatárs-választó csak a memória fülön jelenik meg, a fájlok fül saját szűrőt kap', () => {
+    const panel = readFileSync(join(import.meta.dirname, '../src/app/control-plane/projects/projects-panel.tsx'), 'utf8')
+    assert.match(panel, /tab === 'memory' \? \(\s*<label[\s\S]*?t\('teammate'\)/)
+    assert.match(panel, /<WorkFilesPanel[\s\S]*?agents=\{agents\}/)
+    const files = readFileSync(join(import.meta.dirname, '../src/app/control-plane/projects/work-files-panel.tsx'), 'utf8')
+    assert.match(files, /filterWorkFilesByWriter\(files, writer\)/)
+    const page = readFileSync(join(import.meta.dirname, '../src/app/control-plane/projects/page.tsx'), 'utf8')
+    assert.match(page, /listAgents\(\{ unbounded: true \}\)/, 'minden jogosult író elérhető, száz felett is')
+    const platform = readFileSync(join(import.meta.dirname, '../src/app/actions/platform.ts'), 'utf8')
+    const agentAction = platform.slice(platform.indexOf('export async function listAgents('), platform.indexOf('export async function listAgentsForCatalog('))
+    assert.equal((agentAction.match(/unbounded: input\?\.unbounded/g) ?? []).length, 2, 'admin és jogosultságra szűrt lista is továbbadja a korlátlan lekérést')
   })
   await check('csoportosítás mappánként, gyökér külön csoport', () => {
     const groups = groupByFolder(sortWorkFiles(files, 'path'))

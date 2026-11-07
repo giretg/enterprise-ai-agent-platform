@@ -752,6 +752,8 @@ model Agent {
   publicAssistant            PublicAssistant?
   inboundMailRule            AgentInboundMailRule?
   inboundMailEvents          InboundMailEvent[]
+  workFilesCreated           WorkFile[]                  @relation("WorkFileCreatedByAgent")
+  workFilesLastWritten       WorkFile[]                  @relation("WorkFileLastWriterAgent")
 
   @@index([tenantId, status])
   @@map("agents")
@@ -1627,11 +1629,16 @@ model WorkFile {
   content          String   @db.Text
   byteSize         Int      @map("byte_size")
   lastWriterUserId String   @map("last_writer_user_id") @db.Uuid
+  /// NULL: emberi mentés vagy a rögzítés (#1113) előtt készült fájl.
+  createdByAgentId  String?  @map("created_by_agent_id") @db.Uuid
+  lastWriterAgentId String?  @map("last_writer_agent_id") @db.Uuid
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  tenant     Tenant @relation(fields: [tenantId], references: [id])
-  lastWriter User   @relation("WorkFileLastWriter", fields: [lastWriterUserId], references: [id])
+  tenant          Tenant @relation(fields: [tenantId], references: [id])
+  lastWriter      User   @relation("WorkFileLastWriter", fields: [lastWriterUserId], references: [id])
+  createdByAgent  Agent? @relation("WorkFileCreatedByAgent", fields: [createdByAgentId], references: [id], onDelete: SetNull)
+  lastWriterAgent Agent? @relation("WorkFileLastWriterAgent", fields: [lastWriterAgentId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, projectKey, path])
   @@index([tenantId, projectKey])

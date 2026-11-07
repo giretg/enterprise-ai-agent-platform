@@ -1958,49 +1958,55 @@ async function main() {
 
   await check('#662 pinned skill script runs and writes work files', async () => {
     const written: string[] = []
+    const writerAgents: string[] = []
+    const audited: Array<{ action: string; metadata?: unknown }> = []
     const result = await invokeEnterpriseTool(
-      invokeDeps({
-        definition: sandboxDefinition,
-        connector: sandboxConnector,
-        grant: null,
-        loadSkillVersion: async (id) =>
-          id === SKILL_VERSION_ID
-            ? { attachments: [scriptAttachment], status: 'active', tenantId: TENANT_ID }
-            : null,
-        executeSandboxRun: async (input) => {
-          assert.deepEqual(input.command.slice(0, 2), [
-            'python3',
-            '/work/in/skill/scripts/run_napi_marketing_riport.py',
-          ])
-          assert.ok(input.files.some((file) => file.sandboxPath === '/work/run.py'))
-          return {
-            exitCode: 0,
-            stdout: 'ok',
-            stderr: '',
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            outputFiles: [{ path: 'report.html', bytes: Buffer.from('<html>ok</html>') }],
-            metrics: {
-              provider: 'cloud_run',
-              region: 'europe-west1',
-              provisionMs: 1,
-              execMs: 1,
-              totalMs: 2,
-              cpuProfile: '1',
-              memoryProfile: '512Mi',
-              inputBytes: 12,
-              outputBytes: 14,
-              egressBytes: null,
-              coldStart: false,
-              exitStatus: 0,
-            },
-          }
-        },
-        writeWorkFile: async (input) => {
-          written.push(input.path)
-          return { path: input.path }
-        },
-      }),
+      {
+        ...invokeDeps({
+          definition: sandboxDefinition,
+          connector: sandboxConnector,
+          grant: null,
+          loadSkillVersion: async (id) =>
+            id === SKILL_VERSION_ID
+              ? { attachments: [scriptAttachment], status: 'active', tenantId: TENANT_ID }
+              : null,
+          executeSandboxRun: async (input) => {
+            assert.deepEqual(input.command.slice(0, 2), [
+              'python3',
+              '/work/in/skill/scripts/run_napi_marketing_riport.py',
+            ])
+            assert.ok(input.files.some((file) => file.sandboxPath === '/work/run.py'))
+            return {
+              exitCode: 0,
+              stdout: 'ok',
+              stderr: '',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              outputFiles: [{ path: 'report.html', bytes: Buffer.from('<html>ok</html>') }],
+              metrics: {
+                provider: 'cloud_run',
+                region: 'europe-west1',
+                provisionMs: 1,
+                execMs: 1,
+                totalMs: 2,
+                cpuProfile: '1',
+                memoryProfile: '512Mi',
+                inputBytes: 12,
+                outputBytes: 14,
+                egressBytes: null,
+                coldStart: false,
+                exitStatus: 0,
+              },
+            }
+          },
+          writeWorkFile: async (input) => {
+            written.push(input.path)
+            writerAgents.push(input.agentId)
+            return { path: input.path }
+          },
+        }),
+        audit: { append: async (entry) => { audited.push({ action: entry.action, metadata: entry.metadata }) } },
+      },
       {
         principal: principal(),
         toolName: SANDBOX_RUN_TOOL,
@@ -2008,6 +2014,7 @@ async function main() {
           definitionId: DEFINITION_ID,
           skillVersionId: SKILL_VERSION_ID,
           entry: 'scripts/run_napi_marketing_riport.py',
+          projectKey: 'sales',
         },
       },
     )
@@ -2017,6 +2024,69 @@ async function main() {
     assert.equal(payload.scriptSha256, 'abc123')
     assert.deepEqual(payload.outputs, ['sandbox-output/napi-riport/report.html'])
     assert.deepEqual(written, ['sandbox-output/napi-riport/report.html'])
+    assert.deepEqual(writerAgents, [sandboxDefinition.agentId], 'a kimeneti fájl az indító agenthez kerül')
+    const metadata = audited.find((entry) => entry.action === 'enterprise.tool.ok')?.metadata as Record<string, unknown> | undefined
+    assert.equal(metadata?.projectKey, 'sales')
+    assert.deepEqual(metadata?.outputPaths, written)
+  })
+
+  await check('#1113 sandbox_run: részleges hibánál a napló megnevezi a már mentett kimenetet', async () => {
+    const audited: Array<{ action: string; metadata?: unknown }> = []
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          definition: sandboxDefinition,
+          connector: sandboxConnector,
+          grant: null,
+          loadSkillVersion: async () => ({ attachments: [scriptAttachment], status: 'active', tenantId: TENANT_ID }),
+          executeSandboxRun: async () => ({
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            outputFiles: [
+              { path: 'elso.html', bytes: Buffer.from('a') },
+              { path: 'masodik.html', bytes: Buffer.from('b') },
+            ],
+            metrics: {
+              provider: 'cloud_run',
+              region: 'europe-west1',
+              provisionMs: 1,
+              execMs: 1,
+              totalMs: 2,
+              cpuProfile: '1',
+              memoryProfile: '512Mi',
+              inputBytes: 1,
+              outputBytes: 2,
+              egressBytes: null,
+              coldStart: false,
+              exitStatus: 0,
+            },
+          }),
+          writeWorkFile: async (input) => {
+            if (input.path.endsWith('masodik.html')) throw new Error('quota_exceeded')
+            return { path: input.path }
+          },
+        }),
+        audit: { append: async (entry) => { audited.push({ action: entry.action, metadata: entry.metadata }) } },
+      },
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          projectKey: 'sales',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    const metadata = audited.find((entry) => entry.action === 'enterprise.tool.error')?.metadata as Record<string, unknown> | undefined
+    assert.equal(metadata?.errorCode, 'quota_exceeded')
+    assert.equal(metadata?.projectKey, 'sales')
+    assert.deepEqual(metadata?.outputPaths, ['sandbox-output/napi-riport/elso.html'])
   })
 
   await check('sandbox_run copies binary attachment and work-file inputs to /work/in/', async () => {

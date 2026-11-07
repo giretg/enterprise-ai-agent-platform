@@ -18,7 +18,7 @@ export default async function ProjectsPage({
   const ctx = await requireTenantRole('viewer')
   const [projectsRes, agentsRes] = await Promise.all([
     listWorkProjectsAction(),
-    listAgents({ limit: 100 }),
+    listAgents({ unbounded: true }),
   ])
 
   const projects = projectsRes.success ? projectsRes.data.projects : []

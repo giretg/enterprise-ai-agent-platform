@@ -362,7 +362,7 @@ async function readableAgent(user: {
   return canReadPublishedAgent({ role: user.activeTenantRole, grant }) ? agent : null
 }
 
-export async function listAgents(input?: { limit?: number; offset?: number }) {
+export async function listAgents(input?: { limit?: number; offset?: number; unbounded?: boolean }) {
   try {
     const user = await requireTenantRole('viewer')
     if (!user.activeTenantId) return ok([])
@@ -371,6 +371,7 @@ export async function listAgents(input?: { limit?: number; offset?: number }) {
         tenantId: user.activeTenantId,
         limit: input?.limit ?? DEFAULT_LIST_LIMIT,
         offset: input?.offset,
+        unbounded: input?.unbounded,
       })
       return ok(page.items)
     }
@@ -383,6 +384,7 @@ export async function listAgents(input?: { limit?: number; offset?: number }) {
       ids,
       limit: input?.limit ?? DEFAULT_LIST_LIMIT,
       offset: input?.offset,
+      unbounded: input?.unbounded,
     })
     return ok(page.items)
   } catch (e) {

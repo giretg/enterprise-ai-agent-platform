@@ -89,12 +89,15 @@ class MemFiles implements WorkFileStore {
     content: string
     byteSize: number
     lastWriterUserId: string
+    writerAgentId?: string | null
   }) {
     const existing = this.rows.get(this.key(input.tenantId, input.projectKey, input.path))
     const now = new Date()
     const row: WorkFileRecord = {
       id: existing?.id ?? globalThis.crypto.randomUUID(),
       ...input,
+      createdByAgentId: existing ? existing.createdByAgentId : (input.writerAgentId ?? null),
+      lastWriterAgentId: input.writerAgentId ?? null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
@@ -246,6 +249,7 @@ await check('work file write/read survives a later call on the same projectKey',
     path: 'plans/atvilagitas.md',
     content: '# 4. szakasz',
     userId: ANNA,
+    agentId: null,
   })
   assert.equal(written.ok, true)
   const read = await svc.readFile({
@@ -409,6 +413,7 @@ await check('path traversal and oversized files are rejected; unknown project fa
     path: 'a.md',
     content: 'x',
     userId: ANNA,
+    agentId: null,
   })
   assert.equal(unknown.ok, false)
   const huge = await svc.writeFile({
@@ -416,6 +421,7 @@ await check('path traversal and oversized files are rejected; unknown project fa
     path: 'big.md',
     content: 'x'.repeat(WORK_FILE_MAX_BYTES + 1),
     userId: ANNA,
+    agentId: null,
   })
   assert.equal(huge.ok, false)
 })
@@ -782,6 +788,53 @@ await check('invalid_args lists the bad fields', async () => {
   )
   assert.equal(payload.code, 'invalid_args')
   assert.ok((payload.issues as Array<{ path: string }>).some((issue) => issue.path === 'path'))
+})
+
+await check('MCP records the writing agent and the audit names the changed file, never its content', async () => {
+  const { svc, files } = harness('direct')
+  const audited: Array<{ inputRef: string | null; metadata: Record<string, unknown> }> = []
+  const deps = {
+    loadDefinition: async () => definition,
+    findCurrentDefinitionId: async () => DEF,
+    findAgentGrant: async () => ({ accessLevel: 'operate' }),
+    projectWork: svc,
+    audit: {
+      append: async (entry: { inputRef: string | null; metadata: unknown }) => {
+        audited.push({ inputRef: entry.inputRef, metadata: entry.metadata as Record<string, unknown> })
+      },
+    },
+  }
+  const principal = { userId: ANNA, tenantId: TENANT, role: 'operator' as const, assumed: false }
+  const call = (toolName: string, args: Record<string, unknown>) =>
+    invokeProjectWork(deps as never, { principal, toolName, args: { definitionId: DEF, ...args } })
+  await call('platform.work_file.write', { path: 'hr/bér.md', content: 'BIZALMAS-TARTALOM' })
+  const row = await files.find(TENANT, GENERAL_WORK_PROJECT_KEY, 'hr/bér.md')
+  assert.equal(row?.createdByAgentId, AGENT)
+  assert.equal(row?.lastWriterAgentId, AGENT)
+
+  await svc.writeFile({ tenantId: TENANT, path: 'hr/bér.md', content: 'emberi', userId: ANNA, agentId: null })
+  const human = await files.find(TENANT, GENERAL_WORK_PROJECT_KEY, 'hr/bér.md')
+  assert.equal(human?.createdByAgentId, AGENT, 'a létrehozó megmarad')
+  assert.equal(human?.lastWriterAgentId, null)
+
+  await call('platform.work_file.append', { path: 'hr/bér.md', content: 'más' })
+  await call('platform.work_file.read', { path: 'hr/bér.md' })
+  await call('platform.work_file.delete', { path: 'hr/bér.md' })
+  const byTool = new Map(audited.map((entry) => [entry.inputRef, entry.metadata]))
+  for (const tool of ['platform.work_file.write', 'platform.work_file.append', 'platform.work_file.delete']) {
+    assert.equal(byTool.get(tool)?.path, 'hr/bér.md', tool)
+    assert.equal(byTool.get(tool)?.projectKey, GENERAL_WORK_PROJECT_KEY, tool)
+    assert.equal(byTool.get(tool)?.agentId, AGENT, tool)
+  }
+  assert.equal(byTool.get('platform.work_file.read')?.path, undefined, 'olvasásnál nincs útvonal')
+  assert.doesNotMatch(JSON.stringify(audited), /BIZALMAS-TARTALOM/)
+
+  await call('platform.work_file.write', { path: 'lista.md', content: 'x' })
+  const list = parsePayload(await call('platform.work_file.list', {})) as { files: Array<Record<string, unknown>> }
+  assert.equal(list.files[0]?.path, 'lista.md')
+  assert.equal('lastWriterAgentId' in list.files[0]!, false, 'az agent listája nem nő az azonosítókkal')
+  const uiList = await svc.listFiles({ tenantId: TENANT })
+  assert.equal(uiList.ok && uiList.files[0]?.lastWriterAgentId, AGENT, 'a felület megkapja az írót')
 })
 
 await check('work file tools return a deep link the agent can hand to the user', async () => {
