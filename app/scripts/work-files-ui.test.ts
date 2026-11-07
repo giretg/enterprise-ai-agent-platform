@@ -124,6 +124,11 @@ async function main() {
     assert.match(panel, /<WorkFilesPanel[\s\S]*?agents=\{agents\}/)
     const files = readFileSync(join(import.meta.dirname, '../src/app/control-plane/projects/work-files-panel.tsx'), 'utf8')
     assert.match(files, /filterWorkFilesByWriter\(files, writer\)/)
+    const page = readFileSync(join(import.meta.dirname, '../src/app/control-plane/projects/page.tsx'), 'utf8')
+    assert.match(page, /listAgents\(\{ unbounded: true \}\)/, 'minden jogosult író elérhető, száz felett is')
+    const platform = readFileSync(join(import.meta.dirname, '../src/app/actions/platform.ts'), 'utf8')
+    const agentAction = platform.slice(platform.indexOf('export async function listAgents('), platform.indexOf('export async function listAgentsForCatalog('))
+    assert.equal((agentAction.match(/unbounded: input\?\.unbounded/g) ?? []).length, 2, 'admin és jogosultságra szűrt lista is továbbadja a korlátlan lekérést')
   })
   await check('csoportosítás mappánként, gyökér külön csoport', () => {
     const groups = groupByFolder(sortWorkFiles(files, 'path'))

@@ -1,3 +1,4 @@
+import { effectiveWorkProjectKey } from '@/lib/work-project'
 import { expireRejectedTenantMailbox, type MailboxFailureDeps } from '@/domain/connector-grant/tenant-mailbox-failure'
 import { canOperateAgent, type AgentDefinition } from '@/domain/agent-definition'
 import type { WriteConfirmLinkReason } from '@/domain/gateway-operation/write-confirm-branch'
@@ -2199,7 +2200,7 @@ async function invokeSandboxTool(
       outputRef: resolved.script.entry.sha256,
       policyDecision: 'allowed',
       // Az útvonal csak a naplóba kerül, a konzolra nem: érzékeny lehet (például név a fájlnévben).
-      metadata: { ...payload, outputPaths: outputs },
+      metadata: { ...payload, projectKey: effectiveWorkProjectKey(parsedArgs.projectKey), outputPaths: outputs },
       tenantId: principal.tenantId,
     })
     return textResult({
