@@ -6,9 +6,10 @@ import {
   INITIAL_VOICE_CALL_VIEW,
   microphoneFailureMessage,
   voiceEndedMessage,
+  voiceBackendWorkVisible,
   voiceEndReport,
   voiceFailureMessage,
-  voiceProviderErrorMessage,
+  voiceProviderNotice,
 } from '@/components/agents/voice-call-events'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'closing' | 'ended' | 'failed'
@@ -284,6 +285,7 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
   }
 
   const busy = phase === 'connecting' || phase === 'live' || phase === 'closing'
+  const providerNotice = voiceProviderNotice(view)
 
   return (
     <div className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]">
@@ -318,9 +320,9 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
               </p>
             ),
           )}
-          {view.backendSince !== null ? <p className="text-xs text-ink-soft">A munkatárs utánanéz…</p> : null}
+          {voiceBackendWorkVisible(phase, view) ? <p className="text-xs text-ink-soft">A munkatárs utánanéz…</p> : null}
           {failure ? <p className="text-coral-deep">{failure}</p> : null}
-          {view.providerError ? <p className="text-coral-deep">{voiceProviderErrorMessage(view.providerError)}</p> : null}
+          {providerNotice ? <p className="text-coral-deep">{providerNotice}</p> : null}
           {phase === 'ended' ? (
             <p className="text-ink-soft">{voiceEndedMessage(view.closedReason, limitReached)} Ez a nézet az ablak bezárásával eltűnik.</p>
           ) : null}

@@ -9,6 +9,7 @@ export type VoiceCallView = {
   closedReason: string | null
   /** Utolsó nem végzetes szolgáltatói hibaüzenet, például ha az eszközök beállítása nem érvényes. */
   providerError: string | null
+  providerErrorCode: string | null
   backendSince: number | null
   backendCalls: number
   lastBackendWaitMs: number | null
@@ -30,6 +31,7 @@ export const INITIAL_VOICE_CALL_VIEW: VoiceCallView = {
   seconds: 0,
   closedReason: null,
   providerError: null,
+  providerErrorCode: null,
   backendSince: null,
   backendCalls: 0,
   lastBackendWaitMs: null,
@@ -120,7 +122,7 @@ export function applyVoiceEvent(view: VoiceCallView, event: unknown, nowMs: numb
     case 'error': {
       const error = asRecord(e.error)
       const text = typeof error?.message === 'string' ? error.message : typeof error?.code === 'string' ? error.code : 'ismeretlen hiba'
-      return { ...view, providerError: text.slice(0, 300) }
+      return { ...view, providerError: text.slice(0, 300), providerErrorCode: typeof error?.code === 'string' ? error.code : null }
     }
     default:
       return view
@@ -141,12 +143,17 @@ function reportableLines(lines: VoiceTranscriptLine[]): VoiceTranscriptLine[] {
 }
 
 export function voiceEndReport(view: VoiceCallView) {
-  const transcript = reportableLines(view.lines)
+  // A szolgáltató hibaszövege nyers tartalom, ezért az átiratba kerül; az audit-sorba csak a kódja.
+  const lines: VoiceTranscriptLine[] = view.providerError
+    ? [...view.lines, { role: 'tool', text: `Az OpenAI hibaüzenete: ${view.providerError}` }]
+    : view.lines
+  const transcript = reportableLines(lines.slice(-MAX_LINES))
   return {
     transcript,
-    transcriptTruncated: transcript.length < view.lines.length,
+    transcriptTruncated: transcript.length < lines.length,
     backendWaitsMs: view.backendWaitsMs,
     reason: view.closedReason,
+    providerErrorCode: view.providerErrorCode,
     seconds: view.seconds,
     backendCalls: view.backendCalls,
     avgBackendWaitMs: view.completedBackendCalls > 0 ? view.totalBackendWaitMs / view.completedBackendCalls : null,
@@ -159,9 +166,20 @@ export function voiceProviderErrorMessage(detail: string): string {
   return `Az OpenAI hibát jelzett, ezért a munkatárs lehet, hogy nem éri el az adatokat. Próbáld újra, és ha ismétlődik, küldd el ezt a szöveget a rendszergazdának: ${detail}`
 }
 
+/** A szűrő miatti lezárásnál a záró üzenet mondja meg a teendőt, az általános hibaszöveg félrevezetne. */
+export function voiceProviderNotice(view: Pick<VoiceCallView, 'providerError' | 'closedReason'>): string | null {
+  if (!view.providerError || view.closedReason === 'content') return null
+  return voiceProviderErrorMessage(view.providerError)
+}
+
+/** A háttér befejezéséről lezárás után már nem jön esemény, ezért a jelzés csak élő beszélgetésben látszik. */
+export function voiceBackendWorkVisible(phase: string, view: Pick<VoiceCallView, 'backendSince'>): boolean {
+  return phase === 'live' && view.backendSince !== null
+}
+
 export function voiceEndedMessage(closedReason: string | null, limitReached: boolean): string {
   if (limitReached || closedReason === 'expired') return 'A beszélgetés véget ért, mert elérte az időkorlátot. Ha kell, indíts újat.'
-  if (closedReason === 'content') return 'Az OpenAI tartalmi szűrője lezárta a beszélgetést. Ha kell, indíts újat.'
+  if (closedReason === 'content') return 'Az OpenAI tartalmi szűrője lezárta a beszélgetést. Ez ártalmatlan mondatnál is előfordulhat. Indíts újat, és ha ismétlődik, szólj a rendszergazdának.'
   if (closedReason === 'connection_lost') return 'Megszakadt a kapcsolat. Ellenőrizd a hálózatot, és indíts új beszélgetést.'
   return 'A beszélgetés véget ért.'
 }
