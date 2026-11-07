@@ -18,7 +18,9 @@ import {
   voiceEndedMessage,
   voiceEndReport,
   voiceFailureMessage,
+  voiceBackendWorkVisible,
   voiceProviderErrorMessage,
+  voiceProviderNotice,
   type VoiceCallView,
 } from '../src/components/agents/voice-call-events'
 import { issueGatewayToken } from '../src/domain/model-gateway-token/gateway-token'
@@ -539,17 +541,63 @@ async function main() {
     ])
     assert.deepEqual(view.backendWaitsMs, [2500])
     const report = voiceEndReport(view)
-    assert.deepEqual(report.transcript, view.lines)
+    const errorLine = { role: 'tool', text: 'Az OpenAI hibaüzenete: Hibás eszköz' }
+    assert.deepEqual(report.transcript, [...view.lines, errorLine])
     assert.equal(report.transcriptTruncated, false)
     assert.equal(view.lastBackendWaitMs, 2500)
     assert.equal(view.backendSince, null)
     assert.equal(view.providerError, 'Hibás eszköz')
     assert.equal(view.closedReason, 'close_requested')
     assert.deepEqual(voiceEndReport(view), {
-      transcript: view.lines,
+      transcript: [...view.lines, errorLine],
       transcriptTruncated: false,
-      backendWaitsMs: [2500], reason: 'close_requested', seconds: 45, backendCalls: 1, avgBackendWaitMs: 2500, maxBackendWaitMs: 2500 })
+      backendWaitsMs: [2500], reason: 'close_requested', providerErrorCode: 'responses_validation_failed', seconds: 45, backendCalls: 1, avgBackendWaitMs: 2500, maxBackendWaitMs: 2500 })
     assert.equal(voiceEndReport(INITIAL_VOICE_CALL_VIEW).avgBackendWaitMs, null)
+  })
+
+  await check('moderáció: érthető üzenet, nincs beragadt jelzés, a hiba részlete megmarad', async () => {
+    const run = (events: unknown[]): VoiceCallView => events.reduce<VoiceCallView>((view, event, index) => applyVoiceEvent(view, event, index), INITIAL_VOICE_CALL_VIEW)
+    const working = run([{ type: 'session.started' }, { type: 'session.output_transcript.delta', delta: 'Egy kis türel' }, { type: 'session.delegation.created' }])
+    const moderationError = { type: 'error', error: { code: 'moderation_stopped', message: 'The generation was stopped due to moderation.' } }
+    const closed = run([{ type: 'session.started' }, { type: 'session.output_transcript.delta', delta: 'Egy kis türel' }, { type: 'session.delegation.created' }, moderationError, { type: 'session.closed', reason: 'content', usage: { seconds: 37 } }])
+
+    // Nem állítjuk, hogy az adatok nem érhetők el: a szűrő zárta le a beszélgetést.
+    assert.equal(voiceProviderNotice(closed), null)
+    assert.match(voiceEndedMessage('content', false), /tartalmi szűrője.*ártalmatlan.*ismétlődik.*rendszergazdának/)
+    // Más hibánál és lezárás előtt marad a teendő.
+    assert.equal(voiceProviderNotice(applyVoiceEvent(working, moderationError, 9)), voiceProviderErrorMessage('The generation was stopped due to moderation.'))
+    assert.equal(voiceProviderNotice(working), null)
+
+    assert.equal(voiceBackendWorkVisible('live', working), true)
+    for (const phase of ['closing', 'ended', 'failed']) assert.equal(voiceBackendWorkVisible(phase, closed), false, phase)
+    assert.equal(voiceBackendWorkVisible('live', run([{ type: 'session.started' }])), false)
+
+    const report = voiceEndReport(closed)
+    assert.equal(report.providerErrorCode, 'moderation_stopped')
+    assert.deepEqual(report.transcript.at(-1), { role: 'tool', text: 'Az OpenAI hibaüzenete: The generation was stopped due to moderation.' })
+    assert.equal(closed.lines.some((line) => line.text.includes('hibaüzenete')), false)
+    assert.equal(run([{ type: 'error', error: { message: 'csak szöveg' } }]).providerErrorCode, null)
+
+    // A szerver 300 sornál többet nem fogad el, ezért a hibasor miatt nem veszhet el az egész átirat.
+    const full = Array.from({ length: 300 }, (_, index) => ({ role: 'user' as const, text: String(index) }))
+    const capped = voiceEndReport({ ...closed, lines: full })
+    assert.equal(capped.transcript.length, 300)
+    assert.equal(capped.transcript[0].text, '1')
+    assert.match(capped.transcript[299].text, /hibaüzenete/)
+    assert.equal(capped.transcriptTruncated, true)
+
+    const audits: Array<{ metadata?: unknown }> = []
+    const deps = { audit: { append: async (entry: { metadata?: unknown }) => void audits.push(entry) }, sessionAwaitsEnd: async () => true }
+    const end = (providerErrorCode: unknown) =>
+      recordVoiceSessionEnd(deps as never, { userId: USER, tenantId: TENANT, body: { agentId: AGENT, sessionId: 'live_1', reason: 'content', providerErrorCode } })
+    await end('moderation_stopped')
+    await end('<script>alert(1)</script>')
+    await end('x'.repeat(81))
+    const codes = audits.map((audit) => (audit.metadata as Record<string, unknown>).providerErrorCode)
+    assert.deepEqual(codes, ['moderation_stopped', null, null])
+    for (const audit of audits) assertAuditMetadataSafe(audit.metadata)
+    // A hibaszöveg csak a titkosított átiratba kerülhet, az audit-sorba nem.
+    assert.equal(JSON.stringify(audits).includes('stopped due to moderation'), false)
   })
 
   console.log(`\n${failures === 0 ? 'voice-pilot: ok' : `voice-pilot: ${failures} failed`}`)

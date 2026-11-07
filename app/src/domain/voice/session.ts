@@ -197,6 +197,8 @@ export async function recordVoiceSessionEnd(
       reportedBy: 'browser',
       sessionId: b.sessionId,
       closeReason: typeof b.reason === 'string' ? b.reason.slice(0, 40) : null,
+      // Csak kód formájú érték kerülhet ide, szabad szöveg nem: az audit-sorba nem való nyers tartalom.
+      providerErrorCode: typeof b.providerErrorCode === 'string' && /^[\w.-]{1,80}$/.test(b.providerErrorCode) ? b.providerErrorCode : null,
       ...measured,
     },
     tenantId: input.tenantId,
