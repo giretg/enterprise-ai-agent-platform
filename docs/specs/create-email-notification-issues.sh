@@ -9,6 +9,11 @@
 #
 set -euo pipefail
 
+# Felülírva (2026-11-07): az érvényes spec a #1135 leírása. A szkript elavult
+# issue-kat hozna létre, ezért nem fut le.
+echo "Elavult szkript: az érvényes spec a #1135 issue leírása." >&2
+exit 1
+
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 MILESTONE="Platform e-mail értesítések"
 PREFIX="[Platform e-mail értesítések]"

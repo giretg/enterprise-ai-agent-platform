@@ -11,6 +11,7 @@ böngésző (platform UI)  ──1. POST /api/chat/session──▶  platform  �
         ▼
 worker (Cloud Run, request-based, min=0)
   ├─ POST /api/chat/continuation  → fordulóra szűkített folytatási token (háttérfutás)
+  ├─ GET /api/chat/feature-flags  → flag-leállítás ellenőrzése lépésenként (folytatási tokennel)
   ├─ MCP                          → /api/mcp/<tenant>  (folytatási tokennel, x-excellence-agent-id)
   ├─ modell                       → /api/model-gateway/token + /v1/chat/completions
   ├─ Cloud Tasks                  → saját /internal/step (lépésenként egy kérés, OIDC)
@@ -25,6 +26,14 @@ A kész lépés nem fut újra, az író tool idempotencia-kulcsot kap (`hash(tur
 feladat); a „Jóváhagyom / Elvetem” új lépést indít. 15 perc után a kérés a platform jóváhagyási
 listáján marad, a forduló zárószöveggel lezárul. Korlátok: 25 lépés, 40 perc, lépésenként 3 próba,
 ismétlődő-hurok (azonos tool + argumentum 3×) → leállás.
+
+## Fokozatos bevezetés (#1126)
+
+A flagek a folytatási token válaszában érkeznek, és a forduló elején a `turns.context.featureFlags`-be kerülnek, így a
+futás nem vált működést félúton. Rögzített flagnél a motor a forduló első 45 másodperce után minden lépés előtt
+megkérdezi a `/api/chat/feature-flags` végpontot. Ha egy flaget közben leállítottak, a bejegyzése szerint a forduló érthető üzenettel lezárul (`finish_run`),
+vagy a régi úton megy tovább (`old_path`). Kapu a kódban: `isTurnFeatureActive(context, kulcs)`. Útmutató:
+`docs/feature-flags.md`.
 
 ## Letöltés-kártya (#1024)
 

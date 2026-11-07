@@ -1,4 +1,5 @@
 /** A worker adatmodellje (§5.1) — a motor ezen az interfészen át dolgozik, így tesztben memóriában fut. */
+import type { TurnFeatureFlag } from './platform.ts'
 
 export type TurnStatus = 'queued' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'succeeded' | 'failed' | 'cancelled'
 export const ACTIVE_TURN_STATUSES: readonly TurnStatus[] = ['queued', 'running', 'awaiting_approval', 'awaiting_input', 'paused']
@@ -97,6 +98,13 @@ export type TurnContext = {
   core?: string[]
   /** #1022: a `tools[]`-ben teljes sémával küldött eszközök; hiányzik = régi kontextus, minden betöltött. */
   loaded?: string[]
+  /**
+   * #1126 WP-5: a forduló elején rögzített flagek, így a futás nem vált működést félúton. A `stopped` a
+   * közben leállítottakat tartja: ezek a futás végéig Ki maradnak, akkor is, ha közben újra bekapcsolják.
+   */
+  featureFlags?: { pinned: TurnFeatureFlag[]; stopped: string[] }
+  /** #1126 WP-5: még csak a flagek vannak benne; a definíció és az eszközök az első lépésnél töltődnek be. */
+  flagsOnly?: true
 }
 
 export type Turn = {

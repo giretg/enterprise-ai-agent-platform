@@ -212,7 +212,7 @@ export function createPgStore(pool: pg.Pool, connection: Pick<pg.Pool, 'query'> 
     async lastTurnContext(conversationId, excludeTurnId) {
       const r = await one(
         `SELECT context FROM platform_chat.turns
-          WHERE conversation_id = $1 AND id <> $2 AND context IS NOT NULL
+          WHERE conversation_id = $1 AND id <> $2 AND context IS NOT NULL AND context->>'flagsOnly' IS NULL
           ORDER BY created_at DESC LIMIT 1`,
         [conversationId, excludeTurnId],
       )

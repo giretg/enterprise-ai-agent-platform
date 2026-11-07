@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict'
 import { createServer, type IncomingMessage } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { BUDGET_BLOCK_REASON, createPlatformClient, fileLinksOf, PLATFORM_CHAT_INSTALL_ID } from '../src/platform.ts'
+import { BUDGET_BLOCK_REASON, createPlatformClient, fileLinksOf, parseFeatureFlags, PlatformError, PLATFORM_CHAT_INSTALL_ID } from '../src/platform.ts'
 
 let failures = 0
 async function check(name: string, fn: () => Promise<void>) {
@@ -33,6 +33,11 @@ const server = createServer(async (req, res) => {
   if (req.url === '/api/chat/continuation') {
     res.writeHead(req.headers.authorization === 'Bearer chat' ? 200 : 401, { 'content-type': 'application/json' })
     return res.end(JSON.stringify(req.headers.authorization === 'Bearer chat' ? { token: 'turn', expiresAt: '' } : { error: 'unauthenticated' }))
+  }
+  if (req.url === '/api/chat/feature-flags') {
+    const ok = req.headers.authorization === 'Bearer turn'
+    res.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' })
+    return res.end(JSON.stringify(ok ? { featureFlags: [{ key: 'a.b', onStop: 'old_path' }, { key: 'c.d', onStop: 'ismeretlen' }, null] } : { error: 'unauthenticated' }))
   }
   if (req.url === '/api/mcp/acme') {
     const params = body.params as { name?: string; requestState?: string }
@@ -75,8 +80,23 @@ async function main() {
   const access = { token: 'turn', tenantSlug: 'acme', agentId: 'a1', sessionId: 'conv-1' }
   try {
     await check('folytatási token: a böngésző chat-tokenjével', async () => {
-      assert.equal(await client.continuationToken({ chatToken: 'chat', turnId: 't', agentId: 'a1' }), 'turn')
+      assert.deepEqual(await client.continuationToken({ chatToken: 'chat', turnId: 't', agentId: 'a1' }), { token: 'turn', featureFlags: [] })
       await assert.rejects(client.continuationToken({ chatToken: 'bad', turnId: 't', agentId: 'a1' }))
+    })
+
+    await check('#1126 flagek: a hibás elem Ki, régi platformon üres lista; a leállítás-ellenőrzés hibája kivétel', async () => {
+      assert.deepEqual(await client.activeFeatureFlags({ token: 'turn' }), [{ key: 'a.b', onStop: 'old_path' }])
+      await assert.rejects(client.activeFeatureFlags({ token: 'lejárt' }), PlatformError)
+      // A lógó platform nem tarthatja fel a lépést a bérlet lejártáig.
+      let signal: AbortSignal | null | undefined
+      const recording = createPlatformClient(origin, (async (_url: string, init?: RequestInit) => {
+        signal = init?.signal
+        return new Response(JSON.stringify({ featureFlags: [] }))
+      }) as typeof fetch)
+      await recording.activeFeatureFlags({ token: 'turn' })
+      assert.ok(signal instanceof AbortSignal)
+      assert.deepEqual(parseFeatureFlags(undefined), [])
+      assert.deepEqual(parseFeatureFlags([{ key: 'x.y', onStop: 'finish_run' }]), [{ key: 'x.y', onStop: 'finish_run' }])
     })
 
     await check('MCP: tools/list és agents.list SSE-válaszból; állapotmentes 2026-07-28 envelope + agent-kötés', async () => {

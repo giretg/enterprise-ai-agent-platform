@@ -22,6 +22,7 @@ import { PostgresWikiConsoleRepository } from '../src/repositories/postgres/wiki
 import { WikiService, type WikiCaller, type WikiPageInput } from '../src/domain/knowledge-base/wiki-service'
 import { WikiConsoleError, WikiConsoleService, type WikiConsoleActor } from '../src/domain/knowledge-base/wiki-console-service'
 import { WikiHistoryService } from '../src/domain/knowledge-base/wiki-history-service'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import type { AuditAppendInput } from '../src/lib/audit/types'
 
 let failures = 0
@@ -40,6 +41,8 @@ const history = new PostgresWikiHistoryRepository()
 const audit: AuditAppendInput[] = []
 const auditSink = {
   async append(entry: AuditAppendInput) {
+    // Ugyanaz az őr, mint a valódi naplóban: a csonk ne rejtse el a tiltott audit-kulcsot.
+    assertAuditMetadataSafe(entry.metadata)
     audit.push(entry)
     return entry as never
   },
@@ -372,6 +375,12 @@ async function main() {
     const newAudit = audit.slice(auditBefore)
     assert.ok(newAudit.some((entry) => entry.action === 'kb.wiki.erasure.executed'))
     assert.ok(!JSON.stringify(newAudit).toLowerCase().includes(lower), 'az audit nem tartalmazza a nevet')
+    // Közös wikinél is: az indok szabad szöveg, az auditba csak a hash-e kerül.
+    const erasureAudit = newAudit.find((entry) => entry.action === 'kb.wiki.erasure.executed')!
+    const auditMetadata = erasureAudit.metadata as Record<string, unknown>
+    assert.equal(auditMetadata.reason, undefined)
+    assert.match(String(auditMetadata.reasonHash), /^[0-9a-f]{64}$/)
+    assert.ok(!JSON.stringify(newAudit).includes(erasure.reason), 'az indok szövege nincs az auditban')
     // A kitakarás után az oldal még mindig olvasható, csak a név helyén [törölve].
     assert.match((await page('entities/e.md')).body, /anonim/)
   })

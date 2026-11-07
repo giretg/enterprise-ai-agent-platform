@@ -595,7 +595,8 @@ export class WikiHistoryService {
       erasureId: result.erasureId,
       kind: input.scope.kind,
       mode: input.scope.kind === 'text' ? input.scope.mode : 'erase',
-      reason,
+      // A szabad szöveg nem kerülhet az auditba (payload-guard): az indok a `WikiErasure` sorban él.
+      reasonHash: createHash('sha256').update(reason).digest('hex'),
       ...(typeof scope.matchHash === 'string' ? { matchHash: scope.matchHash } : {}),
       ...(Array.isArray(scope.pageIds) ? { pageIds: scope.pageIds } : {}),
       ...(result.changeSetId ? { changeSetId: result.changeSetId, seq: result.seq } : {}),

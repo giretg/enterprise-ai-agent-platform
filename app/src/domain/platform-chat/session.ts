@@ -6,6 +6,7 @@ import type { UserRole } from '@prisma/client'
 import type { AuditSink } from '@/lib/audit/types'
 import { writeAudit } from '@/lib/audit/types'
 import { resolvePrincipalForUser, type McpPrincipalDeps } from '@/auth/mcp-principal'
+import type { ExternalClientFlag } from '@/domain/feature-flags/external-client-flags'
 import type { PlatformChatAccess } from '@/domain/platform-chat/gateway'
 import {
   CHAT_TOKEN_AUDIENCE,
@@ -92,6 +93,10 @@ export async function issueChatSession(
 
 export type ContinuationDeps = Omit<ChatSessionDeps, 'workerUrl' | 'loadTenant' | 'modelKeyConfigured'> & {
   principal: McpPrincipalDeps
+  /** #1126 WP-5: a workernek szánt, a cégnél aktív flagek; a worker kódja nem érheti el a kiértékelőt. */
+  activeFeatureFlags: (tenantId: string) => Promise<ExternalClientFlag[]>
+  /** Hamis, amíg a példány nem tudta betölteni a flagek állapotát; az üres lista ilyenkor nem jelent leállítást. */
+  featureFlagStateKnown: () => boolean
 }
 
 /**
@@ -101,7 +106,7 @@ export type ContinuationDeps = Omit<ChatSessionDeps, 'workerUrl' | 'loadTenant' 
 export async function issueContinuationToken(
   deps: ContinuationDeps,
   input: { authorizationHeader: string | null; body: unknown },
-): Promise<{ ok: true; token: string; expiresAt: string } | { ok: false; code: ChatSessionFailureCode }> {
+): Promise<{ ok: true; token: string; expiresAt: string; featureFlags: ExternalClientFlag[] } | { ok: false; code: ChatSessionFailureCode }> {
   const key = usableChatTokenKey(deps.signingKey)
   if (!key) return { ok: false, code: 'not_configured' }
   const now = (deps.now ?? (() => new Date()))()
@@ -120,6 +125,7 @@ export async function issueContinuationToken(
   if (!access.agentEnabled || !(await deps.canUseAgent({ tenantId: p.tenantId, userId: p.userId, role: p.role, agentId: b.agentId }))) {
     return { ok: false, code: 'agent_unavailable' }
   }
+  const featureFlags = await deps.activeFeatureFlags(p.tenantId)
   const { token, claims } = signChatToken(
     {
       aud: CHAT_TURN_TOKEN_AUDIENCE,
@@ -144,8 +150,34 @@ export async function issueContinuationToken(
     targetType: 'agent',
     targetId: b.agentId,
     policyDecision: 'allowed',
-    metadata: { turnId: b.turnId, jti: claims.jti, client: 'platform_chat' },
+    metadata: {
+      turnId: b.turnId,
+      jti: claims.jti,
+      client: 'platform_chat',
+      ...(featureFlags.length ? { featureFlags: featureFlags.map((flag) => flag.key) } : {}),
+    },
     tenantId: p.tenantId,
   })
-  return { ok: true, token, expiresAt: new Date(claims.exp * 1000).toISOString() }
+  return { ok: true, token, expiresAt: new Date(claims.exp * 1000).toISOString(), featureFlags }
+}
+
+/**
+ * #1126 WP-5: a worker lépésenként ezzel ellenőrzi a leállítást. A folytatási token elég, mert a válasz
+ * csak a token saját cégénél aktív flageket mutatja, és a kiértékelő cache-éből jön.
+ */
+export async function readTurnFeatureFlags(
+  deps: Pick<ContinuationDeps, 'signingKey' | 'now' | 'activeFeatureFlags' | 'featureFlagStateKnown'>,
+  input: { authorizationHeader: string | null },
+): Promise<{ ok: true; featureFlags: ExternalClientFlag[] } | { ok: false; code: 'not_configured' | 'unauthenticated' | 'unavailable' }> {
+  const key = usableChatTokenKey(deps.signingKey)
+  if (!key) return { ok: false, code: 'not_configured' }
+  const now = (deps.now ?? (() => new Date()))()
+  const bearer = /^Bearer\s+(\S+)/i.exec(input.authorizationHeader?.trim() ?? '')?.[1]
+  const turn = bearer ? verifyChatToken(bearer, key, Math.floor(now.getTime() / 1000), [CHAT_TURN_TOKEN_AUDIENCE]) : null
+  // A hang-token az OpenAI-hoz is eljut, és az audience-e ugyanez, ezért külön ki kell zárni.
+  if (!turn || turn.voice) return { ok: false, code: 'unauthenticated' }
+  const featureFlags = await deps.activeFeatureFlags(turn.tid)
+  // A worker a hiányzó flaget leállításnak veszi, ezért betöltetlen állapotnál nem adhatunk üres listát.
+  if (!deps.featureFlagStateKnown()) return { ok: false, code: 'unavailable' }
+  return { ok: true, featureFlags }
 }

@@ -24,7 +24,8 @@ const store = createPgStore(pool)
 const queued: Array<{ turnId: string; seq: number }> = []
 let toolRound = 0
 const platform: PlatformClient = {
-  continuationToken: async () => 'turn-token',
+  continuationToken: async () => ({ token: 'turn-token', featureFlags: [] }),
+    activeFeatureFlags: async () => [],
   listAgents: async () => [],
   getDefinition: async () => '{"definitionId":"d"}',
   listTools: async () => [{ name: 'google_drive_create_folder', inputSchema: { type: 'object', properties: { idempotencyKey: {} } } }],
@@ -122,6 +123,16 @@ try {
   assert.equal(await answerQuestion(askDeps, { turnId: r2.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Nagy'] } }), 'ok')
   while (queued.length) await runStep(askDeps, queued.shift()!)
   assert.equal((await store.getTurn(r2.turn.id))?.status, 'succeeded')
+
+  // #1126: az el nem indult forduló flag-kontextusa nem számít az előző forduló eszközállapotának.
+  const contextBefore = await store.lastTurnContext(c.id, randomUUID())
+  assert.ok(contextBefore?.definition)
+  const seeded = await store.createTurn({ conversationId: c.id, tenantId: TENANT, userId: USER, agentId: AGENT })
+  assert.ok(seeded)
+  await store.updateTurn(seeded.id, { context: { definition: '', tools: [], flagsOnly: true, featureFlags: { pinned: [{ key: 'a.b', onStop: 'old_path' }], stopped: [] } } })
+  assert.deepEqual(await store.lastTurnContext(c.id, randomUUID()), contextBefore)
+  assert.deepEqual((await store.getTurn(seeded.id))?.context?.featureFlags?.pinned, [{ key: 'a.b', onStop: 'old_path' }])
+  assert.ok(await store.transitionTurn(seeded.id, ['queued'], 'cancelled'))
   const after = await store.listMessages(c.id)
   assert.deepEqual(after.slice(-3).map((m) => [m.role, m.content]), [['assistant', ''], ['user', 'Nagy'], ['assistant', 'Kész.']])
   assert.equal(after.at(-3)?.question?.answer.selected[0], 'Nagy')

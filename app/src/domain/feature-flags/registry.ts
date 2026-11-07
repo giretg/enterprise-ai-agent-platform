@@ -5,6 +5,17 @@
  */
 export type LocalizedText = { hu: string; en: string }
 
+/** A platformon kívül futó kliensek, amelyek nem érik el közvetlenül a kiértékelőt. */
+export const FEATURE_FLAG_EXTERNAL_CLIENTS = ['platform_chat', 'hermes'] as const
+export type FeatureFlagExternalClient = (typeof FEATURE_FLAG_EXTERNAL_CLIENTS)[number]
+
+/**
+ * Mi a biztonságos, ha egy futó munka közben leállítják a flaget:
+ * `finish_run` = a következő lépésnél érthető üzenettel lezárul; `old_path` = a régi úton folytatódik.
+ */
+export const FEATURE_FLAG_STOP_BEHAVIORS = ['finish_run', 'old_path'] as const
+export type FeatureFlagStopBehavior = (typeof FEATURE_FLAG_STOP_BEHAVIORS)[number]
+
 export type FeatureFlagDefinition = {
   /** Rövid név; a cég auditnaplója is ezt mutatja. */
   title: LocalizedText
@@ -18,6 +29,11 @@ export type FeatureFlagDefinition = {
   issue: number
   /** Felülvizsgálati dátum (ÉÉÉÉ-HH-NN); ha lejár, a CI figyelmeztet. */
   reviewBy: string
+  /** Csak akkor kell, ha a flag a chat-worker vagy a Hermes működését is kapcsolja. */
+  externalClients?: {
+    clients: readonly FeatureFlagExternalClient[]
+    onStop: FeatureFlagStopBehavior
+  }
 }
 
 /** A kulcs formája `terület.funkció`, pl. `chat.resumable_pause`. */
@@ -67,6 +83,15 @@ export function validateFeatureFlagRegistry(
     if (retiredKeys.includes(key)) errors.push(`${key}: törölt kulcs nem használható újra`)
     for (const field of ['title', 'whatChanges', 'whenOff'] as const) {
       if (!def[field]?.hu?.trim() || !def[field]?.en?.trim()) errors.push(`${key}: a(z) ${field} magyarul és angolul is kötelező`)
+    }
+    if (def.externalClients) {
+      const { clients, onStop } = def.externalClients
+      if (!clients?.length || !clients.every((client) => FEATURE_FLAG_EXTERNAL_CLIENTS.includes(client))) {
+        errors.push(`${key}: az externalClients.clients legalább egy ismert klienst soroljon fel`)
+      }
+      if (!FEATURE_FLAG_STOP_BEHAVIORS.includes(onStop)) {
+        errors.push(`${key}: az externalClients.onStop értéke finish_run vagy old_path`)
+      }
     }
     if (!def.owner?.trim()) errors.push(`${key}: a felelős kötelező`)
     if (!Number.isInteger(def.issue) || def.issue <= 0) errors.push(`${key}: az issue száma kötelező`)

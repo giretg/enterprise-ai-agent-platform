@@ -70,7 +70,7 @@ export class MemoryStore implements Store {
     return t ? structuredClone(t) : null
   }
   async lastTurnContext(conversationId: string, excludeTurnId: string) {
-    const prev = [...this.turns.values()].filter((t) => t.conversationId === conversationId && t.id !== excludeTurnId && t.context).at(-1)
+    const prev = [...this.turns.values()].filter((t) => t.conversationId === conversationId && t.id !== excludeTurnId && t.context && !t.context.flagsOnly).at(-1)
     return prev ? structuredClone(prev.context) : null
   }
   async activeTurn(conversationId: string) {
