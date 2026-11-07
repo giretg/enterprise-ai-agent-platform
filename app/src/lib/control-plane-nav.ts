@@ -179,6 +179,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         requires: { platformRole: 'platform_auditor' },
       },
       {
+        key: 'admin.platform-rollouts',
+        href: '/control-plane/platform/rollouts',
+        label: 'Platform · Fokozatos bevezetés',
+        requires: { platformRole: 'platform_auditor' },
+      },
+      {
         key: 'admin.platform-settings',
         href: '/control-plane/platform/settings',
         label: 'Platform · Beállítások',

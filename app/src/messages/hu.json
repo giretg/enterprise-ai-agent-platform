@@ -1526,6 +1526,7 @@
       "admin_platform-tenants": "Platform · Tenantok",
       "admin_platform-iam": "Platform · IAM",
       "admin_platform-contact": "Platform · Kapcsolatfelvételek",
+      "admin_platform-rollouts": "Platform · Fokozatos bevezetés",
       "admin_platform-settings": "Platform · Beállítások",
       "promises": "Ígéretek",
       "admin_ai-client-policy": "Hermes céges kontroll"
@@ -2467,6 +2468,135 @@
     "roleLabel_operator": "Operátor",
     "roleLabel_viewer": "Megfigyelő",
     "unknownError": "Ismeretlen hiba"
+  },
+  "PlatformRollouts": {
+    "eyebrow": "Platform · Fokozatos bevezetés",
+    "title": "Fokozatos bevezetés",
+    "body": "Új, kockázatos funkciót itt lehet cégenként bekapcsolni, lépésenként bővíteni, és hiba esetén új kiadás nélkül leállítani.",
+    "loadError": "Az oldal betöltése nem sikerült. Ehhez a felülethez platform-szintű jogosultság szükséges.",
+    "empty": "Most nincs fokozatos bevezetés alatt álló funkció. Ilyenkor minden cég ugyanazt a működést kapja.",
+    "byTenantLink": "Cég szerinti nézet",
+    "backToList": "Vissza a listához",
+    "columns": {
+      "name": "Funkció",
+      "state": "Állapot",
+      "owner": "Felelős",
+      "issue": "Hivatkozás",
+      "deadline": "Határidő"
+    },
+    "state": {
+      "off": "Ki",
+      "selected": "Kiválasztott: {count} cég",
+      "selectedNone": "Kiválasztott: még nincs cég",
+      "all": "Mindenkinek",
+      "allExcluded": "Mindenkinek, {count} cég kivételével"
+    },
+    "deadline": {
+      "remove": "Törlés: {date}",
+      "review": "Felülvizsgálat: {date}",
+      "expired": "lejárt"
+    },
+    "whatChanges": "Mit kap a felhasználó bekapcsolva",
+    "whenOff": "Mi történik leállításkor",
+    "current": {
+      "title": "Jelenlegi állapot",
+      "stoppedAt": "Leállítva: {date}",
+      "fullRolloutAt": "Teljes bevezetés: {date}"
+    },
+    "stop": {
+      "button": "Azonnali leállítás",
+      "help": "Legfeljebb kb. 30 másodpercen belül minden cégnél a régi működés fut, új kiadás nélkül. A cégek listája megmarad, így a bevezetés onnan folytatható.",
+      "title": "Azonnali leállítás",
+      "hint": "Egy mondat elég, a leállítást ne késleltesse az indoklás."
+    },
+    "mode": {
+      "title": "Kinél legyen aktív",
+      "help": "A „Mindenkinek” állapotban az új cégek is megkapják a funkciót. Ezt csak superadmin kapcsolhatja be, a leállítás és a kiválasztott cégek kezelése operátornak is elérhető.",
+      "off": "Ki",
+      "offHelp": "Senkinél nem aktív.",
+      "selected": "Kiválasztott cégeknél",
+      "selectedHelp": "Csak a felvett cégeknél aktív, új cégnél nem.",
+      "all": "Mindenkinek",
+      "allHelp": "Mindenkinél aktív a kizárt cégek kivételével, új cégnél is.",
+      "allForbidden": "Ezt csak superadmin kapcsolhatja be."
+    },
+    "tenants": {
+      "title": "Cégek",
+      "help": "A felvett cég „Kiválasztott cégeknél” állapotban kapja meg a funkciót. A kizárt cég „Mindenkinek” állapotban sem kapja meg. Az eredmény oszlop a most beállított állapotot mutatja.",
+      "search": "Cég keresése",
+      "searchPlaceholder": "Kezdd el írni a cég nevét",
+      "empty": "Nincs ilyen nevű cég.",
+      "name": "Cég",
+      "access": "Jelölés",
+      "result": "Eredmény",
+      "accessNone": "Nincs jelölés",
+      "accessIncluded": "Felvett",
+      "accessExcluded": "Kizárt",
+      "active": "Aktív",
+      "inactive": "Nem aktív",
+      "changing": "változik"
+    },
+    "review": {
+      "button": "Változtatások áttekintése",
+      "title": "Mentés előtti összegzés",
+      "gains": "Bekapcsol {count} cégnél",
+      "loses": "Leáll {count} cégnél",
+      "none": "Most egyetlen cég működése sem változik.",
+      "justification": "Miért változtatsz?",
+      "justificationHelp": "Rövid indoklás kötelező, a platform auditnaplójába kerül. A cégek nem látják.",
+      "placeholder": "Pl. előbb a saját cégeinken próbáljuk ki",
+      "save": "Mentés",
+      "cancel": "Mégsem"
+    },
+    "outcome": {
+      "saved": "Mentve. A többi példányon legfeljebb kb. 30 másodperc alatt érvényesül.",
+      "auditFailed": "A változás érvényben van, de a naplóba írás nem sikerült. Szólj az üzemeltetésnek, mert ez a módosítás nem látszik az előzményekben.",
+      "blockedAudit": "Nem mentettünk semmit, mert a naplóba írás nem sikerült. Bővítés csak naplózva történhet.",
+      "conflict": "Időközben más is módosította, nézd át újra.",
+      "forbidden": "Ehhez a változtatáshoz nincs jogosultságod.",
+      "noChange": "Nincs mit menteni, az állapot már ilyen.",
+      "invalidJustification": "Írj rövid indoklást (3–500 karakter).",
+      "invalidTenant": "Az egyik kiválasztott cég már nem érhető el. Töltsd újra az oldalt.",
+      "invalidDate": "Az új határidő legyen későbbi a jelenleginél.",
+      "generic": "A művelet nem sikerült. Próbáld újra később.",
+      "extended": "A határidő módosítva."
+    },
+    "deadlineCard": {
+      "title": "Törlési határidő",
+      "help": "A teljes bevezetéstől számított 60 nap után a kapcsolót és a régi működést törölni kell a kódból. Indoklással hosszabbítható.",
+      "noDeadline": "Törlési határidő az első „Mindenkinek” állapottól indul. Addig a kódba írt felülvizsgálati dátum él: {date}.",
+      "current": "Jelenlegi határidő: {date}",
+      "newDate": "Új határidő",
+      "justification": "Miért kell több idő?",
+      "extend": "Határidő hosszabbítása"
+    },
+    "history": {
+      "title": "Előzmények",
+      "empty": "Ezen a funkción még nem történt változtatás.",
+      "system": "Ismeretlen felhasználó",
+      "mode": "Állapot: {from} → {to}",
+      "tenant": "{name}: {from} → {to}",
+      "deadline": "Határidő: {from} → {to}",
+      "gained": "Bekapcsolt {count} cégnél",
+      "lost": "Leállt {count} cégnél"
+    },
+    "byTenant": {
+      "title": "Cég szerinti nézet",
+      "body": "Egy cégnél minden funkció látszik az eredménnyel és az okkal.",
+      "select": "Cég",
+      "show": "Megjelenítés",
+      "choose": "Válassz céget a listából.",
+      "feature": "Funkció",
+      "result": "Eredmény",
+      "why": "Miért"
+    },
+    "reason": {
+      "off": "Nem aktív, mert a funkció ki van kapcsolva",
+      "selected_included": "Aktív, mert a cég fel van véve a kiválasztottak közé",
+      "selected_other": "Nem aktív, mert a cég nincs a kiválasztottak között",
+      "all": "Aktív, mert mindenkinek be van kapcsolva",
+      "all_excluded": "Nem aktív, mert a cég ki van zárva"
+    }
   },
   "PlatformContact": {
     "eyebrow": "Platform · Üzenetek",
