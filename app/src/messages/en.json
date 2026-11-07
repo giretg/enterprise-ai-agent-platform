@@ -1234,8 +1234,8 @@
           "change_failed": "The change was not completed, so the comment is open again.",
           "change_reverted": "The change was reverted, so the comment is open again.",
           "change_erased": "The change was rejected because of a data protection erasure, so the comment is open again.",
-          "visibility_changed": "The wiki's visibility changed, so the pending change was dropped. The comment is open again.",
-          "partly_applied": "Part of the change is already live, the rest waits for approval."
+          "visibility_changed": "The wiki's visibility changed, so the change waiting for approval was not made. The comment is open again.",
+          "partly_applied": "Part of the change is already on the page, the rest waits for approval."
         },
         "partlyAppliedSuffix": "The part of the change that was already applied stays on the page.",
         "errors": {
@@ -1270,7 +1270,7 @@
           "note": "Note from the AI teammate: {note}",
           "erased": "Deleted comment"
         },
-        "reason": "This change was requested by a comment from someone who does not manage this wiki."
+        "reason": "This change waits for approval because it is based on a comment written or added to by someone who does not manage this wiki."
       },
       "review": {
         "loading": "Loading the wiki change…",
@@ -1867,7 +1867,7 @@
         "title": "Your comments in wikis",
         "body": "These are your comments that the AI teammate has handled. Questions and declined comments wait for you, finished comments are shown for information only.",
         "labelQuestion": "The AI teammate asks",
-        "labelDeclined": "The AI teammate did not change the page",
+        "labelDeclined": "The page was not changed",
         "labelResolved": "Worked in",
         "ok": "OK",
         "allOk": "All OK",

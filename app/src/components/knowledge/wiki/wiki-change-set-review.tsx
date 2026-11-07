@@ -89,6 +89,9 @@ export function WikiChangeSetReview({
           {t('review.blocking')}
         </p>
       ) : null}
+      {review.commentAuthorApproval ? (
+        <p className="text-xs text-ink-soft" data-testid="wiki-review-comment-author">{t('comments.reason')}</p>
+      ) : null}
       <WikiChangeComments comments={review.comments} />
       <button
         type="button"

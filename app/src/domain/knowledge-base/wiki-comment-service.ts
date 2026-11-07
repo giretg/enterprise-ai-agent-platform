@@ -337,7 +337,8 @@ export class WikiCommentService {
     )
     const names = new Map(visible.map((row) => [row.id, this.todoWikiName(row, ownerAgents)]))
     return views.map((view, index) => {
-      const lastAnswer = [...view.thread].reverse().find((event) => event.actor === 'agent' && event.text)
+      // A legutóbbi indokolt állapotváltás, bárki írta: a kézi lezárás indoka is ide tartozik, az ember válasza nem.
+      const lastAnswer = [...view.thread].reverse().find((event) => event.kind === 'status' && event.text)
       return {
         ...view,
         connectorId: visible[index].connectorId,

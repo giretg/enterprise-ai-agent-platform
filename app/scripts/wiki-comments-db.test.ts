@@ -326,6 +326,69 @@ async function main() {
     await prisma.tenantMembership.updateMany({ where: { tenantId: tenant.id, userId: secondOperator.id }, data: { status: 'active' } })
   })
 
+  await check('D3: a forrásként hivatkozott komment ugyanúgy jóváhagyásra visz, mint a lezárt', async () => {
+    const addSource = (path: string, baseVersion: string, commentId: string, final?: boolean) =>
+      wikiService.write(direct, {
+        wikiId: main.wiki.id,
+        ...(final === undefined ? {} : { final }),
+        pages: [{ path, action: 'patch', baseVersion, patch: [{ op: 'addSource', source: { kind: 'wiki_comment', commentId } as never }] }],
+      })
+
+    const page = await seed(main, 'd3-source.md')
+    const fromOperator = await add(operator, 'd3-source.md')
+    const cited = await addSource('d3-source.md', page.contentHash, fromOperator)
+    assert.equal(cited.ok, 'approval', JSON.stringify(cited))
+    assert.equal((cited as Row).request.reason, 'comment_author')
+    assert.equal(await hashOf('d3-source.md'), page.contentHash, 'jóváhagyásig az oldal nem változik')
+    assert.equal(await statusOf(fromOperator), 'open', 'a forrás nem zárja le a kommentet')
+    const review = await consoleService.getChangeSetReview(admin, (cited as Row).request.changeSetId)
+    assert.equal(review.commentAuthorApproval, true, 'a jóváhagyó látja, miért került hozzá')
+
+    // A részletekben írás sem kerülheti meg a kaput.
+    const partPage = await seed(main, 'd3-part.md')
+    const fromPart = await add(operator, 'd3-part.md')
+    assert.equal((await addSource('d3-part.md', partPage.contentHash, fromPart, false)).ok, 'approval')
+
+    // Kezelő kommentje közvetlenül mehet.
+    const adminPage = await seed(main, 'd3-admin.md')
+    const fromAdmin = await add(admin, 'd3-admin.md')
+    okResult(await addSource('d3-admin.md', adminPage.contentHash, fromAdmin))
+
+    // A már az oldalon lévő forrás nem visz jóváhagyásra, különben az oldal minden írása oda menne.
+    const keepPage = await seed(main, 'd3-keep.md')
+    const kept = await add(operator, 'd3-keep.md')
+    await prisma.wikiPage.update({
+      where: { id: keepPage.id },
+      data: { sourceRefs: [{ kind: 'wiki_comment', commentId: kept, authorUserId: operatorUser.id, commentedAt: new Date().toISOString() }] as never },
+    })
+    okResult(await wikiService.write(direct, {
+      wikiId: main.wiki.id,
+      pages: [{
+        path: 'd3-keep.md', action: 'upsert', type: 'entity', title: 'x', summary: 's', body: 'Új szöveg.', baseVersion: keepPage.contentHash,
+        frontmatter: { sources: [{ kind: 'wiki_comment', commentId: kept }] },
+      }],
+    }))
+  })
+
+  await check('D3: az olvasó válasza a kezelő kommentjére is jóváhagyásra visz', async () => {
+    const page = await seed(main, 'd3-reply.md')
+    const fromAdmin = await add(admin, 'd3-reply.md')
+    okResult(await service.respondAsAgent(direct, { wikiId: main.wiki.id, commentId: fromAdmin, action: 'ask', text: 'Mennyi legyen?' }))
+    await service.answer(operator, main.connector.id, fromAdmin, 'Legyen 5%.')
+    const outcome = await writePage(direct, main, 'd3-reply.md', page.contentHash, [{ commentId: fromAdmin, note: 'Átírtam.' }])
+    assert.equal(outcome.ok, 'approval', JSON.stringify(outcome))
+    assert.equal((outcome as Row).request.reason, 'comment_author')
+    assert.equal(await statusOf(fromAdmin), 'pending_approval')
+
+    // Kezelő válasza nem jelent többletkockázatot.
+    const page2 = await seed(main, 'd3-reply2.md')
+    const fromAdmin2 = await add(admin, 'd3-reply2.md')
+    okResult(await service.respondAsAgent(direct, { wikiId: main.wiki.id, commentId: fromAdmin2, action: 'ask', text: 'Mennyi legyen?' }))
+    await service.answer(admin, main.connector.id, fromAdmin2, 'Legyen 5%.')
+    okResult(await writePage(direct, main, 'd3-reply2.md', page2.contentHash, [{ commentId: fromAdmin2, note: 'Átírtam.' }]))
+    assert.equal(await statusOf(fromAdmin2), 'resolved')
+  })
+
   await check('jóváhagyásos módban a komment pending_approval, de a tálca és a többi út érintetlen', async () => {
     const approvalCaller = callerFor(main, 'approval')
     const page = await seed(main, 'approval.md')
@@ -478,18 +541,18 @@ async function main() {
 
   await check('AC12: a forrás szerzője és ideje a komment sorából jön; más wiki kommentje invalid_comment_ref', async () => {
     const page = await seed(main, 'ac12.md')
-    const id = await add(operator, 'ac12.md')
+    const id = await add(admin, 'ac12.md')
     const row = await prisma.wikiComment.findUniqueOrThrow({ where: { id } })
     const applied = await wikiService.write(direct, {
       wikiId: main.wiki.id,
       pages: [{
         path: 'ac12.md', action: 'upsert', type: 'entity', title: 'x', summary: 's', body: 'A jutalék 3%.', baseVersion: page.contentHash,
-        frontmatter: { sources: [{ kind: 'wiki_comment', commentId: id, authorUserId: adminUser.id, commentedAt: '2000-01-01T00:00:00.000Z' }] },
+        frontmatter: { sources: [{ kind: 'wiki_comment', commentId: id, authorUserId: operatorUser.id, commentedAt: '2000-01-01T00:00:00.000Z' }] },
       }],
     })
     okResult(applied)
     const refs = (await wikis.findPage(main.connector.id, 'ac12.md'))!.sourceRefs as Row[]
-    assert.deepEqual(refs, [{ kind: 'wiki_comment', commentId: id, authorUserId: operatorUser.id, commentedAt: row.createdAt.toISOString() }])
+    assert.deepEqual(refs, [{ kind: 'wiki_comment', commentId: id, authorUserId: adminUser.id, commentedAt: row.createdAt.toISOString() }])
 
     // Háttérfutásban (nem interaktív) is mehet, szemben a human_note-tal.
     assert.notEqual(direct.interactive, true)
@@ -509,7 +572,7 @@ async function main() {
     const before = await consoleService.getPage(operator, main.connector.id, 'ac12.md').catch((error) => error)
     assert.ok(!(before instanceof Error), String(before))
     const source = before.sources.find((row: Row) => row.kind === 'wiki_comment')
-    assert.equal(source.authorName, 'Kovács Anna')
+    assert.equal(source.authorName, 'Admin Ádám')
     assert.equal(source.erased, false)
     await service.remove(admin, main.connector.id, source.commentId)
     const after = await consoleService.getPage(operator, main.connector.id, 'ac12.md')
@@ -663,8 +726,10 @@ async function main() {
     assert.deepEqual(listed.comments, [])
     assert.equal(okResult(await service.listForAgent(caller, { wikiId: quiet.wiki.id, status: 'all' })).comments.length, 1)
     assert.equal((await comments.countOpenByConnector([quiet.connector.id])).get(quiet.connector.id), undefined)
+    assert.equal(await comments.countOpenForPage(page.id), 0, 'az oldal fejlécének és a kb_get_page-nek a számlálója is')
     await prisma.wikiPage.update({ where: { id: page.id }, data: { status: 'published' } })
     assert.equal(okResult(await service.listForAgent(caller, { wikiId: quiet.wiki.id })).openTotal, 1)
+    assert.equal(await comments.countOpenForPage(page.id), 1)
   })
 
   await check('kb_wiki_comments: notice, szerző-jelző, szál, lapozás, szűrés, kért verzióhoz képesti eltérés', async () => {
@@ -826,6 +891,20 @@ async function main() {
 
     // Másik szerző nem nyugtázhatja.
     assert.equal((await service.acknowledge(operator2, { commentId: declined })).acknowledged, 0)
+
+    // Kézi lezárásnál a kezelő indoka látszik, nem az agent korábbi kérdése.
+    const manual = await add(operator, 'todo.md', 'K6', quiet)
+    okResult(await service.respondAsAgent(caller, { wikiId: quiet.wiki.id, commentId: manual, action: 'ask', text: 'Melyik évre?' }))
+    assert.equal((await service.listTodos(operator)).find((item) => item.id === manual)?.answer, 'Melyik évre?')
+    await service.answer(operator, quiet.connector.id, manual, 'A 2026-osra.')
+    await service.closeManually(admin, quiet.connector.id, manual, { to: 'declined', reason: 'Nem ide tartozik.' })
+    assert.equal((await service.listTodos(operator)).find((item) => item.id === manual)?.answer, 'Nem ide tartozik.')
+
+    // AC21: a friss „Beledolgozva” sorok nem szoríthatják ki a számlált sort a korlátos listából.
+    const fresh = await add(operator, 'todo.md', 'K7', quiet)
+    okResult(await service.respondAsAgent(caller, { wikiId: quiet.wiki.id, commentId: fresh, action: 'already_done', text: 'Már jó.' }))
+    const [first] = await comments.listTodoRows(tenant.id, operatorUser.id, 1)
+    assert.notEqual(first.status, 'resolved')
   })
 
   await check('AC21: névsorról lekerült szerző nem látja, a számláló egyezik a sorokkal; archivált oldal kimarad', async () => {
@@ -883,6 +962,9 @@ async function main() {
     await add(operator, 'v.md', 'K', quiet)
     const preview = await consoleService.previewVisibilityChange(admin, quiet.connector.id, 'private')
     assert.equal(preview.comments, 1)
+    flagOn = false
+    assert.equal((await consoleService.previewVisibilityChange(admin, quiet.connector.id, 'private')).comments, 0, 'kikapcsolt flagnél nem számol')
+    flagOn = true
 
     const priv = await mkWiki('Törlendő', { visibility: 'private_to_user', ownerUserId: operatorUser.id })
     await seed(priv, 'p.md')

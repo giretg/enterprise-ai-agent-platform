@@ -5,7 +5,7 @@
  */
 import { Prisma, type WikiComment, type WikiCommentEvent, type WikiCommentStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import { WIKI_COMMENT_PARTLY_APPLIED, type WikiCommentLink } from '@/lib/wiki-comments'
+import { WIKI_COMMENT_PARTLY_APPLIED, WikiCommentNotOpenError, type WikiCommentLink } from '@/lib/wiki-comments'
 
 export type WikiCommentActor = { kind: 'human' | 'agent' | 'system'; userId?: string | null; agentId?: string | null }
 
@@ -44,6 +44,8 @@ export type WikiCommentForWrite = {
   authorUserId: string
   createdAt: Date
   erasedAt: Date | null
+  /** Akik az agent kérdésére válaszoltak: a kérdéskörben bárki, aki látja a wikit (D3). */
+  replierUserIds: string[]
 }
 
 export type WikiCommentErasure = {
@@ -105,13 +107,6 @@ export interface WikiCommentRepository {
   findTextMatches(wikiId: string, connectorId: string, phrase: string): Promise<WikiCommentTextMatch[]>
   listForPages(connectorId: string, pageIds: string[]): Promise<Array<{ id: string; pageId: string }>>
   listWithQuoteAt(connectorId: string, pageId: string, version: number): Promise<string[]>
-}
-
-export class WikiCommentNotOpenError extends Error {
-  constructor() {
-    super('comment_not_open')
-    this.name = 'WikiCommentNotOpenError'
-  }
 }
 
 const withPageAndEvents = {
@@ -375,7 +370,7 @@ export class PostgresWikiCommentRepository implements WikiCommentRepository {
   }
 
   countOpenForPage(pageId: string): Promise<number> {
-    return prisma.wikiComment.count({ where: { pageId, status: 'open', erasedAt: null } })
+    return prisma.wikiComment.count({ where: { pageId, status: 'open', erasedAt: null, page: { status: { not: 'archived' } } } })
   }
 
   countForConnector(connectorId: string): Promise<number> {
@@ -446,34 +441,40 @@ export class PostgresWikiCommentRepository implements WikiCommentRepository {
     return result.count
   }
 
-  private todoWhere(tenantId: string, authorUserId: string, counted: boolean): Prisma.WikiCommentWhereInput {
+  /** `decision`: a szerző döntésére vár, ez a számláló; `info`: kész, csak tájékoztatás. */
+  private todoWhere(tenantId: string, authorUserId: string, kind: 'decision' | 'info'): Prisma.WikiCommentWhereInput {
     return {
       authorUserId,
       erasedAt: null,
       connector: { tenantId, lifecycleState: 'active', type: 'knowledge_base' },
       page: { status: { not: 'archived' } },
-      OR: counted
+      OR: kind === 'decision'
         ? [{ status: 'question' }, { status: 'declined', authorSeenAt: null }]
-        : [{ status: 'question' }, { status: { in: ['declined', 'resolved'] }, authorSeenAt: null }],
+        : [{ status: 'resolved', authorSeenAt: null }],
     }
   }
 
-  listTodoRows(tenantId: string, authorUserId: string, limit: number): Promise<WikiCommentTodoRow[]> {
-    return prisma.wikiComment.findMany({
-      where: this.todoWhere(tenantId, authorUserId, false),
-      include: {
-        ...withPageAndEvents,
-        connector: { select: { id: true, name: true, config: true, visibility: true, ownerUserId: true, kbMemberUserIds: true } },
-      },
-      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
-      take: limit,
-    })
+  /** A döntést váró sorok előbb, hogy a sok „Beledolgozva” ne szoríthassa ki őket: a szám és a sorok egyeznek (AC21). */
+  async listTodoRows(tenantId: string, authorUserId: string, limit: number): Promise<WikiCommentTodoRow[]> {
+    const query = (where: Prisma.WikiCommentWhereInput, take: number) =>
+      prisma.wikiComment.findMany({
+        where,
+        include: {
+          ...withPageAndEvents,
+          connector: { select: { id: true, name: true, config: true, visibility: true, ownerUserId: true, kbMemberUserIds: true } },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        take,
+      })
+    const decisions = await query(this.todoWhere(tenantId, authorUserId, 'decision'), limit)
+    if (decisions.length >= limit) return decisions
+    return [...decisions, ...(await query(this.todoWhere(tenantId, authorUserId, 'info'), limit - decisions.length))]
   }
 
   async countTodoRows(tenantId: string, authorUserId: string): Promise<WikiCommentTodoCount[]> {
     const groups = await prisma.wikiComment.groupBy({
       by: ['connectorId'],
-      where: this.todoWhere(tenantId, authorUserId, true),
+      where: this.todoWhere(tenantId, authorUserId, 'decision'),
       _count: { _all: true },
     })
     if (groups.length === 0) return []
@@ -501,12 +502,23 @@ export class PostgresWikiCommentRepository implements WikiCommentRepository {
     return new Map(rows.map((row) => [row.userId, row.role]))
   }
 
-  findForWrite(wikiId: string, ids: string[]): Promise<WikiCommentForWrite[]> {
-    if (ids.length === 0) return Promise.resolve([])
-    return prisma.wikiComment.findMany({
+  async findForWrite(wikiId: string, ids: string[]): Promise<WikiCommentForWrite[]> {
+    if (ids.length === 0) return []
+    const rows = await prisma.wikiComment.findMany({
       where: { wikiId, id: { in: ids } },
-      select: { id: true, status: true, authorUserId: true, createdAt: true, erasedAt: true },
+      select: {
+        id: true,
+        status: true,
+        authorUserId: true,
+        createdAt: true,
+        erasedAt: true,
+        events: { where: { kind: 'reply', erasedAt: null, actorUserId: { not: null } }, select: { actorUserId: true } },
+      },
     })
+    return rows.map(({ events, ...row }) => ({
+      ...row,
+      replierUserIds: events.map((event) => event.actorUserId).filter((id): id is string => !!id),
+    }))
   }
 
   listForChangeSet(connectorId: string, changeSetId: string): Promise<WikiCommentRow[]> {

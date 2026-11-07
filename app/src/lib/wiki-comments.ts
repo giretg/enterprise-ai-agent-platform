@@ -129,6 +129,14 @@ export function rejectionSystemCode(input: { actorUserId: string | null; reason?
 
 export const WIKI_COMMENT_PARTLY_APPLIED = 'partly_applied'
 
+/** A feltételes állapotváltás nem talált nyitott kommentet: más közben lezárta. */
+export class WikiCommentNotOpenError extends Error {
+  constructor() {
+    super('comment_not_open')
+    this.name = 'WikiCommentNotOpenError'
+  }
+}
+
 /** A jóváhagyó és a változásnézet: a módosítást kérő kommentek a teljes szöveggel. */
 export async function commentsRequestingChange(
   deps: { comments: Pick<WikiCommentRepository, 'listForChangeSet'>; userLabels(ids: string[]): Promise<Map<string, string>> },

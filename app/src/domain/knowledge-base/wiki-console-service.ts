@@ -1119,7 +1119,7 @@ export class WikiConsoleService {
       this.deps.console.listTenantUsers(actor.tenantId),
       this.deps.console.listBindingsForConnector(connector.id),
       this.deps.wikis.listPendingChangeSetIds(connector.id),
-      this.deps.comments?.countForConnector(connector.id) ?? Promise.resolve(0),
+      this.commentsOn(actor.tenantId).then((on) => (on ? this.deps.comments!.countForConnector(connector.id) : 0)),
     ])
     const after = { visibility: plan.visibility, ownerUserId: plan.ownerUserId, kbMemberUserIds: plan.memberUserIds }
     const losing = users.filter((user) => isKnowledgeBaseVisibleTo(connector, user.id) && !isKnowledgeBaseVisibleTo(after, user.id))
@@ -1355,6 +1355,8 @@ export class WikiConsoleService {
     return {
       /** #1129 S3: a jóváhagyó a kérést és a módosítást együtt látja. */
       comments,
+      /** #1129 §8.3: miért került hozzá egy közvetlen módú írás. */
+      commentAuthorApproval: preview.changeSet.approvalReason === 'comment_author',
       changeSetId: preview.changeSet.id,
       status: preview.changeSet.status,
       connectorId: preview.connector.id,

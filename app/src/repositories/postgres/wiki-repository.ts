@@ -27,9 +27,9 @@ import {
   closeLinkedCommentsInTx,
   reopenBoundCommentsInTx,
   resolveBoundCommentsInTx,
-  WikiCommentNotOpenError,
   type WikiCommentActor,
 } from './wiki-comment-repository'
+import { WikiCommentNotOpenError } from '@/lib/wiki-comments'
 import type { WikiPageMetaQuery, WikiPageMetaRow } from '../interfaces'
 
 /** Tranzakció-megszakítás eredménnyel (a rollback után ezt adjuk vissza). */

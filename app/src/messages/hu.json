@@ -1234,8 +1234,8 @@
           "change_failed": "A módosítás nem készült el, ezért a komment újra nyitott.",
           "change_reverted": "A módosítást visszavonták, ezért a komment újra nyitott.",
           "change_erased": "A módosítást adatvédelmi törlés miatt elutasítottuk, ezért a komment újra nyitott.",
-          "visibility_changed": "A wiki láthatósága megváltozott, ezért a függő módosítás kiesett. A komment újra nyitott.",
-          "partly_applied": "A módosítás egy része már élesben van, a többi jóváhagyásra vár."
+          "visibility_changed": "A wiki láthatósága megváltozott, ezért a jóváhagyásra váró módosítás nem készült el. A komment újra nyitott.",
+          "partly_applied": "A módosítás egy része már megjelent az oldalon, a többi jóváhagyásra vár."
         },
         "partlyAppliedSuffix": "A módosítás már alkalmazott része az oldalon maradt.",
         "errors": {
@@ -1270,7 +1270,7 @@
           "note": "Az AI-munkatárs megjegyzése: {note}",
           "erased": "Törölt komment"
         },
-        "reason": "A módosítást olyan komment kérte, amelynek szerzője nem wiki-kezelő."
+        "reason": "Ez a módosítás azért vár jóváhagyásra, mert olyan kommenten alapul, amelyet nem wiki-kezelő írt vagy egészített ki."
       },
       "review": {
         "loading": "A wiki-változás betöltése…",
@@ -1867,7 +1867,7 @@
         "title": "Kommentjeid a wikiben",
         "body": "Ezek a te kommentjeid, amelyekkel az AI-munkatárs foglalkozott. A kérdés és az elutasítás a te válaszodra vár, a kész kommentek csak tájékoztatásul jelennek meg.",
         "labelQuestion": "Az AI-munkatárs kérdez",
-        "labelDeclined": "Az AI-munkatárs nem módosított",
+        "labelDeclined": "Az oldal nem módosult",
         "labelResolved": "Beledolgozva",
         "ok": "Rendben",
         "allOk": "Mind rendben",

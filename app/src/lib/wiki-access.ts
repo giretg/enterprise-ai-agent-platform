@@ -158,7 +158,6 @@ export function withoutKbMemberLists<S extends { connectors: WikiSnapshotConnect
 /** Egy tudástár emberi közönsége: mindenki (`all`) vagy egy névsor. */
 export type KbAudience = { kind: 'all' } | { kind: 'users'; userIds: ReadonlySet<string> }
 
-/** Ismeretlen láthatóság: üres közönség (senki), így semmit sem idézhet és semmi sem idézheti. */
 /** Mit tehet egy ember a wikivel a felületen. `metaOnly`: a listában tartalom nélkül látja. */
 export type HumanWikiAccess = { view: boolean; contribute: boolean; manage: boolean; metaOnly: boolean }
 
@@ -185,6 +184,7 @@ export function humanWikiAccess(actor: { userId: string; role: UserRole | string
   return { view: operator, contribute: operator, manage: admin, metaOnly: false }
 }
 
+/** Ismeretlen láthatóság: üres közönség (senki), így semmit sem idézhet és semmi sem idézheti. */
 export function knowledgeBaseAudience(row: KbVisibilityRow): KbAudience {
   if (row.visibility === undefined || row.visibility === null || row.visibility === 'shared') return { kind: 'all' }
   if (row.visibility === 'private_to_user') {
