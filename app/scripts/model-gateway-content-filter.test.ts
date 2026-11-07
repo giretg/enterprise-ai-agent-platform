@@ -330,6 +330,25 @@ async function main() {
     }
   })
 
+  await check('kártyafelismerés: Mastercard 2-sorozat (összefüggő) és Amex 4-6-5 csoportosítás is tiltott és redaktált', () => {
+    // Luhn-érvényes, valós tartományú kártyák, amelyek korábban átcsúsztak a felismerésen:
+    //  - 2223003122003222: Mastercard 2-sorozat (2221–2720), összefüggő számjegyekkel (pl. hang-átirat);
+    //  - 3782 822463 10005: American Express a kártyán nyomtatott 4-6-5 csoportosításban.
+    for (const value of ['2223003122003222', '3782 822463 10005']) {
+      const inspection = inspectPromptSensitivity([{ role: 'user', content: `a kártyám ${value}` }])
+      assert.equal(inspection.level, 'forbidden', value)
+      assert.ok(['pan', 'card_broad'].includes(inspection.matchedCategory ?? ''), value)
+      const { text, redactedCount } = redactSensitiveText(`a kártyám ${value}`)
+      assert.equal(redactedCount, 1, value)
+      assert.ok(!text.includes(value.replace(/\s/g, '')) && !text.includes(value), value)
+    }
+    // Hamis pozitív elkerülése: a 2721… a 2-sorozat tartománya FÖLÖTT van (nem illeszkedik),
+    // a 4111…1112 pedig Visa-prefixű, de Luhn-érvénytelen — egyiket sem szabad redaktálni.
+    for (const value of ['2721000000000000', '4111111111111112']) {
+      assert.equal(redactSensitiveText(`hivatkozás ${value}`).redactedCount, 0, value)
+    }
+  })
+
   await check('letöltő-URL ?token= nem titok; ismert prefix, JWT, PEM, Bearer igen', async () => {
     const download =
       'https://crm.example.com/reports/exports/11111111-1111-4111-8111-111111111111/download?token=D6OaB7cD8eF9gH0iJ1kL2mN3oP4qR5sT6uV7wX8yZ'

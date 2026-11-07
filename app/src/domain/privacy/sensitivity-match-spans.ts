@@ -27,16 +27,24 @@ export type SensitivityInspection = SensitivityDecision & {
 
 // ── Pattern registry ────────────────────────────────────────────────────────
 
-/** PAN / card number: 13-19 digit sequence, with optional separators. */
+/**
+ * PAN / card number: 13-19 digit sequence, separators nélkül (összefüggő számjegyek).
+ * A Mastercard 2-sorozat (2221–2720 BIN, 2017 óta kibocsátva) a modern kártyák jelentős
+ * részét adja — enélkül egy összefüggően felolvasott 2-sorozatú kártyaszám (pl. hang-átirat)
+ * kimaradt a felismerésből. A `5[1-5]` ág a klasszikus 51–55 sorozatot fedi.
+ */
 const PAN_RE =
-  /\b(?:4[0-9]{12}(?:[0-9]{3,6})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}|(?:3(?:0[0-5]|[68][0-9]))[0-9]{11})\b/
+  /\b(?:4[0-9]{12}(?:[0-9]{3,6})?|5[1-5][0-9]{14}|2(?:22[1-9]|2[3-9][0-9]|[3-6][0-9]{2}|7[01][0-9]|720)[0-9]{12}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12}|(?:3(?:0[0-5]|[68][0-9]))[0-9]{11})\b/
 
 /**
- * 16-19 digit sequence (broad card-like number match for unknown issuers).
+ * Csoportosított, „kártyaszerű" számsor (ismeretlen kibocsátó is). Két alak:
+ *  - 4-4-4-(3..7): a Visa/Mastercard szokásos csoportosítása;
+ *  - 4-6-5: az American Express kártyán nyomtatott és így felolvasott alak (`3[47]` prefix).
  * Szándékosan NEM enged `\s` (újsort): különben két egymás utáni tool-üzenet
  * szegélyén (pl. kb_search JSON vége + gmail_search eleje) hamis pozitív keletkezik.
  */
-const CARD_BROAD_RE = /\b[0-9]{4}(?:[ \t\-][0-9]{4}){2}[ \t\-][0-9]{3,7}\b/
+const CARD_BROAD_RE =
+  /\b(?:[0-9]{4}(?:[ \t\-][0-9]{4}){2}[ \t\-][0-9]{3,7}|3[47][0-9]{2}[ \t\-][0-9]{6}[ \t\-][0-9]{5})\b/
 
 /** Hungarian TAJ szám (social security, 9 digits). */
 const TAJ_RE = /\b[0-9]{3}-[0-9]{3}-[0-9]{3}\b/

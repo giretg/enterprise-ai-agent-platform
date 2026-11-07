@@ -3,9 +3,13 @@ import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { voiceSessionDeps } from '@/auth/voice-deps'
 import { startVoiceSession, type VoiceSessionFailureCode } from '@/domain/voice/session'
 import { resolvePublicAppOrigin } from '@/lib/public-app-url'
+import { readBoundedJson, RequestTooLargeError } from '@/lib/request-body'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
+
+/** Az SDP-ajánlat legfeljebb 64 000 karakter, az agentId egy UUID — 128 KB bőven elég, OOM ellen köt. */
+const VOICE_SESSION_MAX_BODY_BYTES = 128 * 1024
 
 const STATUS: Record<VoiceSessionFailureCode, number> = {
   bad_request: 400,
@@ -33,11 +37,19 @@ export async function POST(request: Request): Promise<Response> {
     }
     return NextResponse.json({ error: 'unauthenticated' }, { status: 401 })
   }
+  let body: unknown
+  try {
+    body = await readBoundedJson(request, VOICE_SESSION_MAX_BODY_BYTES)
+  } catch (error) {
+    // Túl nagy törzs → 413 (OOM ellen); érvénytelen JSON → null, a domain bad_request-ként kezeli.
+    if (error instanceof RequestTooLargeError) return NextResponse.json({ error: 'bad_request' }, { status: 413 })
+    body = null
+  }
   const result = await startVoiceSession(voiceSessionDeps(origin), {
     userId: ctx.user.id,
     tenantId: ctx.activeTenantId,
     role: ctx.activeTenantRole,
-    body: await request.json().catch(() => null),
+    body,
   })
   if (!result.ok) return NextResponse.json({ error: result.code }, { status: STATUS[result.code] })
   return NextResponse.json(
