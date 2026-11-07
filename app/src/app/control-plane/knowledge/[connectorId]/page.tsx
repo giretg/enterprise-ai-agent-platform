@@ -301,7 +301,7 @@ async function WikiTab({
   const toc = (
     // Az olvasó nézetben a hosszú tartalomjegyzék önállóan görgethető, a szöveg mellett végig elérhető.
     // A kereső gomb a kártyán kívül áll, különben a tartalomjegyzékkel együtt kigörgetődne.
-    <div className={`space-y-2 lg:sticky lg:top-4 ${reader ? 'lg:flex lg:max-h-[calc(100dvh-2rem)] lg:flex-col lg:space-y-0 lg:gap-2' : ''}`}>
+    <div className={`space-y-2 lg:sticky lg:top-[calc(var(--app-header-h,0px)+1rem)] ${reader ? 'lg:flex lg:max-h-[calc(100dvh-var(--app-header-h,0px)-2rem)] lg:flex-col lg:space-y-0 lg:gap-2' : ''}`}>
       {wiki.pageCount > 0 && !query.asOf ? <WikiSearch connectorId={connectorId} linkQuery={linkQuery} /> : null}
       <Card className={reader ? 'lg:min-h-0 lg:overflow-y-auto' : ''}>
       <div className="mb-2 flex items-center">

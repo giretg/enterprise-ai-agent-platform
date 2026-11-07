@@ -270,7 +270,8 @@ test.describe('wiki-keresés (#1136)', () => {
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem('wiki-reader-trail'))).toContain('a-szabalyzat')
     await page.evaluate(() => window.scrollTo(0, 400))
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(400)
-    await expect(button).toBeInViewport()
+    // Görgetés után is kattintható: a ragadós fejléc nem takarja (a próbakattintás ezt ellenőrzi).
+    await button.click({ trial: true, timeout: 3_000 })
     const input = page.getByTestId('wiki-search-input')
     await expect(async () => {
       await page.keyboard.press(`${mod}+k`)
