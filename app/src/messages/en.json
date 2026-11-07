@@ -1526,6 +1526,7 @@
       "admin_platform-tenants": "Platform · Workspaces",
       "admin_platform-iam": "Platform · IAM",
       "admin_platform-contact": "Platform · Contact inbox",
+      "admin_platform-rollouts": "Platform · Gradual rollout",
       "admin_platform-settings": "Platform · Settings",
       "promises": "Promises",
       "admin_ai-client-policy": "Hermes company controls"
@@ -2467,6 +2468,135 @@
     "roleLabel_operator": "Operator",
     "roleLabel_viewer": "Viewer",
     "unknownError": "Unknown error"
+  },
+  "PlatformRollouts": {
+    "eyebrow": "Platform · Gradual rollout",
+    "title": "Gradual rollout",
+    "body": "Turn a new, risky feature on company by company, widen it step by step, and stop it without a new release if something goes wrong.",
+    "loadError": "This page could not be loaded. It requires a platform-level role.",
+    "empty": "No feature is being rolled out right now. Every company gets the same behaviour.",
+    "byTenantLink": "View by company",
+    "backToList": "Back to the list",
+    "columns": {
+      "name": "Feature",
+      "state": "Status",
+      "owner": "Owner",
+      "issue": "Reference",
+      "deadline": "Deadline"
+    },
+    "state": {
+      "off": "Off",
+      "selected": "Selected: {count, plural, one {# company} other {# companies}}",
+      "selectedNone": "Selected: no company yet",
+      "all": "Everyone",
+      "allExcluded": "Everyone except {count, plural, one {# company} other {# companies}}"
+    },
+    "deadline": {
+      "remove": "Remove by {date}",
+      "review": "Review by {date}",
+      "expired": "overdue"
+    },
+    "whatChanges": "What users get when it is on",
+    "whenOff": "What happens when it is stopped",
+    "current": {
+      "title": "Current status",
+      "stoppedAt": "Stopped: {date}",
+      "fullRolloutAt": "Full rollout: {date}"
+    },
+    "stop": {
+      "button": "Stop immediately",
+      "help": "Within about 30 seconds every company is back on the old behaviour, without a new release. The company list is kept, so the rollout can continue from there.",
+      "title": "Stop immediately",
+      "hint": "One sentence is enough, the reason should not delay the stop."
+    },
+    "mode": {
+      "title": "Who should have it",
+      "help": "With “Everyone”, new companies get the feature too. Only a superadmin can switch to it; stopping and managing selected companies are also open to operators.",
+      "off": "Off",
+      "offHelp": "Not active anywhere.",
+      "selected": "Selected companies",
+      "selectedHelp": "Active only at the companies you add, not at new ones.",
+      "all": "Everyone",
+      "allHelp": "Active everywhere except excluded companies, including new ones.",
+      "allForbidden": "Only a superadmin can switch this on."
+    },
+    "tenants": {
+      "title": "Companies",
+      "help": "An added company gets the feature under “Selected companies”. An excluded company does not get it even under “Everyone”. The result column follows the status currently set above.",
+      "search": "Search companies",
+      "searchPlaceholder": "Start typing a company name",
+      "empty": "No company with this name.",
+      "name": "Company",
+      "access": "Marking",
+      "result": "Result",
+      "accessNone": "No marking",
+      "accessIncluded": "Added",
+      "accessExcluded": "Excluded",
+      "active": "Active",
+      "inactive": "Not active",
+      "changing": "changes"
+    },
+    "review": {
+      "button": "Review changes",
+      "title": "Summary before saving",
+      "gains": "Turns on at {count, plural, one {# company} other {# companies}}",
+      "loses": "Stops at {count, plural, one {# company} other {# companies}}",
+      "none": "No company's behaviour changes right now.",
+      "justification": "Why are you changing this?",
+      "justificationHelp": "A short reason is required. It goes into the platform audit log; companies do not see it.",
+      "placeholder": "For example: trying it on our own companies first",
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "outcome": {
+      "saved": "Saved. Other instances pick it up within about 30 seconds.",
+      "auditFailed": "The change is in effect, but writing it to the log failed. Tell operations, because this change does not appear in the history.",
+      "blockedAudit": "Nothing was saved because writing to the log failed. A rollout can only be widened when it is logged.",
+      "conflict": "Someone else changed this in the meantime. Please review it again.",
+      "forbidden": "You do not have permission for this change.",
+      "noChange": "Nothing to save, this is already the status.",
+      "invalidJustification": "Write a short reason (3–500 characters).",
+      "invalidTenant": "One of the selected companies is no longer available. Reload the page.",
+      "invalidDate": "The new deadline must be later than the current one.",
+      "generic": "The action failed. Please try again later.",
+      "extended": "The deadline has been changed."
+    },
+    "deadlineCard": {
+      "title": "Removal deadline",
+      "help": "60 days after the full rollout, the switch and the old behaviour must be removed from the code. It can be extended with a reason.",
+      "noDeadline": "The removal deadline starts with the first “Everyone” status. Until then the review date written in the code applies: {date}.",
+      "current": "Current deadline: {date}",
+      "newDate": "New deadline",
+      "justification": "Why is more time needed?",
+      "extend": "Extend deadline"
+    },
+    "history": {
+      "title": "History",
+      "empty": "This feature has not been changed yet.",
+      "system": "Unknown user",
+      "mode": "Status: {from} → {to}",
+      "tenant": "{name}: {from} → {to}",
+      "deadline": "Deadline: {from} → {to}",
+      "gained": "Turned on at {count, plural, one {# company} other {# companies}}",
+      "lost": "Stopped at {count, plural, one {# company} other {# companies}}"
+    },
+    "byTenant": {
+      "title": "View by company",
+      "body": "Every feature at one company, with the result and the reason.",
+      "select": "Company",
+      "show": "Show",
+      "choose": "Choose a company from the list.",
+      "feature": "Feature",
+      "result": "Result",
+      "why": "Why"
+    },
+    "reason": {
+      "off": "Not active, because the feature is off",
+      "selected_included": "Active, because the company is on the selected list",
+      "selected_other": "Not active, because the company is not on the selected list",
+      "all": "Active, because it is on for everyone",
+      "all_excluded": "Not active, because the company is excluded"
+    }
   },
   "PlatformContact": {
     "eyebrow": "Platform · Messages",

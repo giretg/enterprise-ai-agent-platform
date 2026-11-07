@@ -23,6 +23,9 @@ import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
 import { inboundMailBlocksTool, INBOUND_MAIL_TOOL_BLOCKED_MESSAGE } from '@/auth/inbound-mail-tool-guard'
 import { limitServerToVoiceTools, toolNameFromVoiceAlias, voiceBlocksTool, VOICE_TOOL_BLOCKED_MESSAGE } from '@/auth/voice-tool-guard'
+import { createFeatureFlagGateClosed, hideDisabledTools, type ToolFeatureGate } from '@/domain/feature-flags/gates'
+import { TOOL_FEATURE_FLAGS } from '@/domain/feature-flags/tool-flags'
+import { productionToolFeatureGate } from '@/lib/feature-flags'
 import type { AgentScaffoldDeps } from '@/domain/agent-scaffold'
 import { modesFromAgentRow } from '@/lib/write-approval-modes'
 import { mcpAuthNotConfigured } from './mcp-oauth-metadata'
@@ -331,6 +334,8 @@ export type McpRuntimeDeps = McpPrincipalDeps & {
    * (agent csak kötött kliensnél ismert). Hiányában Kötött pálya: ilyen eszköz nem listázódik.
    */
   loadClientPolicy?: (input: { tenantId: string; userId: string; agentId: string | null }) => Promise<SubstitutePolicy>
+  /** #1126: eszköz–flag kapu. Hiányában a flag mögötti eszköz tiltott (a régi működés fut). */
+  toolFeatureGate?: ToolFeatureGate
   listLinkedAccounts?: (input: {
     userId: string
     tenantId: string
@@ -486,6 +491,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
     platformMemberships: repositories.platformMemberships,
     audit: repositories.audit,
     loadClientPolicy: (input) => getPolicySnapshot(clientPolicyStore, input),
+    toolFeatureGate: productionToolFeatureGate,
     async listPublishedAgents({ tenantId, userId, role }) {
       const published = await repositories.agents.findMany({
         tenantId,
@@ -1415,6 +1421,8 @@ function toolBindsToAgentHeader(toolName: string): boolean {
   )
 }
 
+const closedToolFeatureGate = createFeatureFlagGateClosed(TOOL_FEATURE_FLAGS)
+
 function requestStateCodec(key: string | undefined): RequestStateCodec<WriteConfirmState> | null {
   if (!key) return null
   try {
@@ -1486,6 +1494,8 @@ async function createMcpResourceHandler(
     bound: agentHeader !== null,
   })
   const codec = requestStateCodec(deps.requestStateKey)
+  const toolFeatureGate = deps.toolFeatureGate ?? closedToolFeatureGate
+  const flagDisabledTools = await toolFeatureGate.disabledTools(principal.tenantId)
   // #1020: a „harness-pótló” eszköz csak ott listázódik, ahol a policy engedi és a kliensnek nincs sajátja.
   // A meghívhatóságot ettől függetlenül minden hívásnál a policy dönti el (invokeEnterpriseTool).
   const boundPolicy = () => resolveEffectivePolicy({ tenant: null, user: null, agent: null })
@@ -1528,6 +1538,8 @@ async function createMcpResourceHandler(
   return createMcpHandler(
     async (server) => {
       if (principal.voiceCall) limitServerToVoiceTools(server)
+      // A hang-szűrő után: ez az eredeti eszköznevet látja, nem a hangos aliast.
+      hideDisabledTools(server, flagDisabledTools)
       const tenantPackages = await deps.listMcpSkills({ tenantId: principal.tenantId })
       // A client bound to one agent lists only that agent's skills (resources/list, skills/list).
       // #1111: hang közben a skillek sem érhetők el, csak az eszköz-engedélylista.
@@ -2416,6 +2428,11 @@ async function createMcpResourceHandler(
             { code: 'tool_not_allowed', message: 'Tool is not allowed on this MCP endpoint' },
             true,
           )
+        }
+        // #1126: a lista nem védelem, mert a kliens gyorsítótárazhatja; a flag neve nem kerül a válaszba.
+        if (await toolFeatureGate.blocksTool(toolName, principal.tenantId)) {
+          await auditMcpToolDenied(deps, principal, toolName, 'feature_not_enabled')
+          return textResult({ code: 'feature_not_enabled', message: 'This tool is not available for this organization' }, true)
         }
         // Bejövő levél feldolgozása: csak olvasás és jóváhagyásra váró írás (engedélylista).
         if (inboundMailBlocksTool(principal, toolName)) {

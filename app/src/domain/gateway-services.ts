@@ -46,6 +46,9 @@ import { hasMinimumRole } from '@/lib/iam-policy'
 import type { UserRole } from '@prisma/client'
 import { IamService } from '@/domain/iam/iam-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
+import { FeatureFlagAdminService } from '@/domain/feature-flags/admin-service'
+import { FEATURE_FLAGS } from '@/domain/feature-flags/registry'
+import { featureFlagEvaluator } from '@/lib/feature-flags'
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
 import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
 import { SelfUpdatingConnectorService } from '@/domain/connector-self-update/self-update-service'
@@ -833,7 +836,20 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   },
 }
 
+const featureFlagAdminService = new FeatureFlagAdminService({
+  registry: FEATURE_FLAGS,
+  store: repositories.featureFlags,
+  listTenants: async () =>
+    (await repositories.tenants.findMany())
+      .filter((tenant) => tenant.status !== 'archived')
+      .map(({ id, displayName }) => ({ id, displayName })),
+  onChanged: () => featureFlagEvaluator.invalidate(),
+  logAuditFailure: (key, error) =>
+    console.error('feature_flags.audit_failed', { key, error: error instanceof Error ? error.message : String(error) }),
+})
+
 export const services = {
+  featureFlags: featureFlagAdminService,
   platformSettings: platformSettingsService,
   iam: iamService,
   tenants: tenantService,

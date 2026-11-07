@@ -35,6 +35,18 @@ enum TenantStatus {
   archived
 }
 
+/// #1126 fokozatos bevezetés: hiányzó sor = off, így új flag kiadásához nem kell adatot betölteni.
+enum FeatureFlagMode {
+  off
+  selected
+  all
+}
+
+enum FeatureFlagTenantAccess {
+  included
+  excluded
+}
+
 enum TenantMembershipStatus {
   pending
   active
@@ -573,6 +585,7 @@ model Tenant {
   warehouse                  TenantWarehouse?
   publicAssistants           PublicAssistant[]
   publicChatSessions         PublicChatSession[]
+  featureFlagTenants         FeatureFlagTenant[]
   publicChatDailyUsage       PublicChatDailyUsage[]
   documentExports            DocumentExport[]
   inboundMailEvents          InboundMailEvent[]
@@ -1755,6 +1768,40 @@ model AuditLog {
   @@index([tenantId, createdAt])
   @@index([action, createdAt])
   @@map("audit_log")
+}
+
+/// #1126: egy kockázatos funkció bevezetési állapota. A flagek listája a kódban van
+/// (`domain/feature-flags/registry.ts`), a kódból törölt kulcs sora nem hat semmire.
+model FeatureFlag {
+  key           String          @id
+  mode          FeatureFlagMode @default(off)
+  /// Párhuzamos szerkesztés védelme: minden mentés növeli.
+  version       Int             @default(1)
+  /// Az első „Mindenkinek” időpontja; innen számít a 60 napos törlési határidő.
+  fullRolloutAt DateTime?       @map("full_rollout_at") @db.Timestamptz
+  removeBy      DateTime?       @map("remove_by") @db.Timestamptz
+  stoppedAt     DateTime?       @map("stopped_at") @db.Timestamptz
+  updatedById   String?         @map("updated_by") @db.Uuid
+  updatedAt     DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenants FeatureFlagTenant[]
+
+  @@map("feature_flags")
+}
+
+model FeatureFlagTenant {
+  flagKey     String                  @map("flag_key")
+  tenantId    String                  @map("tenant_id") @db.Uuid
+  access      FeatureFlagTenantAccess
+  updatedById String?                 @map("updated_by") @db.Uuid
+  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz
+
+  flag   FeatureFlag @relation(fields: [flagKey], references: [key], onDelete: Cascade)
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([flagKey, tenantId])
+  @@index([tenantId])
+  @@map("feature_flag_tenants")
 }
 
 model Handoff {
