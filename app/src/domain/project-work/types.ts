@@ -33,6 +33,8 @@ export type WorkFileRecord = {
   content: string
   byteSize: number
   lastWriterUserId: string
+  createdByAgentId: string | null
+  lastWriterAgentId: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -59,6 +61,8 @@ export type WorkFileSaveInput = {
   content: string
   append: boolean
   lastWriterUserId: string
+  /** Az író agent; emberi mentésnél null. */
+  writerAgentId: string | null
   maxFileBytes: number
   maxProjectBytes: number
   maxCount: number

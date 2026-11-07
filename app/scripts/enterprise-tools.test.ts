@@ -1958,6 +1958,7 @@ async function main() {
 
   await check('#662 pinned skill script runs and writes work files', async () => {
     const written: string[] = []
+    const writerAgents: string[] = []
     const result = await invokeEnterpriseTool(
       invokeDeps({
         definition: sandboxDefinition,
@@ -1998,6 +1999,7 @@ async function main() {
         },
         writeWorkFile: async (input) => {
           written.push(input.path)
+          writerAgents.push(input.agentId)
           return { path: input.path }
         },
       }),
@@ -2017,6 +2019,7 @@ async function main() {
     assert.equal(payload.scriptSha256, 'abc123')
     assert.deepEqual(payload.outputs, ['sandbox-output/napi-riport/report.html'])
     assert.deepEqual(written, ['sandbox-output/napi-riport/report.html'])
+    assert.deepEqual(writerAgents, [sandboxDefinition.agentId], 'a kimeneti fájl az indító agenthez kerül')
   })
 
   await check('sandbox_run copies binary attachment and work-file inputs to /work/in/', async () => {

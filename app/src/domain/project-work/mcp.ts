@@ -17,7 +17,7 @@ import {
 } from '@/domain/enterprise-tools'
 import { isDispatchable } from '@/lib/agent-lifecycle'
 import { writeAudit, type AuditSink } from '@/lib/audit/types'
-import { effectiveWorkProjectKey } from '@/lib/work-project'
+import { effectiveWorkProjectKey, normalizeWorkFilePath } from '@/lib/work-project'
 import { workFileUrl } from '@/lib/work-file-link'
 import { ProjectWorkService } from './project-work-service'
 
@@ -390,6 +390,7 @@ async function auditOk(
   toolName: string,
   definitionId: string,
   agentId: string,
+  extraMetadata?: Record<string, string>,
 ) {
   await writeAudit(deps.audit, {
     actorType: 'human',
@@ -408,6 +409,7 @@ async function auditOk(
       userId: principal.userId,
       definitionId,
       agentId,
+      ...extraMetadata,
     },
     tenantId: principal.tenantId,
   })
@@ -526,11 +528,24 @@ export async function invokeProjectWork(
       description: typeof parsed.description === 'string' ? parsed.description : undefined,
     })
   } else if (toolName === MCP_WORK_FILE_LIST_TOOL) {
-    outcome = await svc.listFiles({
+    const listed = await svc.listFiles({
       tenantId,
       projectKey,
       prefix: typeof parsed.prefix === 'string' ? parsed.prefix : undefined,
     })
+    // Az író agent azonosítója a felületnek kell; hosszú listánál az agentnek csak fölös token lenne.
+    outcome = listed.ok
+      ? {
+          ...listed,
+          files: listed.files.map((file) => ({
+            path: file.path,
+            byteSize: file.byteSize,
+            lastWriterUserId: file.lastWriterUserId,
+            createdAt: file.createdAt,
+            updatedAt: file.updatedAt,
+          })),
+        }
+      : listed
   } else if (toolName === MCP_WORK_FILE_READ_TOOL) {
     outcome = await svc.readFile({ tenantId, projectKey, path: String(parsed.path) })
   } else if (toolName === MCP_WORK_FILE_WRITE_TOOL) {
@@ -541,6 +556,7 @@ export async function invokeProjectWork(
       ...(typeof parsed.content === 'string' ? { content: parsed.content } : {}),
       ...(typeof parsed.contentBase64 === 'string' ? { contentBase64: parsed.contentBase64 } : {}),
       userId: principal.userId,
+      agentId: definition.agentId,
     })
   } else if (toolName === MCP_WORK_FILE_APPEND_TOOL) {
     outcome = await svc.appendFile({
@@ -550,6 +566,7 @@ export async function invokeProjectWork(
       ...(typeof parsed.content === 'string' ? { content: parsed.content } : {}),
       ...(typeof parsed.contentBase64 === 'string' ? { contentBase64: parsed.contentBase64 } : {}),
       userId: principal.userId,
+      agentId: definition.agentId,
     })
   } else if (toolName === MCP_WORK_FILE_DELETE_TOOL) {
     outcome = await svc.deleteFile({ tenantId, projectKey, path: String(parsed.path) })
@@ -642,9 +659,26 @@ export async function invokeProjectWork(
     await auditDenied(deps, principal, toolName, outcome.code, definition.definitionId, definition.agentId)
     return errorResult(outcome.code)
   }
-  await auditOk(deps, principal, toolName, definition.definitionId, definition.agentId)
+  await auditOk(deps, principal, toolName, definition.definitionId, definition.agentId, workFileAuditMetadata(toolName, projectKey, parsed))
   return textResult(origin ? withWorkFileLinks(outcome, toolName, projectKey, origin) : outcome)
 }
+
+/** Módosító fájlműveletnél a napló megmondja, melyik fájlt érintette. Tartalom sosem kerül bele. */
+function workFileAuditMetadata(
+  toolName: string,
+  projectKey: string | undefined,
+  parsed: Record<string, unknown>,
+): Record<string, string> | undefined {
+  if (!WORK_FILE_MUTATING_TOOLS.has(toolName)) return undefined
+  const path = normalizeWorkFilePath(String(parsed.path))
+  return path ? { projectKey: effectiveWorkProjectKey(projectKey), path } : undefined
+}
+
+const WORK_FILE_MUTATING_TOOLS = new Set<string>([
+  MCP_WORK_FILE_WRITE_TOOL,
+  MCP_WORK_FILE_APPEND_TOOL,
+  MCP_WORK_FILE_DELETE_TOOL,
+])
 
 const WORK_FILE_LINK_TOOLS = new Set<string>([
   MCP_WORK_FILE_LIST_TOOL,

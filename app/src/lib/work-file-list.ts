@@ -73,6 +73,23 @@ export function filterWorkFiles<T extends { path: string }>(files: readonly T[],
   })
 }
 
+export const WORK_FILE_WRITER_ALL = 'all'
+export const WORK_FILE_WRITER_NONE = 'none'
+
+export type AttributedWorkFile = { createdByAgentId: string | null; lastWriterAgentId: string | null }
+
+/** Az „Írta” szűrő értéke: minden fájl, a rögzített író nélküliek, vagy egy agent azonosítója. */
+export function filterWorkFilesByWriter<T extends AttributedWorkFile>(files: readonly T[], filter: string): T[] {
+  if (filter === WORK_FILE_WRITER_ALL) return [...files]
+  if (filter === WORK_FILE_WRITER_NONE) return files.filter((file) => !file.createdByAgentId && !file.lastWriterAgentId)
+  return files.filter((file) => file.createdByAgentId === filter || file.lastWriterAgentId === filter)
+}
+
+/** A sorban mutatott író: az utolsó agent, emberi módosítás után a létrehozó. */
+export function workFileWriterAgentId(file: AttributedWorkFile): string | null {
+  return file.lastWriterAgentId ?? file.createdByAgentId
+}
+
 function fold(value: string): string {
   return value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 }

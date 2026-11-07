@@ -260,7 +260,7 @@ export class ProjectWorkService {
     tenantId: string
     projectKey?: string
     prefix?: string
-  }): Promise<ProjectWorkResult<{ files: Array<{ path: string; byteSize: number; lastWriterUserId: string; createdAt: string; updatedAt: string }> }>> {
+  }): Promise<ProjectWorkResult<{ files: Array<{ path: string; byteSize: number; lastWriterUserId: string; createdByAgentId: string | null; lastWriterAgentId: string | null; createdAt: string; updatedAt: string }> }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
     const prefix = input.prefix ? normalizeWorkFilePath(input.prefix) : undefined
@@ -271,6 +271,8 @@ export class ProjectWorkService {
         path: row.path,
         byteSize: row.byteSize,
         lastWriterUserId: row.lastWriterUserId,
+        createdByAgentId: row.createdByAgentId,
+        lastWriterAgentId: row.lastWriterAgentId,
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
       })),
@@ -306,6 +308,8 @@ export class ProjectWorkService {
     content?: string
     contentBase64?: string
     userId: string
+    /** Az író agent; emberi mentésnél null. Kötelező, hogy új hívó ne hagyhassa ki csendben. */
+    agentId: string | null
   }): Promise<ProjectWorkResult<{ file: { path: string; byteSize: number; lastWriterUserId: string } }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
@@ -322,6 +326,7 @@ export class ProjectWorkService {
       content: body.content,
       append: false,
       lastWriterUserId: input.userId,
+      writerAgentId: input.agentId,
       maxFileBytes: WORK_FILE_MAX_BYTES,
       maxProjectBytes: WORK_FILE_MAX_PROJECT_BYTES,
       maxCount: WORK_FILE_MAX_COUNT,
@@ -343,6 +348,8 @@ export class ProjectWorkService {
     content?: string
     contentBase64?: string
     userId: string
+    /** Az író agent; emberi mentésnél null. Kötelező, hogy új hívó ne hagyhassa ki csendben. */
+    agentId: string | null
   }): Promise<ProjectWorkResult<{ file: { path: string; byteSize: number; lastWriterUserId: string } }>> {
     const scoped = await this.assertProject(input.tenantId, input.projectKey)
     if (!scoped.ok) return scoped
@@ -358,6 +365,7 @@ export class ProjectWorkService {
       content: chunk.content,
       append: true,
       lastWriterUserId: input.userId,
+      writerAgentId: input.agentId,
       maxFileBytes: WORK_FILE_MAX_BYTES,
       maxProjectBytes: WORK_FILE_MAX_PROJECT_BYTES,
       maxCount: WORK_FILE_MAX_COUNT,

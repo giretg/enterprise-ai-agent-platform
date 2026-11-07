@@ -309,6 +309,7 @@ export type EnterpriseToolDeps = MailboxFailureDeps & AuthorizeToolCallDeps &
   writeWorkFile?: (input: {
     tenantId: string
     userId: string
+    agentId: string
     projectKey?: string
     path: string
     contentBase64: string
@@ -2167,6 +2168,7 @@ async function invokeSandboxTool(
       const written = await writeWorkFile({
         tenantId: principal.tenantId,
         userId: principal.userId,
+        agentId: definition.agentId,
         projectKey: parsedArgs.projectKey,
         path: `${prefix}/${file.path}`,
         contentBase64: Buffer.from(file.bytes).toString('base64'),
@@ -2196,7 +2198,8 @@ async function invokeSandboxTool(
       inputRef: toolName,
       outputRef: resolved.script.entry.sha256,
       policyDecision: 'allowed',
-      metadata: payload,
+      // Az útvonal csak a naplóba kerül, a konzolra nem: érzékeny lehet (például név a fájlnévben).
+      metadata: { ...payload, outputPaths: outputs },
       tenantId: principal.tenantId,
     })
     return textResult({
