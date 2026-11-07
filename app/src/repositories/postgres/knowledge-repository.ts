@@ -2,6 +2,7 @@ import { Prisma, type Document, type KnowledgeArtifact, type KnowledgeArtifactSt
 import { prisma } from '@/lib/db'
 import { isKbLanguage, kbPgConfig, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
 import { KB_SECTION_SPLIT_SQL, kbSectionForSegment, readKbPurpose, snippet } from '@/lib/kb-retrieval'
+import { kbQueryTerms } from '@/lib/kb-text-match'
 import type {
   DocumentListItem,
   DocumentRepository,
@@ -13,15 +14,6 @@ import type {
   KnowledgePageChunk,
   KnowledgeRawHit,
 } from '../interfaces'
-
-/** A keresőkifejezés szavai: kisbetű, nem-betű/szám karakternél vágva, dedup, min. 2 karakter. */
-export function kbQueryTerms(query: string): string[] {
-  const seen = new Set<string>()
-  for (const token of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
-    if (token.length >= 2) seen.add(token)
-  }
-  return [...seen]
-}
 
 export function toKbTsQuery(query: string): string {
   return kbQueryTerms(query)

@@ -94,7 +94,8 @@ test('olvasó nézet: csak cím, menü és tartalom; a Vissza az előző lapra �
   await expect(page.getByTestId('wiki-page-meta')).toHaveCount(0)
   const titleBox = await page.getByTestId('wiki-title').boundingBox()
   const tocBox = await page.getByTestId('wiki-toc').boundingBox()
-  expect(tocBox!.y - titleBox!.y).toBeLessThan(120)
+  // A cím és a menü között csak a kereső gomb áll (#1136).
+  expect(tocBox!.y - titleBox!.y).toBeLessThan(170)
 
   // Első lapnál nincs hova visszalépni.
   const back = page.getByTestId('wiki-reader-back')
@@ -227,6 +228,203 @@ test('wiki-kommentek: panel, kijelölés idézetként, fül, Teendők-lista, kik
   await page.getByTestId('wiki-comment-delete').click()
   await page.getByTestId('wiki-comment-delete-confirm').click()
   await expect(page.getByTestId('wiki-comment-erased')).toBeVisible()
+})
+
+test.describe('wiki-keresés (#1136)', () => {
+  let searchKbId = ''
+  let emptyKbId = ''
+  const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
+
+  test.beforeAll(async () => {
+    const make = async (displayName: string) => {
+      const connector = await prisma.connector.create({
+        data: { tenantId, type: 'knowledge_base', name: `kb:shared:${randomUUID()}`, authMode: 'agent_owned', scope: 'single', config: { displayName } },
+      })
+      const wiki = await prisma.agentWiki.create({ data: { connectorId: connector.id, schemaMd: '# WIKI' } })
+      return { connectorId: connector.id, wikiId: wiki.id }
+    }
+    const wiki = await make('Kereső wiki')
+    searchKbId = wiki.connectorId
+    emptyKbId = (await make('Üres wiki')).connectorId
+    const filler = Array.from({ length: 80 }, (_, i) => `Bekezdés ${i + 1}.`).join('\n\n')
+    await prisma.wikiPage.createMany({
+      data: [
+        { ...wiki, path: 'a-szabalyzat.md', type: 'entity', title: 'Kártyaelfogadási szabályzat', summary: 'Szabályok', category: 'Termékek', body: `${filler}\n\nA kereskedő kártyát fogad el, és az elfogadás díjköteles. <script>alert(1)</script>`, contentHash: `s1-${suffix}` },
+        { ...wiki, path: 'b-dijtablazat.md', type: 'entity', title: 'Díjtáblázat', summary: 'Díjak', body: 'A kártyaelfogadás költségét a kereskedő viseli.', contentHash: `s2-${suffix}` },
+        { ...wiki, path: 'c-partnerek.md', type: 'entity', title: 'Partnerlista', summary: 'Partnerek', body: 'Minden kártya típus.', contentHash: `s3-${suffix}` },
+        { ...wiki, path: 'd-tervezet.md', type: 'entity', title: 'Titkos tervezet', summary: 'x', body: 'kártya elfogadás', status: 'pending_approval', contentHash: `s4-${suffix}` },
+      ],
+    })
+  })
+
+  test('olvasó nézet: ⌘K, gépelés, Enter; a találat olvasó nézetben nyílik, a keresés folytatható, a Vissza működik', async ({ page }) => {
+    const requests: string[] = []
+    page.on('request', (request) => requests.push(request.url()))
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=reader&page=c-partnerek.md`)
+    const button = page.getByTestId('wiki-search-open')
+    await expect(button).toBeVisible()
+
+    // A hosszú lapról nyitunk, hogy a Vissza görgetési helye is ellenőrizhető legyen.
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=reader&page=a-szabalyzat.md`)
+    // A billentyű és a Vissza gomb a betöltés után él; a dev-szerver hidratálása eltart egy ideig.
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('wiki-reader-trail'))).toContain('a-szabalyzat')
+    await page.evaluate(() => window.scrollTo(0, 400))
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(400)
+    // Görgetés után is kattintható: a ragadós fejléc nem takarja (a próbakattintás ezt ellenőrzi).
+    await button.click({ trial: true, timeout: 3_000 })
+    const input = page.getByTestId('wiki-search-input')
+    await expect(async () => {
+      await page.keyboard.press(`${mod}+k`)
+      await expect(input).toBeFocused({ timeout: 500 })
+    }).toPass()
+    await expect(page.getByTestId('wiki-search-hint')).toBeVisible()
+
+    await input.fill('kartya elfogadas')
+    const hits = page.getByTestId('wiki-search-hit')
+    await expect(hits).toHaveCount(3)
+    await expect(page.getByTestId('wiki-search-count')).toHaveText('3 oldal')
+    await expect(hits.nth(0)).toContainText('Kártyaelfogadási szabályzat')
+    await expect(hits.nth(0)).toContainText('Termékek')
+    await expect(hits.nth(0)).toHaveAttribute('aria-selected', 'true')
+    await expect(hits.nth(0).locator('mark').first()).toBeVisible()
+    await expect(page.getByTestId('wiki-search-partial-heading')).toContainText('Csak néhány szóra illik (1)')
+    await expect(hits.nth(2)).toContainText('Hiányzik: elfogadas')
+    await expect(page.getByTestId('wiki-search-dialog')).not.toContainText('Titkos tervezet')
+
+    // Az oldalszöveg szövegként jelenik meg, a kereső szó nem kerül URL-be.
+    await page.getByTestId('wiki-search-input').fill('alert')
+    await expect(hits).toHaveCount(1)
+    await expect(hits.nth(0)).toContainText('<script>alert(1)</script>')
+
+    await input.fill('kartya elfogadas')
+    await expect(hits).toHaveCount(3)
+    await input.press('ArrowDown')
+    await expect(hits.nth(1)).toHaveAttribute('aria-selected', 'true')
+    await expect(input).toHaveAttribute('aria-activedescendant', (await hits.nth(1).getAttribute('id'))!)
+    await input.press('Enter')
+
+    await expect(page.getByTestId('wiki-search-dialog')).toHaveCount(0)
+    await expect(page.getByTestId('wiki-page')).toContainText('Díjtáblázat')
+    await expect(page).toHaveURL(/tab=reader.*b-dijtablazat/)
+    expect(requests.some((url) => /kartya|elfogadas/.test(url))).toBe(false)
+
+    // Újranyitás: a keresés kijelölve áll, a megnyitott sor kiválasztva, ↓ + Enter a következő találat.
+    await page.keyboard.press(`${mod}+k`)
+    await expect(input).toHaveValue('kartya elfogadas')
+    await expect(hits).toHaveCount(3)
+    await expect(hits.nth(1)).toHaveAttribute('aria-selected', 'true')
+    expect(await input.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart ?? 0, el.selectionEnd ?? 0))).toBe('kartya elfogadas')
+    await input.press('ArrowDown')
+    await input.press('Enter')
+    await expect(page.getByTestId('wiki-page')).toContainText('Partnerlista')
+    await expect(page).toHaveURL(/tab=reader.*c-partnerek/)
+
+    // A Vissza a modalból nyitott találat után is az előző lapokra visz.
+    const back = page.getByTestId('wiki-reader-back')
+    await back.click()
+    await expect(page.getByTestId('wiki-page')).toContainText('Díjtáblázat')
+    await back.click()
+    await expect(page.getByTestId('wiki-page')).toContainText('Kártyaelfogadási szabályzat')
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300)
+  })
+
+  test('wiki nézet: találat után wiki nézet marad; Esc után a fókusz a gombon; nincs találat; hiba + újra', async ({ page }) => {
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=wiki`)
+    const button = page.getByTestId('wiki-search-open')
+    const input = page.getByTestId('wiki-search-input')
+    await expect(async () => {
+      await button.click()
+      await expect(input).toBeFocused({ timeout: 500 })
+    }).toPass()
+    await input.press('Escape')
+    await expect(page.getByTestId('wiki-search-dialog')).toHaveCount(0)
+    await expect(button).toBeFocused()
+
+    // Egy karakterre nincs kérés.
+    await button.click()
+    let posts = 0
+    page.on('request', (request) => {
+      if (request.url().endsWith('/search')) posts++
+    })
+    await input.fill('k')
+    await page.waitForTimeout(400)
+    expect(posts).toBe(0)
+    await expect(page.getByTestId('wiki-search-hint')).toBeVisible()
+
+    await input.fill('nincsilyenszo')
+    await expect(page.getByTestId('wiki-search-empty')).toContainText('Nincs találat erre: nincsilyenszo.')
+
+    // Elavult válasz nem írja felül az újabbat.
+    await page.route('**/search', async (route) => {
+      const body = route.request().postDataJSON() as { query: string }
+      if (body.query === 'lassu') await new Promise((resolve) => setTimeout(resolve, 1_200))
+      await route.continue()
+    })
+    await input.fill('lassu')
+    await page.waitForTimeout(350)
+    await input.fill('díjtáblázat')
+    await expect(page.getByTestId('wiki-search-hit')).toHaveCount(1)
+    await page.waitForTimeout(1_300)
+    await expect(page.getByTestId('wiki-search-hit')).toHaveCount(1)
+    await expect(page.getByTestId('wiki-search-hit').first()).toContainText('Díjtáblázat')
+    await page.unroute('**/search')
+
+    // Hiba: a wiki olvasható marad, az Újra gomb megismétli.
+    await page.route('**/search', (route) => route.abort('failed'))
+    await input.fill('partnerlista')
+    await expect(page.getByTestId('wiki-search-error')).toContainText('A keresés most nem sikerült.')
+    await page.unroute('**/search')
+    await page.getByTestId('wiki-search-retry').click()
+    await expect(page.getByTestId('wiki-search-hit').first()).toContainText('Partnerlista')
+
+    await input.press('Enter')
+    await expect(page.getByTestId('wiki-page')).toContainText('Partnerlista')
+    await expect(page).not.toHaveURL(/tab=reader/)
+    await expect(page.getByTestId('wiki-tab-wiki')).toBeVisible()
+  })
+
+  test('nincs gomb üres wikinél, időutazásnál és más fülön; kis kijelzőn lebegő gomb', async ({ page, request }) => {
+    await page.goto(`/control-plane/knowledge/${emptyKbId}?tab=wiki`)
+    await expect(page.getByTestId('wiki-empty')).toBeVisible()
+    await expect(page.getByTestId('wiki-search-open')).toHaveCount(0)
+
+    // A Fájlok fül a tudásbázis alapnézete: ott sincs wiki-keresés.
+    await page.goto(`/control-plane/knowledge/${searchKbId}`)
+    await expect(page.getByTestId('wiki-tab-files')).toBeVisible()
+    await expect(page.getByTestId('wiki-search-open')).toHaveCount(0)
+
+    await page.goto(`/control-plane/knowledge/${searchKbId}?tab=log`)
+    await expect(page.getByTestId('wiki-tab-log')).toBeVisible()
+    await expect(page.getByTestId('wiki-search-open')).toHaveCount(0)
+    await page.keyboard.press(`${mod}+k`)
+    await expect(page.getByTestId('wiki-search-dialog')).toHaveCount(0)
+
+    await page.goto(`/control-plane/knowledge/${searchKbId}?asOf=${encodeURIComponent(new Date().toISOString())}`)
+    await expect(page.getByTestId('wiki-title')).toBeVisible()
+    await expect(page.getByTestId('wiki-search-open')).toHaveCount(0)
+
+    await page.setViewportSize({ width: 390, height: 800 })
+    await page.goto(`/control-plane/knowledge/${searchKbId}?page=a-szabalyzat.md`)
+    await expect(page.getByTestId('wiki-search-open')).toBeHidden()
+    await page.evaluate(() => window.scrollTo(0, 2_000))
+    const fab = page.getByTestId('wiki-search-fab')
+    await expect(fab).toBeInViewport()
+    await fab.click()
+    const box = await page.getByTestId('wiki-search-dialog').boundingBox()
+    expect(box!.width).toBe(390)
+    expect(box!.height).toBe(800)
+    await page.getByTestId('wiki-search-close').click()
+    await expect(fab).toBeFocused()
+
+    // A végpont ugyanazt a 404-et adja nem látható és nem létező wikire, GET-re nem válaszol.
+    const post = (id: string) => request.post(`/api/control-plane/knowledge/${id}/search`, { data: { query: 'kártya' } })
+    expect((await post(otherPrivateKbId)).status()).toBe(404)
+    expect((await post(randomUUID())).status()).toBe(404)
+    expect((await request.get(`/api/control-plane/knowledge/${searchKbId}/search`)).status()).toBe(405)
+    const ok = await post(searchKbId)
+    expect(ok.headers()['cache-control']).toContain('no-store')
+    expect(((await ok.json()) as { total: number }).total).toBe(3)
+  })
 })
 
 test('a 10 MB-nál nagyobb fájl is felkerül a tálcára', async ({ page }) => {

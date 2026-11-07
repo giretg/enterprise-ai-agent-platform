@@ -49,7 +49,8 @@ import {
   type WikiDocumentSourceRef,
   type WikiSourceRef,
 } from '@/lib/kb-wiki'
-import { isKbLanguage, type KbLanguage } from '@/lib/kb-language'
+import { isKbLanguage, resolveKbLanguage, type KbLanguage } from '@/lib/kb-language'
+import { kbQueryTerms, kbSnippet, type KbSnippet, type KbTextTerm } from '@/lib/kb-text-match'
 import { metaFromColumns, readWikiMeta, type WikiPageMeta } from '@/lib/wiki-metadata'
 import { WIKI_MD_MAX_CHARS } from '@/lib/wiki-config'
 import {
@@ -121,6 +122,25 @@ export type WikiSourceView =
 
 type Access = { view: boolean; contribute: boolean; manage: boolean; metaOnly: boolean }
 
+/** #1136 D3, D2: ennyi szóra keres a felület, és ennyi oldalt listáz. */
+const WIKI_SEARCH_MAX_TERMS = 6
+const WIKI_SEARCH_LIMIT = 30
+
+export type WikiSearchHitView = {
+  path: string
+  title: string
+  category: string | null
+  /** A lapon lévő előfordulások száma, az összes szóra együtt. */
+  occurrences: number
+  /** Minden beírt szó illeszkedik; a részleges találatok külön csoportba kerülnek. */
+  full: boolean
+  /** A beírt szavak, amelyek nem illeszkednek erre az oldalra. */
+  missing: string[]
+  snippet: KbSnippet
+}
+
+export type WikiSearchResult = { terms: KbTextTerm[]; total: number; hits: WikiSearchHitView[] }
+
 export type WikiConsoleDeps = {
   documents: Pick<DocumentRepository, 'readSource'>
   connectors: Pick<ConnectorRepository, 'findById' | 'create' | 'updateKnowledgeBase'>
@@ -132,6 +152,7 @@ export type WikiConsoleDeps = {
     | 'listPages'
     | 'findPage'
     | 'listRevisions'
+    | 'searchPages'
     | 'listPagesCitingDocuments'
     | 'listLog'
     | 'inboxSummary'
@@ -587,6 +608,36 @@ export class WikiConsoleService {
         exists: !!doc,
       }
     })
+  }
+
+  /**
+   * #1136: az aktuális wiki közzétett oldalai a beírt szavakra. A jog ugyanaz, mint az
+   * oldal megnyitásáé; a keresett szó sehol nem marad meg (D7).
+   */
+  async searchPages(actor: WikiConsoleActor, connectorId: string, query: string): Promise<WikiSearchResult> {
+    const { connector } = await this.load(actor, connectorId, 'view')
+    const terms = kbQueryTerms(query).slice(0, WIKI_SEARCH_MAX_TERMS)
+    if (terms.length === 0) return { terms: [], total: 0, hits: [] }
+    const result = await this.deps.wikis.searchPages(connector.id, {
+      terms,
+      language: resolveKbLanguage(connector.kbLanguage),
+      limit: WIKI_SEARCH_LIMIT,
+    })
+    const wikiId = result.hits.length ? await this.deps.wiki.wikiIdForConnector(actor.tenantId, connector.id) : null
+    const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
+    return {
+      terms: result.terms,
+      total: result.total,
+      hits: result.hits.map((hit) => ({
+        path: hit.path,
+        title: hit.title,
+        category: categoryLabel(hit.category, managed),
+        occurrences: hit.occurrences,
+        full: hit.matchedTerms.length === result.terms.length,
+        missing: result.terms.filter((_, index) => !hit.matchedTerms.includes(index)).map((term) => term.term),
+        snippet: kbSnippet({ body: hit.body, fallback: hit.summary, terms: result.terms }),
+      })),
+    }
   }
 
   async getPage(actor: WikiConsoleActor, connectorId: string, path: string) {

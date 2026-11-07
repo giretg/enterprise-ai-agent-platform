@@ -38,6 +38,7 @@ import { WikiMetadataPanel } from '@/components/knowledge/wiki/wiki-metadata-pan
 import { WikiPageMeta } from '@/components/knowledge/wiki/wiki-page-meta'
 import { WikiMenu } from '@/components/knowledge/wiki/wiki-menu'
 import { WikiReaderBack } from '@/components/knowledge/wiki/wiki-reader-back'
+import { WikiSearch } from '@/components/knowledge/wiki/wiki-search'
 import {
   ChangesTab,
   PageHistoryPanel,
@@ -299,7 +300,10 @@ async function WikiTab({
   ) : null
   const toc = (
     // Az olvasó nézetben a hosszú tartalomjegyzék önállóan görgethető, a szöveg mellett végig elérhető.
-    <Card className={`lg:sticky lg:top-4 ${reader ? 'lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto' : ''}`}>
+    // A kereső gomb a kártyán kívül áll, különben a tartalomjegyzékkel együtt kigörgetődne.
+    <div className={`space-y-2 lg:sticky lg:top-[calc(var(--app-header-h,0px)+1rem)] ${reader ? 'lg:flex lg:max-h-[calc(100dvh-var(--app-header-h,0px)-2rem)] lg:flex-col lg:space-y-0 lg:gap-2' : ''}`}>
+      {wiki.pageCount > 0 && !query.asOf ? <WikiSearch connectorId={connectorId} linkQuery={linkQuery} /> : null}
+      <Card className={reader ? 'lg:min-h-0 lg:overflow-y-auto' : ''}>
       <div className="mb-2 flex items-center">
         <h2 className="font-display text-lg font-semibold">{t('toc.title')}</h2>
         <HelpHint>{t('toc.help')}</HelpHint>
@@ -312,7 +316,8 @@ async function WikiTab({
           <WikiMenu connectorId={connectorId} groups={wiki.menu} currentPath={query.page} linkedWikis={wiki.linkedWikis} linkQuery={linkQuery} />
         </>
       )}
-    </Card>
+      </Card>
+    </div>
   )
 
   let main: React.ReactNode
