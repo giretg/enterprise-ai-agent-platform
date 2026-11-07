@@ -207,6 +207,7 @@
     "test:agent-product-links": "tsx scripts/agent-product-links.test.ts",
     "test:confirm-dialog": "tsx scripts/confirm-dialog.test.ts",
     "test:project-memory-delete": "tsx scripts/project-memory-delete.test.ts",
+    "test:project-memory-access": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/project-memory-access.test.ts",
     "test:memory-ui-labels": "tsx scripts/memory-ui-labels.test.ts",
     "test:work-project": "tsx scripts/work-project.test.ts",
     "test:work-files-ui": "tsx scripts/work-files-ui.test.ts",
