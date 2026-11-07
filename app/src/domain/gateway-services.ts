@@ -64,7 +64,9 @@ import { WikiCategoryService } from '@/domain/knowledge-base/wiki-category-servi
 import { WikiMetadataService } from '@/domain/knowledge-base/wiki-metadata-service'
 import { WikiHistoryService } from '@/domain/knowledge-base/wiki-history-service'
 import { PostgresWikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
-import { executeKnowledgeBaseTool, executeWikiConfigTool, executeWikiTool, isWikiConfigTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { executeKnowledgeBaseTool, executeWikiCommentTool, executeWikiConfigTool, executeWikiTool, isWikiCommentTool, isWikiConfigTool } from '@/domain/enterprise-tools/handlers/knowledge-base'
+import { WikiCommentService } from '@/domain/knowledge-base/wiki-comment-service'
+import { isFeatureEnabled } from '@/lib/feature-flags'
 import { WikiConfigService } from '@/domain/knowledge-base/wiki-config-service'
 import { scopeSnapshotConnectorsToUser } from '@/lib/wiki-access'
 import { executeSandboxRun } from '@/domain/enterprise-tools/handlers/sandbox-run'
@@ -244,6 +246,8 @@ const wikiAccessService = new WikiAccessService({
 })
 
 const wikiConsoleRepository = new PostgresWikiConsoleRepository()
+// #1129: a flag a kompozíciós gyökérben dől el, a domain csak a tenantonkénti logikai értéket látja.
+const wikiCommentsEnabled = (tenantId: string) => isFeatureEnabled('wiki.comments', { tenantId })
 const wikiService = new WikiService({
   wikis: repositories.wikis,
   documents: repositories.documents,
@@ -253,6 +257,8 @@ const wikiService = new WikiService({
   audit: repositories.audit,
   history: repositories.wikiHistory,
   structure: repositories.wikiStructure,
+  comments: repositories.wikiComments,
+  commentsEnabled: wikiCommentsEnabled,
   async findUserLabel(userId) {
     const user = await repositories.users.findById(userId)
     return user ? user.name || user.email : null
@@ -277,6 +283,20 @@ const wikiConsoleService = new WikiConsoleService({
   knowledgeBase: knowledgeBaseService,
   audit: repositories.audit,
   history: repositories.wikiHistory,
+  comments: repositories.wikiComments,
+  commentsEnabled: wikiCommentsEnabled,
+})
+
+// #1129: wiki-kommentek (Control Plane + MCP).
+const wikiCommentService = new WikiCommentService({
+  comments: repositories.wikiComments,
+  wikis: repositories.wikis,
+  wiki: wikiService,
+  wikiConsole: wikiConsoleService,
+  userLabels: (ids) => wikiConsoleRepository.userLabels(ids),
+  agentNames: (tenantId, ids) => wikiConsoleRepository.agentNames(tenantId, ids),
+  audit: repositories.audit,
+  commentsEnabled: wikiCommentsEnabled,
 })
 
 // #1061 F1: kezelt kategória-fa (Control Plane).
@@ -317,6 +337,7 @@ const wikiHistoryService = new WikiHistoryService({
   wikiConsole: wikiConsoleService,
   wiki: wikiService,
   audit: repositories.audit,
+  comments: repositories.wikiComments,
 })
 
 const projectWorkService = new ProjectWorkService(
@@ -600,8 +621,8 @@ const gatewayOperationDeps: GatewayOperationServiceDeps = {
         },
         changeSetId,
       ),
-    reject: async ({ tenantId, changeSetId, actorUserId }) => {
-      await wikiService.reject(changeSetId, { tenantId, actorUserId })
+    reject: async ({ tenantId, changeSetId, actorUserId, note }) => {
+      await wikiService.reject(changeSetId, { tenantId, actorUserId, ...(note ? { note } : {}) })
     },
   },
   async recordCreatedDriveFiles({ grantId, files }) {
@@ -772,7 +793,9 @@ const enterpriseToolDeps: EnterpriseToolDeps = {
   executeWikiTool: (toolName, args, ctx) =>
     isWikiConfigTool(toolName)
       ? executeWikiConfigTool(wikiConfigService, toolName, args, ctx)
-      : executeWikiTool(wikiService, toolName, args, ctx),
+      : isWikiCommentTool(toolName)
+        ? executeWikiCommentTool(wikiCommentService, toolName, args, ctx)
+        : executeWikiTool(wikiService, toolName, args, ctx),
   resolveKbConnector: async ({ tenantId, wikiId, documentId }) => {
     const connectorId = wikiId
       ? (await repositories.wikis.findById(wikiId))?.connectorId
@@ -879,6 +902,7 @@ export const services = {
   wiki: wikiService,
   wikiConsole: wikiConsoleService,
   wikiHistory: wikiHistoryService,
+  wikiComments: wikiCommentService,
   wikiCategories: wikiCategoryService,
   wikiMetadata: wikiMetadataService,
   wikiConfig: wikiConfigService,

@@ -7,6 +7,7 @@ import { getWikiChangeSetReviewAction } from '@/app/actions/knowledge-wiki'
 import { Badge } from '@/components/ui/shell'
 import { collapseUnchanged, type LineDiffRow } from '@/lib/text-line-diff'
 import { wikiHref } from './wiki-format'
+import { WikiChangeComments } from './wiki-change-comments'
 import { WikiSourceList } from './wiki-sources'
 
 const ISSUE_CODES = [
@@ -88,6 +89,7 @@ export function WikiChangeSetReview({
           {t('review.blocking')}
         </p>
       ) : null}
+      <WikiChangeComments comments={review.comments} />
       <button
         type="button"
         onClick={() => setOpen(true)}

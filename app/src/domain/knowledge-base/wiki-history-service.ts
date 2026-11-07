@@ -16,6 +16,7 @@ import {
   groupWikiIndex,
   isDocumentSource,
   isHumanNoteSource,
+  isWikiCommentSource,
   readWikiSources,
   visibleWikiSources,
   stripManagedFrontmatter,
@@ -43,6 +44,8 @@ import type {
   WikiRepository,
 } from '@/repositories/interfaces'
 import type { WikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
+import type { WikiCommentRepository } from '@/repositories/postgres/wiki-comment-repository'
+import { commentsRequestingChange } from '@/lib/wiki-comments'
 import { WikiConsoleError, type WikiConsoleActor, type WikiConsoleService } from './wiki-console-service'
 import { pageChunks, readPageSummary, type WikiRevertTarget, type WikiService } from './wiki-service'
 
@@ -70,6 +73,7 @@ export type WikiErasureLocation =
   | 'sourceFile'
   | 'chunk'
   | 'gatewayOperation'
+  | 'comment'
 
 export type WikiHistoryDeps = {
   history: WikiHistoryRepository
@@ -79,6 +83,8 @@ export type WikiHistoryDeps = {
   wikiConsole: Pick<WikiConsoleService, 'authorize' | 'displayName'>
   wiki: Pick<WikiService, 'wikiIdForConnector' | 'revertAsHuman' | 'resolveAsOf' | 'approverScopeFor'>
   audit: Pick<AuditRepository, 'append'>
+  /** #1129: a kommentek és idézeteik a törlési körökben. */
+  comments?: Pick<WikiCommentRepository, 'findTextMatches' | 'listForPages' | 'listWithQuoteAt' | 'listForChangeSet'>
   now?: () => Date
 }
 
@@ -319,7 +325,12 @@ export class WikiHistoryService {
       })
     }
     const log = (changeSet.logEntry ?? {}) as { op?: string; title?: string; note?: string | null }
+    const requestedBy = this.deps.comments
+      ? await commentsRequestingChange({ comments: this.deps.comments, userLabels: (ids) => this.deps.console.userLabels(ids) }, connector.id, changeSet.id)
+      : []
     return {
+      /** #1129: a módosítást ezek a kommentek kérték. */
+      comments: requestedBy,
       seq: changeSet.seq,
       changeSetId: changeSet.id,
       status: changeSet.status,
@@ -509,9 +520,9 @@ export class WikiHistoryService {
   }
 
   /** Napi takarító (a `ai-audit-retention` route hívja): wikinként ritkít, töröl, kiürít. */
-  async sweepRetention(): Promise<{ wikis: number; thinned: number; deleted: number; changeSetsPruned: number }> {
+  async sweepRetention(): Promise<{ wikis: number; thinned: number; deleted: number; changeSetsPruned: number; commentsErased: number }> {
     const now = this.now()
-    const totals = { wikis: 0, thinned: 0, deleted: 0, changeSetsPruned: 0 }
+    const totals = { wikis: 0, thinned: 0, deleted: 0, changeSetsPruned: 0, commentsErased: 0 }
     let afterId: string | undefined
     for (;;) {
       const batch = await this.deps.history.listWikisForRetention({ afterId, limit: 100 })
@@ -530,7 +541,8 @@ export class WikiHistoryService {
         totals.thinned += counts.thinned
         totals.deleted += counts.deleted
         totals.changeSetsPruned += counts.changeSetsPruned
-        if (counts.thinned + counts.deleted + counts.changeSetsPruned === 0) continue
+        totals.commentsErased += counts.commentsErased ?? 0
+        if (counts.thinned + counts.deleted + counts.changeSetsPruned + (counts.commentsErased ?? 0) === 0) continue
         const connector = await this.deps.connectors.findById(wiki.connectorId)
         if (!connector) continue
         await this.deps.audit.append(
@@ -625,6 +637,7 @@ export class WikiHistoryService {
       sourceFile: 0,
       chunk: 0,
       gatewayOperation: 0,
+      comment: 0,
     }
     const locations: Array<{ where: WikiErasureLocation; label: string; snippet?: string }> = []
     const write: Omit<WikiErasureWrite, 'reason'> = {
@@ -645,7 +658,9 @@ export class WikiHistoryService {
       chunkPattern: null,
       gatewayOperations: [],
       erasedHashes: [],
+      comments: { erase: [], redact: [], clearQuotes: [] },
     }
+    const commentErasure = write.comments!
     const addPageWrite = (page: WikiPage, state: WikiPageState, status: 'published' | 'archived') => {
       write.pageWrites.push({
         pageId: page.id,
@@ -787,6 +802,17 @@ export class WikiHistoryService {
         locations.push({ where: 'chunk', label: String(matches.chunks) })
         write.chunkPattern = escapeRegExp(phrase)
       }
+      for (const row of (await this.deps.comments?.findTextMatches(wikiId, connector.id, phrase)) ?? []) {
+        counts.comment++
+        locations.push({ where: 'comment', label: row.pagePath, snippet: snippetOf([row.quote, row.body, ...row.events.map((event) => event.body)].filter(Boolean).join('\n'), phrase) })
+        if (scope.mode === 'erase') commentErasure.erase.push(row.id)
+        else commentErasure.redact.push({
+          id: row.id,
+          body: redact(row.body),
+          quote: row.quote ? redact(row.quote) : null,
+          events: row.events.map((event) => ({ id: event.id, body: redact(event.body) })),
+        })
+      }
       const seenGateway = new Set<string>()
       for (const op of matches.gatewayOperations) {
         counts.gatewayOperation++
@@ -890,6 +916,11 @@ export class WikiHistoryService {
         })
         counts.log++
       }
+      // #1129 AC13: az oldal kommentjei és a száluk is ürülnek.
+      for (const row of (await this.deps.comments?.listForPages(connector.id, [...pageIds])) ?? []) {
+        commentErasure.erase.push(row.id)
+        counts.comment++
+      }
       for (const op of await this.deps.history.listPendingGatewayOperations(connector.id)) {
         const replaced = replacePaths(op.argsJson, oldPaths)
         const args = op.argsJson as { changeSetId?: string } | null
@@ -914,6 +945,11 @@ export class WikiHistoryService {
     write.erasedHashes.push(rev.contentHash)
     counts.revision = 1
     locations.push({ where: 'revision', label: `${page.path} v${rev.version}` })
+    // #1129: az ehhez a verzióhoz írt komment idézete a törölt szövegből származik.
+    for (const id of (await this.deps.comments?.listWithQuoteAt(connector.id, page.id, rev.version)) ?? []) {
+      commentErasure.clearQuotes.push(id)
+      counts.comment++
+    }
     // Ugyanaz a másolat-tisztítás, mint oldal-módban: függő visszaállítás / gateway
     // és a keletkező change-set pages JSON is őrizheti a törölt tartalmat.
     const pathKeys = [...new Set([page.path, rev.path].filter((value): value is string => !!value))]
@@ -1046,6 +1082,7 @@ function localDocumentSources(value: unknown) {
 
 function sourceLabel(ref: WikiSourceRef): string {
   if (isHumanNoteSource(ref)) return `human_note: ${ref.occasion}`
+  if (isWikiCommentSource(ref)) return `wiki_comment: ${ref.commentedAt.slice(0, 10)}`
   return ref.filename ?? ref.documentId
 }
 

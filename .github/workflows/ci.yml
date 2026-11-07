@@ -164,6 +164,7 @@ jobs:
           npm run test:wiki-sources
           npm run test:wiki-metadata
           npm run test:wiki-config
+          npm run test:wiki-comments
           npm run test:gateway-operation
           npm run test:named-approver
           npm run test:audit-log
@@ -341,6 +342,9 @@ jobs:
       # #1075: agent által javasolt wiki-beállítás (javaslat, jóváhagyás, ütközés, oldalmozgatás).
       - name: Wiki config proposals (Postgres)
         run: npm run test:wiki-config-db
+      # #1129: wiki-kommentek (jog, jóváhagyás, GDPR, Teendők, flag) valódi Postgresen.
+      - name: Wiki comments (Postgres)
+        run: npm run test:wiki-comments-db
 
       # #946: a Control Plane wiki-nézetének SQL-je (lista, tálca, kötések) valódi Postgresen.
       - name: Wiki console queries (Postgres)

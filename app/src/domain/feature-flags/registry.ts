@@ -37,7 +37,22 @@ export type FeatureFlagDefinition = {
 }
 
 /** A kulcs formája `terület.funkció`, pl. `chat.resumable_pause`. */
-export const FEATURE_FLAGS = {} satisfies Record<string, FeatureFlagDefinition>
+export const FEATURE_FLAGS = {
+  'wiki.comments': {
+    title: { hu: 'Wiki-kommentek', en: 'Wiki comments' },
+    whatChanges: {
+      hu: 'Aki olvashat egy wikit, kommentet írhat az oldalaihoz, az író joggal rendelkező AI-munkatárs pedig feldolgozza őket. A szerző a Teendők között kap visszajelzést.',
+      en: 'Anyone who can read a wiki can comment on its pages, and an AI teammate with write access works through them. The author gets feedback under Tasks.',
+    },
+    whenOff: {
+      hu: 'A kommentek panelje, füle, Teendők-listája és az AI-munkatárs eszközei eltűnnek. A meglévő kommentek megmaradnak, és újrabekapcsoláskor visszatérnek; a már elindult jóváhagyások lefutnak. Az oldalakon a kommentből származó forrás továbbra is olvasható.',
+      en: 'The comments panel, tab, task list and the AI teammate tools disappear. Existing comments are kept and come back when it is switched on again; approvals already started still finish. Sources that came from a comment stay readable on the pages.',
+    },
+    owner: 'Giret Gergely',
+    issue: 1129,
+    reviewBy: '2027-03-01',
+  },
+} satisfies Record<string, FeatureFlagDefinition>
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAGS & string
 

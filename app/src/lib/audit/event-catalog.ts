@@ -215,6 +215,16 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'kb.wiki.config.withdrawn',
   'kb.wiki.config.setting_changed',
   'kb.wiki.config.collect_updated',
+  // #1129: wiki-kommentek (azonosító és állapot, a szöveg soha nem kerül az auditba).
+  'kb.wiki.comment.created',
+  'kb.wiki.comment.replied',
+  'kb.wiki.comment.responded',
+  'kb.wiki.comment.withdrawn',
+  'kb.wiki.comment.reopened',
+  'kb.wiki.comment.closed',
+  'kb.wiki.comment.deleted',
+  'kb.wiki.comment.pending_approval',
+  'kb.wiki.comment.resolved',
   // #1061 F3: metaadat-mezők (séma, átnézés, beépített mezők) és F4 sablon (category.updated).
   'kb.wiki.fields.enabled',
   'kb.wiki.fields.disabled',

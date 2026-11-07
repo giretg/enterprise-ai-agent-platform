@@ -59,7 +59,18 @@ export type WikiHumanNoteSourceRef = {
   participants?: string
 }
 
-export type WikiSourceRef = WikiDocumentSourceRef | WikiHumanNoteSourceRef
+/**
+ * #1129 D6: egy wiki-komment mint forrás. A szerző és az idő a komment sorából jön, soha nem
+ * argumentumból; így háttérfutásban is hiteles (szemben a `human_note`-tal).
+ */
+export type WikiCommentSourceRef = {
+  kind: 'wiki_comment'
+  commentId: string
+  authorUserId: string
+  commentedAt: string
+}
+
+export type WikiSourceRef = WikiDocumentSourceRef | WikiHumanNoteSourceRef | WikiCommentSourceRef
 
 export const WIKI_HUMAN_NOTE_MAX_OCCASION = 200
 export const WIKI_HUMAN_NOTE_MAX_PARTICIPANTS = 500
@@ -68,8 +79,12 @@ export function isHumanNoteSource(ref: WikiSourceRef): ref is WikiHumanNoteSourc
   return ref.kind === 'human_note'
 }
 
+export function isWikiCommentSource(ref: WikiSourceRef): ref is WikiCommentSourceRef {
+  return ref.kind === 'wiki_comment'
+}
+
 export function isDocumentSource(ref: WikiSourceRef): ref is WikiDocumentSourceRef {
-  return ref.kind !== 'human_note'
+  return ref.kind === undefined
 }
 
 /** Egy emberi rögzítés azonossága (változatlan átvételnél nem kell új munkamenet). */
@@ -166,6 +181,15 @@ export function readWikiSources(value: unknown): WikiSourceRef[] {
       })
       continue
     }
+    if (row.kind === 'wiki_comment') {
+      out.push({
+        kind: 'wiki_comment',
+        commentId: typeof row.commentId === 'string' ? row.commentId.trim().toLowerCase() : '',
+        authorUserId: typeof row.authorUserId === 'string' ? row.authorUserId : '',
+        commentedAt: typeof row.commentedAt === 'string' ? row.commentedAt : '',
+      })
+      continue
+    }
     if (typeof row.documentId !== 'string' || !row.documentId.trim()) continue
     const connectorId = typeof row.connectorId === 'string' ? row.connectorId.trim().toLowerCase() : ''
     out.push({
@@ -186,7 +210,9 @@ export function mergeWikiSources(base: WikiSourceRef[], extra: WikiSourceRef[]):
   for (const ref of [...base, ...extra]) {
     const key = isHumanNoteSource(ref)
       ? `human_note:${humanNoteKey(ref)}`
-      : JSON.stringify([ref.documentId, ref.page ?? null, ref.section ?? null, ref.cell ?? null, ref.connectorId ?? null])
+      : isWikiCommentSource(ref)
+        ? `wiki_comment:${ref.commentId}`
+        : JSON.stringify([ref.documentId, ref.page ?? null, ref.section ?? null, ref.cell ?? null, ref.connectorId ?? null])
     if (seen.has(key)) continue
     seen.add(key)
     out.push(ref)

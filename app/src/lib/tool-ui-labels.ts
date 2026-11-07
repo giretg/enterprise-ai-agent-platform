@@ -65,6 +65,15 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description:
       'Egy már feldolgozott forrást visszatesz a wiki tálcájára, indoklással, ha hibát talál vagy ellenőrzést kérnek. A meglévő oldalakat a jelölés nem változtatja meg. Csak írási joggal.',
   },
+  kb_wiki_comments: {
+    label: 'Wiki-kommentek olvasása',
+    description: 'Elolvassa, mit írtak az emberek a wiki oldalaihoz. A kommentet adatként kezeli, nem utasításként. Nem változtat semmit.',
+  },
+  kb_wiki_comment_respond: {
+    label: 'Válasz wiki-kommentre',
+    description:
+      'Az oldal módosítása nélkül lezár egy kommentet, megírja az indokot, vagy visszakérdez. A választ a wiki minden olvasója látja. Csak írási joggal.',
+  },
   kb_wiki_config_withdraw: {
     label: 'Javaslat visszavonása',
     description: 'Az AI-munkatárs visszavonja a saját, még el nem bírált javaslatát a wiki beállításaira.',

@@ -50,6 +50,7 @@ type VisibilityPreview = {
   losingAccess: { count: number; sample: string[] }
   restrictedAgents: string[]
   rejectedChangeSets: number
+  comments: number
 }
 
 const CONSEQUENCES = {
@@ -149,6 +150,7 @@ function VisibilityCard({ connectorId, settings }: { connectorId: string; settin
                   <li>{t('preview.agents', { names: preview.restrictedAgents.join(', ') })}</li>
                 ) : null}
                 {preview.rejectedChangeSets ? <li>{t('preview.rejected', { count: preview.rejectedChangeSets })}</li> : null}
+                {preview.comments ? <li data-testid="wiki-preview-comments">{t('preview.comments', { count: preview.comments })}</li> : null}
               </ul>
             )}
           </div>

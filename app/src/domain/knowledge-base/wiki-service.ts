@@ -47,6 +47,7 @@ import {
   isHumanNoteSource,
   isReservedWikiPath,
   isValidWikiPath,
+  isWikiCommentSource,
   mergeWikiSources,
   readWikiSources,
   renderWikiIndex,
@@ -71,6 +72,7 @@ import {
   audienceCovers,
   canDecideWikiChange,
   effectiveInboxStatus,
+  humanWikiAccess,
   parseWikiReprocess,
   type WikiReprocessMarker,
   ownerAgentIdForKnowledgeBase,
@@ -85,6 +87,8 @@ import {
   type WikiSnapshotConnector,
 } from '@/lib/wiki-access'
 import type { WikiConfigPageChange } from '@/lib/wiki-config'
+import { normalizeWikiCommentLinks, rejectionSystemCode, wikiCommentTextIsForbidden, type WikiCommentLink } from '@/lib/wiki-comments'
+import { WikiCommentNotOpenError, type WikiCommentActor, type WikiCommentRepository } from '@/repositories/postgres/wiki-comment-repository'
 import {
   buildCategoryTree,
   categoryIndex,
@@ -135,6 +139,8 @@ export type WikiCaller = {
    * ilyenkor rögzíthető emberi forrás (`human_note`); hiánya = háttérfutás.
    */
   interactive?: boolean
+  /** #1129: bejövő levél feldolgozása. A levélből indított futás nem nyúlhat kommenthez. */
+  forceWriteApproval?: boolean
 }
 
 /** #1061 F2: ki olvas (a másik wikire mutató forrás / link újra-ellenőrzéséhez). */
@@ -209,8 +215,11 @@ export type WikiApprovalRequest = {
   reason: WikiApprovalReason
 }
 
-/** #1061 F3: `doc_status` = az agent jóváhagyott állapotot kér (D5: mindig jóváhagyással). */
-export type WikiApprovalReason = 'approval_mode' | 'other_authors_page' | 'category_rule' | 'doc_status'
+/**
+ * #1061 F3: `doc_status` = az agent jóváhagyott állapotot kér (D5: mindig jóváhagyással).
+ * #1129 D3: `comment_author` = a módosítást olyan komment kérte, amelynek szerzője nem wiki-kezelő.
+ */
+export type WikiApprovalReason = 'approval_mode' | 'other_authors_page' | 'category_rule' | 'doc_status' | 'comment_author'
 
 export type WikiAppliedSummary = {
   changeSetId: string
@@ -261,6 +270,8 @@ export type WikiWriteInput = {
   logEntry?: { op: 'ingest' | 'query' | 'lint' | 'note'; title: string; note?: string }
   inboxItemId?: string
   final?: boolean
+  /** #1129: a módosítás ezeket a kommenteket zárja le (`{commentId, note}`). */
+  resolvesComments?: Array<{ commentId: string; note: string }>
 }
 
 export type WikiServiceDeps = {
@@ -296,6 +307,12 @@ export type WikiServiceDeps = {
    * Hiányában gazdát agent nem állíthat (`unknown_owner`).
    */
   findTenantUser?: (tenantId: string, query: { userId?: string; email?: string }) => Promise<{ id: string; label: string } | null>
+  /** #1129: wiki-kommentek; hiányában vagy kikapcsolt flagnél az agent nem hivatkozhat kommentre. */
+  comments?: Pick<
+    WikiCommentRepository,
+    'findForWrite' | 'activeRoles' | 'countOpenByConnector' | 'countOpenForPage' | 'boundToChangeSet' | 'resolvedCountsByChangeSet'
+  >
+  commentsEnabled?: (tenantId: string) => Promise<boolean>
   now?: () => Date
 }
 
@@ -459,6 +476,8 @@ export class WikiService {
     const pool = need === 'write' ? scopes.writable : need === 'submit' ? scopes.submittable : scopes.readable
     const now = this.now()
     const summary = await this.deps.wikis.inboxSummary(pool.map((scope) => scope.connectorId), { now })
+    // #1129 §8.5: egy csoportosított lekérdezés, mert ez a `get_definition` forró útja.
+    const openComments = await this.openCommentCounts(caller.tenantId, pool.filter((scope) => scope.access === 'write').map((scope) => scope.connectorId))
     const rows = []
     for (const scope of pool) {
       const connector = await this.deps.connectors.findById(scope.connectorId, caller.tenantId)
@@ -487,6 +506,8 @@ export class WikiService {
           .map(batch => ({ batchId: batch.batchId, pending: batch.pending, inProgress: batch.inProgress, processed: batch.processed, skipped: batch.skipped, ...(batch.reprocess ? { reprocess: batch.reprocess } : {}) })),
         // #978 §5.4: csak ha van új módosítás az agent legutóbbi átnézése óta.
         ...(changes ? { changes } : {}),
+        // #1129: csak író agentnek és csak ha van mit feldolgozni.
+        ...(openComments.get(scope.connectorId) ? { comments: { open: openComments.get(scope.connectorId)! } } : {}),
         // #1061 F1: kezelt kategóriáknál az agent csak ezekből választhat.
         ...(categories ? { categories: briefingCategories(categories) } : {}),
         // #1061 F3: lejárt átnézés és tervezetek — az agent frissítést javasolhat a gazdának.
@@ -494,6 +515,16 @@ export class WikiService {
       })
     }
     return rows
+  }
+
+  /** #1129: kikapcsolt flagnél üres, így a számlálók is eltűnnek. */
+  private async commentsOn(tenantId: string): Promise<boolean> {
+    return !!this.deps.comments && !!(await this.deps.commentsEnabled?.(tenantId))
+  }
+
+  private async openCommentCounts(tenantId: string, connectorIds: string[]): Promise<Map<string, number>> {
+    if (connectorIds.length === 0 || !(await this.commentsOn(tenantId))) return new Map()
+    return this.deps.comments!.countOpenByConnector(connectorIds)
   }
 
   /** #1061 F3 briefing-sor: hány oldal átnézése járt le, hány tervezet vár; kikapcsolt mezőknél `null`. */
@@ -919,6 +950,7 @@ export class WikiService {
     const visibleState = { ...state, sources: sources.filter((ref): ref is WikiSourceRef => ref.kind !== 'restricted') }
     const crossBacklinks = await this.crossBacklinksFor(input.reader, wiki.id, page.path)
     const metadata = await this.pageMetadata(wiki.id, page)
+    const openComments = await this.openCommentsForWriter(input.reader, input.connectorId, page.id)
     return {
       found: true,
       kind: 'wiki_page',
@@ -945,8 +977,16 @@ export class WikiService {
       ...(crossBacklinks.length ? { crossWikiBacklinks: crossBacklinks } : {}),
       // #1061 F3: beépített és egyedi mezők, átnézési esedékesség.
       ...(metadata ? { metadata } : {}),
+      // #1129: csak író agentnek; az olvasó agent elől a vitatott kritika v1-ben rejtve marad.
+      ...(openComments !== null ? { openComments } : {}),
       text: renderWikiPageMarkdown(visibleState),
     }
+  }
+
+  private async openCommentsForWriter(reader: WikiReader | undefined, connectorId: string, pageId: string): Promise<number | null> {
+    if (!reader?.snapshot || !(await this.commentsOn(reader.tenantId))) return null
+    const writable = resolveWikiScopes(reader.snapshot, reader.userId).writable.some((scope) => scope.connectorId === connectorId)
+    return writable ? this.deps.comments!.countOpenForPage(pageId) : null
   }
 
   /**
@@ -1291,8 +1331,13 @@ export class WikiService {
     if (!lifted.ok) return lifted
     const stamped = await this.stampHumanNotes(caller, connector.id, lifted.pages, now)
     if (!stamped.ok) return stamped
+    // #1129 D6: a komment-forrás szerzője és ideje a komment sorából jön.
+    const commentStamped = await this.stampCommentSources(caller, connector.id, wikiId, stamped.pages)
+    if (!commentStamped.ok) return commentStamped
+    const commentPlan = await this.planCommentLinks(caller, connector, wikiId, input)
+    if (!commentPlan.ok) return commentPlan
     // #1061 F3: „Átnéztem” csak interaktív munkamenetből (a szerző a munkamenet embere); gazda = platform-felhasználó.
-    const reviewed = this.stampReviews(caller, stamped.pages, now)
+    const reviewed = this.stampReviews(caller, commentStamped.pages, now)
     if (!reviewed.ok) return reviewed
     const owned = await this.resolveOwners(caller.tenantId, reviewed.pages)
     if (!owned.ok) return owned
@@ -1325,7 +1370,9 @@ export class WikiService {
         ? null
         : scope.writeMode !== 'direct'
           ? 'approval_mode'
-          : protectedCategory(page)
+          : commentPlan.needsApproval
+            ? 'comment_author'
+            : protectedCategory(page)
             ? 'category_rule'
             : requestsApproved(page)
               ? 'doc_status'
@@ -1337,11 +1384,16 @@ export class WikiService {
     const reasons = new Set(approvalPages.map((page) => approvalReason(page)!))
     const reason: WikiApprovalReason = reasons.has('approval_mode')
       ? 'approval_mode'
-      : reasons.has('category_rule')
-        ? 'category_rule'
-        : reasons.has('doc_status')
-          ? 'doc_status'
-          : 'other_authors_page'
+      : reasons.has('comment_author')
+        ? 'comment_author'
+        : reasons.has('category_rule')
+          ? 'category_rule'
+          : reasons.has('doc_status')
+            ? 'doc_status'
+            : 'other_authors_page'
+    const commentActor: WikiCommentActor = { kind: 'agent', userId: caller.userId, agentId: caller.agentId }
+    // Vegyes írásnál a komment a függő részhez kötődik, mert csak akkor kész, ha minden része kész (§8.3).
+    const directCommentLinks = approvalPages.length === 0 ? commentPlan.links : []
     const log = {
       op: input.logEntry?.op ?? (input.inboxItemId || sourceDocumentIds.length ? 'ingest' : 'note'),
       title: input.logEntry?.title?.trim() || `Updated ${plan.planned.length} page${plan.planned.length === 1 ? '' : 's'}`,
@@ -1375,6 +1427,7 @@ export class WikiService {
         inbox: input.inboxItemId
           ? { documentId: input.inboxItemId, final, agentId: caller.agentId, claimExpiresAt: new Date(now.getTime() + WIKI_CLAIM_TTL_MS) }
           : null,
+        commentLinks: directCommentLinks.length ? { links: directCommentLinks, actor: commentActor } : null,
       })
       if (!result.ok) return result
       applied = result.result
@@ -1390,23 +1443,49 @@ export class WikiService {
           ...applied!,
           ...(input.inboxItemId ? { inboxItemId: input.inboxItemId, inboxStatus: final ? 'processed' : 'in_progress' } : {}),
           ...(warnings.length ? { warnings } : {}),
+          ...(directCommentLinks.length ? { resolvedComments: directCommentLinks.map((link) => link.commentId) } : {}),
         },
       }
     }
 
-    const pending = await this.deps.wikis.createChangeSet({
-      wikiId,
-      connectorId: connector.id,
-      agentId: caller.agentId,
-      userId: caller.userId,
-      status: 'pending',
-      pages: approvalPages.map((page) => page.input) as unknown as Prisma.InputJsonValue,
-      validation,
-      logEntry: log as unknown as Prisma.InputJsonValue,
-      sourceDocumentIds,
-      inboxItemId: applied ? null : (input.inboxItemId ?? null),
-      approverScope: approverScope as unknown as Prisma.InputJsonValue,
-    })
+    let pending
+    try {
+      pending = await this.deps.wikis.createChangeSet({
+        wikiId,
+        connectorId: connector.id,
+        agentId: caller.agentId,
+        userId: caller.userId,
+        status: 'pending',
+        pages: approvalPages.map((page) => page.input) as unknown as Prisma.InputJsonValue,
+        validation,
+        logEntry: log as unknown as Prisma.InputJsonValue,
+        sourceDocumentIds,
+        inboxItemId: applied ? null : (input.inboxItemId ?? null),
+        approverScope: approverScope as unknown as Prisma.InputJsonValue,
+        ...(commentPlan.links.length ? { commentLinks: { links: commentPlan.links, actor: commentActor, partlyApplied: !!applied } } : {}),
+      })
+    } catch (error) {
+      if (!(error instanceof WikiCommentNotOpenError)) throw error
+      // A közvetlen rész ekkor már élesben van: a válasz kimondja, hogy csak a függő rész maradt ki.
+      return {
+        ok: false,
+        code: 'comment_not_open',
+        details: {
+          ...(applied ? { applied } : {}),
+          hint: applied
+            ? 'Someone else closed a comment meanwhile. The direct pages were written, the rest was not. Read the comments again.'
+            : 'Someone else closed a comment meanwhile. Nothing was written. Read the comments again.',
+        },
+      }
+    }
+    for (const link of commentPlan.links) {
+      await this.audit(connector, caller, 'kb.wiki.comment.pending_approval', link.commentId, {
+        wikiId,
+        commentId: link.commentId,
+        changeSetId: pending.id,
+        toStatus: 'pending_approval',
+      }, 'wiki_comment')
+    }
     if (input.inboxItemId && !applied && final) {
       // Jóváhagyásig se dolgozza fel más; elutasításkor visszakerül a tálcára.
       await this.deps.wikis.markInboxProcessed({ documentId: input.inboxItemId, changeSetId: pending.id })
@@ -1441,9 +1520,13 @@ export class WikiService {
         })),
         ...(applied ? { applied } : {}),
         ...(warnings.length ? { warnings } : {}),
+        ...(commentPlan.links.length ? { pendingComments: commentPlan.links.map((link) => link.commentId) } : {}),
         note: [
           reasons.has('approval_mode')
             ? 'This wiki needs approval: the change is not readable or searchable until the wiki owner approves it.'
+            : null,
+          reasons.has('comment_author')
+            ? 'This change was requested by a comment from someone who does not manage this wiki, so it waits for the wiki approver even in direct mode.'
             : null,
           reasons.has('category_rule')
             ? 'Pages in a category marked "always needs approval" (new, changed, moved in or out, archived) wait for the wiki approver.'
@@ -1542,9 +1625,25 @@ export class WikiService {
     return { ok: true, result: { status: 'applied', wikiId: changeSet.wikiId, ...result.result } }
   }
 
-  /** Elutasítás: a change-set `rejected`, a hozzá lezárt tálca-tétel vissza a tálcára. */
-  async reject(changeSetId: string, input: { tenantId: string; actorUserId: string | null; reason?: string }) {
-    const changeSet = await this.deps.wikis.transitionChangeSet(changeSetId, 'pending', 'rejected')
+  /**
+   * Elutasítás: a change-set `rejected`, a hozzá lezárt tálca-tétel vissza a tálcára, a hozzá kötött
+   * komment vissza `open`-be. A `reason` gépi kód, a `note` a jóváhagyó szövege a komment szálába.
+   */
+  async reject(changeSetId: string, input: { tenantId: string; actorUserId: string | null; reason?: string; note?: string }) {
+    const boundComments = (await this.deps.comments?.boundToChangeSet(changeSetId)) ?? []
+    const note = input.note?.trim()
+    const systemCode = rejectionSystemCode(input)
+    const changeSet = await this.deps.wikis.transitionChangeSet(changeSetId, 'pending', 'rejected', boundComments.length
+      ? {
+          reopenComments: {
+            systemCode,
+            // A wiki minden olvasója látja: a kártyaszámos indoklás nem kerül a szálba.
+            body: note && !wikiCommentTextIsForbidden(note) ? note.slice(0, 2000) : null,
+            ...(input.actorUserId ? { actor: { kind: 'human' as const, userId: input.actorUserId } } : {}),
+            now: this.now(),
+          },
+        }
+      : undefined)
     if (!changeSet) return false
     if (changeSet.inboxItemId) {
       await this.deps.wikis.reopenInboxItem({ documentId: changeSet.inboxItemId, changeSetId })
@@ -1567,6 +1666,24 @@ export class WikiService {
           tenantId: input.tenantId,
         }),
       )
+      for (const commentId of boundComments) {
+        await this.deps.audit.append(
+          redactKbAuditForVisibility(connector, {
+            actorType: input.actorUserId ? 'human' : 'system',
+            actorId: input.actorUserId,
+            agentVersion: null,
+            action: 'kb.wiki.comment.reopened',
+            targetType: 'wiki_comment',
+            targetId: commentId,
+            modelUsed: null,
+            inputRef: null,
+            outputRef: null,
+            policyDecision: 'allowed',
+            metadata: { wikiId: changeSet.wikiId, commentId, changeSetId, connectorId: connector.id, toStatus: 'open', kind: systemCode },
+            tenantId: input.tenantId,
+          }),
+        )
+      }
     }
     return true
   }
@@ -2142,6 +2259,9 @@ export class WikiService {
         revertedSeqs.set(row.revertsId, (await this.deps.wikis.findChangeSet(row.revertsId))?.seq ?? null)
       }
     }
+    const resolvedComments = (await this.commentsOn(caller.tenantId))
+      ? await this.deps.comments!.resolvedCountsByChangeSet(changes.map((row) => row.id))
+      : new Map<string, number>()
     const maxSeq = changes.reduce((max, row) => Math.max(max, row.seq ?? 0), since ?? 0)
     if (input.markSeen !== false && changes.length > 0) {
       await history.advanceCursor(wikiId, caller.agentId, caller.userId, maxSeq)
@@ -2166,6 +2286,7 @@ export class WikiService {
             ...(log.note ? { note: log.note } : {}),
             ...(row.revertsId ? { reverts: revertedSeqs.get(row.revertsId) ?? null } : {}),
             ...(row.status === 'reverted' ? { reverted: true } : {}),
+            ...(resolvedComments.get(row.id) ? { resolvedComments: resolvedComments.get(row.id) } : {}),
             pages: readPageSummary(row.pageSummary).slice(0, 50).map((page) => ({
               path: page.path,
               action: page.action,
@@ -2286,6 +2407,100 @@ export class WikiService {
       }
     }
     return { ok: true, pages: out }
+  }
+
+  /**
+   * #1129 D6: `{ kind: "wiki_comment", commentId }` — a szerző és az idő a komment sorából jön, az
+   * argumentumban kapott érték nem számít. Az oldalon már meglévő forrás akkor is megmarad, ha a komment
+   * azóta törlődött. Bejövő levélből és kikapcsolt flagnél új komment-forrás nem jöhet létre.
+   */
+  private async stampCommentSources(
+    caller: WikiCaller,
+    connectorId: string,
+    wikiId: string,
+    pages: WikiPageInput[],
+  ): Promise<{ ok: true; pages: WikiPageInput[] } | WikiFailure> {
+    const isCommentInput = (item: unknown) => !!item && typeof item === 'object' && (item as { kind?: unknown }).kind === 'wiki_comment'
+    const commentIdOf = (item: unknown) => {
+      const id = (item as { commentId?: unknown }).commentId
+      return typeof id === 'string' ? id.trim().toLowerCase() : ''
+    }
+    const involved = pages.flatMap((page) => [
+      ...(Array.isArray(page.frontmatter?.sources) ? (page.frontmatter!.sources as unknown[]) : []),
+      ...(page.patch ?? []).flatMap((op) => (op.op === 'addSource' ? [op.source as unknown] : [])),
+    ]).filter(isCommentInput)
+    if (involved.length === 0) return { ok: true, pages }
+    const enabled = !caller.forceWriteApproval && (await this.commentsOn(caller.tenantId))
+    const rows = enabled ? await this.deps.comments!.findForWrite(wikiId, [...new Set(involved.map(commentIdOf).filter((id) => /^[0-9a-f-]{36}$/.test(id)))]) : []
+    const byId = new Map(rows.filter((row) => !row.erasedAt).map((row) => [row.id, row]))
+    const missing: string[] = []
+    const out: WikiPageInput[] = []
+    for (const page of pages) {
+      const existing = await this.deps.wikis.findPage(connectorId, page.path.trim())
+      const kept = new Map(
+        (existing ? readWikiSources(existing.sourceRefs).filter(isWikiCommentSource) : []).map((ref) => [ref.commentId, ref]),
+      )
+      const stamp = (item: unknown): unknown => {
+        const id = commentIdOf(item)
+        const row = byId.get(id)
+        if (row) return { kind: 'wiki_comment', commentId: row.id, authorUserId: row.authorUserId, commentedAt: row.createdAt.toISOString() }
+        const previous = kept.get(id)
+        if (previous) return previous
+        missing.push(id || 'missing commentId')
+        return item
+      }
+      out.push({
+        ...page,
+        ...(Array.isArray(page.frontmatter?.sources)
+          ? { frontmatter: { ...page.frontmatter, sources: (page.frontmatter!.sources as unknown[]).map((item) => (isCommentInput(item) ? stamp(item) : item)) } }
+          : {}),
+        ...(page.patch
+          ? { patch: page.patch.map((op) => (op.op === 'addSource' && isCommentInput(op.source) ? { ...op, source: stamp(op.source) as WikiSourceRef } : op)) }
+          : {}),
+      })
+    }
+    if (missing.length) {
+      return { ok: false, code: 'invalid_comment_ref', details: { commentIds: [...new Set(missing)], hint: 'Nothing was written. A wiki_comment source must point to a comment of this wiki.' } }
+    }
+    return { ok: true, pages: out }
+  }
+
+  /**
+   * #1129 §8.3 tervezés: minden komment ebben a wikiben van, és nyitott. D3: ha bármelyik szerzője nem
+   * wiki-kezelő, a módosítás a közvetlen módtól függetlenül jóváhagyásra megy; a jog élőben dől el, a
+   * szervezetből kikerült szerző nem kezelő.
+   */
+  private async planCommentLinks(
+    caller: WikiCaller,
+    connector: Connector,
+    wikiId: string,
+    input: WikiWriteInput,
+  ): Promise<{ ok: true; links: WikiCommentLink[]; needsApproval: boolean } | WikiFailure> {
+    if (input.resolvesComments === undefined) return { ok: true, links: [], needsApproval: false }
+    const invalid = (hint: string, commentIds?: string[]): WikiFailure => ({
+      ok: false,
+      code: 'invalid_comment_ref',
+      details: { ...(commentIds?.length ? { commentIds } : {}), hint: `Nothing was written. ${hint}` },
+    })
+    const links = normalizeWikiCommentLinks(input.resolvesComments)
+    if (!links) return invalid('resolvesComments is a list of up to 20 distinct {commentId, note}; every note is required.')
+    if (links.length === 0) return { ok: true, links: [], needsApproval: false }
+    if (input.final === false) return invalid('Pass resolvesComments on the last call of a multi-part write (final:true).')
+    if (caller.forceWriteApproval || !(await this.commentsOn(caller.tenantId))) return invalid('Comments are not available in this run.', links.map((link) => link.commentId))
+    if (links.some((link) => wikiCommentTextIsForbidden(link.note))) return invalid('A note contains a card number or a secret; remove it.')
+    const rows = await this.deps.comments!.findForWrite(wikiId, links.map((link) => link.commentId))
+    const live = new Map(rows.filter((row) => !row.erasedAt).map((row) => [row.id, row]))
+    const unknown = links.filter((link) => !live.has(link.commentId)).map((link) => link.commentId)
+    if (unknown.length) return invalid('These comments are not in this wiki.', unknown)
+    const notOpen = links.filter((link) => live.get(link.commentId)!.status !== 'open').map((link) => link.commentId)
+    if (notOpen.length) return invalid('These comments are not open any more. Read them again with kb_wiki_comments.', notOpen)
+    const authors = [...new Set(rows.map((row) => row.authorUserId))]
+    const roles = await this.deps.comments!.activeRoles(caller.tenantId, authors)
+    const needsApproval = authors.some((userId) => {
+      const role = roles.get(userId)
+      return !role || !humanWikiAccess({ userId, role }, connector).manage
+    })
+    return { ok: true, links, needsApproval }
   }
 
   /**
@@ -2824,6 +3039,7 @@ export class WikiService {
     revertsId?: string | null
     categoryUpdate?: Parameters<WikiRepository['applyChangeSet']>[0]['categoryUpdate']
     configPlan?: WikiConfigApplyPlan
+    commentLinks?: { links: WikiCommentLink[]; actor: WikiCommentActor } | null
   }): Promise<WikiOutcome<WikiAppliedSummary & { seq: number }>> {
     const { caller, connector } = input
     const agentId = caller.human ? null : caller.agentId
@@ -2863,6 +3079,7 @@ export class WikiService {
         actorUserId: caller.userId,
       },
       inbox: input.inbox,
+      commentLinks: input.commentLinks ?? null,
       pageSummary: input.planned.map(summarizePlannedPage),
       appliedAt: this.now(),
     })
@@ -2870,6 +3087,13 @@ export class WikiService {
       if (result.reason === 'changeset_not_pending') return { ok: false, code: 'changeset_not_pending' }
       if (result.reason === 'changeset_not_revertible') return { ok: false, code: 'changeset_not_revertible' }
       if (result.reason === 'config_conflict' || result.reason === 'proposal_not_pending') return { ok: false, code: result.reason }
+      if (result.reason === 'comment_not_open') {
+        return {
+          ok: false,
+          code: 'comment_not_open',
+          details: { hint: 'Someone else closed a comment meanwhile. Nothing was written. Read the comments again.' },
+        }
+      }
       const existing = result.path ? await this.deps.wikis.findPage(connector.id, result.path) : null
       return {
         ok: false,
@@ -2925,6 +3149,24 @@ export class WikiService {
         },
         'wiki_page',
       )
+    }
+    // #1129 S9: csak azonosító és állapot, a komment szövege soha.
+    for (const commentId of result.commentsResolved ?? []) {
+      await this.audit(connector, caller, 'kb.wiki.comment.resolved', commentId, {
+        wikiId: input.wikiId,
+        commentId,
+        changeSetId: result.changeSetId,
+        toStatus: 'resolved',
+      }, 'wiki_comment')
+    }
+    for (const commentId of result.commentsReopened ?? []) {
+      await this.audit(connector, caller, 'kb.wiki.comment.reopened', commentId, {
+        wikiId: input.wikiId,
+        commentId,
+        changeSetId: input.revertsId ?? null,
+        toStatus: 'open',
+        kind: 'change_reverted',
+      }, 'wiki_comment')
     }
     if (input.inbox?.final) {
       await this.audit(connector, caller, 'kb.wiki.inbox.processed', input.inbox.documentId, {

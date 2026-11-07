@@ -1,3 +1,5 @@
+import type { WikiCommentActor, WikiCommentErasure } from '@/repositories/postgres/wiki-comment-repository'
+import type { WikiCommentLink } from '@/lib/wiki-comments'
 import type { WikiEffectiveInboxStatus, WikiReprocessMarker } from '@/lib/wiki-access'
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
 import type { WikiConfigState } from '@/lib/wiki-config'
@@ -995,6 +997,8 @@ export type WikiApplyChangeSetInput = {
     actorAgentId?: string | null
     actorUserId?: string | null
   }
+  /** #1129 közvetlen írás: a lezárt kommentek az oldallal együtt változnak, vagy egyik sem. */
+  commentLinks?: { links: WikiCommentLink[]; actor: WikiCommentActor } | null
   /** Tálca-tétel lezárása (`final`) vagy a foglalás megújítása, ugyanabban a tranzakcióban. */
   inbox?: { documentId: string; final: boolean; agentId: string; claimExpiresAt: Date } | null
   /** #978 §6: az `ops`-szal azonos sorrendű összefoglaló (a `pageId`/`version` a repó tölti). */
@@ -1003,7 +1007,15 @@ export type WikiApplyChangeSetInput = {
 }
 
 export type WikiApplyChangeSetResult =
-  | { ok: true; changeSetId: string; seq: number; pages: WikiPage[] }
+  | {
+      ok: true
+      changeSetId: string
+      seq: number
+      pages: WikiPage[]
+      /** #1129: az írással kész lett, illetve a visszavonással visszanyílt kommentek. */
+      commentsResolved?: string[]
+      commentsReopened?: string[]
+    }
   | { ok: false; reason: 'conflict'; path: string | null }
   | { ok: false; reason: 'changeset_not_pending' }
   /** #978 D5: a visszavonandó change-set már nem `applied` (pl. közben visszavonták). */
@@ -1011,6 +1023,8 @@ export type WikiApplyChangeSetResult =
   /** #1075: közben változott a beállítás, vagy a javaslat már nem függőben van. */
   | { ok: false; reason: 'config_conflict' }
   | { ok: false; reason: 'proposal_not_pending' }
+  /** #1129: a lezárandó komment időközben már nem nyitott; semmi nem íródott. */
+  | { ok: false; reason: 'comment_not_open' }
 
 export type WikiConfigApplyPlan = {
   proposalId: string
@@ -1108,6 +1122,8 @@ export interface WikiRepository {
     approverScope: Prisma.InputJsonValue
     /** #978 D5: visszaállító change-set — ezt vonja vissza. */
     revertsId?: string | null
+    /** #1129: a függő change-set és a `pending_approval` kommentek egy tranzakcióban (`WikiCommentNotOpenError`). */
+    commentLinks?: { links: WikiCommentLink[]; actor: WikiCommentActor; partlyApplied: boolean } | null
   }): Promise<WikiChangeSet>
   findChangeSet(id: string): Promise<WikiChangeSet | null>
   /** #965: a tudásbázis függő change-setjei (láthatóság-váltáskor elutasítjuk őket). */
@@ -1117,7 +1133,12 @@ export interface WikiRepository {
     id: string,
     from: WikiChangeSetStatus,
     to: WikiChangeSetStatus,
-    extra?: { gatewayOperationId?: string | null; appliedAt?: Date | null },
+    extra?: {
+      gatewayOperationId?: string | null
+      appliedAt?: Date | null
+      /** #1129: elutasításkor a kötött kommentek a change-settel együtt nyílnak vissza. */
+      reopenComments?: { systemCode: string; body?: string | null; actor?: WikiCommentActor; now: Date }
+    },
   ): Promise<WikiChangeSet | null>
 
   appendLog(input: {
@@ -1273,7 +1294,7 @@ export type WikiPageMetaRow = {
 /** #978: egy oldal állapota egy korábbi sorszámon (időutazás). */
 export type WikiStateRow = WikiPageRevision & { seq: number | null }
 
-export type WikiRetentionCounts = { thinned: number; deleted: number; changeSetsPruned: number }
+export type WikiRetentionCounts = { thinned: number; deleted: number; changeSetsPruned: number; commentsErased?: number }
 
 export type WikiErasureWrite = {
   wikiId: string
@@ -1312,6 +1333,8 @@ export type WikiErasureWrite = {
   chunkPattern: string | null
   gatewayOperations: Array<{ id: string; argsJson: Prisma.InputJsonValue; reject?: boolean }>
   erasedHashes: string[]
+  /** #1129: a kommentek és idézeteik. */
+  comments?: WikiCommentErasure
 }
 
 /**
@@ -1405,6 +1428,8 @@ export type PrivateKnowledgeBasePurgeCounts = {
   logEntries: number
   gatewayOperations: number
   agentLinks: number
+  /** #1129 */
+  comments?: number
 }
 
 export interface PrivateKnowledgeBaseStore {

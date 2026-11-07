@@ -124,6 +124,111 @@ test('olvasó nézet: csak cím, menü és tartalom; a Vissza az előző lapra �
   await expect(page.getByTestId('wiki-page')).toContainText('Rövid szöveg.')
 })
 
+test('wiki-kommentek: panel, kijelölés idézetként, fül, Teendők-lista, kikapcsolt flag', async ({ page }) => {
+  // A flag bekapcsolása a futó szerveren kb. 30 másodperc alatt érvényesül.
+  test.setTimeout(240_000)
+  const wiki = await prisma.agentWiki.upsert({ where: { connectorId: sharedKbId }, create: { connectorId: sharedKbId, schemaMd: '# WIKI' }, update: {} })
+  const path = `concepts/komment-${suffix}.md`
+  await prisma.wikiPage.create({
+    data: { wikiId: wiki.id, connectorId: sharedKbId, path, type: 'entity', title: 'Kommentelt lap', summary: 'Lap', body: 'A jutalék 2% minden partnernél.', contentHash: `c-${suffix}` },
+  })
+  const url = `/control-plane/knowledge/${sharedKbId}?page=${path}`
+
+  // Kikapcsolt flag: nincs panel és fül.
+  await page.goto(url)
+  await expect(page.getByTestId('wiki-page')).toContainText('A jutalék 2%')
+  await expect(page.getByTestId('wiki-comments-panel')).toHaveCount(0)
+  await expect(page.getByTestId('wiki-tab-comments')).toHaveCount(0)
+
+  await prisma.featureFlag.upsert({
+    where: { key: 'wiki.comments' },
+    create: { key: 'wiki.comments', mode: 'selected', tenants: { create: { tenantId, access: 'included' } } },
+    update: { mode: 'selected', tenants: { create: { tenantId, access: 'included' } } },
+  })
+  // A szerver a flaget legfeljebb kb. 30 másodperc alatt látja meg.
+  await expect(async () => {
+    await page.goto(url)
+    await expect(page.getByTestId('wiki-comments-panel')).toBeVisible({ timeout: 2_000 })
+  }).toPass({ timeout: 45_000 })
+
+  // Üres állapot, és jelzés, hogy nincs író AI-munkatárs.
+  await expect(page.getByTestId('wiki-comments-empty')).toBeVisible()
+  await expect(page.getByTestId('wiki-comment-no-writer')).toBeVisible()
+
+  // A kijelölt szöveg idézetként a kommentbe kerül.
+  await page.getByTestId('wiki-page').getByText('A jutalék 2% minden partnernél.').selectText()
+  await page.getByTestId('wiki-comment-quote-selection').click()
+  await expect(page.getByTestId('wiki-comment-draft-quote')).toContainText('A jutalék 2%')
+
+  // A HTML és a Markdown szövegként jelenik meg.
+  const markup = '<img src=x onerror="window.__xss=1"> **vastag** 2026 óta 3%'
+  await page.getByTestId('wiki-comment-input').fill(markup)
+  await page.getByTestId('wiki-comment-send').click()
+  await expect(page.getByTestId('wiki-comment-body')).toHaveText(markup)
+  await expect(page.getByTestId('wiki-comment').locator('img')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as unknown as { __xss?: number }).__xss)).toBeUndefined()
+  await expect(page.getByTestId('wiki-comment-quote')).toContainText('A jutalék 2%')
+  await expect(page.getByTestId('wiki-page-comment-count')).toBeVisible()
+
+  // Kártyaszám: érthető hiba, nem mentődik.
+  await page.getByTestId('wiki-comment-input').fill('A kártyám 4111 1111 1111 1111')
+  await page.getByTestId('wiki-comment-send').click()
+  await expect(page.getByTestId('wiki-comment-error')).toBeVisible()
+  await expect(page.getByTestId('wiki-comment')).toHaveCount(1)
+
+  // A panel az olvasó fülön is ott van.
+  await page.goto(`/control-plane/knowledge/${sharedKbId}?tab=reader&page=${path}`)
+  await expect(page.getByTestId('wiki-comments-panel')).toBeVisible()
+
+  // Kommentek fül: magyarázat, szűrők, a komment az oldal linkjével.
+  await page.goto(`/control-plane/knowledge/${sharedKbId}?tab=comments`)
+  await expect(page.getByTestId('wiki-comments-tab')).toBeVisible()
+  await expect(page.getByTestId('wiki-comments-states')).toBeVisible()
+  await expect(page.getByTestId('wiki-comments-tab-list').getByTestId('wiki-comment')).toHaveCount(1)
+  await expect(page.getByTestId('wiki-comments-tab-list').getByRole('link', { name: 'Kommentelt lap' })).toBeVisible()
+
+  // Az AI-munkatárs kérdez: a szerző Teendői között megjelenik, a válasz után eltűnik.
+  const comment = await prisma.wikiComment.findFirstOrThrow({ where: { connectorId: sharedKbId } })
+  await prisma.wikiComment.update({ where: { id: comment.id }, data: { status: 'question' } })
+  await prisma.wikiCommentEvent.create({
+    data: { commentId: comment.id, kind: 'status', fromStatus: 'open', toStatus: 'question', actorKind: 'agent', actorAgentId: agentId, body: 'Melyik szerződésre gondolsz?' },
+  })
+  await page.goto('/control-plane/operations')
+  const todo = page.getByTestId('wiki-comment-todo')
+  await expect(todo).toHaveAttribute('data-status', 'question')
+  await expect(todo.getByTestId('wiki-comment-todo-answer')).toHaveText('Melyik szerződésre gondolsz?')
+  await todo.getByTestId('wiki-comment-todo-answer-open').click()
+  await todo.getByTestId('wiki-comment-todo-text').fill('A 2026-os módosításra.')
+  await todo.getByTestId('wiki-comment-todo-send').click()
+  await expect(page.getByTestId('wiki-comment-todos')).toHaveCount(0)
+  expect((await prisma.wikiComment.findUniqueOrThrow({ where: { id: comment.id } })).status).toBe('open')
+
+  // Az elutasítás a „Rendben”-ig látszik.
+  await prisma.wikiComment.update({ where: { id: comment.id }, data: { status: 'declined', closedAt: new Date() } })
+  await page.goto('/control-plane/operations')
+  await expect(page.getByTestId('wiki-comment-todo')).toHaveAttribute('data-status', 'declined')
+  await page.getByTestId('wiki-comment-todo-ok').click()
+  await expect(page.getByTestId('wiki-comment-todos')).toHaveCount(0)
+  expect((await prisma.wikiComment.findUniqueOrThrow({ where: { id: comment.id } })).status).toBe('declined')
+
+  // A kezelő újranyitja és kézzel lezárja.
+  await page.goto(url)
+  await page.getByTestId('wiki-comment-reopen').click()
+  await page.getByTestId('wiki-comment-action-text').fill('Mégis nézzük meg.')
+  await page.getByTestId('wiki-comment-action-send').click()
+  await expect(page.getByTestId('wiki-comment-status')).toHaveAttribute('data-status', 'open')
+  await page.getByTestId('wiki-comment-close').click()
+  await page.getByTestId('wiki-comment-action-text').fill('Megbeszéltük.')
+  await page.getByTestId('wiki-comment-close-resolved').click()
+  await expect(page.getByTestId('wiki-comment-status')).toHaveAttribute('data-status', 'resolved')
+  await page.goto(url)
+
+  // Törlés: a szöveg eltűnik, csak a nyoma marad.
+  await page.getByTestId('wiki-comment-delete').click()
+  await page.getByTestId('wiki-comment-delete-confirm').click()
+  await expect(page.getByTestId('wiki-comment-erased')).toBeVisible()
+})
+
 test('a 10 MB-nál nagyobb fájl is felkerül a tálcára', async ({ page }) => {
   await page.goto(`/control-plane/knowledge/${sharedKbId}?tab=inbox`)
   await page.getByTestId('wiki-inbox-file-input').setInputFiles([

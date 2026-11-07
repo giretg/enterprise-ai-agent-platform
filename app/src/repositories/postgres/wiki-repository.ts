@@ -22,6 +22,14 @@ import type {
 import type { WikiCategoryRow } from '@/lib/wiki-categories'
 import { configVersionOf, configPagesVersionOf, type WikiConfigState } from '@/lib/wiki-config'
 import { metaFromColumns, type WikiFieldDef } from '@/lib/wiki-metadata'
+import {
+  bindLinkedCommentsInTx,
+  closeLinkedCommentsInTx,
+  reopenBoundCommentsInTx,
+  resolveBoundCommentsInTx,
+  WikiCommentNotOpenError,
+  type WikiCommentActor,
+} from './wiki-comment-repository'
 import type { WikiPageMetaQuery, WikiPageMetaRow } from '../interfaces'
 
 /** Tranzakció-megszakítás eredménnyel (a rollback után ezt adjuk vissza). */
@@ -242,21 +250,32 @@ export class PostgresWikiRepository implements WikiRepository {
   }
 
   createChangeSet(input: Parameters<WikiRepository['createChangeSet']>[0]): Promise<WikiChangeSet> {
-    return prisma.wikiChangeSet.create({
-      data: {
-        wikiId: input.wikiId,
+    const data = {
+      wikiId: input.wikiId,
+      connectorId: input.connectorId,
+      agentId: input.agentId ?? null,
+      userId: input.userId ?? null,
+      status: input.status ?? 'pending',
+      pages: input.pages,
+      validation: input.validation ?? Prisma.JsonNull,
+      logEntry: input.logEntry ?? Prisma.JsonNull,
+      sourceDocumentIds: input.sourceDocumentIds ?? [],
+      inboxItemId: input.inboxItemId ?? null,
+      approverScope: input.approverScope,
+      revertsId: input.revertsId ?? null,
+    } satisfies Prisma.WikiChangeSetUncheckedCreateInput
+    const commentLinks = input.commentLinks
+    if (!commentLinks?.links.length) return prisma.wikiChangeSet.create({ data })
+    return prisma.$transaction(async (tx) => {
+      const changeSet = await tx.wikiChangeSet.create({ data })
+      await bindLinkedCommentsInTx(tx, {
         connectorId: input.connectorId,
-        agentId: input.agentId ?? null,
-        userId: input.userId ?? null,
-        status: input.status ?? 'pending',
-        pages: input.pages,
-        validation: input.validation ?? Prisma.JsonNull,
-        logEntry: input.logEntry ?? Prisma.JsonNull,
-        sourceDocumentIds: input.sourceDocumentIds ?? [],
-        inboxItemId: input.inboxItemId ?? null,
-        approverScope: input.approverScope,
-        revertsId: input.revertsId ?? null,
-      },
+        links: commentLinks.links,
+        changeSetId: changeSet.id,
+        actor: commentLinks.actor,
+        partlyApplied: commentLinks.partlyApplied,
+      })
+      return changeSet
     })
   }
 
@@ -276,16 +295,28 @@ export class PostgresWikiRepository implements WikiRepository {
     id: string,
     from: WikiChangeSet['status'],
     to: WikiChangeSet['status'],
-    extra: { gatewayOperationId?: string | null; appliedAt?: Date | null } = {},
+    extra: {
+      gatewayOperationId?: string | null
+      appliedAt?: Date | null
+      /** #1129: elutasításkor a kötött kommentek a change-settel együtt nyílnak vissza. */
+      reopenComments?: { systemCode: string; body?: string | null; actor?: WikiCommentActor; now: Date }
+    } = {},
   ): Promise<WikiChangeSet | null> {
-    const result = await prisma.wikiChangeSet.updateMany({
-      where: { id, status: from },
-      data: {
-        status: to,
-        ...(extra.gatewayOperationId !== undefined ? { gatewayOperationId: extra.gatewayOperationId } : {}),
-        ...(extra.appliedAt !== undefined ? { appliedAt: extra.appliedAt } : {}),
-      },
-    })
+    const data = {
+      status: to,
+      ...(extra.gatewayOperationId !== undefined ? { gatewayOperationId: extra.gatewayOperationId } : {}),
+      ...(extra.appliedAt !== undefined ? { appliedAt: extra.appliedAt } : {}),
+    }
+    const reopen = extra.reopenComments
+    if (reopen) {
+      return prisma.$transaction(async (tx) => {
+        const moved = await tx.wikiChangeSet.updateMany({ where: { id, status: from }, data })
+        if (moved.count === 0) return null
+        await reopenBoundCommentsInTx(tx, { changeSetId: id, from: 'pending_approval', ...reopen })
+        return tx.wikiChangeSet.findUnique({ where: { id } })
+      })
+    }
+    const result = await prisma.wikiChangeSet.updateMany({ where: { id, status: from }, data })
     if (result.count === 0) return null
     return prisma.wikiChangeSet.findUnique({ where: { id } })
   }
@@ -656,12 +687,33 @@ export class PostgresWikiRepository implements WikiRepository {
           revertsId = created.revertsId ?? null
         }
         // #978 D5: a visszavont change-set `reverted`, és hivatkozik a visszaállítóra.
+        let commentsReopened: string[] = []
         if (revertsId) {
           const marked = await tx.wikiChangeSet.updateMany({
             where: { id: revertsId, wikiId: input.wikiId, status: 'applied' },
             data: { status: 'reverted', revertedById: changeSetId },
           })
           if (marked.count === 0) throw new ApplyAborted({ ok: false, reason: 'changeset_not_revertible' })
+          // #1129 AC8: ami a visszavont módosítással készült el, az újra nyitott.
+          commentsReopened = await reopenBoundCommentsInTx(tx, {
+            changeSetId: revertsId,
+            from: 'resolved',
+            systemCode: 'change_reverted',
+            now: input.appliedAt,
+          })
+        }
+        // #1129: közvetlen írásnál itt záródik a komment, jóváhagyásnál a hozzá kötöttek készülnek el.
+        const commentsResolved =
+          'id' in input.changeSet ? await resolveBoundCommentsInTx(tx, { changeSetId, now: input.appliedAt }) : []
+        if (input.commentLinks?.links.length) {
+          await closeLinkedCommentsInTx(tx, {
+            connectorId: input.connectorId,
+            links: input.commentLinks.links,
+            changeSetId,
+            actor: input.commentLinks.actor,
+            now: input.appliedAt,
+          })
+          commentsResolved.push(...input.commentLinks.links.map((link) => link.commentId))
         }
 
         const container =
@@ -779,10 +831,11 @@ export class PostgresWikiRepository implements WikiRepository {
                 },
           })
         }
-        return { ok: true as const, changeSetId, seq, pages }
+        return { ok: true as const, changeSetId, seq, pages, commentsResolved, commentsReopened }
       })
     } catch (error) {
       if (error instanceof ApplyAborted) return error.result
+      if (error instanceof WikiCommentNotOpenError) return { ok: false, reason: 'comment_not_open' }
       // Párhuzamos létrehozás ugyanarra a path-ra (unique connector+path).
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         return { ok: false, reason: 'conflict', path: null }
@@ -1303,7 +1356,10 @@ export class PostgresPrivateKnowledgeBaseStore implements PrivateKnowledgeBaseSt
       const pageIds = (await tx.wikiPage.findMany({ where: { connectorId }, select: { id: true } })).map(
         (row) => row.id,
       )
+      // A kommentek az oldallal törlődnek (Cascade), ezért előtte számolunk.
+      const comments = await tx.wikiComment.count({ where: { connectorId } })
       const counts: PrivateKnowledgeBasePurgeCounts = {
+        comments,
         revisions: pageIds.length
           ? (await tx.wikiPageRevision.deleteMany({ where: { pageId: { in: pageIds } } })).count
           : 0,

@@ -3,18 +3,21 @@ import { requireTenantRole } from '@/auth/tenant-context'
 import { listPendingGatewayOperationsAction } from '@/app/actions/gateway-operation'
 import { listHandoffInboxAction } from '@/app/actions/handoff'
 import { listMyInboundMailAction } from '@/app/actions/inbound-mail'
+import { listMyWikiCommentTodosAction } from '@/app/actions/knowledge-wiki'
 import { InboundMailList } from '@/components/agents/inbound-mail-panel'
 import { asTranslate } from '@/i18n/translate'
 import { operationErrorLabel } from './labels'
 import { OperationsPanel } from './operations-panel'
 import { HandoffsPanel } from './handoffs-panel'
 import { OperationsHistoryPanel } from './operations-history-panel'
+import { WikiCommentTodos } from './wiki-comment-todos'
 
 export default async function OperationsPage() {
   await requireTenantRole('viewer')
   const listed = await listPendingGatewayOperationsAction()
   const inbox = await listHandoffInboxAction()
   const mail = await listMyInboundMailAction()
+  const wikiCommentTodos = await listMyWikiCommentTodosAction()
   const operations = listed.success ? listed.data.operations : []
   const handoffs = inbox.success ? inbox.data.handoffs : []
   const operationsError = listed.success ? null : listed.error
@@ -60,6 +63,7 @@ export default async function OperationsPage() {
           emptyText=""
         />
       ) : null}
+      <WikiCommentTodos rows={wikiCommentTodos} />
       <OperationsHistoryPanel />
     </div>
   )

@@ -20,6 +20,7 @@ import type {
   WikiRepository,
 } from '@/repositories/interfaces'
 import type { WikiConsoleRepository } from '@/repositories/postgres/wiki-console-repository'
+import type { WikiCommentRepository } from '@/repositories/postgres/wiki-comment-repository'
 import { hasMinimumRole } from '@/auth/types'
 import type { UserRole } from '@prisma/client'
 import { redactKbAuditForVisibility } from '@/lib/audit/kb-private-redaction'
@@ -36,6 +37,7 @@ import {
   wikiLinkTitles,
   isDocumentSource,
   isHumanNoteSource,
+  isWikiCommentSource,
   readWikiSources,
   visibleWikiSources,
   renderWikiIndex,
@@ -63,6 +65,7 @@ import {
   canManageKnowledgeBaseLink,
   effectiveWikiAccess,
   effectiveWikiWriteMode,
+  humanWikiAccess,
   isKnowledgeBaseMember,
   isKnowledgeBaseVisibleTo,
   isMembersKnowledgeBase,
@@ -73,6 +76,7 @@ import {
 } from '@/lib/wiki-access'
 import { normalizeKbPurpose } from '@/lib/kb-retrieval'
 import { KB_MAX_FILE_BYTES, type KnowledgeBaseService } from './knowledge-base-service'
+import { commentsRequestingChange } from '@/lib/wiki-comments'
 import { privateKnowledgeBaseDisplayName, type WikiAccessService } from './wiki-access-service'
 import type { WikiService } from './wiki-service'
 
@@ -111,6 +115,8 @@ export type WikiSourceView =
       exists: boolean
     }
   | { kind: 'human_note'; recordedBy: string | null; recordedAt: string; occasion: string; participants: string | null }
+  /** #1129 D6: egy wiki-komment; törölt kommentnél név és dátum nélkül. */
+  | { kind: 'wiki_comment'; commentId: string; authorName: string | null; commentedAt: string | null; erased: boolean }
   | { kind: 'restricted' }
 
 type Access = { view: boolean; contribute: boolean; manage: boolean; metaOnly: boolean }
@@ -145,6 +151,9 @@ export type WikiConsoleDeps = {
   audit: Pick<AuditRepository, 'append'>
   /** #978: címke szerinti export. */
   history?: Pick<WikiHistoryRepository, 'listTags' | 'stateAt'>
+  /** #1129: számlálók, jóváhagyó kártya, komment-forrás; hiányában vagy kikapcsolt flagnél nincs komment. */
+  comments?: Pick<WikiCommentRepository, 'countOpenByConnector' | 'countOpenForPage' | 'countForConnector' | 'listForChangeSet' | 'findForWrite'>
+  commentsEnabled?: (tenantId: string) => Promise<boolean>
   now?: () => Date
 }
 
@@ -156,30 +165,7 @@ function accessFor(
   actor: WikiConsoleActor,
   connector: Pick<Connector, 'visibility' | 'ownerUserId'> & { kbMemberUserIds?: readonly string[] | null },
 ): Access {
-  if (isMembersKnowledgeBase(connector)) {
-    // #1061 F2 D9: a tartalmat csak tag látja — az admin is csak tagként; nem-tag admin metaadatot lát.
-    const member = isKnowledgeBaseMember(connector, actor.userId)
-    const admin = hasMinimumRole(role(actor), 'admin')
-    return {
-      view: member,
-      contribute: member && hasMinimumRole(role(actor), 'operator'),
-      manage: member && (connector.ownerUserId === actor.userId || admin),
-      metaOnly: !member && admin,
-    }
-  }
-  if (isPrivateKnowledgeBase(connector)) {
-    const owner = !!connector.ownerUserId && connector.ownerUserId === actor.userId
-    return {
-      view: owner,
-      contribute: owner,
-      manage: owner,
-      metaOnly: !owner && hasMinimumRole(role(actor), 'admin'),
-    }
-  }
-  if (connector.visibility !== 'shared') return { view: false, contribute: false, manage: false, metaOnly: false }
-  const operator = hasMinimumRole(role(actor), 'operator')
-  const admin = hasMinimumRole(role(actor), 'admin')
-  return { view: operator, contribute: operator, manage: admin, metaOnly: false }
+  return humanWikiAccess({ userId: actor.userId, role: actor.role }, connector)
 }
 
 export function wikiKbKind(connector: Pick<Connector, 'name' | 'visibility'>): WikiKbKind {
@@ -293,6 +279,16 @@ export class WikiConsoleService {
     return typeof config.displayName === 'string' && config.displayName.trim() ? config.displayName.trim() : connector.name
   }
 
+  /** #1129: a kikapcsolt flag a számlálót is eltünteti. */
+  private async commentsOn(tenantId: string): Promise<boolean> {
+    return !!this.deps.comments && !!(await this.deps.commentsEnabled?.(tenantId))
+  }
+
+  private async openCommentCounts(tenantId: string, connectorIds: string[]): Promise<Map<string, number>> {
+    if (connectorIds.length === 0 || !(await this.commentsOn(tenantId))) return new Map()
+    return this.deps.comments!.countOpenByConnector(connectorIds)
+  }
+
   // -------------------------------------------------------------------------
   // Lista + létrehozás
 
@@ -311,6 +307,7 @@ export class WikiConsoleService {
       this.deps.console.agentNames(actor.tenantId, agentIds),
       this.deps.console.listKnowledgeBaseAgents(actor.tenantId),
     ])
+    const openComments = await this.openCommentCounts(actor.tenantId, visible.filter((row) => accessFor(actor, row).view).map((row) => row.connectorId))
     return visible.map((row) => {
       const access = accessFor(actor, row)
       const kind = wikiKbKind(row)
@@ -335,6 +332,7 @@ export class WikiConsoleService {
         usedBy,
         // A lista-jelvény a tennivalót számolja, ebbe az újrafeldolgozásra várók is beletartoznak.
         inbox: { pending: (counts?.pending ?? 0) + (counts?.reprocess ?? 0), inProgress: counts?.inProgress ?? 0 },
+        openComments: openComments.get(row.connectorId) ?? 0,
         ...stats,
       }
     })
@@ -411,6 +409,8 @@ export class WikiConsoleService {
     const counts = summary.wikis[0]
     const managed = wikiId ? (await this.deps.wiki.managedCategories?.(wikiId)) ?? null : null
     const linkedWikis = managed ? await this.visibleLinkedWikis(actor, managed) : []
+    const commentsEnabled = await this.commentsOn(actor.tenantId)
+    const openComments = (await this.openCommentCounts(actor.tenantId, [connector.id])).get(connector.id) ?? 0
     const pageView = (page: WikiPage) => ({
       path: page.path,
       title: page.title,
@@ -431,6 +431,9 @@ export class WikiConsoleService {
       template: configTemplate(connector.config),
       canManage: access.manage,
       canContribute: access.contribute,
+      /** #1129: panel, fül és számláló csak bekapcsolt flagnél. */
+      commentsEnabled,
+      openComments,
       pageCount: pages.length,
       /** #1061 F1: kezelt kategóriák — a menü a fát követi (üres kategória is látszik). */
       managedCategories: !!managed,
@@ -538,8 +541,29 @@ export class WikiConsoleService {
       }
       readable.set(owner, await this.deps.console.listSourceDocuments(owner, [...new Set(ids)]))
     }
-    const users = await this.deps.console.userLabels(refs.filter(isHumanNoteSource).map((ref) => ref.recordedByUserId))
+    const users = await this.deps.console.userLabels([
+      ...refs.filter(isHumanNoteSource).map((ref) => ref.recordedByUserId),
+      ...refs.filter(isWikiCommentSource).map((ref) => ref.authorUserId),
+    ])
+    // #1129: a törölt komment forrása „törölt komment”, név nélkül. A forrás a flagtől függetlenül olvasható.
+    const commentRefs = refs.filter(isWikiCommentSource)
+    const wikiId = commentRefs.length && this.deps.comments ? (await this.deps.wikis.findByConnectorId(connectorId))?.id : null
+    const liveComments = new Set(
+      wikiId
+        ? (await this.deps.comments!.findForWrite(wikiId, commentRefs.map((ref) => ref.commentId))).filter((row) => !row.erasedAt).map((row) => row.id)
+        : [],
+    )
     return refs.map((ref): WikiSourceView => {
+      if (isWikiCommentSource(ref)) {
+        const erased = !liveComments.has(ref.commentId)
+        return {
+          kind: 'wiki_comment',
+          commentId: ref.commentId,
+          authorName: erased ? null : users.get(ref.authorUserId) ?? null,
+          commentedAt: erased ? null : ref.commentedAt,
+          erased,
+        }
+      }
       if (isHumanNoteSource(ref)) {
         return {
           kind: 'human_note',
@@ -585,7 +609,10 @@ export class WikiConsoleService {
     const crossLinks = await this.crossLinkViews(actor, connector.id, page.body)
     const crossBacklinks =
       page.status === 'published' && wikiId ? await this.visibleCrossBacklinks(actor, wikiId, page.path) : []
+    const openComments = (await this.commentsOn(actor.tenantId)) ? await this.deps.comments!.countOpenForPage(page.id) : 0
     return {
+      /** #1129: a fejléc számlálója. */
+      openComments,
       path: page.path,
       title: page.title,
       summary: page.summary,
@@ -1088,10 +1115,11 @@ export class WikiConsoleService {
     const { connector } = await this.load(actor, connectorId, 'manage')
     const plan = visibilityTransition(actor, connector, to)
     if (!plan) throw new WikiConsoleError('forbidden')
-    const [users, bindings, pending] = await Promise.all([
+    const [users, bindings, pending, comments] = await Promise.all([
       this.deps.console.listTenantUsers(actor.tenantId),
       this.deps.console.listBindingsForConnector(connector.id),
       this.deps.wikis.listPendingChangeSetIds(connector.id),
+      this.deps.comments?.countForConnector(connector.id) ?? Promise.resolve(0),
     ])
     const after = { visibility: plan.visibility, ownerUserId: plan.ownerUserId, kbMemberUserIds: plan.memberUserIds }
     const losing = users.filter((user) => isKnowledgeBaseVisibleTo(connector, user.id) && !isKnowledgeBaseVisibleTo(after, user.id))
@@ -1103,6 +1131,8 @@ export class WikiConsoleService {
         ? []
         : bindings.filter((binding) => effectiveWikiAccess(binding) !== 'none').map((binding) => binding.agentName),
       rejectedChangeSets: pending.length,
+      /** #1129: a kommenteket a szerzőikkel együtt mutatja, ki látja őket a váltás után. */
+      comments,
     }
   }
 
@@ -1319,7 +1349,12 @@ export class WikiConsoleService {
       preview.pages.map((page) => this.describeSources(actor, preview.connector.id, dedupeSources(page.after.sources))),
     )
     const agentNames = await this.deps.console.agentNames(actor.tenantId, preview.changeSet.agentId ? [preview.changeSet.agentId] : [])
+    const comments = this.deps.comments
+      ? await commentsRequestingChange({ comments: this.deps.comments, userLabels: (ids) => this.deps.console.userLabels(ids) }, preview.connector.id, changeSetId)
+      : []
     return {
+      /** #1129 S3: a jóváhagyó a kérést és a módosítást együtt látja. */
+      comments,
       changeSetId: preview.changeSet.id,
       status: preview.changeSet.status,
       connectorId: preview.connector.id,
@@ -1430,7 +1465,7 @@ function dedupeSources(refs: WikiSourceRef[]): WikiSourceRef[] {
   const withPage = new Set(refs.filter(isDocumentSource).filter((ref) => ref.page || ref.section).map(docKey))
   const seen = new Set<string>()
   return refs.filter((ref) => {
-    if (isHumanNoteSource(ref)) return true
+    if (!isDocumentSource(ref)) return true
     if (!ref.page && !ref.section && withPage.has(docKey(ref))) return false
     const key = `${docKey(ref)}|${ref.page ?? ''}|${ref.section ?? ''}`
     if (seen.has(key)) return false

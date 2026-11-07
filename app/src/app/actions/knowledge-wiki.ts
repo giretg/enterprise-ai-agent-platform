@@ -15,6 +15,9 @@ import { WikiAccessError } from '@/domain/knowledge-base/wiki-access-service'
 import { WikiCategoryError } from '@/domain/knowledge-base/wiki-category-service'
 import { WikiMetadataError } from '@/domain/knowledge-base/wiki-metadata-service'
 import { WikiConfigError } from '@/domain/knowledge-base/wiki-config-service'
+import { WikiCommentError } from '@/domain/knowledge-base/wiki-comment-service'
+import { requireFeature, isFeatureEnabled } from '@/lib/feature-flags'
+import { WIKI_COMMENT_MAX_BODY, WIKI_COMMENT_MAX_QUOTE } from '@/lib/wiki-comments'
 import { kbFileErrorCode } from '@/lib/kb-extraction'
 import { WIKI_FIELD_TYPES, type WikiViewFilter } from '@/lib/wiki-metadata'
 import { WIKI_CATEGORY_MAX_COUNT, WIKI_CATEGORY_MAX_PAGE_ORDER, WIKI_CATEGORY_MAX_PINNED, WIKI_PAGE_SORTS } from '@/lib/wiki-categories'
@@ -36,7 +39,8 @@ function failFrom(error: unknown, fallback: string) {
     error instanceof WikiAccessError ||
     error instanceof WikiCategoryError ||
     error instanceof WikiMetadataError ||
-    error instanceof WikiConfigError
+    error instanceof WikiConfigError ||
+    error instanceof WikiCommentError
   ) {
     return fail(error.code)
   }
@@ -940,5 +944,153 @@ export async function setWikiCollectFocusAction(input: { connectorId: string; co
     return ok(result)
   } catch (e) {
     return failFrom(e, 'Failed to save collect focus')
+  }
+}
+
+// -------------------------------------------------------------------------
+// #1129 wiki-kommentek: a gomb elrejtése nem védelem, ezért minden művelet a flaget is nézi.
+
+async function commentActor(): Promise<WikiConsoleActor> {
+  const current = await actor()
+  await requireFeature('wiki.comments', { tenantId: current.tenantId })
+  return current
+}
+
+function revalidateComments(connectorId: string) {
+  revalidateWiki(connectorId)
+  revalidatePath('/control-plane/operations')
+}
+
+export async function listWikiPageCommentsAction(input: { connectorId: string; path: string }) {
+  try {
+    const parsed = z.object({ connectorId: uuid, path: z.string().min(1).max(200) }).parse(input)
+    return ok(await services.wikiComments.listForPage(await commentActor(), parsed.connectorId, parsed.path))
+  } catch (e) {
+    return failFrom(e, 'Failed to load comments')
+  }
+}
+
+export async function listWikiCommentsAction(input: { connectorId: string; status?: string; mine?: boolean; path?: string }) {
+  try {
+    const parsed = z
+      .object({ connectorId: uuid, status: z.string().max(32).optional(), mine: z.boolean().optional(), path: z.string().min(1).max(200).optional() })
+      .parse(input)
+    return ok(await services.wikiComments.listForWiki(await commentActor(), parsed.connectorId, parsed))
+  } catch (e) {
+    return failFrom(e, 'Failed to load comments')
+  }
+}
+
+export async function addWikiCommentAction(input: { connectorId: string; path: string; body: string; quote?: string }) {
+  try {
+    const parsed = z
+      .object({
+        connectorId: uuid,
+        path: z.string().min(1).max(200),
+        body: z.string().trim().min(1).max(WIKI_COMMENT_MAX_BODY),
+        // A kijelölés a felületen vágva érkezik; a szerver sem fogad el hosszabbat.
+        quote: z.string().max(WIKI_COMMENT_MAX_QUOTE).optional(),
+      })
+      .parse(input)
+    const result = await services.wikiComments.addComment(await commentActor(), parsed.connectorId, parsed)
+    revalidateComments(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save the comment')
+  }
+}
+
+const commentRef = z.object({ connectorId: uuid, commentId: uuid })
+
+export async function withdrawWikiCommentAction(input: { connectorId: string; commentId: string }) {
+  try {
+    const parsed = commentRef.parse(input)
+    const result = await services.wikiComments.withdraw(await commentActor(), parsed.connectorId, parsed.commentId)
+    revalidateComments(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to withdraw the comment')
+  }
+}
+
+export async function answerWikiCommentAction(input: { connectorId: string; commentId: string; text: string }) {
+  try {
+    const parsed = commentRef.extend({ text: z.string().trim().min(1).max(WIKI_COMMENT_MAX_BODY) }).parse(input)
+    const result = await services.wikiComments.answer(await commentActor(), parsed.connectorId, parsed.commentId, parsed.text)
+    revalidateComments(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to send the answer')
+  }
+}
+
+export async function reopenWikiCommentAction(input: { connectorId: string; commentId: string; reason: string }) {
+  try {
+    const parsed = commentRef.extend({ reason: z.string().trim().min(1).max(WIKI_COMMENT_MAX_BODY) }).parse(input)
+    const result = await services.wikiComments.reopen(await commentActor(), parsed.connectorId, parsed.commentId, parsed.reason)
+    revalidateComments(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to reopen the comment')
+  }
+}
+
+export async function closeWikiCommentAction(input: { connectorId: string; commentId: string; to: 'resolved' | 'declined'; reason: string }) {
+  try {
+    const parsed = commentRef
+      .extend({ to: z.enum(['resolved', 'declined']), reason: z.string().trim().min(1).max(WIKI_COMMENT_MAX_BODY) })
+      .parse(input)
+    const result = await services.wikiComments.closeManually(await commentActor(), parsed.connectorId, parsed.commentId, parsed)
+    revalidateComments(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to close the comment')
+  }
+}
+
+export async function deleteWikiCommentAction(input: { connectorId: string; commentId: string }) {
+  try {
+    const parsed = commentRef.parse(input)
+    const result = await services.wikiComments.remove(await commentActor(), parsed.connectorId, parsed.commentId)
+    revalidateComments(parsed.connectorId)
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to delete the comment')
+  }
+}
+
+export type WikiCommentTodoRowData = Awaited<ReturnType<typeof services.wikiComments.listTodos>>[number]
+
+/** Hiba vagy kikapcsolt flag esetén üres: a többi teendő ettől még betöltődik. */
+export async function listMyWikiCommentTodosAction(): Promise<WikiCommentTodoRowData[]> {
+  try {
+    const current = await actor()
+    if (!(await isFeatureEnabled('wiki.comments', { tenantId: current.tenantId }))) return []
+    return await services.wikiComments.listTodos(current)
+  } catch (e) {
+    console.error('wiki_comments.todos_failed', e instanceof Error ? e.message : e)
+    return []
+  }
+}
+
+/** A menü számlálója minden control-plane oldalon lefut, ezért csak számol; hibánál 0. */
+export async function countMyWikiCommentTodosAction(): Promise<number> {
+  try {
+    const current = await actor()
+    if (!(await isFeatureEnabled('wiki.comments', { tenantId: current.tenantId }))) return 0
+    return await services.wikiComments.countTodos(current)
+  } catch {
+    return 0
+  }
+}
+
+export async function acknowledgeWikiCommentAction(input: { commentId?: string; allResolved?: boolean }) {
+  try {
+    const parsed = z.object({ commentId: uuid.optional(), allResolved: z.boolean().optional() }).parse(input)
+    const result = await services.wikiComments.acknowledge(await commentActor(), parsed)
+    revalidatePath('/control-plane/operations')
+    return ok(result)
+  } catch (e) {
+    return failFrom(e, 'Failed to save')
   }
 }
