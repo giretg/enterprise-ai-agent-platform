@@ -55,9 +55,30 @@ const user = {
   updatedAt: now,
 } as unknown as User
 
-function fixture(initialInvitation = invitation(), initialUser: User = user) {
-  let currentInvitation = initialInvitation as { status: string; redeemedAt: Date | null }
+function fixture(
+  initialInvitation = invitation(),
+  initialUser: User = user,
+  existingMembership: {
+    id: string
+    tenantId: string
+    userId: string
+    role: string
+    status: 'pending' | 'active' | 'suspended'
+    updatedAt: Date
+  } | null = null,
+) {
+  let currentInvitation = initialInvitation as {
+    id: string
+    tenantId: string | null
+    email: string
+    role: string
+    status: string
+    redeemedAt: Date | null
+    createdAt: Date
+    createdById: string
+  }
   let currentUser: User = { ...initialUser }
+  let membership = existingMembership
   const userUpdates: Record<string, unknown>[] = []
   const membershipCalls: unknown[] = []
   const auditEvents: unknown[] = []
@@ -86,9 +107,28 @@ function fixture(initialInvitation = invitation(), initialUser: User = user) {
     {} as never,
     undefined,
     {
-      async upsert(input: unknown) {
+      async findByTenantAndUser(tenantId: string, userId: string) {
+        if (!membership) return null
+        if (membership.tenantId !== tenantId || membership.userId !== userId) return null
+        return membership as never
+      },
+      async upsert(input: {
+        tenantId: string
+        userId: string
+        role: string
+        status: 'pending' | 'active' | 'suspended'
+        invitedById?: string | null
+      }) {
         membershipCalls.push(input)
-        return { id: 'membership-a' } as never
+        membership = {
+          id: membership?.id ?? 'membership-a',
+          tenantId: input.tenantId,
+          userId: input.userId,
+          role: input.role,
+          status: input.status,
+          updatedAt: new Date(),
+        }
+        return { id: membership.id } as never
       },
     } as never,
     {
@@ -105,6 +145,7 @@ function fixture(initialInvitation = invitation(), initialUser: User = user) {
     userUpdates,
     getInvitation: () => currentInvitation,
     getUser: () => currentUser,
+    getMembership: () => membership,
   }
 }
 
@@ -207,6 +248,78 @@ async function main() {
     await service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator })
     assert.equal(getUser().role, 'admin')
     assert.equal(getUser().invitedById, 'self')
+  })
+
+  await check('stale invite cannot restore suspended membership or escalate role', async () => {
+    const operator = {
+      ...user,
+      role: 'operator' as const,
+      status: 'active' as const,
+      invitedById: 'self',
+      activatedAt: now,
+    }
+    const suspendedAt = new Date(now.getTime() + 30_000)
+    const { service, membershipCalls, getInvitation, getMembership } = fixture(
+      invitation({
+        role: 'admin',
+        createdAt: new Date(now.getTime() - 60_000),
+      }),
+      operator,
+      {
+        id: 'membership-a',
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        role: 'operator',
+        status: 'suspended',
+        updatedAt: suspendedAt,
+      },
+    )
+    await assert.rejects(
+      () => service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator }),
+      /invitation: membership_suspended/,
+    )
+    assert.equal(getInvitation().status, 'pending')
+    assert.equal(membershipCalls.length, 0)
+    assert.equal(getMembership()?.status, 'suspended')
+    assert.equal(getMembership()?.role, 'operator')
+  })
+
+  await check('fresh invite after suspend may reactivate suspended membership (intentional re-invite)', async () => {
+    const operator = {
+      ...user,
+      role: 'operator' as const,
+      status: 'active' as const,
+      invitedById: 'self',
+      activatedAt: now,
+    }
+    const suspendedAt = new Date(now.getTime() - 30_000)
+    const { service, membershipCalls, getMembership } = fixture(
+      invitation({
+        role: 'admin',
+        createdAt: new Date(now.getTime()),
+      }),
+      operator,
+      {
+        id: 'membership-a',
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        role: 'operator',
+        status: 'suspended',
+        updatedAt: suspendedAt,
+      },
+    )
+    await service.acceptInvitationForSignedInUser({ invitationId: 'invite-a', user: operator })
+    assert.deepEqual(membershipCalls, [
+      {
+        tenantId: 'tenant-a',
+        userId: 'user-a',
+        role: 'admin',
+        status: 'active',
+        invitedById: 'admin-a',
+      },
+    ])
+    assert.equal(getMembership()?.status, 'active')
+    assert.equal(getMembership()?.role, 'admin')
   })
 
   console.log(`\n${failures === 0 ? 'Minden teszt zöld.' : `${failures} teszt bukott.`}`)
