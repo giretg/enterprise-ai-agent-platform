@@ -55,6 +55,25 @@ export async function listKnowledgeBasesAction() {
   }
 }
 
+/** #1139: a közös tudásbázis mindig megjelenik a listában, hogy legyen hova feltölteni. */
+export async function ensureKnowledgeCatalogAction() {
+  try {
+    const ctx = await requireTenantRole('admin')
+    await services.knowledgeBase.ensureCatalog({ tenantId: ctx.activeTenantId })
+    return ok(null)
+  } catch (e) {
+    return failFrom(e, 'Failed to prepare the shared knowledge base')
+  }
+}
+
+export async function listWikiFilesAction(input: { connectorId: string }) {
+  try {
+    return ok(await services.wikiConsole.listFiles(await actor(), uuid.parse(input.connectorId)))
+  } catch (e) {
+    return failFrom(e, 'Failed to list files')
+  }
+}
+
 export async function createKnowledgeBaseAction(input: {
   displayName: string
   private: boolean

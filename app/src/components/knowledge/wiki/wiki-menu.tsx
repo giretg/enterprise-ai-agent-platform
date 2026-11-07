@@ -77,7 +77,7 @@ export async function WikiMenu({
   const linkedItem = (item: LinkedWiki) => (
     <Link
       key={item.key}
-      href={wikiHref(item.connectorId, linkQuery)}
+      href={wikiHref(item.connectorId, linkQuery ?? { tab: 'wiki' })}
       data-testid="wiki-toc-linked"
       className="flex items-center gap-1.5 rounded px-1 py-0.5 text-xs font-medium text-ink-soft hover:bg-ink/5 hover:text-coral-deep"
       title={t('linkedWiki')}

@@ -471,6 +471,37 @@
       "eyebrow": "Tudásbázis",
       "back": "← Vissza a tudásbázisokhoz",
       "tabsAria": "A tudásbázis részei",
+      "names": {
+        "catalog": "Közös tudásbázis",
+        "agent": "{name} tudásbázisa",
+        "agentUnknown": "Munkatárs tudásbázisa",
+        "public": "{name} nyilvános anyagai",
+        "publicUnknown": "Nyilvános anyagok"
+      },
+      "files": {
+        "title": "Fájlok",
+        "intro": "Az ide feltöltött fájlokat a tudásbázishoz hozzáférő munkatársak kereshetik és olvashatják. Kattints egy fájlra a szövege megnyitásához.",
+        "empty": "Ebben a tudásbázisban még nincs fájl, ezért a munkatársak innen semmit nem találnak.",
+        "back": "← Vissza a fájlokhoz",
+        "truncated": "A legújabb {count} fájl látszik.",
+        "wikiState": {
+          "none": "Nincs a wikiben",
+          "paged": "Oldalakra bontva a kereséshez",
+          "pending": "Feldolgozásra vár a wikihez",
+          "in_progress": "Feldolgozás alatt a wikihez",
+          "processed": "Bekerült a wikibe",
+          "skipped": "Kihagyva a wikiből"
+        },
+        "manage": {
+          "catalogAdminOnly": "Fájlt feltölteni és törölni adminisztrátor tud.",
+          "agent": "Fájl feltöltése és törlése:",
+          "agentLink": "a munkatárs adatlapján",
+          "public": "Fájl feltöltése és törlése:",
+          "publicLink": "a nyilvános asszisztens Nyilvános tudás fülén",
+          "inbox": "Új fájl feltöltése, amiből wiki is készülhet:",
+          "inboxLink": "a Tálca fülön"
+        }
+      },
       "reader": {
         "exit": "Olvasó nézet bezárása",
         "back": "Vissza",
@@ -668,13 +699,14 @@
         }
       },
       "tabs": {
+        "files": "Fájlok",
         "wiki": "Wiki",
         "reader": "Olvasó nézet",
         "views": "Nézetek",
         "changes": "Változások",
         "inbox": "Tálca",
         "log": "Napló",
-        "access": "Kik férnek hozzá",
+        "access": "Ki használja",
         "proposals": "Javaslatok",
         "settings": "Beállítások"
       },
@@ -799,7 +831,8 @@
           }
         },
       "kind": {
-        "catalog": "Közös katalógus",
+        "catalog": "Közös tudásbázis",
+        "public": "Nyilvános",
         "agent": "Munkatárs saját",
         "shared": "Megosztott",
         "private": "Privát",
@@ -836,13 +869,16 @@
       "header": {
         "body": "Az AI-munkatársak ebből a tudásbázisból dolgoznak. A wiki az ide feltöltött anyagokból készül: az írási joggal rendelkező munkatárs oldalakba rendezi és összekapcsolja őket.",
         "privateBody": "Ezt a tudásbázist csak te látod. Amikor egy AI-munkatárs feldolgozza vagy olvassa, a tartalom eljut a használt AI-szolgáltatóhoz (pl. Claude, OpenAI).",
-        "membersBody": "Ezt a tudásbázist csak a névsoron lévők látják. Egy AI-munkatárs is csak akkor éri el, ha névsoron lévő emberrel dolgozik."
+        "membersBody": "Ezt a tudásbázist csak a névsoron lévők látják. Egy AI-munkatárs is csak akkor éri el, ha névsoron lévő emberrel dolgozik.",
+        "publicBody": "Ami ide kerül, azt a nyilvános asszisztensen át bárki láthatja. Ide csak nyilvánosságra szánt anyagot tölts fel."
       },
       "list": {
-        "title": "Tudásbázisok és wikik",
-        "intro": "Minden tudásbázishoz tartozik egy wiki: az AI-munkatársak a feltöltött anyagokból oldalakat írnak és kapcsolnak össze. Kattints egy sorra a wiki, a tálca és a hozzáférések megnyitásához.",
+        "title": "Tudásbázisok",
+        "intro": "A szám a feltöltött fájlokat mutatja. A wikit az AI-munkatársak írják a fájlokból, ezért lehet üres akkor is, ha vannak fájlok. Kattints egy sorra a fájlok, a wiki és a hozzáférések megnyitásához.",
         "empty": "Még nincs tudásbázis. Hozz létre egyet lent — vagy kapcsold be egy munkatársnál a tudásbázis eszközt, és automatikusan létrejön a saját tudásbázisa.",
-        "stats": "{sources} forrás · {pages} oldal · {size}",
+        "stats": "{files} fájl · {pages, plural, =0 {nincs wiki} other {# wiki-oldal}} · {size}",
+        "usedBy": "Használja: {names}{more, plural, =0 {} other { +#}}",
+        "usedByNone": "Egy munkatárs sem használja",
         "inboxBadge": "{count} vár a tálcán",
         "unknownOwner": "ismeretlen tulajdonos",
         "privateMetaHelp": "Ez valaki más privát tudásbázisa. Adminisztrátorként csak azt látod, hogy létezik és mekkora — a tartalmát nem nyithatod meg.",
@@ -887,7 +923,7 @@
       },
       "overview": {
         "title": "Áttekintés",
-        "empty": "Még nincs egyetlen oldal sem. A wiki akkor kezd megtelni, amikor egy írási joggal rendelkező AI-munkatárs feldolgozza a tálcán váró anyagokat.",
+        "empty": "Még nincs egyetlen wiki-oldal sem. A wiki akkor kezd megtelni, amikor egy írási joggal rendelkező AI-munkatárs feldolgozza a tálcán váró anyagokat. A feltöltött fájlokat a Fájlok fülön találod.",
         "body": "A wikiben {pages} oldal van. Válassz egyet a tartalomjegyzékből.",
         "inbox": "Tálca: {pending} vár, {inProgress} feldolgozás alatt.",
         "writers": "{count, plural, =0 {Egyik munkatárs sem írhatja ezt a wikit — állítsd be egy munkatárs adatlapján (Tudásbázis rész).} one {# munkatárs írhatja ezt a wikit.} other {# munkatárs írhatja ezt a wikit.}}"
@@ -1069,7 +1105,8 @@
           "catalog": "A szervezet közös katalógusa. Az operátorok, az adminok és a hozzá kapcsolt munkatársak használói látják.",
           "shared": "Megosztott tudásbázis: az operátorok, az adminok és a hozzá kapcsolt munkatársak használói látják. Az admin a wiki Beállítások fülén priváttá teheti.",
           "private": "Privát: csak te látod, az admin sem. A munkatárs is csak akkor éri el, amikor te használod.",
-          "members": "Csak a kijelöltek: a munkatárs csak akkor éri el, ha névsoron lévő emberrel dolgozik."
+          "members": "Csak a kijelöltek: a munkatárs csak akkor éri el, ha névsoron lévő emberrel dolgozik.",
+          "public": "Nyilvános: ami ide kerül, azt a nyilvános asszisztensen át bárki láthatja."
         },
         "membersOwnerOnly": "Ez egy csak a kijelölteknek szóló tudásbázis; a tulajdonosa vagy egy tag adminisztrátor kapcsolhatja."
       },
@@ -1077,6 +1114,7 @@
         "visibilityTitle": "Ki láthatja?",
         "nowPrivate": "Privát: csak te látod. Az adminisztrátor csak annyit lát, hogy létezik és mekkora. Az AI-munkatársak csak akkor érik el, amikor te használod őket.",
         "nowShared": {
+          "public": "Ez a nyilvános asszisztens tudásbázisa, a láthatósága nem módosítható.",
           "shared": "Megosztott: a szervezet operátorai és adminjai látják, valamint bárki, aki egy ide kapcsolt munkatársat használ.",
           "agent": "A munkatárs saját tudásbázisa: a szervezet operátorai és adminjai látják, és bárki, aki a munkatársat használhatja.",
           "catalog": "A szervezet közös katalógusa: a szervezet operátorai és adminjai látják, és bárki, aki egy ide kapcsolt munkatársat használ."
@@ -1911,7 +1949,7 @@
     "knowledge": {
       "eyebrow": "Katalógus",
       "title": "Tudásbázis",
-      "body": "Közös dokumentumtár: egyszer töltöd fel, aztán az agentek adatlapján egy kattintással hozzákötöd ahhoz, akinek szüksége van rá. A hozzákötés másolatot készít — a későbbi katalógus-frissítés nem írja át az agentnél lévőt.",
+      "body": "Itt találod a szervezet összes tudásbázisát. Mindegyikben fájlok vannak, és ha kell, wiki is épül belőlük. Azt, hogy egy munkatárs melyiket éri el, a sorra kattintva, a Ki használja fülön állíthatod be.",
       "needOperator": "A tudásbázis megtekintéséhez legalább operátor jogosultság szükséges.",
       "loadFailed": "A katalógus betöltése sikertelen."
     },
@@ -2420,13 +2458,11 @@
     "empty": "Még nincs kiválasztott írható fájl vagy mappa."
   },
   "Knowledge": {
-    "title": "Katalógus-elemek",
     "chooseFile": "Fájl kiválasztása",
     "noFile": "Nincs fájl kiválasztva",
     "purpose": "Mire való (egy sor, opcionális)",
     "upload": "Feltöltés",
     "uploaded": "„{filename}” feltöltve a katalógusba.",
-    "empty": "Még nincs katalógus-elem.",
     "deleteTitle": "Katalógus-elem törlése",
     "deleteBody": "Törlöd: {filename}? Az agenteknél lévő másolatok megmaradnak.",
     "delete": "Törlés",

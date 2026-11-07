@@ -16,6 +16,7 @@ import {
   getWikiSettingsAction,
   getWikiStateAtAction,
   getWikiSourceAction,
+  listWikiFilesAction,
   listWikiInboxAction,
 } from '@/app/actions/knowledge-wiki'
 import { Badge, Card } from '@/components/ui/shell'
@@ -40,13 +41,16 @@ import {
   RevisionView,
   TimeTravelBanner,
 } from '@/components/knowledge/wiki/wiki-history-views'
-import { formatWhen, wikiHref } from '@/components/knowledge/wiki/wiki-format'
+import { formatWhen, resolveWikiTab, wikiDisplayName, wikiHref } from '@/components/knowledge/wiki/wiki-format'
+import { WikiFilesPanel } from '@/components/knowledge/wiki/wiki-files-panel'
+import { KnowledgeLanguageCard } from '@/components/knowledge/knowledge-language-card'
+import { getKnowledgeCatalogLanguage } from '@/app/actions/platform'
+import { resolveKbLanguage } from '@/lib/kb-language'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 
 export const dynamic = 'force-dynamic'
 
-const TABS = ['wiki', 'reader', 'views', 'changes', 'inbox', 'log', 'access', 'proposals', 'settings'] as const
-type Tab = (typeof TABS)[number]
+const TABS = ['files', 'wiki', 'reader', 'views', 'changes', 'inbox', 'log', 'access', 'proposals', 'settings'] as const
 
 /** Az olvasó nézetben minden belső link megtartja ezt, különben kattintásra kilépne belőle. */
 const READER_QUERY = { tab: 'reader' }
@@ -75,8 +79,9 @@ export default async function KnowledgeBaseWikiPage({
     notFound()
   }
   const wiki = overviewRes.data
+  const title = wikiDisplayName(t, wiki)
   const tabs = TABS.filter((tab) => (tab !== 'settings' || wiki.canManage) && (tab !== 'proposals' || wiki.canManage) && (tab !== 'views' || wiki.managedFields))
-  const tab: Tab = (tabs as readonly string[]).includes(query.tab ?? '') ? (query.tab as Tab) : 'wiki'
+  const tab = resolveWikiTab(query, tabs)
   // A nyitott lap (és forrás) a nézetváltáskor is megmarad.
   const openItem = { page: query.page, source: query.source, p: query.p }
 
@@ -84,8 +89,8 @@ export default async function KnowledgeBaseWikiPage({
     return (
       <div className="space-y-3" data-testid="wiki-reader">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h1 className="font-display text-2xl font-semibold" data-testid="wiki-title">{wiki.name}</h1>
-          <Link href={wikiHref(connectorId, openItem)} data-testid="wiki-reader-exit" className="text-sm text-ink-soft hover:text-ink">
+          <h1 className="font-display text-2xl font-semibold" data-testid="wiki-title">{title}</h1>
+          <Link href={wikiHref(connectorId, { tab: 'wiki', ...openItem })} data-testid="wiki-reader-exit" className="text-sm text-ink-soft hover:text-ink">
             {t('reader.exit')}
           </Link>
         </div>
@@ -102,12 +107,20 @@ export default async function KnowledgeBaseWikiPage({
       <div>
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">{t('eyebrow')}</p>
         <div className="mt-1 flex flex-wrap items-center gap-2">
-          <h1 className="font-display text-3xl font-semibold" data-testid="wiki-title">{wiki.name}</h1>
-          <Badge tone={wiki.private || wiki.kind === 'members' ? 'warning' : 'neutral'}>{t(`kind.${wiki.kind}`)}</Badge>
+          <h1 className="font-display text-3xl font-semibold" data-testid="wiki-title">{title}</h1>
+          {wiki.kind === 'catalog' ? null : (
+            <Badge tone={wiki.private || wiki.kind === 'members' || wiki.kind === 'public' ? 'warning' : 'neutral'}>{t(`kind.${wiki.kind}`)}</Badge>
+          )}
           <Badge tone="neutral">{t(`templates.${wiki.template}.name`)}</Badge>
         </div>
         <p className="mt-1 max-w-2xl text-sm text-ink-soft">
-          {wiki.private ? t('header.privateBody') : wiki.kind === 'members' ? t('header.membersBody') : t('header.body')}
+          {wiki.private
+            ? t('header.privateBody')
+            : wiki.kind === 'members'
+              ? t('header.membersBody')
+              : wiki.kind === 'public'
+                ? t('header.publicBody')
+                : t('header.body')}
         </p>
         <WhoSees wiki={wiki} connectorId={connectorId} t={t} />
       </div>
@@ -132,6 +145,7 @@ export default async function KnowledgeBaseWikiPage({
         ))}
       </nav>
 
+      {tab === 'files' ? <FilesTab connectorId={connectorId} wiki={wiki} query={query} t={t} locale={locale} /> : null}
       {tab === 'wiki' ? (
         <WikiTab connectorId={connectorId} wiki={wiki} query={query} t={t} locale={locale} />
       ) : null}
@@ -171,7 +185,7 @@ export default async function KnowledgeBaseWikiPage({
       ) : null}
       {tab === 'access' ? <AccessTab connectorId={connectorId} /> : null}
       {tab === 'proposals' && wiki.canManage ? <ProposalsTab connectorId={connectorId} proposalId={query.proposal} /> : null}
-      {tab === 'settings' && wiki.canManage ? <SettingsTab connectorId={connectorId} name={wiki.name} isPrivate={wiki.private} /> : null}
+      {tab === 'settings' && wiki.canManage ? <SettingsTab connectorId={connectorId} name={title} isPrivate={wiki.private} isCatalog={wiki.kind === 'catalog'} /> : null}
     </div>
   )
 }
@@ -199,6 +213,46 @@ type WikiQuery = {
 
 type Overview = Extract<Awaited<ReturnType<typeof getWikiOverviewAction>>, { success: true }>['data']
 type T = Awaited<ReturnType<typeof getTranslations<'ControlPlane.wiki'>>>
+
+/** #1139: a tudásbázis összes feltöltött fájlja; egy fájl szövege is itt nyílik meg. */
+async function FilesTab({
+  connectorId,
+  wiki,
+  query,
+  t,
+  locale,
+}: {
+  connectorId: string
+  wiki: Overview
+  query: WikiQuery
+  t: T
+  locale: string
+}) {
+  if (query.source) {
+    const res = await getWikiSourceAction({ connectorId, documentId: query.source })
+    const back = wikiHref(connectorId, { tab: 'files' })
+    return res.success ? (
+      <SourceView connectorId={connectorId} source={res.data} page={query.p} t={t} locale={locale} backHref={back} backLabel={t('files.back')} />
+    ) : (
+      <Card>
+        <p className="text-sm text-ink-soft">{t('source.notFound')}</p>
+        <Link href={back} className="mt-4 inline-block text-sm text-coral-deep hover:underline">{t('files.back')}</Link>
+      </Card>
+    )
+  }
+  const res = await listWikiFilesAction({ connectorId })
+  if (!res.success) notFound()
+  return (
+    <WikiFilesPanel
+      connectorId={connectorId}
+      kind={wiki.kind}
+      ownerAgentId={wiki.ownerAgentId}
+      canManage={wiki.canManage}
+      files={res.data.files}
+      truncated={res.data.truncated}
+    />
+  )
+}
 
 async function WikiTab({
   connectorId,
@@ -443,6 +497,8 @@ function SourceView({
   t,
   locale,
   backControl,
+  backHref,
+  backLabel,
 }: {
   connectorId: string
   source: { documentId: string; filename: string; text: string; createdAt: string }
@@ -451,6 +507,9 @@ function SourceView({
   locale: string
   /** Olvasó nézetben ez a gomb váltja ki a lap alji „vissza a wikihez” linket. */
   backControl?: React.ReactNode
+  /** A Fájlok fülről nyitva oda vezet vissza. */
+  backHref?: string
+  backLabel?: string
 }) {
   // A PDF-kinyerés oldalanként `# Oldal N` fejlécet ír; erre ugrunk.
   const sections = source.text.split(/\n(?=# Oldal \d+\n)/)
@@ -478,8 +537,8 @@ function SourceView({
         })}
       </div>
       {backControl ? null : (
-        <Link href={wikiHref(connectorId)} className="mt-4 inline-block text-sm text-coral-deep hover:underline">
-          {t('source.back')}
+        <Link href={backHref ?? wikiHref(connectorId, { tab: 'wiki' })} className="mt-4 inline-block text-sm text-coral-deep hover:underline">
+          {backLabel ?? t('source.back')}
         </Link>
       )}
     </Card>
@@ -620,16 +679,24 @@ async function ProposalsTab({ connectorId, proposalId }: { connectorId: string; 
   return <WikiProposalsPanel connectorId={connectorId} overview={overview.data} review={review?.success ? review.data : null} />
 }
 
-async function SettingsTab({ connectorId, name, isPrivate }: { connectorId: string; name: string; isPrivate: boolean }) {
-  const [res, retention, categories, metadata] = await Promise.all([
+async function SettingsTab({ connectorId, name, isPrivate, isCatalog }: { connectorId: string; name: string; isPrivate: boolean; isCatalog: boolean }) {
+  const [res, retention, categories, metadata, language] = await Promise.all([
     getWikiSettingsAction({ connectorId }),
     getWikiRetentionAction({ connectorId }),
     getWikiCategoriesAction({ connectorId }),
     getWikiMetadataAction({ connectorId }),
+    isCatalog ? getKnowledgeCatalogLanguage() : null,
   ])
   if (!res.success) notFound()
   return (
     <div className="space-y-4">
+      {language?.success ? (
+        <KnowledgeLanguageCard
+          initialLanguage={resolveKbLanguage(language.data.kbLanguage)}
+          tenantLanguage={resolveKbLanguage(language.data.tenantLanguage)}
+          canManage
+        />
+      ) : null}
       <WikiSettingsPanel connectorId={connectorId} settings={res.data} />
       {categories.success ? <WikiCategoriesPanel connectorId={connectorId} data={categories.data} /> : null}
       {metadata.success ? <WikiMetadataPanel connectorId={connectorId} data={metadata.data} /> : null}

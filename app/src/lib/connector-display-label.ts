@@ -11,7 +11,8 @@ export function connectorDisplayLabel(type: string, name: string, config?: unkno
   if (type === 'knowledge_base' && AGENT_OWNED_KB_CONNECTOR_NAME.test(name)) {
     return AGENT_OWNED_KB_CONNECTOR_DISPLAY_LABEL
   }
-  if (type === 'knowledge_base' && name === 'kb:catalog') return 'Közös katalógus'
+  if (type === 'knowledge_base' && name === 'kb:catalog') return 'Közös tudásbázis'
+  if (type === 'knowledge_base' && name.startsWith('kb:public:')) return 'Nyilvános tudásbázis'
   // #946: a Control Plane-en létrehozott (közös / privát / névsoros) tudásbázis neve a configban él.
   if (type === 'knowledge_base' && /^kb:(shared|private|members):/.test(name)) {
     const displayName =

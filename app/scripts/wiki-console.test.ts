@@ -13,6 +13,7 @@ import type { WikiConsoleKbRow, WikiConsoleRepository } from '../src/repositorie
 import { readZipEntries } from '../src/lib/skill/zip-reader'
 import { collapseUnchanged, diffLines } from '../src/lib/text-line-diff'
 import { linkifyWikiLinks } from '../src/lib/wiki-markdown-links'
+import { resolveWikiTab, wikiDisplayName } from '../src/components/knowledge/wiki/wiki-format'
 
 const TENANT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const OWNER = '11111111-1111-4111-8111-111111111111'
@@ -143,6 +144,28 @@ function setup() {
           batchId: d.batchId ?? null,
           batchSeq: d.batchSeq ?? null,
           createdAt: new Date('2026-10-01T00:00:00Z'),
+        }))
+    },
+    async listKnowledgeBaseAgents() {
+      return [
+        { connectorId: KB_SHARED, agentName: 'Elemér doktor', accessMode: 'read', wikiAccess: 'read' },
+        { connectorId: KB_SHARED, agentName: 'Kizárt Károly', accessMode: 'read', wikiAccess: 'none' },
+      ]
+    },
+    async listFiles(connectorId, limit) {
+      return [...documents.values()]
+        .filter((d) => d.connectorId === connectorId)
+        .slice(0, limit)
+        .map((d) => ({
+          id: d.id,
+          filename: d.filename,
+          purpose: null,
+          bytes: d.extractedText.length,
+          createdAt: new Date('2026-10-01T00:00:00Z'),
+          kbLanguageOverride: null,
+          processingMode: null,
+          wikiStatus: d.wikiStatus as any,
+          wikiClaimExpiresAt: d.wikiStatus === 'in_progress' ? new Date('2026-10-09T00:00:00Z') : null,
         }))
     },
     async listBindingsForConnector() {
@@ -361,6 +384,61 @@ async function main() {
     assert.ok(!JSON.stringify(rows).includes('Leletek'))
     // Az admin saját privát KB-ja teljes sor.
     assert.equal(rows.find((row) => row.connectorId === KB_OTHER_PRIV)!.metadataOnly, false)
+  })
+
+  await check('#1139 lista: a nyilvános tudásbázis saját fajtát és munkatárs-nevet kap, technikai azonosító nélkül', async () => {
+    const { service, connectors } = setup()
+    const name = `kb:public:${AGENT}`
+    connectors.set('public-kb', connector('public-kb', { name }))
+    const row = (await service.listKnowledgeBases(operator)).find((item) => item.connectorId === 'public-kb') as any
+    assert.equal(row.kind, 'public')
+    assert.equal(row.name, 'Réka')
+    assert.deepEqual(row.usedBy, ['Réka'], 'a nyilvános asszisztens kötés nélkül is használja')
+    assert.ok(!JSON.stringify(row.name).includes('kb:public'))
+    assert.equal((await service.getSettings(admin, 'public-kb')).canMakePrivate, false)
+  })
+
+  await check('#1139 lista: csak a tényleges hozzáféréssel bíró munkatárs számít használónak', async () => {
+    const { service } = setup()
+    const row = (await service.listKnowledgeBases(operator)).find((item) => item.connectorId === KB_SHARED) as any
+    assert.deepEqual(row.usedBy, ['Elemér doktor'])
+  })
+
+  await check('#1139 listFiles: a wikibe nem szánt fájl is látszik, a lejárt foglalás újra várakozik', async () => {
+    const { service, documents } = setup()
+    documents.set('raw', { id: 'raw', connectorId: KB_SHARED, filename: 'tortak.md', extractedText: 'abc', contentHash: 'h1', wikiStatus: null })
+    documents.set('stale', { id: 'stale', connectorId: KB_SHARED, filename: 'arak.md', extractedText: 'abc', contentHash: 'h2', wikiStatus: 'in_progress' })
+    const { files, truncated } = await service.listFiles(operator, KB_SHARED)
+    assert.equal(truncated, false)
+    assert.deepEqual(files.map((file) => [file.filename, file.wikiState]), [['tortak.md', 'none'], ['arak.md', 'pending']])
+  })
+
+  await check('#1139 listFiles: más privát tudásbázisa nem található, az adminnak sem', async () => {
+    const { service } = setup()
+    await rejectsWith('not_found', () => service.listFiles(admin, KB_PRIV))
+    await rejectsWith('not_found', () => service.listFiles(viewer, KB_SHARED))
+    assert.equal((await service.listFiles(owner, KB_PRIV)).files[0].filename, 'lelet.pdf')
+  })
+
+  await check('#1139 alapnézet: Fájlok, kivéve ha a hivatkozás wiki-tartalomra mutat', () => {
+    const tabs = ['files', 'wiki', 'inbox'] as const
+    assert.equal(resolveWikiTab({}, tabs), 'files')
+    assert.equal(resolveWikiTab({ tab: 'inbox' }, tabs), 'inbox')
+    assert.equal(resolveWikiTab({ tab: 'files', source: 'x' }, tabs), 'files')
+    assert.equal(resolveWikiTab({ tab: 'nincs-ilyen' }, tabs), 'files')
+    for (const query of [{ page: 'a.md' }, { source: 'x' }, { rev: '1' }, { from: '1', to: '2' }, { asOf: '2026-01-01' }]) {
+      assert.equal(resolveWikiTab(query, tabs), 'wiki')
+    }
+  })
+
+  await check('#1139 nevek: fordított alapnév, technikai azonosító nélkül', () => {
+    const t = (key: string, values?: { name: string }) => `${key}${values ? `:${values.name}` : ''}`
+    assert.equal(wikiDisplayName(t, { kind: 'catalog', name: 'Company knowledge base' }), 'names.catalog')
+    assert.equal(wikiDisplayName(t, { kind: 'agent', name: 'Éva' }), 'names.agent:Éva')
+    assert.equal(wikiDisplayName(t, { kind: 'agent', name: 'Agent knowledge base' }), 'names.agentUnknown')
+    assert.equal(wikiDisplayName(t, { kind: 'public', name: 'Webes' }), 'names.public:Webes')
+    assert.equal(wikiDisplayName(t, { kind: 'public', name: 'Public knowledge base' }), 'names.publicUnknown')
+    assert.equal(wikiDisplayName(t, { kind: 'shared', name: 'Termékismeret' }), 'Termékismeret')
   })
 
   await check('listKnowledgeBasesAction: operátor nem látja más privát KB-ját, a sajátját igen', async () => {

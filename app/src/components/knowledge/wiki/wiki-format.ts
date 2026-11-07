@@ -24,3 +24,30 @@ export function wikiHref(connectorId: string, query: Record<string, string | und
   const qs = params.toString()
   return `/control-plane/knowledge/${connectorId}${qs ? `?${qs}` : ''}`
 }
+
+/**
+ * #1139: a kért fül, ha a néző elérheti. Fül nélkül a Fájlok az alapnézet, kivéve ha a hivatkozás
+ * wiki-tartalomra mutat: oldalra, forrásra, korábbi verzióra vagy korábbi állapotra.
+ */
+export function resolveWikiTab<T extends string>(
+  query: { tab?: string; page?: string; source?: string; rev?: string; from?: string; to?: string; asOf?: string },
+  tabs: readonly T[],
+): T | 'files' | 'wiki' {
+  if (query.tab && (tabs as readonly string[]).includes(query.tab)) return query.tab as T
+  return query.page || query.source || query.rev || query.from || query.to || query.asOf ? 'wiki' : 'files'
+}
+
+/** A szerviz tartalék nevei, ha a névadó munkatárs már nem található. */
+const UNKNOWN_AGENT_KB_NAME = 'Agent knowledge base'
+const UNKNOWN_PUBLIC_KB_NAME = 'Public knowledge base'
+
+/** #1139: a tudásbázis neve a felületen, technikai azonosító és fordítatlan alapnév nélkül. */
+export function wikiDisplayName(
+  t: (key: 'names.catalog' | 'names.agent' | 'names.agentUnknown' | 'names.public' | 'names.publicUnknown', values?: { name: string }) => string,
+  wiki: { kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'; name: string },
+): string {
+  if (wiki.kind === 'catalog') return t('names.catalog')
+  if (wiki.kind === 'agent') return wiki.name === UNKNOWN_AGENT_KB_NAME ? t('names.agentUnknown') : t('names.agent', { name: wiki.name })
+  if (wiki.kind === 'public') return wiki.name === UNKNOWN_PUBLIC_KB_NAME ? t('names.publicUnknown') : t('names.public', { name: wiki.name })
+  return wiki.name
+}

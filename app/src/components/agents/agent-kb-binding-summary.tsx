@@ -2,12 +2,13 @@
 
 import { useTranslations } from 'next-intl'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
+import { wikiDisplayName } from '@/components/knowledge/wiki/wiki-format'
 import { OpenInNewWindowLink } from '@/components/ui/open-in-new-window-link'
 
 /** Egy munkatárs és egy tudásbázis kapcsolata. Egy tudásbázisban dokumentumok és a belőlük épült wiki is van. */
 export type AgentKbBindingInfo = {
   connectorId: string
-  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
   /** A munkatárs saját tudásbázisa. Másik munkatársé is lehet `kind: 'agent'`, ekkor `own` hamis. */
   own: boolean
   /** `kind: 'agent'` esetén a tulajdonos munkatárs neve. */
@@ -49,6 +50,7 @@ export function useAgentKbCopy() {
         kindLabel: t('binding.otherAgentKind'),
       }
     }
+    if (info.kind === 'public') return { title: wikiDisplayName(t, info), kindLabel: t('kind.public') }
     return { title: info.name, kindLabel: t(`kind.${info.kind}`) }
   }
 

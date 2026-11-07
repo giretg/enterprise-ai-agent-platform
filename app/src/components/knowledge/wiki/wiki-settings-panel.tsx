@@ -18,7 +18,7 @@ import { errorKey } from './knowledge-bases-list'
 type Template = 'general' | 'health-journal'
 
 export type WikiSettings = {
-  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
   template: Template
   schemaMd: string
   schemaCustomized: boolean

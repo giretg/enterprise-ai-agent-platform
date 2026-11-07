@@ -577,7 +577,7 @@ export async function TimeTravelBanner({
         {seq === 0
           ? t('timeTravel.beforeFirst')
           : t('timeTravel.banner', { when: at ? formatWhen(at, locale) : '—', seq })}{' '}
-        <Link href={wikiHref(connectorId)} className="font-medium text-coral-deep hover:underline">
+        <Link href={wikiHref(connectorId, { tab: 'wiki' })} className="font-medium text-coral-deep hover:underline">
           {t('timeTravel.backToNow')}
         </Link>
       </p>

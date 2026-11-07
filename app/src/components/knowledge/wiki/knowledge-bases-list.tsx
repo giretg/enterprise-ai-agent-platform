@@ -7,12 +7,12 @@ import { useLocale, useTranslations } from 'next-intl'
 import { createKnowledgeBaseAction, joinKnowledgeBaseAction } from '@/app/actions/knowledge-wiki'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { Badge, Card } from '@/components/ui/shell'
-import { formatBytes, wikiHref } from './wiki-format'
+import { formatBytes, wikiDisplayName, wikiHref } from './wiki-format'
 
 export type KnowledgeBaseListRow =
   | {
       connectorId: string
-      kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+      kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
       metadataOnly: true
       ownerLabel: string | null
       sourceCount: number
@@ -21,12 +21,14 @@ export type KnowledgeBaseListRow =
     }
   | {
       connectorId: string
-      kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+      kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
       metadataOnly: false
       name: string
       ownerLabel: string | null
       template: 'general' | 'health-journal'
       canManage: boolean
+      /** A munkatársak, akik elérik ezt a tudásbázist. */
+      usedBy: string[]
       inbox: { pending: number; inProgress: number }
       sourceCount: number
       pageCount: number
@@ -52,7 +54,7 @@ export function KnowledgeBasesList({
 
   const stats = (row: KnowledgeBaseListRow) =>
     t('list.stats', {
-      sources: row.sourceCount,
+      files: row.sourceCount,
       pages: row.pageCount,
       size: formatBytes(row.bytes, locale),
     })
@@ -85,15 +87,25 @@ export function KnowledgeBasesList({
                   data-testid="kb-row"
                   className="flex flex-wrap items-center gap-2 rounded-lg border border-line/70 px-3 py-2 text-sm hover:border-coral/50"
                 >
-                  <span className="font-medium text-ink">{row.name}</span>
-                  <Badge tone={row.kind === 'private' || row.kind === 'members' ? 'warning' : 'neutral'}>{t(`kind.${row.kind}`)}</Badge>
+                  <span className="font-medium text-ink">{wikiDisplayName(t, row)}</span>
+                  {row.kind === 'catalog' ? null : (
+                    <Badge tone={row.kind === 'private' || row.kind === 'members' || row.kind === 'public' ? 'warning' : 'neutral'}>{t(`kind.${row.kind}`)}</Badge>
+                  )}
                   {row.template !== 'general' ? <Badge tone="neutral">{t(`templates.${row.template}.name`)}</Badge> : null}
                   <span className="text-ink-faint">{stats(row)}</span>
                   {row.inbox.pending + row.inbox.inProgress > 0 ? (
-                    <span className="ml-auto rounded-full bg-coral/10 px-2 py-0.5 text-xs font-medium text-coral-deep">
+                    <span className="rounded-full bg-coral/10 px-2 py-0.5 text-xs font-medium text-coral-deep">
                       {t('list.inboxBadge', { count: row.inbox.pending + row.inbox.inProgress })}
                     </span>
                   ) : null}
+                  <span className="ml-auto text-xs text-ink-soft" data-testid="kb-row-used-by">
+                    {row.usedBy.length === 0
+                      ? t('list.usedByNone')
+                      : t('list.usedBy', {
+                          names: row.usedBy.slice(0, 3).join(', '),
+                          more: Math.max(row.usedBy.length - 3, 0),
+                        })}
+                  </span>
                 </Link>
               </li>
             ),

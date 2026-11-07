@@ -15,7 +15,7 @@ type Mode = 'approval' | 'direct'
 
 export type AgentWikiLinkRow = {
   connectorId: string
-  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members'
+  kind: 'catalog' | 'agent' | 'shared' | 'private' | 'members' | 'public'
   own: boolean
   name: string
   template: 'general' | 'health-journal'
