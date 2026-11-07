@@ -155,7 +155,7 @@ export type GatewayOperationServiceDeps = Pick<EnterpriseToolDeps, 'saveHttpResu
       definition: AgentDefinition
       changeSetId: string
     }): Promise<{ ok: true; result: unknown } | { ok: false; code: string }>
-    reject(input: { tenantId: string; changeSetId: string; actorUserId: string | null }): Promise<void>
+    reject(input: { tenantId: string; changeSetId: string; actorUserId: string | null; note?: string }): Promise<void>
   }
   audit?: AuditSink
 }
@@ -842,6 +842,7 @@ export async function rejectGatewayOperation(
         tenantId: input.tenantId,
         changeSetId: rejectedChangeSetId,
         actorUserId: input.actor.userId,
+        ...(input.reason ? { note: input.reason } : {}),
       })
     }
   }

@@ -1,3 +1,10 @@
+import {
+  WIKI_COMMENT_DEFAULT_LIMIT,
+  WIKI_COMMENT_MAX_AGENT_TEXT,
+  WIKI_COMMENT_MAX_LIMIT,
+  WIKI_COMMENT_MAX_RESOLVES,
+  WIKI_COMMENT_STATUSES,
+} from '@/lib/wiki-comments'
 import { z } from 'zod'
 import { KB_DOCUMENT_INLINE_CHARS } from '@/lib/kb-retrieval'
 import { WIKI_CONFIG_MAX_NOTE, WIKI_CONFIG_MAX_OPERATIONS } from '@/lib/wiki-config'
@@ -98,6 +105,9 @@ export const KB_WIKI_CONFIG_PROPOSE_TOOL = 'kb_wiki_config_propose'
 export const KB_WIKI_CONFIG_WITHDRAW_TOOL = 'kb_wiki_config_withdraw'
 /** #1085: lezárt tálca-tétel újrafeldolgozásra jelölése / változtatás nélküli lezárása. */
 export const KB_WIKI_REPROCESS_TOOL = 'kb_wiki_reprocess'
+/** #1129: emberi kommentek olvasása és lezárása oldalmódosítás nélkül. */
+export const KB_WIKI_COMMENTS_TOOL = 'kb_wiki_comments'
+export const KB_WIKI_COMMENT_RESPOND_TOOL = 'kb_wiki_comment_respond'
 
 export const ENTERPRISE_KB_TOOLS = [
   KB_SEARCH_TOOL,
@@ -112,6 +122,8 @@ export const ENTERPRISE_KB_TOOLS = [
   KB_WIKI_CONFIG_GET_TOOL,
   KB_WIKI_CONFIG_PROPOSE_TOOL,
   KB_WIKI_CONFIG_WITHDRAW_TOOL,
+  KB_WIKI_COMMENTS_TOOL,
+  KB_WIKI_COMMENT_RESPOND_TOOL,
 ] as const
 
 export const SANDBOX_RUN_TOOL = 'sandbox_run'
@@ -137,6 +149,9 @@ const CAPABILITY_ALIASES: Record<string, readonly string[]> = {
   [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   // #1085: a tényleges jog a kötés `wikiAccess: write`-ja.
   [KB_WIKI_REPROCESS_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  // #1129: olvasáshoz `read`, lezáráshoz `write` a kötésen; külön kapcsoló nincs.
+  [KB_WIKI_COMMENTS_TOOL]: [KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  [KB_WIKI_COMMENT_RESPOND_TOOL]: [KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
 }
 
 /** Az agent-képességek, amelyek közül bármelyik engedi az eszközt. */
@@ -975,7 +990,10 @@ const wikiHumanNoteSourceSchema = z
   })
   .strict()
 
-const wikiSourceRefSchema = z.union([wikiHumanNoteSourceSchema, wikiDocumentSourceRefSchema])
+/** #1129 D6: a szerző és az idő a komment sorából jön, ezért csak az azonosító adható meg. */
+const wikiCommentSourceSchema = z.object({ kind: z.literal('wiki_comment'), commentId: z.string().uuid() }).strict()
+
+const wikiSourceRefSchema = z.union([wikiHumanNoteSourceSchema, wikiCommentSourceSchema, wikiDocumentSourceRefSchema])
 
 const wikiPatchOpSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('appendToSection'), section: z.string().min(1).max(200), text: z.string().min(1).max(20_000) }),
@@ -1046,6 +1064,14 @@ export const kbWikiWriteObject = z
     logEntry: kbWikiLogEntrySchema.optional(),
     inboxItemId: z.string().uuid().optional(),
     final: z.boolean().optional(),
+    resolvesComments: z
+      .string()
+      .min(2)
+      .max(60_000)
+      .optional()
+      .describe(
+        `JSON array (max ${WIKI_COMMENT_MAX_RESOLVES}) of comments this change closes, e.g. [{"commentId":"…","note":"Changed it to 3% based on the contract amendment."}]. Every comment must be open and in this wiki. On a multi-part write pass it on the last call.`,
+      ),
   })
   .passthrough()
 
@@ -1077,6 +1103,17 @@ export const kbWikiWriteInputSchema = z
     logEntry: kbWikiLogEntrySchema.optional(),
     inboxItemId: z.string().uuid().optional(),
     final: z.boolean().optional(),
+    resolvesComments: z.preprocess(
+      parseJsonText,
+      z
+        .array(
+          z
+            .object({ commentId: z.string().uuid(), note: z.string().trim().min(1).max(WIKI_COMMENT_MAX_AGENT_TEXT) })
+            .strict(),
+        )
+        .max(WIKI_COMMENT_MAX_RESOLVES)
+        .optional(),
+    ),
   })
   .passthrough()
 
@@ -1209,6 +1246,36 @@ export const kbWikiReprocessInputSchema = kbWikiReprocessObject
     message: 'finish_unchanged needs documentId.',
   })
 
+/** #1129: a sémában nincs tömb (Claude.ai), a szűrők szövegek. */
+export const kbWikiCommentsObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    path: z.string().min(1).max(200).optional().describe('Only the comments of this page.'),
+    commentId: z.string().uuid().optional().describe('One comment, in any status.'),
+    status: z
+      .enum([...WIKI_COMMENT_STATUSES, 'all'])
+      .optional()
+      .describe('Default open: the comments waiting for you. question = you asked and wait for a person; all = every status, also on archived pages.'),
+    limit: z.number().int().min(1).max(WIKI_COMMENT_MAX_LIMIT).optional().describe(`Default ${WIKI_COMMENT_DEFAULT_LIMIT}, max ${WIKI_COMMENT_MAX_LIMIT}.`),
+    cursor: z.string().max(120).optional().describe('nextCursor of the previous response.'),
+  })
+  .passthrough()
+
+export const kbWikiCommentRespondObject = z
+  .object({
+    definitionId,
+    agentId: optionalAgentId,
+    wikiId: optionalWikiId,
+    commentId: z.string().uuid(),
+    action: z
+      .enum(['already_done', 'decline', 'ask'])
+      .describe('already_done: the page is already correct, say what you checked. decline: you will not change it, say why. ask: a concrete question to a person.'),
+    text: z.string().trim().min(1).max(WIKI_COMMENT_MAX_AGENT_TEXT).describe('Required. Every reader of this wiki sees it, so write only content from this wiki.'),
+  })
+  .passthrough()
+
 export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_LIST_INDEX_TOOL) return kbListIndexInputSchema
   if (toolName === KB_GET_PAGE_TOOL) return kbGetPageInputSchema
@@ -1221,6 +1288,8 @@ export function schemaForEnterpriseKbTool(toolName: EnterpriseKbTool) {
   if (toolName === KB_WIKI_CONFIG_PROPOSE_TOOL) return kbWikiConfigProposeInputSchema
   if (toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL) return kbWikiConfigWithdrawInputSchema
   if (toolName === KB_WIKI_REPROCESS_TOOL) return kbWikiReprocessInputSchema
+  if (toolName === KB_WIKI_COMMENTS_TOOL) return kbWikiCommentsObject
+  if (toolName === KB_WIKI_COMMENT_RESPOND_TOOL) return kbWikiCommentRespondObject
   return kbSearchInputSchema
 }
 

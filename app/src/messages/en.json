@@ -685,7 +685,8 @@
             "document": "Raw source",
             "sourceFile": "Original file",
             "chunk": "Search index",
-            "gatewayOperation": "Request awaiting approval"
+            "gatewayOperation": "Request awaiting approval",
+            "comment": "Comment"
           },
           "irreversible": "This is permanent and cannot be undone.",
           "reason": "Reason (required)",
@@ -708,6 +709,7 @@
         "log": "Log",
         "access": "Who uses it",
         "proposals": "Proposals",
+        "comments": "Comments",
         "settings": "Settings"
       },
         "proposals": {
@@ -880,6 +882,7 @@
         "usedBy": "Used by: {names}{more, plural, =0 {} other { +#}}",
         "usedByNone": "No teammate uses it",
         "inboxBadge": "{count} waiting in inbox",
+        "commentsBadge": "{count, plural, one {# open comment} other {# open comments}}",
         "unknownOwner": "unknown owner",
         "privateMetaHelp": "This is someone else's private knowledge base. As an admin you only see that it exists and how big it is — you cannot open its content.",
         "membersMetaHelp": "Only the people on its list can see this knowledge base. As an admin you can open its content only after adding yourself to the list — this is logged.",
@@ -941,6 +944,8 @@
         "category": "Category: {name}",
         "sourceRestricted": "Source in another knowledge base – you have no access",
         "humanNote": "Human note",
+        "commentSource": "Comment by {name}, {date}",
+        "commentSourceErased": "deleted comment",
         "unknownRecorder": "unknown recorder",
         "participants": "present: {names}",
         "sourceOtherWiki": "from another knowledge base",
@@ -1157,7 +1162,8 @@
           "losing": "Loses access: {count} people ({names}).",
           "losingNone": "Nobody loses access.",
           "agents": "From now on these teammates only reach it while working with someone who has access: {names}.",
-          "rejected": "{count} pending wiki changes will be rejected."
+          "rejected": "{count} pending wiki changes will be rejected.",
+          "comments": "The wiki has {count, plural, one {# comment} other {# comments}}. From now on they are visible, with their authors, to whoever has access after the change; anyone who loses access no longer sees even their own comment."
         },
         "members": {
           "title": "Members: who can see it?",
@@ -1171,6 +1177,100 @@
           "readOnly": "The owner or an admin can change the list.",
           "unknownUser": "unknown user"
         }
+      },
+      "comments": {
+        "statuses": {
+          "open": "Open",
+          "question": "Waiting for an answer",
+          "pending_approval": "Waiting for approval",
+          "resolved": "Worked in",
+          "declined": "No change",
+          "withdrawn": "Withdrawn"
+        },
+        "statusHelp": {
+          "open": "Waiting for the AI teammate, who reads it during their next piece of work.",
+          "question": "The AI teammate asked a question and does nothing until someone answers.",
+          "pending_approval": "The AI teammate proposed a change, which waits for the approver.",
+          "resolved": "Done: the page changed, or the AI teammate found it was already correct.",
+          "declined": "The AI teammate decided, with a reason, not to change the page. Reopen it if you disagree.",
+          "withdrawn": "The author withdrew it, so nobody works on it."
+        },
+        "panelTitle": "Comments",
+        "panelIntro": "Found a mistake, or is something missing? Write it here. The AI teammate reads it during their next piece of work, and either works it into the page or explains why not. Every reader of this page sees your comment with your name.",
+        "placeholder": "What is wrong or missing?",
+        "send": "Send comment",
+        "sendHint": "Do not write passwords, card numbers or personal data here.",
+        "quoteSelection": "Comment on this part",
+        "quoteLabel": "About this part:",
+        "quoteRemove": "Remove quote",
+        "empty": "There are no comments on this page yet.",
+        "noWriter": "No AI teammate can edit this wiki right now, so nobody works on the comments until one can. You can set this on the Who has access tab.",
+        "noWriterLink": "Set it on the Who has access tab",
+        "notCommentable": "You cannot comment on this page right now because it is archived.",
+        "headerCount": "{count, plural, one {# open comment} other {# open comments}}",
+        "versionNote": "This comment was written for version {version} of the page.",
+        "openChange": "Open the change",
+        "openPage": "Open the page",
+        "erased": "This comment was deleted.",
+        "unknownAuthor": "Unknown author",
+        "agent": "AI teammate",
+        "system": "System",
+        "withdraw": "Withdraw",
+        "reply": "Answer",
+        "replyPlaceholder": "Your answer to the AI teammate",
+        "reopen": "Reopen",
+        "reopenPlaceholder": "Why are you reopening it? The AI teammate will read this.",
+        "close": "Close by hand",
+        "closePlaceholder": "Why are you closing it? Everyone who reads this wiki sees it.",
+        "closeResolved": "Close: worked in",
+        "closeDeclined": "Close: no change",
+        "remove": "Delete",
+        "removeConfirm": "Delete it? The text disappears for good, only a mark stays that there was a comment here.",
+        "cancel": "Cancel",
+        "confirm": "Send",
+        "systemCodes": {
+          "change_rejected": "The approver rejected the change, so the comment is open again.",
+          "change_conflict": "The change could not be applied because the page changed meanwhile. The comment is open again.",
+          "change_failed": "The change was not completed, so the comment is open again.",
+          "change_reverted": "The change was reverted, so the comment is open again.",
+          "change_erased": "The change was rejected because of a data protection erasure, so the comment is open again.",
+          "visibility_changed": "The wiki's visibility changed, so the change waiting for approval was not made. The comment is open again.",
+          "partly_applied": "Part of the change is already on the page, the rest waits for approval."
+        },
+        "partlyAppliedSuffix": "The part of the change that was already applied stays on the page.",
+        "errors": {
+          "comment_not_open": "Someone else has handled this comment meanwhile. Refresh the page.",
+          "comment_rate_limited": "You can write at most 30 comments per hour in this wiki. Try again later.",
+          "comment_sensitive_data": "We found a card number or a secret key in the text, so it was not saved. Remove it and send it again.",
+          "page_not_commentable": "You cannot comment on this page. Only live pages take comments.",
+          "not_author": "Only the author of the comment or a wiki manager can do this.",
+          "not_found": "This comment is no longer available.",
+          "forbidden": "You do not have permission for this; a wiki manager can do it.",
+          "invalid_args": "The text is empty or too long. Fix it and try again.",
+          "generic": "Something went wrong. Try again a little later."
+        },
+        "tab": {
+          "intro": "Anyone who reads the wiki can comment under its pages. It does not happen instantly: during their next piece of work the AI teammate reads the comment and works it into the page, explains why not, or asks back.",
+          "statesTitle": "What do the statuses mean?",
+          "tip": "Tip: for regular processing, set up a scheduled task for the AI teammate that asks them to go through the open comments of the wiki.",
+          "filterStatus": "Status",
+          "filterActive": "Not closed",
+          "filterClosed": "Closed",
+          "filterAll": "All",
+          "filterMine": "Only mine",
+          "filterPage": "Page",
+          "filterAllPages": "All pages",
+          "apply": "Filter",
+          "empty": "There are no open comments. Anyone who reads the wiki can comment under its pages.",
+          "emptyFiltered": "Nothing matches this filter."
+        },
+        "review": {
+          "title": "These comments asked for this change",
+          "help": "Compare the request with the result. The comment was written by someone who can read the wiki; the AI teammate made the change from it.",
+          "note": "Note from the AI teammate: {note}",
+          "erased": "Deleted comment"
+        },
+        "reason": "This change waits for approval because it is based on a comment written or added to by someone who does not manage this wiki."
       },
       "review": {
         "loading": "Loading the wiki change…",
@@ -1717,7 +1817,7 @@
     "operations": {
       "eyebrow": "Your queue",
       "title": "Waiting on you",
-      "body": "Two lists: writes a teammate would send in your name, and tasks handed off to you. Both wait for your decision.",
+      "body": "Everything that needs you is here: writes a teammate would send in your name, tasks handed off to you, new mail and answers to your wiki comments.",
       "approvalsTitle": "Writes waiting for approval",
       "approvalsBody": "These are writes the teammate would send in your name (for example an API call or a Google Drive file). After approval the system runs the request once; rejection performs no write.",
       "empty": "No writes waiting for approval.",
@@ -1762,6 +1862,22 @@
         "invalid_args": "Invalid request.",
         "handoffs_unavailable": "Handoffs are not installed on this environment yet. Run pending database migrations.",
         "schema_mismatch": "This list could not be loaded. On a fresh install, run pending database migrations."
+      },
+      "wikiComments": {
+        "title": "Your comments in wikis",
+        "body": "These are your comments that the AI teammate has handled. Questions and declined comments wait for you, finished comments are shown for information only.",
+        "labelQuestion": "The AI teammate asks",
+        "labelDeclined": "The page was not changed",
+        "labelResolved": "Worked in",
+        "ok": "OK",
+        "allOk": "All OK",
+        "answer": "Answer",
+        "answerPlaceholder": "Your answer",
+        "reopen": "Reopen",
+        "reopenPlaceholder": "Why do you disagree?",
+        "send": "Send",
+        "cancel": "Cancel",
+        "openChange": "Open the change"
       },
       "handoffsTitle": "Tasks handed off to you",
       "handoffsBody": "A teammate handed you work outside their own remit. Accept it, reject it, or mark it done if you already handled it.",

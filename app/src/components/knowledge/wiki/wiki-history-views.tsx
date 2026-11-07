@@ -14,6 +14,7 @@ import {
 import { Badge, Card } from '@/components/ui/shell'
 import { HelpHint } from '@/components/onboarding/onboarding-ui'
 import { collapseUnchanged, type LineDiffRow } from '@/lib/text-line-diff'
+import { WikiChangeComments } from './wiki-change-comments'
 import { WikiMarkdown } from './wiki-markdown'
 import { WikiRevertButton, WikiTagDeleteButton, WikiTagForm } from './wiki-history-actions'
 import { formatWhen, wikiHref } from './wiki-format'
@@ -509,6 +510,9 @@ export async function ChangeSetView({ connectorId, seq, locale }: { connectorId:
           {change.canRevert && change.seq ? (
             <WikiRevertButton connectorId={connectorId} target={{ kind: 'changeset', seq: change.seq }} />
           ) : null}
+        </div>
+        <div className="mt-3">
+          <WikiChangeComments comments={change.comments} />
         </div>
       </Card>
       {change.pages.map((page) => (

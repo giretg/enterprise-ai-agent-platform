@@ -53,6 +53,8 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
       'kb_wiki_config_propose',
       'kb_wiki_config_withdraw',
       'kb_wiki_reprocess',
+      'kb_wiki_comments',
+      'kb_wiki_comment_respond',
     ],
   },
   { label: 'Kódfuttatás', tools: ['sandbox_run'] },

@@ -7,6 +7,8 @@ import type {
   WikiWriteOutcome,
 } from '@/domain/knowledge-base/wiki-service'
 import type { WikiConfigService } from '@/domain/knowledge-base/wiki-config-service'
+import type { WikiCommentService } from '@/domain/knowledge-base/wiki-comment-service'
+import type { WikiCommentAgentAction } from '@/lib/wiki-comments'
 import type { WikiSnapshotConnector } from '@/lib/wiki-access'
 import { parseWikiViewFilter } from '@/lib/wiki-metadata'
 import {
@@ -18,6 +20,8 @@ import {
   KB_WIKI_CONFIG_GET_TOOL,
   KB_WIKI_CONFIG_PROPOSE_TOOL,
   KB_WIKI_CONFIG_WITHDRAW_TOOL,
+  KB_WIKI_COMMENT_RESPOND_TOOL,
+  KB_WIKI_COMMENTS_TOOL,
   KB_WIKI_REVERT_TOOL,
   KB_WIKI_REPROCESS_TOOL,
   KB_WIKI_WRITE_TOOL,
@@ -35,6 +39,8 @@ export type KbToolContext = {
   snapshot?: { connectors: WikiSnapshotConnector[] }
   /** #1061 F2: interaktív emberi munkamenet (nem ütemezett futás) — `human_note` csak így. */
   interactive?: boolean
+  /** #1129: bejövő levél feldolgozása — komment nem zárható. */
+  forceWriteApproval?: boolean
 }
 
 const WIKI_REPROCESS_NEXT_STEP =
@@ -82,7 +88,7 @@ function wikiCaller(ctx: KbToolContext): WikiCaller | null {
 /** A wiki-útvonalak (beküldés, írás, tálca), amelyek nem egyetlen kiválasztott KB-kötésen futnak. */
 export function isWikiToolCall(toolName: string, args: Record<string, unknown>): boolean {
   if (toolName === KB_WIKI_WRITE_TOOL || toolName === KB_WIKI_CHANGES_TOOL || toolName === KB_WIKI_REVERT_TOOL || toolName === KB_WIKI_REPROCESS_TOOL) return true
-  if (isWikiConfigTool(toolName)) return true
+  if (isWikiConfigTool(toolName) || isWikiCommentTool(toolName)) return true
   if (toolName === KB_INGEST_TOOL) return args.processingMode === 'wiki'
   if (toolName === KB_LIST_INDEX_TOOL) return args.inbox === true
   return false
@@ -90,6 +96,36 @@ export function isWikiToolCall(toolName: string, args: Record<string, unknown>):
 
 export function isWikiConfigTool(toolName: string): boolean {
   return toolName === KB_WIKI_CONFIG_GET_TOOL || toolName === KB_WIKI_CONFIG_PROPOSE_TOOL || toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL
+}
+
+export function isWikiCommentTool(toolName: string): boolean {
+  return toolName === KB_WIKI_COMMENTS_TOOL || toolName === KB_WIKI_COMMENT_RESPOND_TOOL
+}
+
+/** #1129: a kommentek; a jog és az állapotgép a `WikiCommentService`-ben. */
+export function executeWikiCommentTool(
+  comments: WikiCommentService,
+  toolName: EnterpriseKbTool,
+  args: Record<string, unknown>,
+  caller: WikiCaller,
+): Promise<WikiOutcome> {
+  const wikiId = typeof args.wikiId === 'string' ? args.wikiId : undefined
+  if (toolName === KB_WIKI_COMMENT_RESPOND_TOOL) {
+    return comments.respondAsAgent(caller, {
+      wikiId,
+      commentId: String(args.commentId),
+      action: args.action as WikiCommentAgentAction,
+      text: String(args.text),
+    })
+  }
+  return comments.listForAgent(caller, {
+    wikiId,
+    path: typeof args.path === 'string' ? args.path : undefined,
+    commentId: typeof args.commentId === 'string' ? args.commentId : undefined,
+    status: typeof args.status === 'string' ? args.status : undefined,
+    limit: typeof args.limit === 'number' ? args.limit : undefined,
+    cursor: typeof args.cursor === 'string' ? args.cursor : undefined,
+  })
 }
 
 /** #1075: a beállítás-eszközök; az érvényesítés és a jog a `WikiConfigService`-ben. */

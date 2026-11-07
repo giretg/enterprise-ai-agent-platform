@@ -97,6 +97,8 @@ export function toolsNeedKnowledgeBase(toolNames: string[]): boolean {
       name === 'kb_wiki_config_get' ||
       name === 'kb_wiki_config_propose' ||
       name === 'kb_wiki_config_withdraw' ||
-      name === 'kb_wiki_reprocess',
+      name === 'kb_wiki_reprocess' ||
+      name === 'kb_wiki_comments' ||
+      name === 'kb_wiki_comment_respond',
   )
 }

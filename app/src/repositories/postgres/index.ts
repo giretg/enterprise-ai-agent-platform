@@ -35,6 +35,7 @@ import { PostgresContactInquiryRepository } from './contact-inquiry-repository'
 import { PostgresMiniAppRepository } from './mini-app-repository'
 import { PostgresPrivateKnowledgeBaseStore, PostgresWikiConfigRepository, PostgresWikiRepository, PostgresWikiStructureRepository } from './wiki-repository'
 import { PostgresWikiHistoryRepository } from './wiki-history-repository'
+import { PostgresWikiCommentRepository } from './wiki-comment-repository'
 
 export const repositories = {
   featureFlags: new PostgresFeatureFlagRepository(),
@@ -61,6 +62,7 @@ export const repositories = {
   knowledgeChunks: new PostgresKnowledgeChunkRepository(),
   wikis: new PostgresWikiRepository(),
   wikiHistory: new PostgresWikiHistoryRepository(),
+  wikiComments: new PostgresWikiCommentRepository(),
   wikiStructure: new PostgresWikiStructureRepository(),
   wikiConfig: new PostgresWikiConfigRepository(),
   privateKnowledgeBases: new PostgresPrivateKnowledgeBaseStore(),

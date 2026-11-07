@@ -685,7 +685,8 @@
             "document": "Nyers forrás",
             "sourceFile": "Eredeti fájl",
             "chunk": "Keresési index",
-            "gatewayOperation": "Jóváhagyásra váró kérés"
+            "gatewayOperation": "Jóváhagyásra váró kérés",
+            "comment": "Komment"
           },
           "irreversible": "Ez végleges, nem vonható vissza.",
           "reason": "Indoklás (kötelező)",
@@ -708,6 +709,7 @@
         "log": "Napló",
         "access": "Ki használja",
         "proposals": "Javaslatok",
+        "comments": "Kommentek",
         "settings": "Beállítások"
       },
         "proposals": {
@@ -880,6 +882,7 @@
         "usedBy": "Használja: {names}{more, plural, =0 {} other { +#}}",
         "usedByNone": "Egy munkatárs sem használja",
         "inboxBadge": "{count} vár a tálcán",
+        "commentsBadge": "{count} nyitott komment",
         "unknownOwner": "ismeretlen tulajdonos",
         "privateMetaHelp": "Ez valaki más privát tudásbázisa. Adminisztrátorként csak azt látod, hogy létezik és mekkora — a tartalmát nem nyithatod meg.",
         "membersMetaHelp": "Ezt a tudásbázist csak a névsoron lévők látják. Adminisztrátorként a tartalmát csak akkor nyithatod meg, ha felveszed magad a névsorra — ez naplózódik.",
@@ -941,6 +944,8 @@
         "category": "Kategória: {name}",
         "sourceRestricted": "Forrás egy másik tudástárban – nincs hozzáférésed",
         "humanNote": "Emberi rögzítés",
+        "commentSource": "{name} kommentje, {date}",
+        "commentSourceErased": "törölt komment",
         "unknownRecorder": "ismeretlen rögzítő",
         "participants": "jelen volt: {names}",
         "sourceOtherWiki": "másik tudástárból",
@@ -1157,7 +1162,8 @@
           "losing": "Elveszíti a hozzáférést: {count} fő ({names}).",
           "losingNone": "Senki nem veszíti el a hozzáférést.",
           "agents": "Ezek a munkatársak ezentúl csak a jogosultakkal dolgozva érik el: {names}.",
-          "rejected": "Elutasítódik {count} függő wiki-módosítás."
+          "rejected": "Elutasítódik {count} függő wiki-módosítás.",
+          "comments": "A wikin {count} komment van. Mostantól azok látják őket a szerzőikkel együtt, akik a váltás után hozzáférnek a wikihez; aki elveszíti a hozzáférést, a saját kommentjét sem látja."
         },
         "members": {
           "title": "Névsor: kik látják?",
@@ -1171,6 +1177,100 @@
           "readOnly": "A névsort a tulajdonos vagy az adminisztrátor módosíthatja.",
           "unknownUser": "ismeretlen felhasználó"
         }
+      },
+      "comments": {
+        "statuses": {
+          "open": "Nyitott",
+          "question": "Választ vár",
+          "pending_approval": "Jóváhagyásra vár",
+          "resolved": "Beledolgozva",
+          "declined": "Nem módosít",
+          "withdrawn": "Visszavonva"
+        },
+        "statusHelp": {
+          "open": "Az AI-munkatársra vár. A következő munkája során elolvassa.",
+          "question": "Az AI-munkatárs kérdezett. Amíg valaki nem válaszol, nem foglalkozik vele.",
+          "pending_approval": "Az AI-munkatárs módosítást javasolt, a jóváhagyó döntésére vár.",
+          "resolved": "Elkészült: az oldal módosult, vagy az AI-munkatárs szerint már helyes volt.",
+          "declined": "Az AI-munkatárs indoklással úgy döntött, hogy nem módosít. Újranyithatod, ha nem értesz egyet.",
+          "withdrawn": "A szerző visszavonta, senki nem dolgozza fel."
+        },
+        "panelTitle": "Kommentek",
+        "panelIntro": "Hibát találtál, vagy valami hiányzik? Írd meg itt. Az AI-munkatárs a következő munkája során elolvassa, és vagy beledolgozza az oldalba, vagy megírja, miért nem. Az oldal minden olvasója látja a kommentedet a neveddel együtt.",
+        "placeholder": "Mi a hiba, vagy mi hiányzik?",
+        "send": "Komment küldése",
+        "sendHint": "Ne írj ide jelszót, kártyaszámot vagy személyes adatot.",
+        "quoteSelection": "Kommentelés erre a részre",
+        "quoteLabel": "Erre a részre vonatkozik:",
+        "quoteRemove": "Idézet törlése",
+        "empty": "Még nincs komment ezen az oldalon.",
+        "noWriter": "Ehhez a wikihez most nincs olyan AI-munkatárs, aki módosíthatná. A kommenteket addig senki nem dolgozza fel. A Kik férnek hozzá fülön állítható be.",
+        "noWriterLink": "Beállítás a Kik férnek hozzá fülön",
+        "notCommentable": "Ehhez az oldalhoz most nem lehet kommentet írni, mert archivált.",
+        "headerCount": "{count} nyitott komment",
+        "versionNote": "Ez a komment az oldal {version}. verziójához készült.",
+        "openChange": "Módosítás megnyitása",
+        "openPage": "Oldal megnyitása",
+        "erased": "Ezt a kommentet törölték.",
+        "unknownAuthor": "Ismeretlen szerző",
+        "agent": "AI-munkatárs",
+        "system": "Rendszer",
+        "withdraw": "Visszavonás",
+        "reply": "Válasz",
+        "replyPlaceholder": "A válaszod az AI-munkatársnak",
+        "reopen": "Újranyitás",
+        "reopenPlaceholder": "Miért nyitod újra? Az AI-munkatárs ezt fogja elolvasni.",
+        "close": "Lezárás kézzel",
+        "closePlaceholder": "Miért zárod le? Mindenki látja, aki olvassa a wikit.",
+        "closeResolved": "Lezárás: beledolgozva",
+        "closeDeclined": "Lezárás: nem módosítunk",
+        "remove": "Törlés",
+        "removeConfirm": "Biztosan törlöd? A szöveg véglegesen eltűnik, csak a nyoma marad, hogy volt itt komment.",
+        "cancel": "Mégse",
+        "confirm": "Küldés",
+        "systemCodes": {
+          "change_rejected": "A jóváhagyó elutasította a módosítást, ezért a komment újra nyitott.",
+          "change_conflict": "A módosítás nem volt alkalmazható, mert közben változott az oldal. A komment újra nyitott.",
+          "change_failed": "A módosítás nem készült el, ezért a komment újra nyitott.",
+          "change_reverted": "A módosítást visszavonták, ezért a komment újra nyitott.",
+          "change_erased": "A módosítást adatvédelmi törlés miatt elutasítottuk, ezért a komment újra nyitott.",
+          "visibility_changed": "A wiki láthatósága megváltozott, ezért a jóváhagyásra váró módosítás nem készült el. A komment újra nyitott.",
+          "partly_applied": "A módosítás egy része már megjelent az oldalon, a többi jóváhagyásra vár."
+        },
+        "partlyAppliedSuffix": "A módosítás már alkalmazott része az oldalon maradt.",
+        "errors": {
+          "comment_not_open": "Ezzel a kommenttel közben más már foglalkozott. Frissítsd az oldalt.",
+          "comment_rate_limited": "Egy órán belül legfeljebb 30 kommentet írhatsz ebbe a wikibe. Próbáld újra később.",
+          "comment_sensitive_data": "A szövegben kártyaszámot vagy titkos kulcsot találtunk, ezért nem mentettük el. Töröld belőle, és küldd el újra.",
+          "page_not_commentable": "Ehhez az oldalhoz nem lehet kommentet írni. Csak élő oldalhoz lehet.",
+          "not_author": "Ezt csak a komment szerzője vagy a wiki kezelője teheti meg.",
+          "not_found": "Ez a komment már nem érhető el.",
+          "forbidden": "Ehhez nincs jogosultságod, ezt a wiki kezelője teheti meg.",
+          "invalid_args": "A szöveg üres vagy túl hosszú. Javítsd, és próbáld újra.",
+          "generic": "Valami nem sikerült. Próbáld újra egy kicsit később."
+        },
+        "tab": {
+          "intro": "Az oldalak alatt bárki írhat kommentet, aki olvassa a wikit. A feldolgozás nem azonnali: az AI-munkatárs a következő munkája során elolvassa a kommentet, és beledolgozza az oldalba, megindokolja, miért nem módosít, vagy visszakérdez.",
+          "statesTitle": "Mit jelentenek az állapotok?",
+          "tip": "Tipp: rendszeres feldolgozáshoz állíts be ütemezett feladatot az AI-munkatársnál. Kérd meg benne, hogy nézze át a wiki nyitott kommentjeit.",
+          "filterStatus": "Állapot",
+          "filterActive": "Nem lezárt",
+          "filterClosed": "Lezárt",
+          "filterAll": "Mind",
+          "filterMine": "Csak az enyéim",
+          "filterPage": "Oldal",
+          "filterAllPages": "Minden oldal",
+          "apply": "Szűrés",
+          "empty": "Nincs nyitott komment. Az oldalak alatt bárki írhat, aki olvassa a wikit.",
+          "emptyFiltered": "Ezzel a szűréssel nincs találat."
+        },
+        "review": {
+          "title": "A módosítást ezek a kommentek kérték",
+          "help": "Vesd össze a kérést az eredménnyel. A kommentet olyan ember írta, aki olvashatja a wikit; a módosítást az AI-munkatárs készítette belőle.",
+          "note": "Az AI-munkatárs megjegyzése: {note}",
+          "erased": "Törölt komment"
+        },
+        "reason": "Ez a módosítás azért vár jóváhagyásra, mert olyan kommenten alapul, amelyet nem wiki-kezelő írt vagy egészített ki."
       },
       "review": {
         "loading": "A wiki-változás betöltése…",
@@ -1717,7 +1817,7 @@
     "operations": {
       "eyebrow": "Teendők",
       "title": "Ami rád vár",
-      "body": "Két lista: a munkatárs által a te nevedben indított írások, és a neked átadott ügyek. Mindkettő a te döntésedet várja.",
+      "body": "Itt találod, ami tőled vár valamit: a munkatárs által a te nevedben indított írásokat, a neked átadott ügyeket, az új leveleket és a wiki-kommentjeidre érkezett válaszokat.",
       "approvalsTitle": "Jóváhagyásra váró írások",
       "approvalsBody": "Ezeket a munkatárs a te nevedben küldené el (például API-hívás vagy Google Drive-fájl). Jóváhagyás után a rendszer egyszer végrehajtja; elutasításnál nem történik írás.",
       "empty": "Nincs jóváhagyásra váró írás.",
@@ -1762,6 +1862,22 @@
         "invalid_args": "Érvénytelen kérés.",
         "handoffs_unavailable": "Az átadások funkciója még nincs telepítve ezen a környezeten. Futtasd a hiányzó adatbázis-migrációkat.",
         "schema_mismatch": "A lista most nem tölthető be. Ha friss telepítésről van szó, futtasd a hiányzó adatbázis-migrációkat."
+      },
+      "wikiComments": {
+        "title": "Kommentjeid a wikiben",
+        "body": "Ezek a te kommentjeid, amelyekkel az AI-munkatárs foglalkozott. A kérdés és az elutasítás a te válaszodra vár, a kész kommentek csak tájékoztatásul jelennek meg.",
+        "labelQuestion": "Az AI-munkatárs kérdez",
+        "labelDeclined": "Az oldal nem módosult",
+        "labelResolved": "Beledolgozva",
+        "ok": "Rendben",
+        "allOk": "Mind rendben",
+        "answer": "Válasz",
+        "answerPlaceholder": "A válaszod",
+        "reopen": "Újranyitás",
+        "reopenPlaceholder": "Miért nem értesz egyet?",
+        "send": "Küldés",
+        "cancel": "Mégse",
+        "openChange": "Módosítás megnyitása"
       },
       "handoffsTitle": "Neked átadott ügyek",
       "handoffsBody": "Egy munkatárs a saját körén kívülre adott neked feladatot. Elfogadhatod, elutasíthatod, vagy készre jelölheted, ha már intézted.",

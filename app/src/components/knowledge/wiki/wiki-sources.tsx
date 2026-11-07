@@ -38,6 +38,15 @@ export function WikiSourceLabel({
       </span>
     )
   }
+  if (source.kind === 'wiki_comment') {
+    // #1129 D6: a forrás a kommentre mutat; törölt kommentnél név és dátum nélkül.
+    if (source.erased || !source.commentedAt) return <span className="text-ink-faint" data-testid="wiki-source-comment">{t('commentSourceErased')}</span>
+    return (
+      <span data-testid="wiki-source-comment">
+        {t('commentSource', { name: source.authorName ?? '—', date: new Date(source.commentedAt).toLocaleDateString(locale) })}
+      </span>
+    )
+  }
   const owner = source.connectorId ?? connectorId
   const label = `${source.filename ?? source.documentId}${source.page ? `, ${t('pageN', { n: source.page })}` : ''}${source.section ? ` · ${source.section}` : ''}`
   if (!source.exists) {

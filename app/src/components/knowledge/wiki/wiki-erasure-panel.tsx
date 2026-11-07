@@ -12,7 +12,7 @@ type Kind = 'text' | 'pages' | 'revision'
 type Mode = 'redact' | 'erase'
 type Preview = Extract<Awaited<ReturnType<typeof previewWikiErasureAction>>, { success: true }>['data']
 
-const LOCATIONS = ['page', 'revision', 'changeSet', 'log', 'document', 'sourceFile', 'chunk', 'gatewayOperation'] as const
+const LOCATIONS = ['page', 'revision', 'changeSet', 'log', 'document', 'sourceFile', 'chunk', 'gatewayOperation', 'comment'] as const
 
 /**
  * #978 §7 (D9, D10): adatvédelmi törlés. Lépések: mit keresünk → előnézet

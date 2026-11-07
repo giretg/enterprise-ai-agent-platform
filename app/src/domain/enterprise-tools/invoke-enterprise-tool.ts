@@ -129,6 +129,8 @@ import {
   KB_WIKI_CHANGES_TOOL,
   KB_WIKI_REVERT_TOOL,
   KB_WIKI_REPROCESS_TOOL,
+  KB_WIKI_COMMENTS_TOOL,
+  KB_WIKI_COMMENT_RESPOND_TOOL,
   KB_WIKI_CONFIG_GET_TOOL,
   KB_WIKI_CONFIG_PROPOSE_TOOL,
   KB_WIKI_CONFIG_WITHDRAW_TOOL,
@@ -1815,6 +1817,8 @@ async function invokeKbTool(
     toolName === KB_WIKI_CONFIG_PROPOSE_TOOL ||
     toolName === KB_WIKI_CONFIG_WITHDRAW_TOOL ||
     toolName === KB_WIKI_REPROCESS_TOOL ||
+    toolName === KB_WIKI_COMMENTS_TOOL ||
+    toolName === KB_WIKI_COMMENT_RESPOND_TOOL ||
     parsedArgs.processingMode === 'wiki' ||
     parsedArgs.inbox === true
   ) {
@@ -1936,6 +1940,9 @@ const WIKI_TOOL_CAPABILITIES: Record<string, readonly string[]> = {
   [KB_WIKI_CONFIG_WITHDRAW_TOOL]: [KB_WIKI_CONFIG_WITHDRAW_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   // #1085: ugyanaz a jog, mint az írásnál; a kötés `wikiAccess: write`-ja dönt.
   [KB_WIKI_REPROCESS_TOOL]: [KB_WIKI_REPROCESS_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
+  // #1129: publikálás nélkül elérhető; a jog a kötésen dől el (olvasáshoz `read`, lezáráshoz `write`).
+  [KB_WIKI_COMMENTS_TOOL]: [KB_WIKI_COMMENTS_TOOL, KB_LIST_INDEX_TOOL, KB_GET_PAGE_TOOL],
+  [KB_WIKI_COMMENT_RESPOND_TOOL]: [KB_WIKI_COMMENT_RESPOND_TOOL, KB_WIKI_WRITE_TOOL, KB_INGEST_TOOL],
   [KB_INGEST_TOOL]: [KB_INGEST_TOOL],
   [KB_LIST_INDEX_TOOL]: [KB_LIST_INDEX_TOOL],
 }
@@ -1972,6 +1979,7 @@ async function invokeWikiTool(
       agentId: definition.agentId,
       snapshot: { connectors: input.userConnectors },
       ...(input.interactive ? { interactive: true } : {}),
+      ...(principal.forceWriteApproval ? { forceWriteApproval: true } : {}),
     })
   } catch (error) {
     const code =

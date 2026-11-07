@@ -15,6 +15,7 @@ import { mcpProtectedResourceMetadata } from '../src/auth/mcp-oauth-metadata'
 import { handleMcpRequest } from '../src/auth/mcp-server'
 import { voiceAllowedToolAliases } from '../src/auth/voice-tool-guard'
 import { createStaticFeatureFlags } from '../src/domain/feature-flags/evaluator'
+import { TOOL_FEATURE_FLAGS } from '../src/domain/feature-flags/tool-flags'
 import { createToolFeatureGate } from '../src/domain/feature-flags/gates'
 import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 import { PRESETS } from '../src/domain/client-policy/capabilities'
@@ -1146,7 +1147,8 @@ async function main() {
       ...MINI_APP_TOOLS,
       // #1020/#1021: policy-sor nélkül Kötött pálya — a „harness-pótló” web_search / web_fetch nem listázódik;
       // #1024: a document_export hívható volna, de külső kliensnek alapból nem listázzuk.
-      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL && name !== WEB_FETCH_TOOL && name !== DOCUMENT_EXPORT_TOOL),
+      // #1126: a flag mögötti eszköz flag nélkül nem listázódik.
+      ...ENTERPRISE_TOOLS.filter((name) => name !== WEB_SEARCH_TOOL && name !== WEB_FETCH_TOOL && name !== DOCUMENT_EXPORT_TOOL && !(name in TOOL_FEATURE_FLAGS)),
       MCP_GATEWAY_OPERATION_GET_TOOL,
     ])
     const submit = tools.find((tool) => tool.name === MCP_SKILL_SUBMIT_TOOL)
@@ -2924,6 +2926,26 @@ async function main() {
     const noGate = await run([], false)
     assert.ok(noGate.names.includes(MCP_AGENTS_LIST_TOOL), 'üres megfeleltetésnél minden a régi')
     assert.notEqual(noGate.called?.isError, true)
+  })
+
+  await check('#1129 a komment-eszközök csak bekapcsolt flagnél listázódnak, és a sémájuk tömb-mentes', async () => {
+    const list = async (enabledFor: string[]) => {
+      const { deps } = runtimeDeps({})
+      deps.toolFeatureGate = createToolFeatureGate(TOOL_FEATURE_FLAGS, createStaticFeatureFlags({ 'wiki.comments': enabledFor }))
+      const res = await post('acme', { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, { authorization: `Bearer ${TOKEN}` }, deps)
+      return ((await readJson(res)) as { result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, { type?: string }> } }> } }).result?.tools ?? []
+    }
+    const names = ['kb_wiki_comments', 'kb_wiki_comment_respond']
+    assert.equal((await list([])).some((tool) => names.includes(tool.name)), false)
+    const on = await list([TENANT_ID])
+    for (const name of names) {
+      const tool = on.find((row) => row.name === name)
+      assert.ok(tool, name)
+      for (const [field, spec] of Object.entries(tool.inputSchema?.properties ?? {})) {
+        assert.notEqual(spec.type, 'array', `${name}.${field}`)
+      }
+    }
+    assert.equal(on.find((row) => row.name === 'kb_wiki_write')?.inputSchema?.properties?.resolvesComments?.type, 'string')
   })
 
   console.log(`\n${failures === 0 ? 'mcp-http: ok' : `mcp-http: ${failures} failed`}`)

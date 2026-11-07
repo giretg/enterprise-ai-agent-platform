@@ -16,10 +16,14 @@ import {
   getWikiSettingsAction,
   getWikiStateAtAction,
   getWikiSourceAction,
+  listWikiCommentsAction,
   listWikiFilesAction,
   listWikiInboxAction,
+  listWikiPageCommentsAction,
 } from '@/app/actions/knowledge-wiki'
 import { Badge, Card } from '@/components/ui/shell'
+import { WikiCommentCard, WikiCommentsPanel } from '@/components/knowledge/wiki/wiki-comments'
+import { WikiCommentStateGuide } from '@/components/knowledge/wiki/wiki-comment-state-guide'
 import { WikiInboxPanel } from '@/components/knowledge/wiki/wiki-inbox-panel'
 import { WikiSourceList } from '@/components/knowledge/wiki/wiki-sources'
 import { WikiMarkdown } from '@/components/knowledge/wiki/wiki-markdown'
@@ -50,7 +54,7 @@ import { HelpHint } from '@/components/onboarding/onboarding-ui'
 
 export const dynamic = 'force-dynamic'
 
-const TABS = ['files', 'wiki', 'reader', 'views', 'changes', 'inbox', 'log', 'access', 'proposals', 'settings'] as const
+const TABS = ['files', 'wiki', 'reader', 'views', 'changes', 'inbox', 'comments', 'log', 'access', 'proposals', 'settings'] as const
 
 /** Az olvasó nézetben minden belső link megtartja ezt, különben kattintásra kilépne belőle. */
 const READER_QUERY = { tab: 'reader' }
@@ -80,7 +84,13 @@ export default async function KnowledgeBaseWikiPage({
   }
   const wiki = overviewRes.data
   const title = wikiDisplayName(t, wiki)
-  const tabs = TABS.filter((tab) => (tab !== 'settings' || wiki.canManage) && (tab !== 'proposals' || wiki.canManage) && (tab !== 'views' || wiki.managedFields))
+  const tabs = TABS.filter(
+    (tab) =>
+      (tab !== 'settings' || wiki.canManage) &&
+      (tab !== 'proposals' || wiki.canManage) &&
+      (tab !== 'views' || wiki.managedFields) &&
+      (tab !== 'comments' || wiki.commentsEnabled),
+  )
   const tab = resolveWikiTab(query, tabs)
   // A nyitott lap (és forrás) a nézetváltáskor is megmarad.
   const openItem = { page: query.page, source: query.source, p: query.p }
@@ -141,6 +151,9 @@ export default async function KnowledgeBaseWikiPage({
                 {wiki.inbox.pending + wiki.inbox.reprocess + wiki.inbox.inProgress}
               </span>
             ) : null}
+            {id === 'comments' && wiki.openComments > 0 ? (
+              <span className="ml-1 rounded-full bg-coral/10 px-1.5 text-xs text-coral-deep">{wiki.openComments}</span>
+            ) : null}
           </Link>
         ))}
       </nav>
@@ -152,6 +165,7 @@ export default async function KnowledgeBaseWikiPage({
       {tab === 'views' ? <ViewsTab connectorId={connectorId} query={query} t={t} locale={locale} /> : null}
       {tab === 'changes' ? <ChangesTab connectorId={connectorId} query={query} locale={locale} /> : null}
       {tab === 'inbox' ? <InboxTab connectorId={connectorId} /> : null}
+      {tab === 'comments' ? <CommentsTab connectorId={connectorId} query={query} locale={locale} /> : null}
       {tab === 'log' ? (
         <Card title={t('log.title')}>
           <p className="mb-3 text-sm text-ink-soft">{t('log.intro')}</p>
@@ -209,6 +223,10 @@ type WikiQuery = {
   owner?: string
   field?: string
   value?: string
+  /** #1129 Kommentek fül szűrői. */
+  status?: string
+  mine?: string
+  commentPage?: string
 }
 
 type Overview = Extract<Awaited<ReturnType<typeof getWikiOverviewAction>>, { success: true }>['data']
@@ -310,11 +328,14 @@ async function WikiTab({
   } else if (!reader && query.page && query.from && query.to) {
     main = <RevisionDiffView connectorId={connectorId} path={query.page} from={query.from} to={query.to} locale={locale} />
   } else if (query.page) {
-    const [res, metaRes] = await Promise.all([
+    const [res, metaRes, commentsRes] = await Promise.all([
       getWikiPageAction({ connectorId, path: query.page }),
       getWikiPageMetaAction({ connectorId, path: query.page }),
+      // #1129: kikapcsolt flagnél a panel és a számláló nem jelenik meg.
+      wiki.commentsEnabled ? listWikiPageCommentsAction({ connectorId, path: query.page }) : null,
     ])
     const pageMeta = metaRes.success ? metaRes.data : null
+    const pageComments = commentsRes?.success ? commentsRes.data : null
     main = res.success ? (
       <Card>
         {backControl}
@@ -333,9 +354,17 @@ async function WikiTab({
             {' · '}
             {t('page.updated', { when: formatWhen(res.data.updatedAt, locale), version: res.data.version })}
             {res.data.status === 'archived' ? ` · ${t('page.archived')}` : ''}
+            {pageComments && res.data.openComments > 0 ? (
+              <>
+                {' · '}
+                <a href="#wiki-comments" data-testid="wiki-page-comment-count" className="text-coral-deep hover:underline">
+                  {t('comments.headerCount', { count: res.data.openComments })}
+                </a>
+              </>
+            ) : null}
           </p>
           {pageMeta && !reader ? <WikiPageMeta connectorId={connectorId} path={res.data.path} data={pageMeta} locale={locale} /> : null}
-          <div className="mt-4">
+          <div className="mt-4" data-wiki-comment-scope>
             <WikiMarkdown
               connectorId={connectorId}
               body={res.data.body}
@@ -359,6 +388,18 @@ async function WikiTab({
           {res.data.backlinks ? <BacklinksPanel connectorId={connectorId} backlinks={res.data.backlinks} t={t} linkQuery={linkQuery} /> : null}
           {res.data.crossBacklinks.length ? <CrossBacklinksPanel rows={res.data.crossBacklinks} t={t} linkQuery={linkQuery} /> : null}
           {reader ? null : <PageHistoryPanel connectorId={connectorId} path={res.data.path} locale={locale} />}
+          {pageComments ? (
+            <WikiCommentsPanel
+              connectorId={connectorId}
+              path={res.data.path}
+              comments={pageComments.comments}
+              canComment={pageComments.canComment}
+              canManage={pageComments.canManage}
+              userId={pageComments.userId}
+              hasWriter={wiki.access.some((row) => row.access === 'write')}
+              locale={locale}
+            />
+          ) : null}
         </article>
       </Card>
     ) : (
@@ -703,6 +744,68 @@ async function SettingsTab({ connectorId, name, isPrivate, isCatalog }: { connec
       {retention.success ? <WikiRetentionPanel connectorId={connectorId} retention={retention.data} /> : null}
       <WikiOwnerActions connectorId={connectorId} name={name} isPrivate={isPrivate} />
       <WikiErasurePanel connectorId={connectorId} name={name} isPrivate={isPrivate} />
+    </div>
+  )
+}
+
+/** #1129: minden nem lezárt komment a wikin, a legrégebbi elöl; a feldolgozás nem azonnali. */
+async function CommentsTab({ connectorId, query, locale }: { connectorId: string; query: WikiQuery; locale: string }) {
+  const t = await getTranslations('ControlPlane.wiki.comments')
+  const res = await listWikiCommentsAction({
+    connectorId,
+    status: query.status || undefined,
+    mine: query.mine === '1',
+    path: query.commentPage || undefined,
+  })
+  if (!res.success) notFound()
+  const { comments, canManage, userId } = res.data
+  const filtered = !!(query.status || query.mine || query.commentPage)
+  return (
+    <div className="space-y-4" data-testid="wiki-comments-tab">
+      <Card>
+        <p className="text-sm text-ink-soft">{t('tab.intro')}</p>
+        <WikiCommentStateGuide />
+        {canManage ? <p className="mt-2 text-xs text-ink-faint">{t('tab.tip')}</p> : null}
+        <form className="mt-3 flex flex-wrap items-end gap-3 text-sm" method="get">
+          <input type="hidden" name="tab" value="comments" />
+          <label>
+            <span className="mb-1 block text-ink">{t('tab.filterStatus')}</span>
+            <select name="status" defaultValue={query.status ?? ''} className="rounded-lg border border-line/70 px-2 py-1 text-sm" data-testid="wiki-comments-filter-status">
+              <option value="">{t('tab.filterActive')}</option>
+              <option value="open">{t('statuses.open')}</option>
+              <option value="question">{t('statuses.question')}</option>
+              <option value="pending_approval">{t('statuses.pending_approval')}</option>
+              <option value="resolved">{t('statuses.resolved')}</option>
+              <option value="declined">{t('statuses.declined')}</option>
+              <option value="withdrawn">{t('statuses.withdrawn')}</option>
+              <option value="closed">{t('tab.filterClosed')}</option>
+              <option value="all">{t('tab.filterAll')}</option>
+            </select>
+          </label>
+          <label>
+            <span className="mb-1 block text-ink">{t('tab.filterPage')}</span>
+            <input name="commentPage" defaultValue={query.commentPage ?? ''} placeholder={t('tab.filterAllPages')} className="rounded-lg border border-line/70 px-2 py-1 text-sm" />
+          </label>
+          <label className="flex items-center gap-2 pb-1">
+            <input type="checkbox" name="mine" value="1" defaultChecked={query.mine === '1'} data-testid="wiki-comments-filter-mine" />
+            <span>{t('tab.filterMine')}</span>
+          </label>
+          <button type="submit" className="rounded-lg bg-ink px-3 py-1.5 text-sm text-white" data-testid="wiki-comments-filter-apply">
+            {t('tab.apply')}
+          </button>
+        </form>
+      </Card>
+      <Card>
+        {comments.length === 0 ? (
+          <p className="text-sm text-ink-soft" data-testid="wiki-comments-tab-empty">{filtered ? t('tab.emptyFiltered') : t('tab.empty')}</p>
+        ) : (
+          <ul className="space-y-2" data-testid="wiki-comments-tab-list">
+            {comments.map((comment) => (
+              <WikiCommentCard key={comment.id} connectorId={connectorId} comment={comment} canManage={canManage} userId={userId} locale={locale} showPage />
+            ))}
+          </ul>
+        )}
+      </Card>
     </div>
   )
 }

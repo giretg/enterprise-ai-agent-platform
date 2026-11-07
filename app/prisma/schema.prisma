@@ -273,6 +273,27 @@ enum WikiPageSort {
   manual
 }
 
+/// #1129: egy wiki-komment életciklusa.
+enum WikiCommentStatus {
+  open
+  question
+  pending_approval
+  resolved
+  declined
+  withdrawn
+}
+
+enum WikiCommentEventKind {
+  reply
+  status
+}
+
+enum WikiCommentActorKind {
+  human
+  agent
+  system
+}
+
 /// #1061 F3: az oldal dokumentum-állapota (külön a technikai `WikiPageStatus`-tól).
 enum WikiDocStatus {
   draft
@@ -909,6 +930,7 @@ model Connector {
   agentConnectors          AgentConnector[]
   primaryForAgents         Agent[]                @relation("AgentPrimaryMailbox")
   linkedFromWikiCategories WikiCategory[]         @relation("WikiCategoryLinkedWiki")
+  wikiComments             WikiComment[]
   grants                   ConnectorGrant[]
   draft                    ConnectorDraft?
   gatewayOperations        GatewayOperation[]
@@ -1232,6 +1254,7 @@ model AgentWiki {
   tags        WikiTag[]
   readCursors WikiReadCursor[]
   erasures    WikiErasure[]
+  comments    WikiComment[]
 
   @@map("agent_wikis")
 }
@@ -1283,6 +1306,7 @@ model WikiPage {
   wiki      AgentWiki          @relation(fields: [wikiId], references: [id], onDelete: Cascade)
   connector Connector          @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   revisions WikiPageRevision[]
+  comments  WikiComment[]
 
   @@unique([connectorId, path])
   @@index([wikiId, status])
@@ -1414,6 +1438,104 @@ model WikiConfigProposal {
 }
 
 /**
+ * #1129: emberi komment egy wiki-oldalon, amelyet az író joggal rendelkező agent MCP-n dolgoz fel.
+ * Nem része az oldal verziójának és `contentHash`-ének, a keresésnek és az exportnak sem.
+ */
+model WikiComment {
+  id           String            @id @default(uuid()) @db.Uuid
+  wikiId       String            @map("wiki_id") @db.Uuid
+  /**
+   * Scope-kulcs, mint a `WikiPage`-nél: minden lekérdezés connectorra szűr.
+   */
+  connectorId  String            @map("connector_id") @db.Uuid
+  pageId       String            @map("page_id") @db.Uuid
+  /**
+   * Az oldal verziója a komment írásakor.
+   */
+  pageVersion  Int               @map("page_version")
+  /**
+   * A kijelölt szövegrész (max. 500 karakter).
+   */
+  quote        String?
+  /**
+   * Sima szöveg (max. 4000 karakter).
+   */
+  body         String            @db.Text
+  status       WikiCommentStatus @default(open)
+  /**
+   * Idegen kulcs nélkül, mint a `WikiPage.createdByUserId`.
+   */
+  authorUserId String            @map("author_user_id") @db.Uuid
+  /**
+   * A lezáró vagy jóváhagyásra váró change-set; üres, ha az agent szerint már jó volt az oldal.
+   */
+  changeSetId  String?           @map("change_set_id") @db.Uuid
+  /**
+   * A megőrzési idő innen számít.
+   */
+  closedAt     DateTime?         @map("closed_at") @db.Timestamptz
+  /**
+   * A szerző a lezárást tudomásul vette a Teendők oldalon.
+   */
+  authorSeenAt DateTime?         @map("author_seen_at") @db.Timestamptz
+  /**
+   * GDPR- vagy kezelői törlés sír-jele: a sor marad, a szöveg kiürül.
+   */
+  erasedAt     DateTime?         @map("erased_at") @db.Timestamptz
+  erasureId    String?           @map("erasure_id") @db.Uuid
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  wiki      AgentWiki          @relation(fields: [wikiId], references: [id], onDelete: Cascade)
+  connector Connector          @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  page      WikiPage           @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  changeSet WikiChangeSet?     @relation(fields: [changeSetId], references: [id], onDelete: SetNull)
+  events    WikiCommentEvent[]
+
+  @@index([connectorId, status, createdAt])
+  @@index([pageId, status])
+  /**
+   * Teendők-lista és számláló.
+   */
+  @@index([authorUserId, status])
+  @@index([changeSetId])
+  @@map("wiki_comments")
+}
+
+/**
+ * #1129: a komment szála, csak hozzáfűzés: válaszok és állapotváltások.
+ */
+model WikiCommentEvent {
+  id           String               @id @default(uuid()) @db.Uuid
+  commentId    String               @map("comment_id") @db.Uuid
+  kind         WikiCommentEventKind
+  fromStatus   WikiCommentStatus?   @map("from_status")
+  toStatus     WikiCommentStatus?   @map("to_status")
+  actorKind    WikiCommentActorKind @map("actor_kind")
+  /**
+   * Az ember, vagy az agent munkamenetének embere.
+   */
+  actorUserId  String?              @map("actor_user_id") @db.Uuid
+  actorAgentId String?              @map("actor_agent_id") @db.Uuid
+  /**
+   * Válasz vagy indoklás (max. 4000 karakter).
+   */
+  body         String?              @db.Text
+  /**
+   * Rendszer-bejegyzés oka gépi kóddal; a felület ebből fordít, az agent ezt látja.
+   */
+  systemCode   String?              @map("system_code")
+  changeSetId  String?              @map("change_set_id") @db.Uuid
+  erasedAt     DateTime?            @map("erased_at") @db.Timestamptz
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz
+
+  comment WikiComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@index([commentId, createdAt])
+  @@map("wiki_comment_events")
+}
+
+/**
  * Egy `kb_wiki_write` hívás — a jóváhagyás egysége (D1/D4).
  */
 model WikiChangeSet {
@@ -1463,6 +1585,7 @@ model WikiChangeSet {
   wiki      AgentWiki          @relation(fields: [wikiId], references: [id], onDelete: Cascade)
   connector Connector          @relation(fields: [connectorId], references: [id], onDelete: Cascade)
   revisions WikiPageRevision[]
+  comments  WikiComment[]
 
   @@unique([wikiId, seq])
   @@index([wikiId, status])
