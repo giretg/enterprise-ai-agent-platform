@@ -92,6 +92,7 @@ jobs:
           npm run test:agent-setting-sections
           npm run test:agent-hire
           npm run test:project-work
+          npm run test:project-memory-access
           npm run test:handoff
           npm run test:scheduled-task-sync-plan
           npm run test:scheduled-task-service
