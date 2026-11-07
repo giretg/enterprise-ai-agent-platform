@@ -12,7 +12,16 @@ class MemoryPromises implements CustomerPromiseStore {
   }
   async findById(tenantId: string, id: string) { return this.rows.find(row => row.tenantId === tenantId && row.id === id) ?? null }
   async list(input: CustomerPromiseListInput, now: Date) {
-    return this.rows.filter(row => row.tenantId === input.tenantId && (!input.ownerUserId || input.ownerUserId === row.ownerUserId) && (!input.agentId || input.agentId === row.agentId) && (!input.status || (input.status === 'active' ? ['open', 'claimed'].includes(row.status) : row.status === input.status)) && (input.due !== 'overdue' || (['open', 'claimed'].includes(row.status) && row.dueAt < now)) && (input.due !== 'upcoming' || row.dueAt >= now)).slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50))
+    const match = (row: CustomerPromiseRecord) => row.tenantId === input.tenantId && (!input.ownerUserId || input.ownerUserId === row.ownerUserId) && (!input.agentId || input.agentId === row.agentId) && (!input.status || (input.status === 'active' ? ['open', 'claimed'].includes(row.status) : row.status === input.status)) && (input.due !== 'overdue' || (['open', 'claimed'].includes(row.status) && row.dueAt < now)) && (input.due !== 'upcoming' || row.dueAt >= now)
+    const sorted = this.rows.filter(match).sort((a, b) => {
+      if (input.due !== 'overdue' && input.due !== 'upcoming') {
+        const aUp = a.dueAt >= now ? 0 : 1
+        const bUp = b.dueAt >= now ? 0 : 1
+        if (aUp !== bUp) return aUp - bUp
+      }
+      return a.dueAt.getTime() - b.dueAt.getTime() || a.id.localeCompare(b.id)
+    })
+    return sorted.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 50))
   }
   async countUrgentForUser(tenantId: string, userId: string, until: Date) { return this.rows.filter(row => row.tenantId === tenantId && row.ownerUserId === userId && ['open', 'claimed'].includes(row.status) && row.dueAt <= until).length }
   async resolve(input: Parameters<CustomerPromiseStore['resolve']>[0]) {
@@ -69,6 +78,27 @@ async function main() {
   assert.equal(secondPage.length, 3)
   assert(!firstPage.some(row => secondPage.some(other => other.id === row.id)))
   assert.equal((await service.list({ tenantId: input.tenantId, offset: -1.5 }))[0].id, firstPage[0].id)
+  // MCP/briefing take:50 must keep live commitments visible when overdue backlog fills the old dueAt-asc window.
+  const mask = { tenantId: randomUUID(), agentId: randomUUID(), ownerUserId: randomUUID(), definitionId: randomUUID() }
+  for (let i = 0; i < 50; i++) {
+    store.rows.push({
+      id: randomUUID(), ...mask, title: `Overdue ${i}`, commitment: 'stale',
+      customerName: null, customerEmail: null, customerRef: null, channel: null,
+      dueAt: new Date(Date.now() - (i + 2) * 86400000), timezone: 'Europe/Budapest', status: 'open',
+      claimedAt: null, claimClient: null, claimExternalId: null, resolvedAt: null, resolvedNote: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    })
+  }
+  const live = await service.register({
+    ...mask, title: 'Still live', commitment: 'Call tomorrow',
+    dueAt: new Date(Date.now() + 2 * 86400000).toISOString(),
+  })
+  assert(live.ok)
+  const briefing = await service.list({ tenantId: mask.tenantId, ownerUserId: mask.ownerUserId, agentId: mask.agentId, status: 'active', limit: 50 })
+  assert.equal(briefing.length, 50)
+  assert.ok(briefing.some(row => row.id === live.row.id), 'upcoming promise must not be masked by overdue backlog')
+  assert.equal(briefing[0].id, live.row.id)
+  assert.equal(briefing.filter(row => !row.overdue).length, 1)
   const serialized = JSON.stringify(audits)
   for (const privateText of ['private@example.com', 'Call private customer', 'Done']) assert(!serialized.includes(privateText))
   console.log('OK customer promises: validation, tenant/owner isolation, limit, lifecycle, overdue, badge, PII-free audit')
