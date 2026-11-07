@@ -944,8 +944,14 @@ async function main() {
   })
 
   const FLAG = 'chat.next_step'
-  const flagged = (onStop: 'finish_run' | 'old_path', script: Script, active: () => TurnFeatureFlag[] | Promise<TurnFeatureFlag[]>) => {
-    const h = harness(script)
+  // Alapból a forduló már túl van a türelmi időn, ahol a flag hiánya még nem számít leállításnak.
+  const flagged = (
+    onStop: 'finish_run' | 'old_path',
+    script: Script,
+    active: () => TurnFeatureFlag[] | Promise<TurnFeatureFlag[]>,
+    now: () => Date = () => new Date(Date.now() + 60_000),
+  ) => {
+    const h = harness(script, { now })
     h.deps.platform.continuationToken = async () => ({ token: 'turn-token', featureFlags: [{ key: FLAG, onStop }] })
     h.deps.platform.activeFeatureFlags = async () => active()
     return h
@@ -1027,6 +1033,43 @@ async function main() {
     assert.equal(turn?.status, 'succeeded')
     assert.equal(h.store.messages.at(-1)?.content, 'Kész.')
     assert.equal(isTurnFeatureActive(turn!.context, FLAG), true)
+  })
+
+  await check('#1126 friss bekapcsolás: a türelmi időben a régi cache-ű példány üres válasza nem állítja le a futást', async () => {
+    let elapsed = 0
+    let checks = 0
+    const h = flagged('finish_run', twoSteps(), () => (checks++, []), () => new Date(Date.now() + elapsed))
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    elapsed = 40_000
+    assert.equal(await runStep(h.deps, { turnId: r.turn.id, seq: 0 }), 'done')
+    assert.equal(checks, 0)
+    assert.equal(isTurnFeatureActive((await h.store.getTurn(r.turn.id))!.context, FLAG), true)
+    elapsed = 50_000
+    assert.equal(await runStep(h.deps, { turnId: r.turn.id, seq: 1 }), 'done')
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(checks, 1)
+    assert.equal(turn?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 0)
+    assert.ok(h.store.messages.at(-1)?.content.includes(MESSAGES.featureStopped))
+  })
+
+  await check('#1126 finish_run: ha a lezárás hibát dob, az újrapróbálás is lezár, nem fut tovább a munka', async () => {
+    const h = flagged('finish_run', twoSteps(), () => [])
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    const addMessage = h.store.addMessage.bind(h.store)
+    h.store.addMessage = async () => { throw new Error('db down') }
+    await assert.rejects(runStep(h.deps, { turnId: r.turn.id, seq: 0 }))
+    assert.deepEqual((await h.store.getTurn(r.turn.id))?.context?.featureFlags?.stopped, [FLAG])
+    h.store.addMessage = addMessage
+    assert.equal(await runStep(h.deps, { turnId: r.turn.id, seq: 0 }), 'done')
+    assert.equal((await h.store.getTurn(r.turn.id))?.status, 'succeeded')
+    assert.equal(h.llmMessages.length, 0)
+    assert.equal(h.toolCalls.length, 0)
+    assert.ok(h.store.messages.at(-1)?.content.includes(MESSAGES.featureStopped))
   })
 
   await check('#1126 a kérdésre adott válasz új tokent ad, de nem rögzít újra flaget', async () => {

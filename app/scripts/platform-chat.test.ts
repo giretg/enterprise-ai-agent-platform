@@ -226,8 +226,8 @@ async function main() {
   await check('#1126 leállítás-ellenőrzés: csak folytatási tokennel, és csak a token saját cégére', async () => {
     const asked: string[] = []
     const flags = [{ key: 'chat.next', onStop: 'finish_run' as const }]
-    const deps = { signingKey: KEY, now: () => NOW, activeFeatureFlags: async (tenantId: string) => (asked.push(tenantId), flags) }
-    const claims = { sub: USER, tenant: 'acme', tid: TENANT, role: 'operator' as const, adminInsight: false }
+    const deps = { signingKey: KEY, now: () => NOW, featureFlagStateKnown: () => true, activeFeatureFlags: async (tenantId: string) => (asked.push(tenantId), flags) }
+    const claims ={ sub: USER, tenant: 'acme', tid: TENANT, role: 'operator' as const, adminInsight: false }
     const turnToken = signChatToken({ ...claims, aud: CHAT_TURN_TOKEN_AUDIENCE, turnId: 't', agentId: AGENT }, KEY, NOW).token
     assert.deepEqual(await readTurnFeatureFlags(deps, { authorizationHeader: `Bearer ${turnToken}` }), { ok: true, featureFlags: flags })
     assert.deepEqual(asked, [TENANT])
@@ -237,6 +237,11 @@ async function main() {
     }
     assert.equal(asked.length, 1)
     assert.deepEqual(await readTurnFeatureFlags({ ...deps, signingKey: undefined }, { authorizationHeader: `Bearer ${turnToken}` }), { ok: false, code: 'not_configured' })
+    // Betöltetlen állapotnál minden flag Ki lenne, a worker ezt leállításnak venné.
+    assert.deepEqual(
+      await readTurnFeatureFlags({ ...deps, activeFeatureFlags: async () => [], featureFlagStateKnown: () => false }, { authorizationHeader: `Bearer ${turnToken}` }),
+      { ok: false, code: 'unavailable' },
+    )
   })
 
   await check('folytatási token: csak chat-tokennel, fordulóra + agentre szűkítve; láncolás tilos', async () => {

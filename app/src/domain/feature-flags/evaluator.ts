@@ -19,6 +19,8 @@ const DEFAULT_RETRY_MS = 5_000
 export type FeatureFlagEvaluator<K extends string = string> = FeatureFlagReader<K> & {
   /** A módosító példány hívja, hogy a saját következő döntése már az új állapotból menjen. */
   invalidate(): void
+  /** Hamis, amíg a példány egyszer sem tudott betölteni: ilyenkor minden flag Ki, de ez nem jelent leállítást. */
+  isStateKnown(): boolean
 }
 
 /**
@@ -98,6 +100,7 @@ export function createFeatureFlagEvaluator<K extends string = string>(deps: {
       nextLoadAt = 0
       inFlight = null
     },
+    isStateKnown: () => snapshot !== null,
   }
 }
 

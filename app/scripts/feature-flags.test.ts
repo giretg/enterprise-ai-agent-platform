@@ -250,6 +250,30 @@ async function main() {
   await check('Lassú adatbázisnál nem vár a végtelenségig, az ismert állapotból dönt', async () => {
     const reader = createFeatureFlagEvaluator({ loadTimeoutMs: 5, load: () => new Promise(() => undefined) })
     assert.equal(await reader.isEnabled(KEY, { tenantId: A }), false)
+    assert.equal(reader.isStateKnown(), false)
+  })
+  await check('#1126 WP-5: az állapot csak sikeres betöltés után ismert, és egy későbbi hiba nem veszi el', async () => {
+    let healthy = false
+    let time = 0
+    const reader = createFeatureFlagEvaluator({
+      now: () => time,
+      retryMs: 0,
+      load: async () => {
+        if (!healthy) throw new Error('db down')
+        return new Map([[KEY, state('all')]])
+      },
+    })
+    assert.equal(reader.isStateKnown(), false)
+    assert.equal(await reader.isEnabled(KEY, { tenantId: A }), false)
+    assert.equal(reader.isStateKnown(), false)
+    healthy = true
+    time = 1
+    assert.equal(await reader.isEnabled(KEY, { tenantId: A }), true)
+    assert.equal(reader.isStateKnown(), true)
+    healthy = false
+    time = 60_000
+    assert.equal(await reader.isEnabled(KEY, { tenantId: A }), true)
+    assert.equal(reader.isStateKnown(), true)
   })
   await check('Statikus teszt-kiértékelő', async () => {
     const reader = createStaticFeatureFlags({ 'a.a': true, 'b.b': [A], 'c.c': false })
@@ -581,6 +605,7 @@ async function main() {
     ])
     assert.equal(typeof clientPolicyStore.activeFeatureFlags, 'function')
     assert.equal(typeof continuationDeps().activeFeatureFlags, 'function')
+    assert.equal(typeof continuationDeps().featureFlagStateKnown(), 'boolean')
   })
   await check('Az éles lista érvényes; a lejárt dátum csak figyelmeztetés a CI-ban', () => {
     const { errors, warnings } = validateFeatureFlagRegistry(FEATURE_FLAGS, RETIRED_FEATURE_FLAG_KEYS, new Date())

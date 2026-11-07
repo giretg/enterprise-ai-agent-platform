@@ -87,6 +87,14 @@ async function main() {
     await check('#1126 flagek: a hibás elem Ki, régi platformon üres lista; a leállítás-ellenőrzés hibája kivétel', async () => {
       assert.deepEqual(await client.activeFeatureFlags({ token: 'turn' }), [{ key: 'a.b', onStop: 'old_path' }])
       await assert.rejects(client.activeFeatureFlags({ token: 'lejárt' }), PlatformError)
+      // A lógó platform nem tarthatja fel a lépést a bérlet lejártáig.
+      let signal: AbortSignal | null | undefined
+      const recording = createPlatformClient(origin, (async (_url: string, init?: RequestInit) => {
+        signal = init?.signal
+        return new Response(JSON.stringify({ featureFlags: [] }))
+      }) as typeof fetch)
+      await recording.activeFeatureFlags({ token: 'turn' })
+      assert.ok(signal instanceof AbortSignal)
       assert.deepEqual(parseFeatureFlags(undefined), [])
       assert.deepEqual(parseFeatureFlags([{ key: 'x.y', onStop: 'finish_run' }]), [{ key: 'x.y', onStop: 'finish_run' }])
     })

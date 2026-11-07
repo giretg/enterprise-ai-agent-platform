@@ -64,6 +64,11 @@ const DEFINITION_MAX_CHARS = 60_000
 /** Szolgáltatói kiesésnél az LLM-lépés újrapróbálása előtti várakozás: a kiesés percekig is tarthat. */
 const MODEL_RETRY_DELAYS_SECONDS = [15, 30, 60]
 const TRANSIENT_MODEL_STATUSES = [429, 502, 503, 504]
+/**
+ * #1126 WP-5: a bekapcsolás ennyi idő alatt biztosan eléri a többi szerverpéldányt (30 mp cache-lejárat,
+ * 5 mp betöltés és a rögzítésig eltelt idő). A forduló elején a flag hiánya ezért még nem jelent leállítást.
+ */
+const FEATURE_FLAG_STOP_GRACE_MS = 45_000
 /** Agent-szerkesztő eszközök: a beszélgetésben nincs rájuk szükség, csak a modell-kontextust hizlalnák. */
 const EXCLUDED_TOOLS = new Set([
   'platform.agent.create_draft',
@@ -204,12 +209,13 @@ export function isTurnFeatureActive(context: TurnContext | null, key: string): b
 /**
  * #1126 WP-5: minden lépés előtt a leállítás ellenőrzése. Rögzített flag nélkül nincs hívás. Ha a platform
  * nem válaszol, az utolsó ismert állapot marad, mert a flag-ellenőrzés kiesése nem állíthat le munkát.
- * Visszatérés: a friss forduló, vagy `null`, ha a forduló a flag szabálya szerint lezárult.
+ * A türelmi időben sincs hívás, mert friss bekapcsolásnál egy régi cache-ű példány a flag hiányát jelezné.
  */
-async function applyFeatureFlagStops(deps: EngineDeps, turn: Turn): Promise<Turn | null> {
+async function recordFeatureFlagStops(deps: EngineDeps, turn: Turn): Promise<Turn> {
   const flags = turn.context?.featureFlags
   const live = flags?.pinned.filter((flag) => !flags.stopped.includes(flag.key)) ?? []
   if (!flags || live.length === 0) return turn
+  if (nowOf(deps).getTime() - turn.createdAt.getTime() < FEATURE_FLAG_STOP_GRACE_MS) return turn
   let active: TurnFeatureFlag[]
   try {
     active = await deps.platform.activeFeatureFlags({ token: turn.continuationToken! })
@@ -221,10 +227,13 @@ async function applyFeatureFlagStops(deps: EngineDeps, turn: Turn): Promise<Turn
   if (stopped.length === 0) return turn
   const context: TurnContext = { ...turn.context!, featureFlags: { ...flags, stopped: [...flags.stopped, ...stopped.map((flag) => flag.key)] } }
   await deps.store.updateTurn(turn.id, { context })
-  const next = { ...turn, context }
-  if (!stopped.some((flag) => flag.onStop === 'finish_run')) return next
-  await finalize(deps, next, MESSAGES.featureStopped)
-  return null
+  return { ...turn, context }
+}
+
+/** A mentett állapotból dönt, így a lezárás hibája után az újrapróbálás is lezár. */
+function stoppedFlagEndsRun(context: TurnContext | null): boolean {
+  const flags = context?.featureFlags
+  return !!flags?.pinned.some((flag) => flag.onStop === 'finish_run' && flags.stopped.includes(flag.key))
 }
 
 /** Kizárólag a tulajdonos kifejezett folytatása nyit új keretet; a számlálók nem nullázódnak. */
@@ -932,9 +941,11 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
       await pauseTurn(deps, turn, 'time', MESSAGES.tooLong)
       return 'done'
     }
-    const checked = await applyFeatureFlagStops(deps, turn)
-    if (!checked) return 'done'
-    turn = checked
+    turn = await recordFeatureFlagStops(deps, turn)
+    if (stoppedFlagEndsRun(turn.context)) {
+      await finalize(deps, turn, MESSAGES.featureStopped)
+      return 'done'
+    }
     if (turn.status === 'queued') await deps.store.transitionTurn(turn.id, ['queued'], 'running')
     const live = { ...turn, status: 'running' as const }
     const plan = planNext(done)

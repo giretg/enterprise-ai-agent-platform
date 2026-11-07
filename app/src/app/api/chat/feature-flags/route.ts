@@ -10,6 +10,6 @@ export async function GET(request: Request): Promise<Response> {
   const result = await readTurnFeatureFlags(continuationDeps(), {
     authorizationHeader: request.headers.get('authorization'),
   })
-  if (!result.ok) return NextResponse.json({ error: result.code }, { status: result.code === 'not_configured' ? 503 : 401 })
+  if (!result.ok) return NextResponse.json({ error: result.code }, { status: result.code === 'unauthenticated' ? 401 : 503 })
   return NextResponse.json({ featureFlags: result.featureFlags }, { headers: { 'cache-control': 'no-store' } })
 }

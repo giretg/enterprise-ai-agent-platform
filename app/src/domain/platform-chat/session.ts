@@ -95,6 +95,8 @@ export type ContinuationDeps = Omit<ChatSessionDeps, 'workerUrl' | 'loadTenant' 
   principal: McpPrincipalDeps
   /** #1126 WP-5: a workernek szánt, a cégnél aktív flagek; a worker kódja nem érheti el a kiértékelőt. */
   activeFeatureFlags: (tenantId: string) => Promise<ExternalClientFlag[]>
+  /** Hamis, amíg a példány nem tudta betölteni a flagek állapotát; az üres lista ilyenkor nem jelent leállítást. */
+  featureFlagStateKnown: () => boolean
 }
 
 /**
@@ -164,9 +166,9 @@ export async function issueContinuationToken(
  * csak a token saját cégénél aktív flageket mutatja, és a kiértékelő cache-éből jön.
  */
 export async function readTurnFeatureFlags(
-  deps: Pick<ContinuationDeps, 'signingKey' | 'now' | 'activeFeatureFlags'>,
+  deps: Pick<ContinuationDeps, 'signingKey' | 'now' | 'activeFeatureFlags' | 'featureFlagStateKnown'>,
   input: { authorizationHeader: string | null },
-): Promise<{ ok: true; featureFlags: ExternalClientFlag[] } | { ok: false; code: 'not_configured' | 'unauthenticated' }> {
+): Promise<{ ok: true; featureFlags: ExternalClientFlag[] } | { ok: false; code: 'not_configured' | 'unauthenticated' | 'unavailable' }> {
   const key = usableChatTokenKey(deps.signingKey)
   if (!key) return { ok: false, code: 'not_configured' }
   const now = (deps.now ?? (() => new Date()))()
@@ -174,5 +176,8 @@ export async function readTurnFeatureFlags(
   const turn = bearer ? verifyChatToken(bearer, key, Math.floor(now.getTime() / 1000), [CHAT_TURN_TOKEN_AUDIENCE]) : null
   // A hang-token az OpenAI-hoz is eljut, és az audience-e ugyanez, ezért külön ki kell zárni.
   if (!turn || turn.voice) return { ok: false, code: 'unauthenticated' }
-  return { ok: true, featureFlags: await deps.activeFeatureFlags(turn.tid) }
+  const featureFlags = await deps.activeFeatureFlags(turn.tid)
+  // A worker a hiányzó flaget leállításnak veszi, ezért betöltetlen állapotnál nem adhatunk üres listát.
+  if (!deps.featureFlagStateKnown()) return { ok: false, code: 'unavailable' }
+  return { ok: true, featureFlags }
 }

@@ -6,7 +6,7 @@ import { canViewAgent } from '@/auth/mcp-server'
 import { hasPlatformChatModelKey } from '@/lib/platform-chat-model-key'
 import { chatTokenKeyFromEnv } from '@/domain/platform-chat/chat-token'
 import type { ChatSessionDeps, ContinuationDeps } from '@/domain/platform-chat/session'
-import { activeExternalClientFlags } from '@/lib/feature-flags'
+import { activeExternalClientFlags, featureFlagEvaluator } from '@/lib/feature-flags'
 import { readPlatformChatSettings } from '@/lib/platform-chat-settings'
 import type { PlatformChatGatewayDeps } from '@/domain/platform-chat/gateway'
 import { PostgresPlatformChatGatewayRepository } from '@/repositories/postgres/platform-chat-gateway-repository'
@@ -67,6 +67,7 @@ export function continuationDeps(): ContinuationDeps {
     canUseAgent,
     audit: repositories.audit,
     activeFeatureFlags: (tenantId) => activeExternalClientFlags('platform_chat', tenantId),
+    featureFlagStateKnown: () => featureFlagEvaluator.isStateKnown(),
     principal: {
       verifyOAuthToken: async () => null,
       users: repositories.users,

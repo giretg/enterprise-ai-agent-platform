@@ -9,6 +9,8 @@ export const PLATFORM_CHAT_INSTALL_ID = 'platform-chat'
 const MRTR_PROTOCOL = '2026-07-28'
 const BLOCK_REASON_HEADER = 'x-excellence-block-reason'
 export const BUDGET_BLOCK_REASON = 'platform_chat_budget'
+/** A kiértékelő legfeljebb 5 mp-et vár az adatbázisra; ennél tovább a lépés nem várhat a flag-ellenőrzésre. */
+const FEATURE_FLAG_CHECK_TIMEOUT_MS = 10_000
 
 export class PlatformError extends Error {
   constructor(
@@ -228,7 +230,10 @@ export function createPlatformClient(platformOrigin: string, fetchImpl: typeof f
     },
 
     async activeFeatureFlags({ token }) {
-      const res = await fetchImpl(`${platformOrigin}/api/chat/feature-flags`, { headers: { authorization: `Bearer ${token}` } })
+      const res = await fetchImpl(`${platformOrigin}/api/chat/feature-flags`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(FEATURE_FLAG_CHECK_TIMEOUT_MS),
+      })
       const body = (await res.json().catch(() => ({}))) as { error?: string; featureFlags?: unknown }
       if (!res.ok || !Array.isArray(body.featureFlags)) throw new PlatformError('feature flags unavailable', res.status, body.error)
       return parseFeatureFlags(body.featureFlags)

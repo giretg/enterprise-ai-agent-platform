@@ -68,12 +68,19 @@ externalClients: {
 | `finish_run` | A félbehagyott munka csak az új úton értelmes | A következő lépésnél érthető üzenettel lezárul, az eredmények megmaradnak |
 
 **Chat-worker.** A flagek a `/api/chat/continuation` válaszában érkeznek, a futás elején a `turns.context`-be
-kerülnek, és a `platform_chat.continuation_issued` audit is megőrzi őket. A kapu a workerben
+kerülnek, és a `platform_chat.continuation_issued` audit is megőrzi őket. Folytatáskor új auditsor készül az akkor
+aktív flagekkel, a futásra viszont továbbra is a rögzítettek hatnak. A kapu a workerben
 `isTurnFeatureActive(context, kulcs)`. A futás közben nem vált működést: a később bekapcsolt flag a következő
 fordulótól hat, a leállított pedig a futás végéig Ki marad, akkor is, ha közben újra bekapcsolják. A worker minden
-lépés előtt ellenőrzi a leállítást a `/api/chat/feature-flags` végponton, de csak akkor, ha van rögzített flagje. Ha a
-végpont nem válaszol, az utolsó ismert állapot marad. A leállítás a következő lépésnél ér célt, a futó modellhívást
-vagy eszközhívást nem szakítja meg.
+lépés előtt ellenőrzi a leállítást a `/api/chat/feature-flags` végponton, de csak akkor, ha van rögzített flagje. A
+leállítás a következő lépésnél ér célt, a futó modellhívást vagy eszközhívást nem szakítja meg.
+
+A hiányzó flag azt jelenti, hogy leállították, ezért a hamis jelzést két szabály zárja ki:
+
+- A forduló első 45 másodpercében a worker nem ellenőriz, mert friss bekapcsolásnál egy másik szerverpéldány cache-e
+  még a régi állapotot mutathatja. Az ebben az időben történt leállítás a 45 másodperc utáni első lépésnél ér célt.
+- Ha a szerverpéldány még nem tudta betölteni a flagek állapotát, a végpont 503-at ad, nem üres listát. A worker
+  ilyenkor, és minden más hibánál vagy 10 másodperces időtúllépésnél, az utolsó ismert állapotnál marad.
 
 **Hermes.** A flagek a `client-policy/snapshot` válasz `featureFlags` mezőjében érkeznek, és beleszámítanak a
 `policyVersion`-be, így a változás a heartbeatben és a gateway-tokenben is látszik. A Guard 15 másodpercenként frissít,
