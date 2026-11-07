@@ -74,6 +74,7 @@ export type WikiConsoleFileRow = {
   createdAt: Date
   kbLanguageOverride: string | null
   processingMode: string | null
+  hasOriginal: boolean
   wikiStatus: 'pending' | 'in_progress' | 'processed' | 'skipped' | null
   wikiClaimExpiresAt: Date | null
 }
@@ -177,6 +178,7 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
         created_at: Date
         kb_language_override: string | null
         processing_mode: string | null
+        has_original: boolean
         wiki_status: WikiConsoleFileRow['wikiStatus']
         wiki_claim_expires_at: Date | null
       }>
@@ -184,6 +186,7 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
       SELECT d.id, d.filename, d.metadata->>'purpose' AS purpose,
              COALESCE(octet_length(s.data), octet_length(d.extracted_text), 0)::bigint AS bytes,
              d.created_at, d.kb_language_override, d.processing_mode::text AS processing_mode,
+             s.document_id IS NOT NULL AS has_original,
              d.wiki_status::text AS wiki_status, d.wiki_claim_expires_at
       FROM documents d
       LEFT JOIN document_source_files s ON s.document_id = d.id
@@ -199,6 +202,7 @@ export class PostgresWikiConsoleRepository implements WikiConsoleRepository {
       createdAt: row.created_at,
       kbLanguageOverride: row.kb_language_override,
       processingMode: row.processing_mode,
+      hasOriginal: row.has_original,
       wikiStatus: row.wiki_status,
       wikiClaimExpiresAt: row.wiki_claim_expires_at,
     }))

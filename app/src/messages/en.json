@@ -483,6 +483,9 @@
         "intro": "Teammates with access to this knowledge base can search and read the files uploaded here. Click a file to open its text.",
         "empty": "This knowledge base has no files yet, so teammates find nothing here.",
         "back": "← Back to the files",
+        "download": "Download",
+        "downloadAsText": "Download as text",
+        "downloadAsTextHelp": "The original file was not kept, so you get the text extracted from it, without formatting and images.",
         "truncated": "Showing the latest {count} files.",
         "wikiState": {
           "none": "Not in the wiki",

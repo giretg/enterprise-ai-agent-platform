@@ -483,6 +483,9 @@
         "intro": "Az ide feltöltött fájlokat a tudásbázishoz hozzáférő munkatársak kereshetik és olvashatják. Kattints egy fájlra a szövege megnyitásához.",
         "empty": "Ebben a tudásbázisban még nincs fájl, ezért a munkatársak innen semmit nem találnak.",
         "back": "← Vissza a fájlokhoz",
+        "download": "Letöltés",
+        "downloadAsText": "Letöltés szövegként",
+        "downloadAsTextHelp": "Az eredeti fájl nem maradt meg, ezért a belőle kinyert szöveget kapod meg. A formázás és a képek nincsenek benne.",
         "truncated": "A legújabb {count} fájl látszik.",
         "wikiState": {
           "none": "Nincs a wikiben",

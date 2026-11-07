@@ -250,6 +250,7 @@ async function FilesTab({
       canManage={wiki.canManage}
       files={res.data.files}
       truncated={res.data.truncated}
+      canDownload={res.data.canDownload}
     />
   )
 }

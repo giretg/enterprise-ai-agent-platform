@@ -20,6 +20,7 @@ import { WIKI_FIELD_TYPES, type WikiViewFilter } from '@/lib/wiki-metadata'
 import { WIKI_CATEGORY_MAX_COUNT, WIKI_CATEGORY_MAX_PAGE_ORDER, WIKI_CATEGORY_MAX_PINNED, WIKI_PAGE_SORTS } from '@/lib/wiki-categories'
 import { WIKI_COLLECT_MAX_CHARS } from '@/lib/wiki-config'
 import { fail, ok } from '@/lib/result'
+import { isFeatureEnabled } from '@/lib/feature-flags'
 
 const uuid = z.string().uuid()
 
@@ -68,7 +69,9 @@ export async function ensureKnowledgeCatalogAction() {
 
 export async function listWikiFilesAction(input: { connectorId: string }) {
   try {
-    return ok(await services.wikiConsole.listFiles(await actor(), uuid.parse(input.connectorId)))
+    const who = await actor()
+    const data = await services.wikiConsole.listFiles(who, uuid.parse(input.connectorId))
+    return ok({ ...data, canDownload: await isFeatureEnabled('knowledge.file_download', { tenantId: who.tenantId }) })
   } catch (e) {
     return failFrom(e, 'Failed to list files')
   }

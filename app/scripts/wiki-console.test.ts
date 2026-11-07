@@ -105,6 +105,7 @@ function setup() {
   const audit: any[] = []
   const calls: Record<string, any[]> = { purge: [], link: [], setWikiAccess: [], create: [], skip: [], reject: [], schema: [], agentChoices: [] }
   const pendingChangeSets = new Map<string, string[]>([[KB_SHARED, ['cs-1', 'cs-2']]])
+  const withoutOriginal = new Set<string>()
   let schemaMd = '# Wiki rules'
   let docSeq = 0
 
@@ -164,6 +165,7 @@ function setup() {
           createdAt: new Date('2026-10-01T00:00:00Z'),
           kbLanguageOverride: null,
           processingMode: null,
+          hasOriginal: false,
           wikiStatus: d.wikiStatus as any,
           wikiClaimExpiresAt: d.wikiStatus === 'in_progress' ? new Date('2026-10-09T00:00:00Z') : null,
         }))
@@ -213,7 +215,7 @@ function setup() {
   }
 
   const service = new WikiConsoleService({
-    documents: { readSource: async () => Buffer.from('%PDF-original-bytes') },
+    documents: { readSource: async (id: string) => (withoutOriginal.has(id) ? null : Buffer.from('%PDF-original-bytes')) },
     connectors: {
       findById: async (id: string) => connectors.get(id) ?? null,
       create: async (input: any) => {
@@ -367,7 +369,7 @@ function setup() {
     audit: { append: async (entry: any) => void audit.push(entry) },
     now: () => new Date('2026-10-10T00:00:00Z'),
   })
-  return { service, connectors, documents, audit, calls, agentBindings }
+  return { service, connectors, documents, audit, calls, agentBindings, withoutOriginal }
 }
 
 async function main() {
@@ -418,6 +420,50 @@ async function main() {
     await rejectsWith('not_found', () => service.listFiles(admin, KB_PRIV))
     await rejectsWith('not_found', () => service.listFiles(viewer, KB_SHARED))
     assert.equal((await service.listFiles(owner, KB_PRIV)).files[0].filename, 'lelet.pdf')
+  })
+
+  await check('#1139 downloadFile: eredeti híján a kinyert szöveg, érthető fájlnévvel és naplózva', async () => {
+    const { service, documents, audit, withoutOriginal } = setup()
+    documents.set('docx', { id: 'docx', connectorId: KB_SHARED, filename: 'arlista.docx', extractedText: 'Dobos 100', contentHash: 'h3', wikiStatus: null })
+    documents.set('md', { id: 'md', connectorId: KB_SHARED, filename: 'tortak.md', extractedText: '# Torták', contentHash: 'h4', wikiStatus: null })
+    withoutOriginal.add('docx').add('md')
+    const docx = await service.downloadFile(operator, KB_SHARED, 'docx')
+    assert.equal(docx.filename, 'arlista.docx.txt')
+    assert.equal(docx.original, false)
+    assert.equal(docx.bytes.toString('utf8'), 'Dobos 100')
+    assert.equal((await service.downloadFile(operator, KB_SHARED, 'md')).filename, 'tortak.md')
+    const entry = audit.find((row) => row.action === 'kb.document.downloaded')
+    assert.equal(entry.targetId, 'docx')
+    assert.equal(entry.actorId, OPERATOR)
+    assert.equal(entry.metadata.original, false)
+    const original = await service.downloadFile(owner, KB_PRIV, DOC)
+    assert.equal(original.filename, 'lelet.pdf')
+    assert.equal(original.bytes.toString('utf8'), '%PDF-original-bytes')
+  })
+
+  await check('#1139 downloadFile: jogosulatlannak és másik tudásbázis fájljára „nem található”, napló nélkül', async () => {
+    const { service, documents, audit } = setup()
+    documents.set('other', { id: 'other', connectorId: KB_SHARED, filename: 'a.md', extractedText: 'x', contentHash: 'h5', wikiStatus: null })
+    await rejectsWith('not_found', () => service.downloadFile(admin, KB_PRIV, DOC))
+    await rejectsWith('not_found', () => service.downloadFile(viewer, KB_SHARED, 'other'))
+    await rejectsWith('not_found', () => service.downloadFile(owner, KB_PRIV, 'other'))
+    assert.ok(!audit.some((row) => row.action === 'kb.document.downloaded'))
+  })
+
+  await check('#1139 downloadFile: privát tudásbázis naplójába nem kerül fájlnév', async () => {
+    const { service, audit } = setup()
+    await service.downloadFile(owner, KB_PRIV, DOC)
+    const entry = audit.find((row) => row.action === 'kb.document.downloaded')
+    assert.ok(!JSON.stringify(entry).includes('lelet'))
+    assert.equal(entry.metadata.privateKb, true)
+  })
+
+  await check('#1139 listFiles: előre jelzi, ha a letöltés csak szöveget ad', async () => {
+    const { service, documents } = setup()
+    documents.set('docx', { id: 'docx', connectorId: KB_SHARED, filename: 'arlista.docx', extractedText: 'x', contentHash: 'h6', wikiStatus: null })
+    documents.set('md', { id: 'md', connectorId: KB_SHARED, filename: 'tortak.md', extractedText: 'x', contentHash: 'h7', wikiStatus: null })
+    const { files } = await service.listFiles(operator, KB_SHARED)
+    assert.deepEqual(files.map((file) => [file.filename, file.downloadsAsText]), [['arlista.docx', true], ['tortak.md', false]])
   })
 
   await check('#1139 alapnézet: Fájlok, kivéve ha a hivatkozás wiki-tartalomra mutat', () => {

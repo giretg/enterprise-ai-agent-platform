@@ -164,6 +164,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   'kb.document.ingested',
   'kb.document.deleted',
+  'kb.document.downloaded',
   'kb.catalog.attached',
   'kb.language.set',
   // #942 LLM Wiki (#941 §6). Privát KB-nál tartalommentes metaadat (`kb-private-redaction`).
