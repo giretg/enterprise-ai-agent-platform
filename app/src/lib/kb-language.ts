@@ -8,8 +8,8 @@
  * Prisma-függés nélkül — Control Plane client-componensek is importálhatják.
  */
 export const KB_LANGUAGE_REGISTRY = {
-  hu: { pgConfig: 'hungarian', label: 'Magyar' },
-  en: { pgConfig: 'english', label: 'English' },
+  hu: { pgConfig: 'hungarian', pgStemDict: 'hungarian_stem', label: 'Magyar' },
+  en: { pgConfig: 'english', pgStemDict: 'english_stem', label: 'English' },
 } as const
 
 export type KbLanguage = keyof typeof KB_LANGUAGE_REGISTRY
@@ -40,4 +40,10 @@ export function resolveKbLanguage(value: unknown): KbLanguage {
 export function kbPgConfig(language: unknown): KbPgConfig {
   if (!isKbLanguage(language)) return KB_PG_FALLBACK
   return KB_LANGUAGE_REGISTRY[language].pgConfig
+}
+
+/** Registry → szótövező szótár a `ts_lexize`-hoz; nem-allowlist inputra `simple` (nem tövez). */
+export function kbPgStemDict(language: unknown): string {
+  if (!isKbLanguage(language)) return KB_PG_FALLBACK
+  return KB_LANGUAGE_REGISTRY[language].pgStemDict
 }
