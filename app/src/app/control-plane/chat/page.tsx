@@ -29,6 +29,11 @@ export default async function PlatformChatPage({
         listed.data.filter((agent) => canStartVoiceCall(agent)).map((agent) => [agent.id, readVoiceConfig(agent.voiceConfig).callStyle]),
       )
     : {}
+  const voiceProviders = listed.success
+    ? Object.fromEntries(
+        listed.data.filter((agent) => canStartVoiceCall(agent)).map((agent) => [agent.id, readVoiceConfig(agent.voiceConfig).provider]),
+      )
+    : {}
   const productLinks = listed.success ? await loadAgentProductLinks(ctx, listed.data) : {}
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -37,6 +42,7 @@ export default async function PlatformChatPage({
         isAdmin={isAdmin}
         keyMissingForAdmin={keyMissingForAdmin}
         voiceCallStyles={voiceCallStyles}
+        voiceProviders={voiceProviders}
         productLinks={productLinks}
         initialAgentId={parsePlatformChatAgentParam(query.agent)}
         initialConversationId={parsePlatformChatAgentParam(query.conversation)}

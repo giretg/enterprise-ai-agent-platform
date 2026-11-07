@@ -13,6 +13,7 @@ import {
   voiceToolAlias,
 } from '../src/auth/voice-tool-guard'
 import {
+  applyElevenLabsEvent,
   applyVoiceEvent,
   INITIAL_VOICE_CALL_VIEW,
   voiceEndedMessage,
@@ -41,6 +42,16 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { VoiceCallIconButton } from '../src/components/agents/voice-call-button'
 import { canStartVoiceCall, parseVoiceConfig, readVoiceConfig, VOICE_TOKEN_TTL_SECONDS, type VoiceCallStyle } from '../src/domain/voice/config'
 import { buildLiveSessionRequest, createOpenAiLiveProvider, mapLiveFailure } from '../src/domain/voice/openai-live'
+import { buildAgentSettings, buildMcpServerSettings, createElevenLabsProvider, mapElevenLabsFailure } from '../src/domain/voice/elevenlabs-agents'
+import {
+  isVoiceProviderCredential,
+  MCP_VOICE_CONVERSATION_HEADER,
+  resolveVoiceProviderClaims,
+  voiceCredentialFingerprint,
+  voiceProviderMcpCredential,
+  type VoiceProviderClaimsDeps,
+} from '../src/domain/voice/provider-credential'
+import { parseElevenLabsApiKey } from '../src/lib/elevenlabs-tenant-key'
 import { buildVoiceGreeting, buildVoiceInstructions } from '../src/domain/voice/prompt'
 import type { VoiceBrowserSessionInput, VoiceProvider } from '../src/domain/voice/provider'
 import { recordVoiceSessionEnd, startVoiceSession, type VoiceSessionDeps } from '../src/domain/voice/session'
@@ -70,11 +81,15 @@ const sessionInput: VoiceBrowserSessionInput = {
   voice: 'cedar',
   voiceInstructions: 'beszéd',
   backendInstructions: 'háttér',
+  directInstructions: 'közvetlen',
   greeting: 'Jó napot!',
   backendReasoningEffort: 'low',
+  agentName: 'Réka',
+  maxSeconds: 600,
   mcp: {
     serverUrl: 'https://app.example.com/api/mcp/acme',
     token: 'mcp-token',
+    providerCredential: 'evc1.titok',
     headers: { 'x-excellence-agent-id': AGENT },
     allowedTools: ['kb_search'],
   },
@@ -101,8 +116,9 @@ function sessionDeps(over: Partial<VoiceSessionDeps> = {}) {
   const calls: VoiceBrowserSessionInput[] = []
   const audits: Array<{ action: string; metadata?: unknown }> = []
   const provider: VoiceProvider = {
-    id: 'fake',
+    id: 'openai_live',
     model: 'fake-model',
+    needsSdpOffer: true,
     startBrowserSession: async (input) => {
       calls.push(input)
       return { ok: true, sessionId: 'live_1', sdpAnswer: 'v=0 answer' }
@@ -113,7 +129,7 @@ function sessionDeps(over: Partial<VoiceSessionDeps> = {}) {
     publicOrigin: 'https://app.example.com',
     agentHeaderName: 'x-excellence-agent-id',
     allowedTools: voiceAllowedToolAliases(),
-    provider,
+    resolveProvider: async () => provider,
     loadTenantSlug: async () => 'acme',
     loadAgent: async () => ({ kind: 'internal', voiceConfig: ENABLED }),
     loadUsableDefinition: async () => ({ snapshot: { name: 'Réka', roleInstruction: 'Rendelést veszel fel.', rules: [{ text: 'Nem adsz kedvezményt.', source: 'hard' as const }] } }),
@@ -394,7 +410,7 @@ async function main() {
 
   await check('indítás: szolgáltatói hiba eljut a felületig, audit nem készül', async () => {
     const { deps, audits } = sessionDeps()
-    deps.provider = { id: 'x', model: 'x', startBrowserSession: async () => ({ ok: false, code: 'provider_no_access' }) }
+    deps.resolveProvider = async () => ({ id: 'openai_live', model: 'x', needsSdpOffer: true, startBrowserSession: async () => ({ ok: false, code: 'provider_no_access' }) })
     assert.deepEqual(await start(deps), { ok: false, code: 'provider_no_access' })
     assert.equal(audits.length, 0)
     assert.match(voiceFailureMessage('provider_no_access'), /hangmodell/)
@@ -623,6 +639,242 @@ async function main() {
     for (const audit of audits) assertAuditMetadataSafe(audit.metadata)
     // A hibaszöveg csak a titkosított átiratba kerülhet, az audit-sorba nem.
     assert.equal(JSON.stringify(audits).includes('stopped due to moderation'), false)
+  })
+
+  const EL_ENABLED = { ...ENABLED, provider: 'elevenlabs', elevenLabsVoiceId: 'abcDEF1234567890' }
+  const elInput: VoiceBrowserSessionInput = { ...sessionInput, sdpOffer: '', voice: 'abcDEF1234567890' }
+
+  await check('ElevenLabs beállítás: a régi mentés OpenAI marad, a hibás hang-azonosító nem kapcsol be', () => {
+    assert.equal(readVoiceConfig(ENABLED).provider, 'openai_live')
+    assert.equal(readVoiceConfig(EL_ENABLED).provider, 'elevenlabs')
+    assert.equal(readVoiceConfig({ ...EL_ENABLED, provider: 'mas' }).enabled, false)
+    assert.equal(readVoiceConfig({ ...EL_ENABLED, elevenLabsVoiceId: 'rossz/hang' }).enabled, false)
+    assert.throws(() => parseElevenLabsApiKey('sk-or-v1-kotojeles-mas-szolgaltato-kulcsa'))
+    assert.equal(parseElevenLabsApiKey(' sk_0123456789abcdef0123456789 '), 'sk_0123456789abcdef0123456789')
+  })
+
+  await check('ElevenLabs agent: a böngésző nem írhatja felül, hangfelvétel nincs, az AI-tájékoztatás nem szakítható félbe', () => {
+    const agent = buildAgentSettings(elInput, 'mcp_1')
+    const override = agent.platform_settings.overrides.conversation_config_override
+    assert.equal(agent.platform_settings.auth.enable_auth, true)
+    assert.equal(override.agent.prompt.prompt, false)
+    assert.equal(override.agent.first_message, false)
+    assert.equal(override.agent.prompt.native_mcp_server_ids, false)
+    assert.equal(override.tts.voice_id, false)
+    assert.equal(agent.platform_settings.privacy.record_voice, false)
+    assert.equal(agent.platform_settings.privacy.retention_days, 30)
+    assert.equal(agent.conversation_config.agent.first_message, 'Jó napot!')
+    assert.equal(agent.conversation_config.agent.disable_first_message_interruptions, true)
+    assert.equal(agent.conversation_config.agent.language, 'hu')
+    assert.equal(agent.conversation_config.agent.prompt.prompt, 'közvetlen')
+    assert.deepEqual(agent.conversation_config.agent.prompt.mcp_server_ids, ['mcp_1'])
+    assert.equal(agent.conversation_config.tts.model_id, 'eleven_flash_v2_5')
+    assert.equal(agent.conversation_config.conversation.max_duration_seconds, 600)
+    assert.equal('voice_id' in buildAgentSettings({ ...elInput, voice: '' }, 'm').conversation_config.tts, false)
+
+    const mcp = buildMcpServerSettings(elInput, 'sec_1', MCP_VOICE_CONVERSATION_HEADER)
+    assert.equal(mcp.approval_policy, 'auto_approve_all')
+    assert.deepEqual(mcp.request_headers.authorization, { secret_id: 'sec_1' })
+    assert.deepEqual(mcp.request_headers[MCP_VOICE_CONVERSATION_HEADER], { variable_name: 'system__conversation_id' })
+    // A tartós titok csak a titoktárba kerül, a beállításba nem.
+    assert.equal(JSON.stringify(mcp).includes('evc1.'), false)
+  })
+
+  function fakeElevenLabs(over: Record<string, (init: RequestInit) => Response> = {}) {
+    const calls: Array<{ key: string; body: unknown; apiKey: unknown }> = []
+    const defaults: Record<string, () => Response> = {
+      'POST /v1/convai/secrets': () => Response.json({ secret_id: 'sec_1' }),
+      'POST /v1/convai/mcp-servers': () => Response.json({ id: 'mcp_1' }),
+      'POST /v1/convai/agents/create': () => Response.json({ agent_id: 'agent_1' }),
+      'PATCH /v1/convai/mcp-servers/mcp_1': () => Response.json({ id: 'mcp_1' }),
+      'PATCH /v1/convai/agents/agent_1': () => Response.json({ agent_id: 'agent_1' }),
+      'GET /v1/convai/conversation/token': () => Response.json({ token: 'tok_1', conversation_id: 'conv_1' }),
+    }
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const key = `${init.method} ${new URL(url).pathname}`
+      calls.push({ key, body: init.body ? JSON.parse(String(init.body)) : null, apiKey: (init.headers as Record<string, string>)['xi-api-key'] })
+      const handler = over[key] ?? defaults[key]
+      assert.ok(handler, `váratlan kérés: ${key}`)
+      return handler(init)
+    }) as unknown as typeof fetch
+    return { calls, provider: createElevenLabsProvider({ conversationHeaderName: MCP_VOICE_CONVERSATION_HEADER, fetchImpl }) }
+  }
+
+  await check('ElevenLabs indítás: első alkalommal létrehoz, utána újraírja, és a titkot nem tölti fel újra', async () => {
+    const first = fakeElevenLabs()
+    const created = await first.provider.startBrowserSession(elInput)
+    assert.equal(created.ok, true)
+    if (!created.ok) return
+    assert.equal(created.sessionId, 'conv_1')
+    assert.equal(created.conversationToken, 'tok_1')
+    assert.equal(first.calls.every((call) => call.apiKey === 'sk-test'), true)
+    const secret = first.calls.find((call) => call.key === 'POST /v1/convai/secrets')?.body as { value: string }
+    assert.equal(secret.value, 'Bearer evc1.titok')
+    // A titok a szerver válaszába nem kerülhet, onnan jutna a böngészőbe.
+    assert.equal(JSON.stringify(created).includes('evc1.'), false)
+    assert.equal(JSON.stringify(created).includes('sk-test'), false)
+
+    const second = fakeElevenLabs()
+    await second.provider.startBrowserSession({ ...elInput, providerState: created.providerState })
+    assert.deepEqual(second.calls.map((call) => call.key), ['PATCH /v1/convai/mcp-servers/mcp_1', 'PATCH /v1/convai/agents/agent_1', 'GET /v1/convai/conversation/token'])
+
+    const rotated = fakeElevenLabs()
+    await rotated.provider.startBrowserSession({ ...elInput, mcp: { ...elInput.mcp, providerCredential: 'evc1.uj' }, providerState: created.providerState })
+    assert.equal(rotated.calls[0].key, 'POST /v1/convai/secrets')
+  })
+
+  await check('ElevenLabs indítás: törölt elemet újra létrehoz, a hibákat érthető kódra fordítja, azonosító nélkül nem indít', async () => {
+    const state = { agentId: 'agent_1', mcpServerId: 'mcp_1', secretId: 'sec_1', credentialFingerprint: voiceCredentialFingerprint('evc1.titok') }
+    const gone = fakeElevenLabs({ 'PATCH /v1/convai/agents/agent_1': () => new Response('{}', { status: 404 }) })
+    assert.equal((await gone.provider.startBrowserSession({ ...elInput, providerState: state })).ok, true)
+    assert.equal(gone.calls.some((call) => call.key === 'POST /v1/convai/agents/create'), true)
+
+    assert.equal(mapElevenLabsFailure(401), 'provider_key_rejected')
+    assert.equal(mapElevenLabsFailure(403), 'provider_no_access')
+    assert.equal(mapElevenLabsFailure(429), 'provider_quota')
+    assert.equal(mapElevenLabsFailure(500), 'provider_error')
+    const rejected = fakeElevenLabs({ 'POST /v1/convai/secrets': () => new Response('{}', { status: 401 }) })
+    assert.deepEqual(await rejected.provider.startBrowserSession(elInput), { ok: false, code: 'provider_key_rejected' })
+    const noConversation = fakeElevenLabs({ 'GET /v1/convai/conversation/token': () => Response.json({ token: 'tok_1' }) })
+    assert.deepEqual(await noConversation.provider.startBrowserSession(elInput), { ok: false, code: 'provider_error' })
+    assert.match(voiceFailureMessage('key_missing', 'elevenlabs'), /ElevenLabs-kulcs/)
+    assert.match(voiceFailureMessage('key_missing'), /OpenAI-kulcs/)
+  })
+
+  await check('ElevenLabs a közös indításban: flag nélkül nem indul, SDP nem kell, a régi oldalt frissítésre kéri', async () => {
+    const provider = fakeElevenLabs().provider
+    const saved: unknown[] = []
+    const { deps, audits } = sessionDeps({
+      loadAgent: async () => ({ kind: 'internal', voiceConfig: EL_ENABLED }),
+      resolveProvider: async () => provider,
+      saveProviderState: async ({ state }) => void saved.push(state),
+    })
+    const started = await start(deps, { agentId: AGENT, provider: 'elevenlabs' })
+    assert.equal(started.ok, true)
+    if (!started.ok) return
+    assert.equal(started.provider, 'elevenlabs')
+    assert.equal(started.conversationToken, 'tok_1')
+    assert.equal((audits[0].metadata as Record<string, unknown>).provider, 'elevenlabs')
+    assert.equal((audits[0].metadata as Record<string, unknown>).sessionId, 'conv_1')
+    assert.equal(saved.length, 1)
+
+    assert.deepEqual(await start(deps, { agentId: AGENT, sdp: 'v=0 offer' }), { ok: false, code: 'bad_request' })
+    const off = sessionDeps({ loadAgent: async () => ({ kind: 'internal', voiceConfig: EL_ENABLED }), resolveProvider: async () => null })
+    assert.deepEqual(await start(off.deps, { agentId: AGENT, provider: 'elevenlabs' }), { ok: false, code: 'provider_disabled' })
+    assert.equal(off.calls.length, 0)
+    const openAi = sessionDeps()
+    assert.deepEqual(await start(openAi.deps, { agentId: AGENT, provider: 'elevenlabs' }), { ok: false, code: 'bad_request' })
+    assert.deepEqual(await start(openAi.deps, { agentId: AGENT, provider: 'kitalalt' }), { ok: false, code: 'bad_request' })
+    assert.equal(await start(openAi.deps, { agentId: AGENT, sdp: 'v=0 offer' }).then((r) => r.ok), true)
+  })
+
+  const startedRow = {
+    action: 'voice.session_started',
+    actorId: USER,
+    createdAt: NOW,
+    metadata: { provider: 'elevenlabs', sessionId: 'conv_1', turnId: 'voice-1', jti: 'j1' },
+  }
+  const claimsDeps = (over: Partial<VoiceProviderClaimsDeps> = {}): VoiceProviderClaimsDeps => ({
+    signingKey: KEY,
+    findTenantId: async (slug) => (slug === 'acme' ? TENANT : null),
+    providerEnabled: async () => true,
+    loadAgent: async () => ({ kind: 'internal', voiceConfig: EL_ENABLED }),
+    loadSessionRows: async () => [startedRow],
+    now: () => NOW,
+    ...over,
+  })
+  const credential = voiceProviderMcpCredential(KEY, TENANT, AGENT)
+  const claimsFor = (deps: VoiceProviderClaimsDeps, over: Record<string, unknown> = {}) =>
+    resolveVoiceProviderClaims(deps, { credential, tenantSlug: 'acme', agentId: AGENT, conversationId: 'conv_1', ...over } as never)
+
+  await check('ElevenLabs MCP: csak titok + futó beszélgetés együtt ad hozzáférést, és csak az indító felhasználó nevében', async () => {
+    assert.equal(isVoiceProviderCredential(credential), true)
+    const claims = await claimsFor(claimsDeps())
+    assert.equal(claims?.sub, USER)
+    assert.equal(claims?.voice, true)
+    assert.equal(claims?.agentId, AGENT)
+    assert.equal(await claimsFor(claimsDeps(), { credential: 'evc1.rossz' }), null)
+    assert.equal(await claimsFor(claimsDeps(), { credential: voiceProviderMcpCredential(KEY, TENANT, USER) }), null, 'más munkatárs titka')
+    assert.equal(await claimsFor(claimsDeps(), { credential: voiceProviderMcpCredential('m'.repeat(40), TENANT, AGENT) }), null, 'más aláíró kulcs')
+    assert.equal(await claimsFor(claimsDeps(), { conversationId: null }), null)
+    assert.equal(await claimsFor(claimsDeps(), { conversationId: '{{system__conversation_id}}' }), null, 'behelyettesítetlen változó')
+    assert.equal(await claimsFor(claimsDeps(), { agentId: null }), null)
+    assert.equal(await claimsFor(claimsDeps(), { tenantSlug: 'mas' }), null)
+    assert.equal(await claimsFor(claimsDeps({ signingKey: undefined })), null)
+  })
+
+  await check('ElevenLabs MCP: lezárt, ismeretlen vagy más szolgáltatós beszélgetés, flag és kikapcsolt hang elutasítva', async () => {
+    assert.equal(await claimsFor(claimsDeps({ loadSessionRows: async () => [] })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadSessionRows: async () => [startedRow, { ...startedRow, action: 'voice.session_ended' }] })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadSessionRows: async () => [{ ...startedRow, action: 'voice.session_ended' }] })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadSessionRows: async () => [{ ...startedRow, metadata: { ...startedRow.metadata, provider: 'openai_live' } }] })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadSessionRows: async () => [{ ...startedRow, actorId: null }] })), null)
+    assert.equal(await claimsFor(claimsDeps({ providerEnabled: async () => false })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadAgent: async () => null })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadAgent: async () => ({ kind: 'public', voiceConfig: EL_ENABLED }) })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadAgent: async () => ({ kind: 'internal', voiceConfig: { ...EL_ENABLED, enabled: false } }) })), null)
+    assert.equal(await claimsFor(claimsDeps({ loadAgent: async () => ({ kind: 'internal', voiceConfig: ENABLED }) })), null)
+    // Csak az engedett időablakon belüli sorokat kérjük le, így a lejárt beszélgetés nem nyit semmit.
+    let since: Date | null = null
+    await claimsFor(claimsDeps({ loadSessionRows: async (q) => ((since = q.since), [startedRow]) }))
+    assert.equal(since!.getTime(), NOW.getTime() - VOICE_TOKEN_TTL_SECONDS * 1000)
+  })
+
+  await check('ElevenLabs MCP a principal-úton: hang-korlátos, munkatárshoz kötött; hiba esetén invalid_token', async () => {
+    const deps: McpPrincipalDeps = { ...principalDeps(), resolveVoiceProviderClaims: async (input) => claimsFor(claimsDeps(), input) }
+    const resolve = (over: Record<string, unknown> = {}) =>
+      resolveMcpPrincipal(
+        { authorizationHeader: `Bearer ${credential}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com', agentIdHeader: AGENT, voiceConversationHeader: 'conv_1', ...over },
+        deps,
+      )
+    const ok = await resolve()
+    assert.equal(ok.ok, true)
+    if (ok.ok) {
+      assert.equal(ok.principal.voiceCall, true)
+      assert.equal(ok.principal.boundAgentId, AGENT)
+      assert.equal(ok.principal.userId, USER)
+      assert.equal(voiceBlocksTool(ok.principal, 'mail_send'), true)
+    }
+    const denied = await resolve({ voiceConversationHeader: null })
+    assert.equal(denied.ok, false)
+    if (!denied.ok) assert.equal(denied.code, 'invalid_token')
+    // A flag vagy függőség hiánya nem eshet át a Clerk-útra.
+    const noDeps = await resolveMcpPrincipal(
+      { authorizationHeader: `Bearer ${credential}`, tenantSlug: 'acme', resourceOrigin: 'https://app.example.com' },
+      { ...principalDeps(), verifyOAuthToken: async () => assert.fail('nem mehet tovább') },
+    )
+    assert.equal(noDeps.ok, false)
+  })
+
+  await check('ElevenLabs események: átirat, eszköz-várakozás, lezárási ok és szolgáltatónév a hibában', () => {
+    let view: VoiceCallView = applyElevenLabsEvent(INITIAL_VOICE_CALL_VIEW, { type: 'connected' }, 1000)
+    view = applyElevenLabsEvent(view, { type: 'message', role: 'agent', text: 'Jó napot!' }, 2000)
+    view = applyElevenLabsEvent(view, { type: 'message', role: 'user', text: 'Szia' }, 3000)
+    view = applyElevenLabsEvent(view, { type: 'message', role: 'user', text: 'Kérek tortát' }, 3500)
+    view = applyElevenLabsEvent(view, { type: 'tool_request', toolName: 'kb_search' }, 4000)
+    assert.equal(voiceBackendWorkVisible('live', view), true)
+    view = applyElevenLabsEvent(view, { type: 'tool_response', toolName: 'kb_search', isError: true }, 5500)
+    view = applyElevenLabsEvent(view, { type: 'error', message: 'hiba' }, 5600)
+    view = applyElevenLabsEvent(view, { type: 'disconnected', reason: 'agent' }, 11_000)
+    assert.deepEqual(view.lines.map((line) => line.role), ['assistant', 'user', 'user', 'tool'])
+    assert.match(view.lines[3].text, /tudásbázisban.*nem sikerült/)
+    assert.equal(view.lastBackendWaitMs, 1500)
+    assert.equal(view.backendCalls, 1)
+    assert.equal(view.seconds, 10)
+    assert.equal(view.closedReason, 'remote_hangup')
+    assert.match(voiceProviderNotice(view, 'elevenlabs') ?? '', /ElevenLabs/)
+    assert.match(voiceEndReport(view, 'elevenlabs').transcript.at(-1)?.text ?? '', /ElevenLabs hibaüzenete/)
+    assert.equal(applyElevenLabsEvent(view, { type: 'disconnected', reason: 'user' }, 11_000).closedReason, 'close_requested')
+    assert.equal(applyElevenLabsEvent(view, { type: 'disconnected', reason: 'error' }, 11_000).closedReason, 'connection_lost')
+  })
+
+  await check('ElevenLabs utasítás: a közvetlen változat eszközt mond, háttérre nem hivatkozik', () => {
+    const { direct } = buildVoiceInstructions({ name: 'Réka', roleInstruction: 'Szerep.', rules: [{ text: 'Szabály.', source: 'hard' as const }] }, NOW)
+    assert.equal(/háttér/i.test(direct), false)
+    assert.match(direct, /eszköz/)
+    assert.match(direct, /Szabály\./)
+    assert.match(direct, /Most:/)
+    assert.match(direct, /Kártyaadatot nem kérsz/)
   })
 
   console.log(`\n${failures === 0 ? 'voice-pilot: ok' : `voice-pilot: ${failures} failed`}`)

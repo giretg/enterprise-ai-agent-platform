@@ -7,8 +7,9 @@ import type { UserRole } from '@prisma/client'
 import { z } from 'zod'
 import type { AgentDefinitionSnapshot } from '@/domain/agent-definition'
 import { CHAT_TURN_TOKEN_AUDIENCE, signChatToken, usableChatTokenKey } from '@/domain/platform-chat/chat-token'
-import { readVoiceConfig, VOICE_DEFAULT_REASONING_EFFORT, VOICE_MAX_SESSION_SECONDS, VOICE_TOKEN_TTL_SECONDS } from '@/domain/voice/config'
+import { readVoiceConfig, VOICE_PROVIDERS, type VoiceProviderId, VOICE_DEFAULT_REASONING_EFFORT, VOICE_MAX_SESSION_SECONDS, VOICE_TOKEN_TTL_SECONDS } from '@/domain/voice/config'
 import { buildVoiceGreeting, buildVoiceInstructions } from '@/domain/voice/prompt'
+import { voiceProviderMcpCredential } from '@/domain/voice/provider-credential'
 import type { VoiceProvider, VoiceProviderFailureCode } from '@/domain/voice/provider'
 import { redactSensitiveText } from '@/domain/privacy/sensitivity-match-spans'
 import { parseAgentModelConfig } from '@/lib/agent-model-config'
@@ -24,6 +25,7 @@ export type VoiceSessionFailureCode =
   | 'voice_disabled'
   | 'key_missing'
   | 'not_configured'
+  | 'provider_disabled'
   | VoiceProviderFailureCode
 
 export type VoiceSessionDeps = {
@@ -31,7 +33,8 @@ export type VoiceSessionDeps = {
   publicOrigin: string
   agentHeaderName: string
   allowedTools: string[]
-  provider: VoiceProvider
+  /** `null`, ha a szolgáltató ennél a szervezetnél nincs bekapcsolva. */
+  resolveProvider: (input: { tenantId: string; providerId: VoiceProviderId }) => Promise<VoiceProvider | null>
   loadTenantSlug: (tenantId: string) => Promise<string | null>
   loadAgent: (input: { tenantId: string; agentId: string }) => Promise<{ kind: string; voiceConfig: unknown; modelConfig?: unknown } | null>
   /** Publikált + a user láthatja (ugyanaz a szabály, mint az MCP-n). */
@@ -41,7 +44,8 @@ export type VoiceSessionDeps = {
     role: UserRole
     agentId: string
   }) => Promise<{ snapshot: Pick<AgentDefinitionSnapshot, 'name' | 'roleInstruction' | 'rules'> } | null>
-  loadApiKey: (tenantId: string) => Promise<string | null>
+  loadApiKey: (input: { tenantId: string; providerId: VoiceProviderId }) => Promise<string | null>
+  saveProviderState?: (input: { tenantId: string; agentId: string; state: unknown }) => Promise<void>
   /** Elkerül-e az átirat szövege a naplóba: ettől függ, elhangzik-e az erről szóló tájékoztatás. */
   transcriptRecorded?: (input: { tenantId: string; userId: string; agentId: string }) => Promise<boolean>
   audit?: AuditSink
@@ -49,7 +53,7 @@ export type VoiceSessionDeps = {
 }
 
 export type VoiceSessionResult =
-  | { ok: true; sessionId: string; sdpAnswer: string; greeting: string; maxSeconds: number }
+  | { ok: true; provider: VoiceProviderId; sessionId: string; sdpAnswer?: string; conversationToken?: string; greeting: string; maxSeconds: number }
   | { ok: false; code: VoiceSessionFailureCode }
 
 export async function startVoiceSession(
@@ -60,13 +64,9 @@ export async function startVoiceSession(
   if (!signingKey) return { ok: false, code: 'not_configured' }
   const body = (input.body ?? {}) as Record<string, unknown>
   const { agentId, sdp } = body
-  if (
-    typeof agentId !== 'string' ||
-    !UUID_RE.test(agentId) ||
-    typeof sdp !== 'string' ||
-    !sdp.startsWith('v=0') ||
-    sdp.length > MAX_SDP_CHARS
-  ) {
+  // A kiadás előtt betöltött oldal nem küld szolgáltatót, és az csak OpenAI-hívást indíthatott.
+  const clientProvider = body.provider ?? 'openai_live'
+  if (typeof agentId !== 'string' || !UUID_RE.test(agentId) || !VOICE_PROVIDERS.includes(clientProvider as VoiceProviderId)) {
     return { ok: false, code: 'bad_request' }
   }
   const scope = { tenantId: input.tenantId, agentId }
@@ -74,11 +74,18 @@ export async function startVoiceSession(
   if (!agent || agent.kind !== 'internal') return { ok: false, code: 'agent_unavailable' }
   const config = readVoiceConfig(agent.voiceConfig)
   if (!config.enabled) return { ok: false, code: 'voice_disabled' }
+  // A régi oldal más kapcsolatot építene, mint amit a szerver indít, ezért inkább frissítést kérünk.
+  if (clientProvider !== config.provider) return { ok: false, code: 'bad_request' }
+  const provider = await deps.resolveProvider({ tenantId: input.tenantId, providerId: config.provider })
+  if (!provider) return { ok: false, code: 'provider_disabled' }
+  if (provider.needsSdpOffer && (typeof sdp !== 'string' || !sdp.startsWith('v=0') || sdp.length > MAX_SDP_CHARS)) {
+    return { ok: false, code: 'bad_request' }
+  }
   const definition = await deps.loadUsableDefinition({ ...scope, userId: input.userId, role: input.role })
   if (!definition) return { ok: false, code: 'agent_unavailable' }
   const tenantSlug = await deps.loadTenantSlug(input.tenantId)
   if (!tenantSlug) return { ok: false, code: 'agent_unavailable' }
-  const apiKey = await deps.loadApiKey(input.tenantId)
+  const apiKey = await deps.loadApiKey({ tenantId: input.tenantId, providerId: config.provider })
   if (!apiKey) return { ok: false, code: 'key_missing' }
 
   const turnId = `voice-${randomUUID()}`
@@ -105,22 +112,33 @@ export async function startVoiceSession(
     ? await deps.transcriptRecorded({ tenantId: input.tenantId, userId: input.userId, agentId }).catch(() => true)
     : false
   const greeting = buildVoiceGreeting(definition.snapshot.name, config.greeting, transcriptRecorded)
-  const started = await deps.provider.startBrowserSession({
+  const started = await provider.startBrowserSession({
     apiKey,
-    sdpOffer: sdp,
-    voice: config.voice,
+    sdpOffer: provider.needsSdpOffer ? (sdp as string) : '',
+    voice: config.provider === 'elevenlabs' ? (config.elevenLabsVoiceId ?? '') : config.voice,
     voiceInstructions: instructions.voice,
     backendInstructions: instructions.backend,
+    directInstructions: instructions.direct,
     greeting,
+    agentName: definition.snapshot.name,
+    maxSeconds: VOICE_MAX_SESSION_SECONDS,
+    providerState: config.elevenLabs,
     backendReasoningEffort: parseAgentModelConfig(agent.modelConfig)?.reasoningEffort ?? VOICE_DEFAULT_REASONING_EFFORT,
     mcp: {
       serverUrl: `${deps.publicOrigin}/api/mcp/${encodeURIComponent(tenantSlug)}`,
       token,
+      providerCredential: voiceProviderMcpCredential(signingKey, input.tenantId, agentId),
       headers: { [deps.agentHeaderName]: agentId },
       allowedTools: deps.allowedTools,
     },
   })
   if (!started.ok) return started
+  // A hiba nem állíthatja meg a hívást: legfeljebb a következő indítás újra létrehozza az elemeket.
+  if (started.providerState !== undefined) {
+    await deps
+      .saveProviderState?.({ ...scope, state: started.providerState })
+      .catch((error: unknown) => console.warn('[voice] saving the provider state failed', error instanceof Error ? error.name : 'unknown'))
+  }
   await writeAudit(deps.audit, {
     actorType: 'human',
     actorId: input.userId,
@@ -128,10 +146,18 @@ export async function startVoiceSession(
     targetType: 'agent',
     targetId: agentId,
     policyDecision: 'allowed',
-    metadata: { provider: deps.provider.id, model: deps.provider.model, sessionId: started.sessionId, turnId, jti: claims.jti },
+    metadata: { provider: provider.id, model: provider.model, sessionId: started.sessionId, turnId, jti: claims.jti },
     tenantId: input.tenantId,
   })
-  return { ok: true, sessionId: started.sessionId, sdpAnswer: started.sdpAnswer, greeting, maxSeconds: VOICE_MAX_SESSION_SECONDS }
+  return {
+    ok: true,
+    provider: provider.id,
+    sessionId: started.sessionId,
+    sdpAnswer: started.sdpAnswer,
+    conversationToken: started.conversationToken,
+    greeting,
+    maxSeconds: VOICE_MAX_SESSION_SECONDS,
+  }
 }
 
 const transcriptSchema = z

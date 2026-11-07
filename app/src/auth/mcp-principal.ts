@@ -19,6 +19,7 @@ import { PROJECT_WORK_TOOLS } from '@/domain/project-work/mcp'
 import { MINI_APP_TOOLS } from '@/domain/mini-app/mcp'
 import { WAREHOUSE_TOOLS } from '@/domain/warehouse/mcp'
 import { CHAT_TURN_TOKEN_AUDIENCE, type ChatTokenClaims } from '@/domain/platform-chat/chat-token'
+import { isVoiceProviderCredential } from '@/domain/voice/provider-credential'
 
 export const MCP_WHOAMI_TOOL = 'platform.whoami'
 export const MCP_AGENTS_LIST_TOOL = 'platform.agents.list'
@@ -108,6 +109,12 @@ export type McpPrincipalDeps = {
   audit?: AuditSink
   /** #1004: a platform-chat tokenje; null = nem ilyen token (a Clerk-út dönt). */
   verifyChatToken?: (bearerToken: string) => ChatTokenClaims | null
+  resolveVoiceProviderClaims?: (input: {
+    credential: string
+    tenantSlug: string
+    agentId: string | null
+    conversationId: string | null
+  }) => Promise<ChatTokenClaims | null>
   /** A bejövőlevél-szabály engedi-e a jóváhagyás nélküli írást; hiánya / hiba = nem (fail-closed). */
   inboundMailAllowsDirectWrites?: (input: { tenantId: string; agentId: string }) => Promise<boolean>
 }
@@ -250,12 +257,27 @@ export async function resolveMcpPrincipal(
     authorizationHeader: string | null
     tenantSlug: string
     resourceOrigin: string
+    /** Csak a hangszolgáltatói titokhoz kell: melyik munkatárs melyik futó beszélgetése. */
+    agentIdHeader?: string | null
+    voiceConversationHeader?: string | null
   },
   deps: McpPrincipalDeps,
 ): Promise<McpPrincipalResult> {
   const parsed = parseBearerToken(input.authorizationHeader)
   if (parsed.kind !== 'bearer' || !parsed.token) {
     return deny(deps, fail('unauthenticated'), input.tenantSlug)
+  }
+
+  // A hangszolgáltatónál tartós titok van, ezért önmagában nem elég: futó beszélgetéshez kell kötődnie.
+  if (isVoiceProviderCredential(parsed.token)) {
+    const claims =
+      (await deps.resolveVoiceProviderClaims?.({
+        credential: parsed.token,
+        tenantSlug: input.tenantSlug,
+        agentId: input.agentIdHeader ?? null,
+        conversationId: input.voiceConversationHeader ?? null,
+      })) ?? null
+    return claims ? resolveChatPrincipal(claims, input.tenantSlug, deps) : deny(deps, fail('invalid_token'), input.tenantSlug)
   }
 
   const chat = deps.verifyChatToken?.(parsed.token) ?? null

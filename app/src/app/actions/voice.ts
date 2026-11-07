@@ -6,25 +6,40 @@ import { aiInteractionStore } from '@/auth/ai-audit-deps'
 import { requireTenantRole, TenantAuthError } from '@/auth/tenant-context'
 import { listVoiceTranscripts, openVoiceTranscript } from '@/domain/ai-audit/ai-audit-service'
 import { services } from '@/domain/gateway-services'
-import { parseVoiceConfig } from '@/domain/voice/config'
+import { parseVoiceConfig, readVoiceConfig } from '@/domain/voice/config'
 import { prisma } from '@/lib/db'
+import { loadElevenLabsTenantKey } from '@/lib/elevenlabs-tenant-key'
+import { FeatureNotEnabledError } from '@/domain/feature-flags/gates'
+import { requireFeature } from '@/lib/feature-flags'
 import { loadOpenAiTenantKey } from '@/lib/openai-tenant-key'
 import { fail, ok } from '@/lib/result'
 import { isSuperadmin } from '@/lib/tenant-policy'
 
 /** #1111: a hang-beszélgetés megkerüli a Model Gateway-t, ezért a pilotban csak superadmin kapcsolhatja be. */
-export async function saveAgentVoiceConfigAction(input: { agentId: string; enabled: boolean; voice: string; greeting: string; callStyle: string }) {
+export async function saveAgentVoiceConfigAction(input: { agentId: string; enabled: boolean; provider: string; voice: string; elevenLabsVoiceId: string; greeting: string; callStyle: string }) {
   try {
     const ctx = await requireTenantRole('admin')
     if (!isSuperadmin(ctx.platformRoles)) return fail('A hang-beszélgetést csak platform-adminisztrátor állíthatja.')
     const agentId = z.string().uuid().parse(input.agentId)
-    const config = parseVoiceConfig({ enabled: input.enabled, voice: input.voice, greeting: input.greeting, callStyle: input.callStyle })
-    const agent = await prisma.agent.findFirst({ where: { id: agentId, tenantId: ctx.activeTenantId }, select: { kind: true } })
+    const parsed = parseVoiceConfig({
+      enabled: input.enabled,
+      provider: input.provider,
+      voice: input.voice,
+      elevenLabsVoiceId: input.elevenLabsVoiceId.trim() || undefined,
+      greeting: input.greeting,
+      callStyle: input.callStyle,
+    })
+    if (parsed.provider === 'elevenlabs') await requireFeature('voice.elevenlabs', { tenantId: ctx.activeTenantId })
+    const agent = await prisma.agent.findFirst({ where: { id: agentId, tenantId: ctx.activeTenantId }, select: { kind: true, voiceConfig: true } })
     if (!agent) return fail('A munkatárs nem található.')
     if (agent.kind !== 'internal') return fail('Nyilvános asszisztensnél a hang-beszélgetés nem kapcsolható be.')
-    if (config.enabled && !(await loadOpenAiTenantKey(ctx.activeTenantId))) {
-      return fail('A bekapcsoláshoz előbb add meg a céges OpenAI-kulcsot: Beállítások → Céges modellkulcsok.')
+    const loadKey = parsed.provider === 'elevenlabs' ? loadElevenLabsTenantKey : loadOpenAiTenantKey
+    if (parsed.enabled && !(await loadKey(ctx.activeTenantId))) {
+      return fail(`A bekapcsoláshoz előbb add meg a céges ${parsed.provider === 'elevenlabs' ? 'ElevenLabs' : 'OpenAI'}-kulcsot: Beállítások → Céges modellkulcsok.`)
     }
+    // A szolgáltatónál létrehozott elemek azonosítója nem az űrlapról jön, de a mentés nem veszítheti el.
+    const previous = agent.voiceConfig === null ? undefined : readVoiceConfig(agent.voiceConfig).elevenLabs
+    const config = previous ? { ...parsed, elevenLabs: previous } : parsed
     await prisma.agent.update({ where: { id: agentId }, data: { voiceConfig: config } })
     await services.audit.append({
       actorType: 'human',
@@ -37,14 +52,15 @@ export async function saveAgentVoiceConfigAction(input: { agentId: string; enabl
       inputRef: null,
       outputRef: String(config.enabled),
       policyDecision: 'updated',
-      metadata: { enabled: config.enabled, voice: config.voice, hasGreeting: config.greeting.length > 0, callStyle: config.callStyle },
+      metadata: { enabled: config.enabled, provider: config.provider, voice: config.voice, hasGreeting: config.greeting.length > 0, callStyle: config.callStyle },
       tenantId: ctx.activeTenantId,
     })
     revalidatePath(`/control-plane/agents/${agentId}`)
-    return ok(config)
+    return ok({ enabled: config.enabled })
   } catch (e) {
-    if (e instanceof z.ZodError) return fail('Az első mondat legfeljebb 300 karakter lehet, és a felkínált hangok és gombok közül kell választani.')
+    if (e instanceof z.ZodError) return fail('Az első mondat legfeljebb 300 karakter lehet, a hang-azonosító csak betűt és számot tartalmazhat, és a felkínált lehetőségek közül kell választani.')
     if (e instanceof TenantAuthError && e.code === 'INSUFFICIENT_ROLE') return fail('Ehhez ebben a szervezetben adminisztrátori szerep kell.')
+    if (e instanceof FeatureNotEnabledError) return fail('Ennél a szervezetnél az ElevenLabs nincs bekapcsolva.')
     console.warn('[voice] saving the voice settings failed', e instanceof Error ? e.name : 'unknown')
     return fail('A mentés nem sikerült. Frissítsd az oldalt, és próbáld újra.')
   }

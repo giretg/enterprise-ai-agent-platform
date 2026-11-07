@@ -140,7 +140,7 @@ A hangos beszélgetés első mondata közli a hívóval, ha az átirat a naplób
 - **Továbbítás:** a napló tartalma nem megy ki LLM-providernek (a provider a szűrt
   promptot kapja, a napló a mi adatbázisunk). Incidensnél a tenant admin négy szemmel
   olvashat, a hang-átiratot egyedül is (3. pont). A hangos beszélgetés hangja és szövege
-  élőben az OpenAI-hoz kerül. SIEM-export v1-ben nincs erre a táblára.
+  élőben a munkatárshoz választott hangszolgáltatóhoz kerül: az OpenAI-hoz, vagy a `voice.elevenlabs` flag bekapcsolása után az ElevenLabshez. Az ElevenLabsnél hangfelvétel nem készül, az átirat 30 napig marad a szolgáltatónál (#1107). Az ElevenLabs alfeldolgozói elfogadása a flag első bekapcsolása előtt a DPO-ra vár. SIEM-export v1-ben nincs erre a táblára.
 - **Megőrzés:** 90 nap, aztán törlés. A lejárt sor a GET-listában már a törlés előtt sem
   jelenik meg.
 - **Törlési jog:** a munkavállaló a tenant adatkezelőjénél élhet GDPR 17. cikkel; a

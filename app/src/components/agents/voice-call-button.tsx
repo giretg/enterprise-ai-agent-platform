@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  applyElevenLabsEvent,
   applyVoiceEvent,
   INITIAL_VOICE_CALL_VIEW,
   microphoneFailureMessage,
@@ -9,9 +10,11 @@ import {
   voiceBackendWorkVisible,
   voiceEndReport,
   voiceFailureMessage,
+  voiceProviderLabel,
   voiceProviderNotice,
+  type ElevenLabsCallEvent,
 } from '@/components/agents/voice-call-events'
-import type { VoiceCallStyle } from '@/domain/voice/config'
+import type { VoiceCallStyle, VoiceProviderId } from '@/domain/voice/config'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'closing' | 'ended' | 'failed'
 
@@ -79,18 +82,18 @@ export function VoiceCallIconButton({ agentName, callStyle, onClick }: { agentNa
 }
 
 /** #1111 hang-pilot: a gomb és az ablak együtt, ahol a gomb helye a hívás alatt biztosan nem változik. */
-export function VoiceCallButton({ agentId, agentName, callStyle }: { agentId: string; agentName: string; callStyle: VoiceCallStyle }) {
+export function VoiceCallButton({ agentId, agentName, callStyle, provider }: { agentId: string; agentName: string; callStyle: VoiceCallStyle; provider: VoiceProviderId }) {
   const [open, setOpen] = useState(false)
   return (
     <>
       <VoiceCallIconButton agentName={agentName} callStyle={callStyle} onClick={() => setOpen(true)} />
-      {open ? <VoiceCallDialog agentId={agentId} agentName={agentName} onClose={() => setOpen(false)} /> : null}
+      {open ? <VoiceCallDialog agentId={agentId} agentName={agentName} provider={provider} onClose={() => setOpen(false)} /> : null}
     </>
   )
 }
 
 /** Böngészős beszélgetés a munkatárssal, mintha felhívtuk volna. Eltávolításkor lecsatol, ezért a hívás alatt a helyén kell maradnia. */
-export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: string; agentName: string; onClose: () => void }) {
+export function VoiceCallDialog({ agentId, agentName, provider, onClose }: { agentId: string; agentName: string; provider: VoiceProviderId; onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [failure, setFailure] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
@@ -103,6 +106,8 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
 
   const connectionRef = useRef<RTCPeerConnection | null>(null)
   const channelRef = useRef<RTCDataChannel | null>(null)
+  // Az ElevenLabs saját kliensen fut, ez zárja a kapcsolatát.
+  const endProviderSessionRef = useRef<(() => void) | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -120,6 +125,8 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
     channelRef.current = null
     connectionRef.current?.close()
     connectionRef.current = null
+    endProviderSessionRef.current?.()
+    endProviderSessionRef.current = null
   }, [])
 
   const sendEndReport = useCallback(
@@ -137,8 +144,8 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
   const report = useCallback(() => {
     if (reportedRef.current || !sessionIdRef.current) return
     reportedRef.current = true
-    sendEndReport(sessionIdRef.current, voiceEndReport(viewRef.current))
-  }, [sendEndReport])
+    sendEndReport(sessionIdRef.current, voiceEndReport(viewRef.current, provider))
+  }, [provider, sendEndReport])
 
   const finish = useCallback(
     (next: 'ended' | 'failed') => {
@@ -156,6 +163,15 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
   }
 
   const requestClose = useCallback(() => {
+    if (endProviderSessionRef.current) {
+      // Az ElevenLabs kliens a lezárást az `onDisconnect` hívással jelzi vissza.
+      setPhase('closing')
+      const end = endProviderSessionRef.current
+      endProviderSessionRef.current = null
+      end()
+      timersRef.current.push(setTimeout(() => finish('ended'), CLOSE_TIMEOUT_MS))
+      return
+    }
     const channel = channelRef.current
     if (channel?.readyState !== 'open') {
       finish('ended')
@@ -214,6 +230,11 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
     }
     streamRef.current = stream
 
+    if (provider === 'elevenlabs') {
+      await startElevenLabs(stale)
+      return
+    }
+
     try {
       const connection = new RTCPeerConnection()
       connectionRef.current = connection
@@ -255,7 +276,7 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
       const response = await fetch('/api/voice/session', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agentId, sdp: connection.localDescription?.sdp }),
+        body: JSON.stringify({ agentId, provider, sdp: connection.localDescription?.sdp }),
       })
       const payload = (await response.json().catch(() => null)) as {
         error?: string
@@ -266,11 +287,11 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
       } | null
       if (stale()) {
         // Megszakítás közben a szerver már elindíthatta: az indítási auditsor mellé kerüljön lezárás is.
-        if (payload?.sessionId) sendEndReport(payload.sessionId, { ...voiceEndReport(INITIAL_VOICE_CALL_VIEW), reason: 'cancelled_while_connecting' })
+        if (payload?.sessionId) sendEndReport(payload.sessionId, { ...voiceEndReport(INITIAL_VOICE_CALL_VIEW, provider), reason: 'cancelled_while_connecting' })
         return
       }
       if (!response.ok || !payload?.sessionId || !payload.sdpAnswer) {
-        setFailure(voiceFailureMessage(payload?.error ?? 'unknown'))
+        setFailure(voiceFailureMessage(payload?.error ?? 'unknown', provider))
         release()
         setPhase('failed')
         return
@@ -293,6 +314,77 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
     }
   }
 
+  /** Az engedély már megvan; az SDK saját mikrofont nyit, ezért a miénket itt lezárjuk. */
+  async function startElevenLabs(stale: () => boolean) {
+    const apply = (event: ElevenLabsCallEvent) => {
+      viewRef.current = applyElevenLabsEvent(viewRef.current, event, Date.now())
+      setView(viewRef.current)
+    }
+    try {
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+      const response = await fetch('/api/voice/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agentId, provider }),
+      })
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string
+        sessionId?: string
+        conversationToken?: string
+        maxSeconds?: number
+      } | null
+      if (stale()) {
+        if (payload?.sessionId) sendEndReport(payload.sessionId, { ...voiceEndReport(INITIAL_VOICE_CALL_VIEW, provider), reason: 'cancelled_while_connecting' })
+        return
+      }
+      if (!response.ok || !payload?.sessionId || !payload.conversationToken) {
+        setFailure(voiceFailureMessage(payload?.error ?? 'unknown', provider))
+        setPhase('failed')
+        return
+      }
+      sessionIdRef.current = payload.sessionId
+      // Csak itt töltődik be, így aki nem használja, annak az oldala nem nehezebb.
+      const { Conversation } = await import('@elevenlabs/client')
+      const conversation = await Conversation.startSession({
+        conversationToken: payload.conversationToken,
+        connectionType: 'webrtc',
+        onConnect: () => apply({ type: 'connected' }),
+        onMessage: ({ role, message }) => apply({ type: 'message', role, text: message }),
+        onAgentToolRequest: ({ tool_name }) => apply({ type: 'tool_request', toolName: tool_name }),
+        onAgentToolResponse: ({ tool_name, is_error }) => apply({ type: 'tool_response', toolName: tool_name, isError: is_error }),
+        onError: (message) => apply({ type: 'error', message }),
+        onDisconnect: (details) => {
+          apply({ type: 'disconnected', reason: details.reason })
+          finish('ended')
+        },
+      })
+      if (stale()) {
+        void conversation.endSession()
+        report()
+        return
+      }
+      endProviderSessionRef.current = () => void conversation.endSession()
+      setPhase('live')
+      setMaxSeconds(payload.maxSeconds ?? DEFAULT_MAX_SECONDS)
+      timersRef.current.push(
+        setTimeout(() => {
+          setLimitReached(true)
+          requestClose()
+        }, (payload.maxSeconds ?? DEFAULT_MAX_SECONDS) * 1000),
+      )
+    } catch (error) {
+      if (stale()) {
+        report()
+        return
+      }
+      // A szolgáltató hibaszövege nyers tartalom, ezért csak az átiratba és a felhasználónak kerül.
+      apply({ type: 'error', message: error instanceof Error ? error.message : 'ismeretlen hiba' })
+      setFailure('A beszélgetést nem sikerült elindítani. Próbáld újra pár perc múlva.')
+      finish('failed')
+    }
+  }
+
   async function copyTranscript() {
     const text = view.lines
       .map((line) => (line.role === 'tool' ? `[${line.text}]` : `${ROLE_LABEL[line.role]}: ${line.text}`))
@@ -306,7 +398,7 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
   }
 
   const busy = phase === 'connecting' || phase === 'live' || phase === 'closing'
-  const providerNotice = voiceProviderNotice(view)
+  const providerNotice = voiceProviderNotice(view, provider)
 
   return (
     <div className="fixed inset-0 z-[400] flex items-center justify-center bg-ink/50 p-4 backdrop-blur-[2px]">
@@ -314,7 +406,7 @@ export function VoiceCallDialog({ agentId, agentName, onClose }: { agentId: stri
         <div className="border-b border-line px-5 py-4">
           <h3 className="font-display text-lg font-semibold text-ink">Hangos beszélgetés: {agentName}</h3>
           <p className="mt-1 text-sm text-ink-soft">
-            Úgy működik, mintha felhívnád: te szólsz, a munkatárs válaszol. A hang és a szöveg az OpenAI-hoz kerül, ezért
+            Úgy működik, mintha felhívnád: te szólsz, a munkatárs válaszol. A hang és a szöveg az {voiceProviderLabel(provider)} szolgáltatóhoz kerül, ezért
             ne mondj valódi ügyféladatot. Legfeljebb 10 percig tart. Hangfelvétel nem készül. Ha a szervezet naplózási beállítása engedi, az átirat
             minőségbiztosítási célból titkosítva a platform naplójába kerül, és alapból 90 napig őrizzük.
           </p>

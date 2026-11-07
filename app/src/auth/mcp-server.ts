@@ -276,6 +276,8 @@ import {
 import { readWarehouseSettings, warehouseAccessForAgent } from '@/lib/warehouse-settings'
 import { MINI_APP_VIEWER_HTML, miniAppViewerResourceMeta } from '@/domain/mini-app/viewer'
 import { chatTokenKeyFromEnv, verifyChatToken } from '@/domain/platform-chat/chat-token'
+import { isVoiceProviderCredential, MCP_VOICE_CONVERSATION_HEADER } from '@/domain/voice/provider-credential'
+import { productionVoiceProviderClaims } from '@/auth/voice-provider-session'
 import {
   isWarehouseTool,
   WAREHOUSE_READ_ONLY_TOOLS,
@@ -486,6 +488,7 @@ export function productionMcpDeps(): McpRuntimeDeps {
     resolveOrigin: resolvePublicAppOrigin,
     verifyOAuthToken: verifyClerkOAuthToken,
     verifyChatToken: productionChatTokenVerifier,
+    resolveVoiceProviderClaims: productionVoiceProviderClaims,
     inboundMailAllowsDirectWrites: async ({ tenantId, agentId }) =>
       (await prisma.agentInboundMailRule.findFirst({ where: { agentId, tenantId }, select: { allowDirectWrites: true } }))
         ?.allowDirectWrites === true,
@@ -2718,6 +2721,8 @@ export async function handleMcpRequest(
   const origin = deps.resolveOrigin(request)
   const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInfo | undefined> => {
     if (!bearerToken) return undefined
+    // Az érdemi ellenőrzéshez a fejlécek is kellenek, ezért a `resolveMcpPrincipal` végzi el.
+    if (isVoiceProviderCredential(bearerToken)) return { token: bearerToken, clientId: 'voice_provider', scopes: [], extra: {} }
     const chat = deps.verifyChatToken?.(bearerToken)
     if (chat) return { token: bearerToken, clientId: 'platform_chat', scopes: [], extra: { userId: chat.sub } }
     const verified = await deps.verifyOAuthToken(bearerToken)
@@ -2735,6 +2740,8 @@ export async function handleMcpRequest(
         authorizationHeader: req.headers.get('authorization'),
         tenantSlug,
         resourceOrigin: origin,
+        agentIdHeader: req.headers.get(MCP_AGENT_ID_HEADER)?.trim() || null,
+        voiceConversationHeader: req.headers.get(MCP_VOICE_CONVERSATION_HEADER)?.trim() || null,
       },
       deps,
     )
