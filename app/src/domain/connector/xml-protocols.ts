@@ -402,14 +402,47 @@ async function parseNavResponse(res: Response): Promise<ProtocolResult> {
   }
   const invoiceData = xmlText(text, 'invoiceData')
   if (!invoiceData) return { ok, body: text }
-  const raw = Buffer.from(invoiceData, 'base64')
   const compressed = xmlText(text, 'compressedContentIndicator') === 'true'
   return {
     ok,
     body: {
       response: text.replace(invoiceData, '[dekódolva: invoiceXml]'),
-      invoiceXml: (compressed ? gunzipSync(raw) : raw).toString('utf8'),
+      invoiceXml: decodeInvoiceXml(invoiceData, compressed),
     },
+  }
+}
+
+/** A kibontott (és a nyers base64) számla-XML kemény plafonja. */
+const MAX_INVOICE_XML_BYTES = 8 * 1024 * 1024
+/** base64 ≈ 4/3 overhead (+4 a padding-tűréshez): ennyi karakter dekódol a plafonnyi nyers bájtra. */
+const MAX_INVOICE_DATA_B64_CHARS = Math.ceil((MAX_INVOICE_XML_BYTES * 4) / 3) + 4
+
+/**
+ * A NAV `invoiceData` base64 — opcionálisan gzip-tömörített — számla-XML kibontása, KORLÁTOSAN.
+ * gzip-nél egy pár kilobájtos blob gigabájtokra tágulhat (dekompressziós bomba); a szinkron
+ * `gunzipSync` eközben a közös Cloud Run példány event-loopját blokkolná és OOM-ot okozna, ami
+ * minden ott futó bérlő hívását megakasztaná. Ezért a base64-bemenetre és a kibontott kimenetre
+ * is kemény plafon kerül, a hibás/túl nagy tartalom pedig tiszta hibát ad, nem kezeletlen
+ * összeomlást (a `gunzipSync` amúgy is dob a sérült gzip-re).
+ */
+function decodeInvoiceXml(invoiceData: string, compressed: boolean): string {
+  if (invoiceData.length > MAX_INVOICE_DATA_B64_CHARS) {
+    throw new ProtocolRequestError('NAV invoiceData exceeds the size limit', 'response_too_large')
+  }
+  const raw = Buffer.from(invoiceData, 'base64')
+  if (!compressed) {
+    if (raw.length > MAX_INVOICE_XML_BYTES) {
+      throw new ProtocolRequestError('NAV invoiceData exceeds the size limit', 'response_too_large')
+    }
+    return raw.toString('utf8')
+  }
+  try {
+    return gunzipSync(raw, { maxOutputLength: MAX_INVOICE_XML_BYTES }).toString('utf8')
+  } catch {
+    throw new ProtocolRequestError(
+      'NAV invoiceData could not be decompressed within the size limit',
+      'response_too_large',
+    )
   }
 }
 

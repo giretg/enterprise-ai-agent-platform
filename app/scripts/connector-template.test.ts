@@ -824,6 +824,22 @@ async function main() {
     )
     assert.equal(navRes.ok, true)
     assert.equal((navRes.body as { invoiceXml: string }).invoiceXml, '<InvoiceData>ok</InvoiceData>')
+
+    // Regresszió: dekompressziós bomba — egy pár kilobájtos gzip blob, ami a plafon fölé
+    // tágulna. A szinkron, korlátlan gunzip OOM-ot/event-loop-blokkot okozna a megosztott
+    // példányon; a kibontásnak kemény plafonnal, tiszta hibával kell elbuknia (nem összeomlás).
+    const bomb = gzipSync(Buffer.alloc(16 * 1024 * 1024, 0x41)).toString('base64')
+    const bombRes = await parseProtocolResponse(
+      'nav_online_invoice',
+      new Response(
+        `<QueryInvoiceDataResponse><result><funcCode>OK</funcCode></result><invoiceDataResult><invoiceData>${bomb}</invoiceData><compressedContentIndicator>true</compressedContentIndicator></invoiceDataResult></QueryInvoiceDataResponse>`,
+      ),
+    ).then(
+      () => ({ threw: false }) as const,
+      (e: unknown) => ({ threw: true, err: e }) as const,
+    )
+    assert.equal(bombRes.threw, true, 'oversized decompressed invoiceData must be rejected, not decoded')
+    assert.equal((bombRes.err as { code?: string }).code, 'response_too_large')
   })
 
   await test('broken custom descriptor fails template self-check', () => {
