@@ -2153,6 +2153,7 @@ async function invokeSandboxTool(
     return errorResult('invalid_args')
   }
   const execute = deps.executeSandboxRun ?? defaultExecuteSandboxRun
+  const outputs: string[] = []
   try {
     const ran = await execute(
       {
@@ -2164,7 +2165,6 @@ async function invokeSandboxTool(
       authorized.connector,
     )
     const prefix = sandboxWorkFilePrefix(resolved.script.skillName)
-    const outputs: string[] = []
     for (const file of ran.outputFiles) {
       const written = await writeWorkFile({
         tenantId: principal.tenantId,
@@ -2247,7 +2247,10 @@ async function invokeSandboxTool(
       inputRef: toolName,
       outputRef: code,
       policyDecision: null,
-      metadata: payload,
+      // Részleges hibánál a korábbi kimenetek már mentve vannak, ezért a napló ezeket is megnevezi.
+      metadata: outputs.length
+        ? { ...payload, projectKey: effectiveWorkProjectKey(parsedArgs.projectKey), outputPaths: outputs }
+        : payload,
       tenantId: principal.tenantId,
     })
     return errorResult(code)

@@ -2030,6 +2030,65 @@ async function main() {
     assert.deepEqual(metadata?.outputPaths, written)
   })
 
+  await check('#1113 sandbox_run: részleges hibánál a napló megnevezi a már mentett kimenetet', async () => {
+    const audited: Array<{ action: string; metadata?: unknown }> = []
+    const result = await invokeEnterpriseTool(
+      {
+        ...invokeDeps({
+          definition: sandboxDefinition,
+          connector: sandboxConnector,
+          grant: null,
+          loadSkillVersion: async () => ({ attachments: [scriptAttachment], status: 'active', tenantId: TENANT_ID }),
+          executeSandboxRun: async () => ({
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            outputFiles: [
+              { path: 'elso.html', bytes: Buffer.from('a') },
+              { path: 'masodik.html', bytes: Buffer.from('b') },
+            ],
+            metrics: {
+              provider: 'cloud_run',
+              region: 'europe-west1',
+              provisionMs: 1,
+              execMs: 1,
+              totalMs: 2,
+              cpuProfile: '1',
+              memoryProfile: '512Mi',
+              inputBytes: 1,
+              outputBytes: 2,
+              egressBytes: null,
+              coldStart: false,
+              exitStatus: 0,
+            },
+          }),
+          writeWorkFile: async (input) => {
+            if (input.path.endsWith('masodik.html')) throw new Error('quota_exceeded')
+            return { path: input.path }
+          },
+        }),
+        audit: { append: async (entry) => { audited.push({ action: entry.action, metadata: entry.metadata }) } },
+      },
+      {
+        principal: principal(),
+        toolName: SANDBOX_RUN_TOOL,
+        args: {
+          definitionId: DEFINITION_ID,
+          skillVersionId: SKILL_VERSION_ID,
+          entry: 'scripts/run_napi_marketing_riport.py',
+          projectKey: 'sales',
+        },
+      },
+    )
+    assert.equal(result.isError, true)
+    const metadata = audited.find((entry) => entry.action === 'enterprise.tool.error')?.metadata as Record<string, unknown> | undefined
+    assert.equal(metadata?.errorCode, 'quota_exceeded')
+    assert.equal(metadata?.projectKey, 'sales')
+    assert.deepEqual(metadata?.outputPaths, ['sandbox-output/napi-riport/elso.html'])
+  })
+
   await check('sandbox_run copies binary attachment and work-file inputs to /work/in/', async () => {
     const result = await invokeEnterpriseTool(
       invokeDeps({
