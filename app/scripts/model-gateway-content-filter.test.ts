@@ -707,6 +707,21 @@ async function main() {
     assert.equal(contentOf(out), 'Lásd: [[EMA')
   })
 
+  await check('túl hosszú szolgáltatói SSE-sor nem növeszti korlátlanul a memóriát', async () => {
+    const prompt = { stream: true, messages: [user('Írj a kovacs.janos@tesco.hu-ra.')] }
+    const beforeFirstLine = setup({ scripts: [streamOf(`data: ${'x'.repeat(1024 * 1024)}`, 64 * 1024)] })
+    const rejected = await beforeFirstLine.call(prompt)
+    assert.ok(rejected.status >= 500)
+    assert.doesNotMatch(await rejected.text(), /x{100}/)
+
+    const longPreamble = setup({ scripts: [streamOf(': comment\n'.repeat(120_000), 64 * 1024)] })
+    assert.ok((await longPreamble.call(prompt)).status >= 500)
+
+    const afterFirstLine = setup({ scripts: [streamOf(chunk({ content: 'ok' }) + `data: ${'x'.repeat(1024 * 1024)}\n`, 64 * 1024)] })
+    const streamed = await afterFirstLine.call(prompt)
+    await assert.rejects(streamed.text(), /Provider SSE line exceeds limit/)
+  })
+
   await check('ismeretlen (kitalált) álnév érintetlen marad, a nem álnév szöveg is', async () => {
     const text = chunk({ role: 'assistant', content: 'A [[EMAIL_9]] és a tömb[[0]] meg [x]' }, 'stop') + 'data: [DONE]\n\n'
     const { out } = await run(text, 3)

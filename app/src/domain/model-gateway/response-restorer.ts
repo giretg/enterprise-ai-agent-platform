@@ -8,6 +8,7 @@ import type { SurrogateSession } from '@/domain/model-gateway/content-filter'
 
 /** Az álnév-prefix hossza nem haladhatja meg ezt; ennél hosszabb „[[…” már biztosan nem álnév. */
 const MAX_HOLD = 64
+const MAX_SSE_LINE_CHARS = 1024 * 1024
 const TEXT_FIELDS = ['content', 'reasoning', 'reasoning_content'] as const
 
 /** Hol kezdődik a lezáratlan álnév-prefix a szöveg végén (a szöveg hossza, ha nincs). */
@@ -135,6 +136,7 @@ export function createRestoreTransform(opts: {
   }
 
   const processLine = async (line: string): Promise<string> => {
+    if (line.length > MAX_SSE_LINE_CHARS) throw new Error('Provider SSE line exceeds limit')
     const trimmed = line.trim()
     const s = trimmed.startsWith('data:') ? await load() : null
     if (!s) return `${line}\n`
@@ -178,6 +180,7 @@ export function createRestoreTransform(opts: {
   const drain = async (final: boolean): Promise<string> => {
     const lines = pending.split('\n')
     pending = final ? '' : (lines.pop() ?? '')
+    if (pending.length > MAX_SSE_LINE_CHARS) throw new Error('Provider SSE line exceeds limit')
     let out = ''
     for (const line of final && lines.length === 1 && !lines[0] ? [] : lines) out += await processLine(line.replace(/\r$/, ''))
     return out
