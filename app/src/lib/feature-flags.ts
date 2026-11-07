@@ -5,8 +5,9 @@ import {
   type FeatureFlagEvaluator,
   type FeatureFlagScope,
 } from '@/domain/feature-flags/evaluator'
+import { createExternalClientFlags } from '@/domain/feature-flags/external-client-flags'
 import { createFeatureGates, createToolFeatureGate } from '@/domain/feature-flags/gates'
-import type { FeatureFlagKey } from '@/domain/feature-flags/registry'
+import { FEATURE_FLAGS, type FeatureFlagKey } from '@/domain/feature-flags/registry'
 import { TOOL_FEATURE_FLAGS } from '@/domain/feature-flags/tool-flags'
 import { repositories } from '@/repositories/postgres'
 
@@ -39,3 +40,6 @@ export async function requireFeatureForPage(key: FeatureFlagKey, scope: FeatureF
 }
 
 export const productionToolFeatureGate = createToolFeatureGate(TOOL_FEATURE_FLAGS, featureFlagEvaluator)
+
+/** Chat-worker és Hermes: csak a kliensnek szánt, a cégnél aktív flagek hagyják el a szervert. */
+export const activeExternalClientFlags = createExternalClientFlags(FEATURE_FLAGS, featureFlagEvaluator)

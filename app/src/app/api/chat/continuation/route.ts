@@ -21,5 +21,8 @@ export async function POST(request: Request): Promise<Response> {
     body: await request.json().catch(() => null),
   })
   if (!result.ok) return NextResponse.json({ error: result.code }, { status: STATUS[result.code] })
-  return NextResponse.json({ token: result.token, expiresAt: result.expiresAt }, { headers: { 'cache-control': 'no-store' } })
+  return NextResponse.json(
+    { token: result.token, expiresAt: result.expiresAt, featureFlags: result.featureFlags },
+    { headers: { 'cache-control': 'no-store' } },
+  )
 }

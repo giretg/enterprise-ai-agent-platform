@@ -15,6 +15,7 @@ import {
 } from '../src/domain/feature-flags/admin-service'
 import { decideFeatureFlag, diffFeatureFlagEffect, type FeatureFlagState } from '../src/domain/feature-flags/evaluate'
 import { createFeatureFlagEvaluator, createStaticFeatureFlags } from '../src/domain/feature-flags/evaluator'
+import { createExternalClientFlags } from '../src/domain/feature-flags/external-client-flags'
 import { createFeatureFlagGateClosed, createFeatureGates, createToolFeatureGate, FeatureNotEnabledError, hideDisabledTools } from '../src/domain/feature-flags/gates'
 import {
   FEATURE_FLAGS,
@@ -540,6 +541,46 @@ async function main() {
     const result = validateFeatureFlagRegistry({ [KEY]: { ...definition, reviewBy: '2026-01-01' } }, [], new Date('2026-11-07T00:00:00Z'))
     assert.deepEqual(result.errors, [])
     assert.equal(result.warnings.length, 1)
+  })
+  await check('#1126 WP-5: a külső kliens-beállítás hibái megbuknak, a helyes átmegy', () => {
+    const run = (externalClients: unknown) =>
+      validateFeatureFlagRegistry({ [KEY]: { ...definition, externalClients } as FeatureFlagDefinition }, [], new Date('2026-11-07T00:00:00Z')).errors
+    assert.deepEqual(run({ clients: ['platform_chat', 'hermes'], onStop: 'old_path' }), [])
+    assert.equal(run({ clients: [], onStop: 'old_path' }).length, 1)
+    assert.equal(run({ clients: ['ismeretlen'], onStop: 'old_path' }).length, 1)
+    assert.equal(run({ clients: ['hermes'], onStop: 'kitalalt' }).length, 1)
+  })
+  await check('#1126 WP-5: a kliens csak a neki szánt, a cégnél aktív flageket kapja; más cég és a többi flag rejtve', async () => {
+    const chat = { clients: ['platform_chat'], onStop: 'finish_run' } as const
+    const hermes = { clients: ['hermes'], onStop: 'old_path' } as const
+    const flags = createExternalClientFlags(
+      {
+        'z.chat': { ...definition, externalClients: chat },
+        'a.chat': { ...definition, externalClients: chat },
+        'b.hermes': { ...definition, externalClients: hermes },
+        'c.internal': definition,
+      },
+      createStaticFeatureFlags({ 'z.chat': true, 'a.chat': [A], 'b.hermes': [A], 'c.internal': true }) as never,
+    )
+    assert.deepEqual(await flags('platform_chat', A), [{ key: 'a.chat', onStop: 'finish_run' }, { key: 'z.chat', onStop: 'finish_run' }])
+    assert.deepEqual(await flags('platform_chat', B), [{ key: 'z.chat', onStop: 'finish_run' }])
+    assert.deepEqual(await flags('hermes', A), [{ key: 'b.hermes', onStop: 'old_path' }])
+    assert.deepEqual(await flags('hermes', B), [])
+  })
+  await check('#1126 WP-5: ha egy flag sincs külső kliensnek szánva, a kiértékelőt sem kérdezi', async () => {
+    let reads = 0
+    const flags = createExternalClientFlags({ 'c.internal': definition }, { isEnabled: async () => (reads++, true) })
+    assert.deepEqual(await flags('platform_chat', A), [])
+    assert.deepEqual(await flags('hermes', A), [])
+    assert.equal(reads, 0)
+  })
+  await check('#1126 WP-5: az éles chat-folytatás és a Hermes-snapshot be van kötve a kiértékelőbe', async () => {
+    const [{ clientPolicyStore }, { continuationDeps }] = await Promise.all([
+      import('../src/auth/gateway-token-deps'),
+      import('../src/auth/platform-chat-deps'),
+    ])
+    assert.equal(typeof clientPolicyStore.activeFeatureFlags, 'function')
+    assert.equal(typeof continuationDeps().activeFeatureFlags, 'function')
   })
   await check('Az éles lista érvényes; a lejárt dátum csak figyelmeztetés a CI-ban', () => {
     const { errors, warnings } = validateFeatureFlagRegistry(FEATURE_FLAGS, RETIRED_FEATURE_FLAG_KEYS, new Date())

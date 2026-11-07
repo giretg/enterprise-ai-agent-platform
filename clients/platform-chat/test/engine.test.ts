@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  isTurnFeatureActive,
   answerQuestion,
   APPROVAL_TTL_MS,
   cancelTurn,
@@ -20,7 +21,7 @@ import {
 import { DEFAULT_MAX_STEPS, loadConfig } from '../src/config.ts'
 import { summary, toolGroup } from '../src/tool-loading.ts'
 import { normalizeAnswer, INTERACTION_TOOLS } from '../src/interaction-tools.ts'
-import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient } from '../src/platform.ts'
+import { BUDGET_BLOCK_REASON, PlatformError, type LlmResult, type McpCallResult, type PlatformClient, type TurnFeatureFlag } from '../src/platform.ts'
 import type { Conversation } from '../src/store.ts'
 import { MemoryStore } from './memory-store.ts'
 import { normalizeWebUrl, urlDomain, urlsInText, userUrlHashes, webUrlHash } from '../src/web-urls.ts'
@@ -57,7 +58,8 @@ function harness(script: Script, opts: { now?: () => Date; maxSteps?: number; to
   const llmMessages: unknown[][] = []
   const llmTools: unknown[][] = []
   const platform: PlatformClient = {
-    continuationToken: async () => 'turn-token',
+    continuationToken: async () => ({ token: 'turn-token', featureFlags: [] }),
+    activeFeatureFlags: async () => [],
     listAgents: async () => [],
     getDefinition: async () => opts.definition ?? '{"definitionId":"def-1","briefing":"Drive-asszisztens"}',
     listTools: async () => opts.tools ?? DRIVE_TOOLS,
@@ -134,7 +136,7 @@ async function main() {
     assert.equal((await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'másik', attachments: [] })).ok, false)
     assert.equal(await runStep(h.deps, { turnId: r.turn.id, seq: 2 }), 'skip')
     let renewals = 0
-    h.deps.platform.continuationToken = async () => { renewals++; return 'fresh-token' }
+    h.deps.platform.continuationToken = async () => { renewals++; return { token: 'fresh-token', featureFlags: [] } }
     const enqueue = h.deps.queue.enqueue
     h.deps.queue.enqueue = async () => { throw new Error('queue unavailable') }
     const input = { turnId: r.turn.id, userId: USER, tenantId: TENANT, chatToken: 'chat' }
@@ -171,7 +173,7 @@ async function main() {
     h.deps.platform.continuationToken = async () => { throw new Error('revoked') }
     assert.equal(await resumeTurn(h.deps, input), 'no_access')
     assert.equal((await h.store.getTurn(r.turn.id))?.status, 'paused')
-    h.deps.platform.continuationToken = async () => 'renewed'
+    h.deps.platform.continuationToken = async () => ({ token: 'renewed', featureFlags: [] })
     now = new Date(now.getTime() + 86_400_000)
     assert.equal(await resumeTurn(h.deps, input), 'ok')
     const resumed = (await h.store.getTurn(r.turn.id))!
@@ -739,7 +741,7 @@ async function main() {
   await check('levélből indult forduló: a Folytatás is háttérfutásként kér tokent (írás jóváhagyásra vár)', async () => {
     const h = harness({ llm: [callTool('google_drive_create_folder', { name: 'riport' }), say('Kész.')], tool: [done('{"id":"export"}')] }, { maxSteps: 2 })
     const minted: Array<{ background?: true }> = []
-    h.deps.platform.continuationToken = async (input) => (minted.push(input), 'fresh-token')
+    h.deps.platform.continuationToken = async (input) => (minted.push(input), { token: 'fresh-token', featureFlags: [] })
     const mail = await h.store.createConversation({ tenantId: TENANT, tenantSlug: 'acme', userId: USER, agentId: AGENT, agentName: 'Drive', origin: 'inbound_mail' })
     const r = await startTurn(h.deps, { conversation: mail, chatToken: 'chat', content: 'levél', attachments: [] })
     assert.ok(r.ok)
@@ -939,6 +941,122 @@ async function main() {
     assert.equal(turn?.status, 'cancelled')
     assert.equal(turn?.pendingInput, null)
     assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Kovács Péter'] } }), 'not_waiting')
+  })
+
+  const FLAG = 'chat.next_step'
+  const flagged = (onStop: 'finish_run' | 'old_path', script: Script, active: () => TurnFeatureFlag[] | Promise<TurnFeatureFlag[]>) => {
+    const h = harness(script)
+    h.deps.platform.continuationToken = async () => ({ token: 'turn-token', featureFlags: [{ key: FLAG, onStop }] })
+    h.deps.platform.activeFeatureFlags = async () => active()
+    return h
+  }
+  const twoSteps = (): Script => ({ llm: [callTool('google_drive.search', { q: 'x' }), say('Kész.')], tool: [done('találat')] })
+
+  await check('#1126 flag nélkül a működés változatlan: nincs ellenőrző hívás, a kontextusban nincs flag', async () => {
+    const h = harness(twoSteps())
+    let checks = 0
+    h.deps.platform.activeFeatureFlags = async () => (checks++, [])
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    assert.equal((await h.store.getTurn(r.turn.id))?.context, null)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'succeeded')
+    assert.equal(checks, 0)
+    assert.equal(turn?.context?.featureFlags, undefined)
+    assert.equal(isTurnFeatureActive(turn!.context, FLAG), false)
+  })
+
+  await check('#1126 a flag a forduló elején rögzül, a definíció és az eszközök mellett megmarad', async () => {
+    const h = flagged('finish_run', twoSteps(), () => [{ key: FLAG, onStop: 'finish_run' }, { key: 'chat.later', onStop: 'old_path' }])
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 1)
+    assert.ok(turn?.context?.definition.includes('Drive-asszisztens'))
+    assert.equal(turn?.context?.flagsOnly, undefined)
+    assert.equal(isTurnFeatureActive(turn!.context, FLAG), true)
+    // Futás közben bekapcsolt flag nem vált működést félúton.
+    assert.equal(isTurnFeatureActive(turn!.context, 'chat.later'), false)
+  })
+
+  await check('#1126 leállítás, finish_run: a következő lépésnél érthető üzenettel lezárul, nem hív tovább', async () => {
+    let checks = 0
+    const h = flagged('finish_run', twoSteps(), () => (++checks === 1 ? [{ key: FLAG, onStop: 'finish_run' }] : []))
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 0)
+    assert.equal(h.llmMessages.length, 1)
+    assert.ok(h.store.messages.at(-1)?.content.includes(MESSAGES.featureStopped))
+    assert.equal(h.store.messages.at(-1)?.content.includes(FLAG), false)
+    assert.equal(isTurnFeatureActive(turn!.context, FLAG), false)
+  })
+
+  await check('#1126 leállítás, old_path: a munka folytatódik, a flag a futás végéig Ki, újrakapcsolva sem jön vissza', async () => {
+    const answers: Array<TurnFeatureFlag[]> = [[], [{ key: FLAG, onStop: 'old_path' }], [{ key: FLAG, onStop: 'old_path' }]]
+    let checks = 0
+    const h = flagged('old_path', twoSteps(), () => { checks++; return answers.shift() ?? [] })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'succeeded')
+    assert.equal(h.toolCalls.length, 1)
+    assert.equal(h.store.messages.at(-1)?.content, 'Kész.')
+    assert.deepEqual(turn?.context?.featureFlags?.stopped, [FLAG])
+    assert.equal(isTurnFeatureActive(turn!.context, FLAG), false)
+    assert.equal(checks, 1) // a leállított flaghez nincs több ellenőrző hívás
+  })
+
+  await check('#1126 a leállítás-ellenőrzés kiesésekor az utolsó ismert állapot marad, a munka megy tovább', async () => {
+    const h = flagged('finish_run', twoSteps(), () => { throw new PlatformError('down', 503) })
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'succeeded')
+    assert.equal(h.store.messages.at(-1)?.content, 'Kész.')
+    assert.equal(isTurnFeatureActive(turn!.context, FLAG), true)
+  })
+
+  await check('#1126 a kérdésre adott válasz új tokent ad, de nem rögzít újra flaget', async () => {
+    const h = flagged('old_path', { llm: [{ toolCalls: [{ id: 'q', name: 'ask_user', arguments: JSON.stringify(PETER) }] }, say('Kész.')], tool: [] }, () => [{ key: FLAG, onStop: 'old_path' }])
+    const c = await h.conversation()
+    const r = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(r.ok)
+    await h.drain()
+    h.deps.platform.continuationToken = async () => ({ token: 'fresh', featureFlags: [{ key: 'chat.later', onStop: 'old_path' }] })
+    assert.equal(await answerQuestion(h.deps, { turnId: r.turn.id, userId: USER, chatToken: 'chat', answer: { selected: ['Kovács Péter'] } }), 'ok')
+    await h.drain()
+    const turn = await h.store.getTurn(r.turn.id)
+    assert.equal(turn?.status, 'succeeded')
+    assert.deepEqual(turn?.context?.featureFlags?.pinned.map((flag) => flag.key), [FLAG])
+  })
+
+  await check('#1126 az el nem indult forduló flag-kontextusa nem írja felül az előző forduló betöltött eszközeit', async () => {
+    const h = harness(twoSteps())
+    const c = await h.conversation()
+    const first = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'x', attachments: [] })
+    assert.ok(first.ok)
+    await h.drain()
+    h.deps.platform.continuationToken = async () => ({ token: 'turn-token', featureFlags: [{ key: FLAG, onStop: 'old_path' }] })
+    const second = await startTurn(h.deps, { conversation: c, chatToken: 'chat', content: 'y', attachments: [] })
+    assert.ok(second.ok)
+    assert.ok(await cancelTurn(h.deps, second.turn.id, USER))
+    h.queued.length = 0
+    const previous = await h.store.lastTurnContext(c.id, 'none')
+    assert.equal(previous?.flagsOnly, undefined)
+    assert.ok(previous?.definition)
   })
 
   if (failures) {

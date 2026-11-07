@@ -26,6 +26,14 @@ feladat); a „Jóváhagyom / Elvetem” új lépést indít. 15 perc után a k�
 listáján marad, a forduló zárószöveggel lezárul. Korlátok: 25 lépés, 40 perc, lépésenként 3 próba,
 ismétlődő-hurok (azonos tool + argumentum 3×) → leállás.
 
+## Fokozatos bevezetés (#1126)
+
+A flagek a folytatási token válaszában érkeznek, és a forduló elején a `turns.context.featureFlags`-be kerülnek, így a
+futás nem vált működést félúton. Rögzített flagnél a motor minden lépés előtt megkérdezi a `/api/chat/feature-flags`
+végpontot. Ha egy flaget közben leállítottak, a bejegyzése szerint a forduló érthető üzenettel lezárul (`finish_run`),
+vagy a régi úton megy tovább (`old_path`). Kapu a kódban: `isTurnFeatureActive(context, kulcs)`. Útmutató:
+`docs/feature-flags.md`.
+
 ## Letöltés-kártya (#1024)
 
 - A tool-eredmény `resource_link` tartalma (pl. `document_export`) és az ismert letöltési mező

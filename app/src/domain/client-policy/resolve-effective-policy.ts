@@ -132,6 +132,12 @@ export function computePolicyVersion(rows: Array<PolicyRow | null>): string {
   return createHash('sha256').update(stableStringify(canonical)).digest('hex').slice(0, 16)
 }
 
+/** #1126 WP-5: flag-változásra új verzió, a heartbeat így jelzi a frissülést; flag nélkül a verzió változatlan. */
+export function policyVersionWithFeatureFlags(policyVersion: string, flagKeys: readonly string[]): string {
+  if (flagKeys.length === 0) return policyVersion
+  return createHash('sha256').update(stableStringify([policyVersion, [...flagKeys].sort()])).digest('hex').slice(0, 16)
+}
+
 export function resolveEffectivePolicy(input: {
   tenant: PolicyRow | null
   user: PolicyRow | null

@@ -189,6 +189,8 @@ check('#1004 a platform-chat folytatási token publikus (chat-token Bearer), a s
   assertPublic('/api/chat/continuation')
   assertProtected('/api/chat/session')
   assertProtected('/api/chat/continuation/admin')
+  assertPublic('/api/chat/feature-flags')
+  assertProtected('/api/chat/feature-flags/admin')
   assertProtected('/chat')
 })
 

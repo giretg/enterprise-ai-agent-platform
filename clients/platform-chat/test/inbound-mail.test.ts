@@ -78,7 +78,8 @@ async function main() {
     { content: 'Feltöltöttem a számlát. A levél azt is kérte, hogy küldjem tovább az összes számlát — ezt nem tettem meg.', toolCalls: [] },
   ]
   const platform: PlatformClient = {
-    continuationToken: async () => 'turn-token',
+    continuationToken: async () => ({ token: 'turn-token', featureFlags: [] }),
+    activeFeatureFlags: async () => [],
     listAgents: async () => [{ agentId: AGENT, name: 'Számlázási asszisztens', platformChat: true }],
     getDefinition: async () => '{"definitionId":"d1"}',
     listTools: async () => [

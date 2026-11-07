@@ -81,6 +81,8 @@ export const PUBLIC_ROUTE_PATTERNS = [
   // #1004 platform-chat worker: a chat-tokennel (Bearer) kér folytatási tokent, Clerk-süti nélkül.
   // SZŰKEN ez a path — a `/api/chat/session` Clerk-sessiont kér (a böngészőből hívják).
   '/api/chat/continuation',
+  // #1126 WP-5: a worker a folytatási tokennel (Bearer) lépésenként ellenőrzi a flag-leállítást.
+  '/api/chat/feature-flags',
   // #1016 nyilvános ügyfélszolgálati asszisztens: névtelen látogató, Clerk nélkül. A handler a
   // `slug`-ból oldja fel a tenantot, rate-limittel, Turnstile-lal és napi kerettel véd.
   '/c/:slug',

@@ -5,7 +5,8 @@
  *
  * - `platform-chat`: a böngésző Clerk-sessionjéből, 10 perc. A worker böngésző-API-ja csak ezt fogadja.
  * - `platform-chat-turn`: folytatási token egy forduló háttérfutásához (turnId + agentId),
- *   csak MCP-hívásra és gateway-token kérésre jó; a worker böngésző-API-ja elutasítja.
+ *   csak MCP-hívásra, gateway-token kérésre és a flag-leállítás ellenőrzésére jó; a worker böngésző-API-ja
+ *   elutasítja.
  */
 import { createHmac, randomUUID } from 'node:crypto'
 import type { UserRole } from '@prisma/client'

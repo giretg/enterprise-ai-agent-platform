@@ -9,7 +9,7 @@
 import { attachmentManifest, type BlobStorage } from './attachments.ts'
 import { ATTACHMENT_TOOLS, ATTACHMENT_TOOL_DEFINITIONS, attachmentImage, conversationAttachment, readAttachmentTool, resolveAttachmentReferences } from './attachment-tools.ts'
 import { createHash } from 'node:crypto'
-import { BUDGET_BLOCK_REASON, PlatformError, type ChatMessage, type PlatformClient } from './platform.ts'
+import { BUDGET_BLOCK_REASON, PlatformError, type ChatMessage, type PlatformClient, type TurnFeatureFlag } from './platform.ts'
 import {
   ACTIVE_TURN_STATUSES,
   PARKED_TURN_STATUSES,
@@ -93,6 +93,7 @@ export const MESSAGES = {
   tooManySteps: 'A feladat elérte a feldolgozás biztonsági korlátját. Az eddigi eredmények megmaradtak. A Folytatás újabb feldolgozási keretet engedélyez.',
   tooLong: 'A feladat felhasználta az erre a munkaszakaszra szánt időt. Az eddigi eredmények megmaradtak. A Folytatás újabb időkeretet engedélyez.',
   loop: 'A munkatárs ugyanazt a lépést ismételte, ezért leállt. Próbáld másképp megfogalmazni a kérést.',
+  featureStopped: 'Egy funkciót, amelyre ez a munka épült, időközben leállítottak, ezért itt lezártam a munkát. Az eddigi eredmények megmaradtak. Később indíts új beszélgetést, vagy kérj segítséget az adminisztrátortól.',
   approvalExpired: (link: string) =>
     `Ez a kérés a jóváhagyási listára került, mert 15 percen belül nem született döntés. A jóváhagyási listán bármikor dönthetsz róla: ${link}`,
 } as const
@@ -189,7 +190,41 @@ async function pauseTurn(deps: EngineDeps, turn: Turn, reason: TurnPause['reason
 async function resumeToken(deps: EngineDeps, turn: Turn, chatToken: string): Promise<string> {
   const conversation = await deps.store.getConversation(turn.conversationId)
   const background = conversation?.origin !== 'user'
-  return deps.platform.continuationToken({ chatToken, turnId: turn.id, agentId: turn.agentId, ...(background ? { background: true as const } : {}) })
+  // A folytatás nem rögzít újra flaget: a futás az elején kapott értékekkel megy tovább.
+  const { token } = await deps.platform.continuationToken({ chatToken, turnId: turn.id, agentId: turn.agentId, ...(background ? { background: true as const } : {}) })
+  return token
+}
+
+/** #1126 WP-5: a kapu a chat-workerben. Aktív, ha a futás elején aktív volt, és azóta nem állították le. */
+export function isTurnFeatureActive(context: TurnContext | null, key: string): boolean {
+  const flags = context?.featureFlags
+  return !!flags && flags.pinned.some((flag) => flag.key === key) && !flags.stopped.includes(key)
+}
+
+/**
+ * #1126 WP-5: minden lépés előtt a leállítás ellenőrzése. Rögzített flag nélkül nincs hívás. Ha a platform
+ * nem válaszol, az utolsó ismert állapot marad, mert a flag-ellenőrzés kiesése nem állíthat le munkát.
+ * Visszatérés: a friss forduló, vagy `null`, ha a forduló a flag szabálya szerint lezárult.
+ */
+async function applyFeatureFlagStops(deps: EngineDeps, turn: Turn): Promise<Turn | null> {
+  const flags = turn.context?.featureFlags
+  const live = flags?.pinned.filter((flag) => !flags.stopped.includes(flag.key)) ?? []
+  if (!flags || live.length === 0) return turn
+  let active: TurnFeatureFlag[]
+  try {
+    active = await deps.platform.activeFeatureFlags({ token: turn.continuationToken! })
+  } catch (error) {
+    console.warn('platform-chat feature flag check failed', { turnId: turn.id, error: error instanceof Error ? error.message : 'unknown' })
+    return turn
+  }
+  const stopped = live.filter((flag) => !active.some((current) => current.key === flag.key))
+  if (stopped.length === 0) return turn
+  const context: TurnContext = { ...turn.context!, featureFlags: { ...flags, stopped: [...flags.stopped, ...stopped.map((flag) => flag.key)] } }
+  await deps.store.updateTurn(turn.id, { context })
+  const next = { ...turn, context }
+  if (!stopped.some((flag) => flag.onStop === 'finish_run')) return next
+  await finalize(deps, next, MESSAGES.featureStopped)
+  return null
 }
 
 /** Kizárólag a tulajdonos kifejezett folytatása nyit új keretet; a számlálók nem nullázódnak. */
@@ -306,12 +341,13 @@ export async function startTurn(
   })
   if (!turn) return { ok: false, code: 'busy' }
   let continuation: string
+  let featureFlags: TurnFeatureFlag[]
   try {
-    continuation = await deps.platform.continuationToken({
+    ;({ token: continuation, featureFlags } = await deps.platform.continuationToken({
       chatToken: input.chatToken,
       turnId: turn.id,
       agentId: conversation.agentId,
-    })
+    }))
   } catch {
     await fail(deps, turn, MESSAGES.noAccess, 'no_access')
     return { ok: false, code: 'no_access' }
@@ -327,7 +363,12 @@ export async function startTurn(
     const title = input.content.replace(/\s+/g, ' ').trim().slice(0, 60) || input.attachments[0]?.name || 'Új beszélgetés'
     await deps.store.renameConversation(conversation.id, title, false)
   }
-  await deps.store.updateTurn(turn.id, { continuationToken: continuation })
+  await deps.store.updateTurn(turn.id, {
+    continuationToken: continuation,
+    ...(featureFlags.length
+      ? { context: { definition: '', tools: [], flagsOnly: true as const, featureFlags: { pinned: featureFlags, stopped: [] } } }
+      : {}),
+  })
   await deps.store.appendEvent(turn.id, 'status', { phase: 'queued' })
   await deps.store.touchConversation(conversation.id)
   await deps.queue.enqueue({ turnId: turn.id, seq: 0 })
@@ -579,7 +620,7 @@ export function toolDefinitions(context: TurnContext, attachments = false) {
 }
 
 async function loadContext(deps: EngineDeps, turn: Turn, conversation: Conversation): Promise<TurnContext> {
-  if (turn.context) return turn.context
+  if (turn.context && !turn.context.flagsOnly) return turn.context
   const access = { token: turn.continuationToken!, tenantSlug: conversation.tenantSlug, agentId: turn.agentId, sessionId: conversation.id }
   const [definition, tools, previous] = await Promise.all([
     deps.platform.getDefinition(access),
@@ -589,7 +630,7 @@ async function loadContext(deps: EngineDeps, turn: Turn, conversation: Conversat
   const available = tools.filter((t) => !EXCLUDED_TOOLS.has(t.name)).map(({ name, description, inputSchema }) => ({ name, description, inputSchema }))
   // Ragadós betöltés: az előző fordulóban betöltött eszközök a beszélgetésben betöltve maradnak.
   const loading = initialLoading(available, { core: deps.coreTools ?? DEFAULT_CORE_TOOLS, definition, sticky: previous?.loaded ?? [] })
-  const context: TurnContext = { definition, tools: available, ...loading }
+  const context: TurnContext = { definition, tools: available, ...loading, ...(turn.context?.featureFlags ? { featureFlags: turn.context.featureFlags } : {}) }
   await deps.store.updateTurn(turn.id, { context })
   return context
 }
@@ -891,6 +932,9 @@ export async function runStep(deps: EngineDeps, task: { turnId: string; seq: num
       await pauseTurn(deps, turn, 'time', MESSAGES.tooLong)
       return 'done'
     }
+    const checked = await applyFeatureFlagStops(deps, turn)
+    if (!checked) return 'done'
+    turn = checked
     if (turn.status === 'queued') await deps.store.transitionTurn(turn.id, ['queued'], 'running')
     const live = { ...turn, status: 'running' as const }
     const plan = planNext(done)

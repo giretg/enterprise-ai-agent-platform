@@ -1,6 +1,6 @@
 /**
  * A platform publikus felülete, ahogy egy külső kliens látja (§3): MCP (`/api/mcp/<tenant>`),
- * Model Gateway (`/api/model-gateway/...`) és a folytatási token végpontja. Nincs más út.
+ * Model Gateway (`/api/model-gateway/...`), a folytatási token és a flag-ellenőrzés végpontja. Nincs más út.
  */
 
 import { USER_URLS_HEADER } from './web-urls.ts'
@@ -19,6 +19,18 @@ export class PlatformError extends Error {
     super(message)
     this.name = 'PlatformError'
   }
+}
+
+/** #1126 WP-5: a cégnél aktív flag, és hogy mi a biztonságos, ha a futás közben leállítják. */
+export type TurnFeatureFlag = { key: string; onStop: 'finish_run' | 'old_path' }
+
+/** Régi platform vagy hibás elem esetén a flag Ki: a régi működés fut. */
+export function parseFeatureFlags(raw: unknown): TurnFeatureFlag[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    const { key, onStop } = (item ?? {}) as { key?: unknown; onStop?: unknown }
+    return typeof key === 'string' && key && (onStop === 'finish_run' || onStop === 'old_path') ? [{ key, onStop }] : []
+  })
 }
 
 export type McpTool = { name: string; description?: string; inputSchema?: Record<string, unknown> }
@@ -52,7 +64,9 @@ export type ChatMessage =
 
 export interface PlatformClient {
   /** `background`: levélből indult forduló folytatása — a platform jóváhagyásra kényszeríti az írásokat. */
-  continuationToken(input: { chatToken: string; turnId: string; agentId: string; background?: true }): Promise<string>
+  continuationToken(input: { chatToken: string; turnId: string; agentId: string; background?: true }): Promise<{ token: string; featureFlags: TurnFeatureFlag[] }>
+  /** #1126 WP-5: a token cégénél most aktív flagek, a leállítás lépésenkénti ellenőrzéséhez. */
+  activeFeatureFlags(input: { token: string }): Promise<TurnFeatureFlag[]>
   listAgents(input: { token: string; tenantSlug: string }): Promise<Array<Record<string, unknown>>>
   getDefinition(input: { token: string; tenantSlug: string; agentId: string; sessionId: string }): Promise<string>
   listTools(input: { token: string; tenantSlug: string; agentId: string; sessionId: string }): Promise<McpTool[]>
@@ -208,9 +222,16 @@ export function createPlatformClient(platformOrigin: string, fetchImpl: typeof f
         headers: { authorization: `Bearer ${chatToken}`, 'content-type': 'application/json' },
         body: JSON.stringify({ turnId, agentId, ...(background ? { background: true } : {}) }),
       })
-      const body = (await res.json().catch(() => ({}))) as { token?: string; error?: string }
+      const body = (await res.json().catch(() => ({}))) as { token?: string; error?: string; featureFlags?: unknown }
       if (!res.ok || !body.token) throw new PlatformError('continuation token denied', res.status, body.error)
-      return body.token
+      return { token: body.token, featureFlags: parseFeatureFlags(body.featureFlags) }
+    },
+
+    async activeFeatureFlags({ token }) {
+      const res = await fetchImpl(`${platformOrigin}/api/chat/feature-flags`, { headers: { authorization: `Bearer ${token}` } })
+      const body = (await res.json().catch(() => ({}))) as { error?: string; featureFlags?: unknown }
+      if (!res.ok || !Array.isArray(body.featureFlags)) throw new PlatformError('feature flags unavailable', res.status, body.error)
+      return parseFeatureFlags(body.featureFlags)
     },
 
     async listAgents({ token, tenantSlug }) {
