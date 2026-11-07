@@ -149,6 +149,9 @@ const documentRepo = {
     documents.set(id, next)
     return next
   },
+  async searchRawFallback() {
+    return []
+  },
   async searchRaw() {
     return []
   },
@@ -185,6 +188,9 @@ const chunkRepo = {
       .filter((c) => `${c.title} ${c.text}`.toLowerCase().includes(q))
       .slice(0, limit)
       .map((c) => ({ ...c, score: 1, matched: [q] }))
+  },
+  async searchChunksFallback() {
+    return []
   },
   async listIndex(connectorIds: string[]) {
     return chunks.filter((c) => connectorIds.includes(c.connectorId)).map((c) => ({ artifactId: c.artifactId, connectorId: c.connectorId, path: c.path, title: c.title, type: c.type }))

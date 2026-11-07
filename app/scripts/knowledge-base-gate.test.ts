@@ -79,6 +79,9 @@ function makeFakes() {
     async searchRaw() {
       return []
     },
+    async searchRawFallback() {
+      return []
+    },
     async listByConnectorId(connectorId: string) {
       return [...documents.values()].filter((doc) => doc.connectorId === connectorId)
     },
@@ -146,6 +149,9 @@ function makeFakes() {
       return rows.length
     },
     async searchChunks() {
+      return []
+    },
+    async searchChunksFallback() {
       return []
     },
     async listIndex(connectorIds: string[], pathPrefix?: string, artifactId?: string) {
