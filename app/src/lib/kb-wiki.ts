@@ -87,6 +87,12 @@ export function isDocumentSource(ref: WikiSourceRef): ref is WikiDocumentSourceR
   return ref.kind === undefined
 }
 
+/** #1129 D3: az írással újonnan hivatkozott kommentek. Az oldalon már meglévő forrás nem számít. */
+export function newlyCitedCommentIds(before: WikiSourceRef[], after: WikiSourceRef[]): string[] {
+  const kept = new Set(before.filter(isWikiCommentSource).map((ref) => ref.commentId))
+  return [...new Set(after.filter(isWikiCommentSource).map((ref) => ref.commentId))].filter((id) => !kept.has(id))
+}
+
 /** Egy emberi rögzítés azonossága (változatlan átvételnél nem kell új munkamenet). */
 export function humanNoteKey(ref: WikiHumanNoteSourceRef): string {
   return JSON.stringify([ref.recordedByUserId, ref.recordedAt, ref.occasion, ref.participants ?? null])

@@ -339,7 +339,7 @@ export type WikiChangeSetPreview = {
     /** #1061 F3: dokumentum-állapot váltása (pl. tervezet → jóváhagyott), ha van. */
     docStatusChange: { from: WikiDocStatusName | null; to: WikiDocStatusName | null } | null
     status: WikiPage['status']
-    before: { title: string; summary: string; body: string; status: string } | null
+    before: { title: string; summary: string; body: string; status: string; sources: WikiSourceRef[] } | null
     after: { title: string; summary: string; body: string; sources: WikiSourceRef[] }
   }>
   issues: KbValidationIssue[]
@@ -1729,7 +1729,13 @@ export class WikiService {
           docStatusChange: docStatusChangeOf(page),
           status: page.status,
           before: page.existing
-            ? { title: page.existing.title, summary: page.existing.summary, body: page.existing.body, status: page.existing.status }
+            ? {
+                title: page.existing.title,
+                summary: page.existing.summary,
+                body: page.existing.body,
+                status: page.existing.status,
+                sources: readWikiSources(page.existing.sourceRefs),
+              }
             : null,
           after: { title: page.state.title, summary: page.state.summary, body: page.state.body, sources: page.state.sources },
         }))

@@ -17,6 +17,7 @@ import {
   isDocumentSource,
   isHumanNoteSource,
   isWikiCommentSource,
+  newlyCitedCommentIds,
   readWikiSources,
   visibleWikiSources,
   stripManagedFrontmatter,
@@ -304,9 +305,11 @@ export class WikiHistoryService {
     const seqById = await this.seqLookup([changeSet])
     const summary = readPageSummary(changeSet.pageSummary)
     const pages = []
+    const citedCommentIds: string[] = []
     for (const rev of revisions) {
       const current = await this.deps.history.findPageById(connector.id, rev.pageId)
       const before = await this.deps.history.previousRevision(connector.id, rev.pageId, rev.version)
+      citedCommentIds.push(...newlyCitedCommentIds(readWikiSources(before?.sourceRefs), readWikiSources(rev.sourceRefs)))
       const row = summary.find((item) => item.pageId === rev.pageId)
       const prunedBefore = !!before && before.version !== rev.version - 1
       pages.push({
@@ -326,7 +329,7 @@ export class WikiHistoryService {
     }
     const log = (changeSet.logEntry ?? {}) as { op?: string; title?: string; note?: string | null }
     const requestedBy = this.deps.comments
-      ? await commentsRequestingChange({ comments: this.deps.comments, userLabels: (ids) => this.deps.console.userLabels(ids) }, connector.id, changeSet.id)
+      ? await commentsRequestingChange({ comments: this.deps.comments, userLabels: (ids) => this.deps.console.userLabels(ids) }, connector.id, changeSet.id, citedCommentIds)
       : []
     return {
       /** #1129: a módosítást ezek a kommentek kérték. */

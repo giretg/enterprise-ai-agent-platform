@@ -343,6 +343,27 @@ async function main() {
     assert.equal(await statusOf(fromOperator), 'open', 'a forrás nem zárja le a kommentet')
     const review = await consoleService.getChangeSetReview(admin, (cited as Row).request.changeSetId)
     assert.equal(review.commentAuthorApproval, true, 'a jóváhagyó látja, miért került hozzá')
+    assert.deepEqual(
+      review.comments.map((row) => [row.id, row.authorName, row.body, row.note]),
+      [[fromOperator, 'Kovács Anna', 'A jutalék 3%, nem 2%.', null]],
+      'S3: a jóváhagyó a forrásként hivatkozott komment szövegét is látja',
+    )
+    const citedChange = await wikiService.applyApproved(direct, (cited as Row).request.changeSetId)
+    assert.equal(citedChange.ok, true)
+    const citedSeq = (citedChange as Row).result.seq
+    const citedView = await historyService.getChangeSet(admin, main.connector.id, citedSeq)
+    assert.deepEqual(citedView.comments.map((row) => row.id), [fromOperator], 'a változásnézet is mutatja')
+
+    // Az oldalon már meglévő forrás nem kérés: a következő módosításnál nem jelenik meg újra.
+    const followUp = okResult(await wikiService.write(direct, {
+      wikiId: main.wiki.id,
+      pages: [{
+        path: 'd3-source.md', action: 'upsert', type: 'entity', title: 'x', summary: 's', body: 'Új szöveg.', baseVersion: await hashOf('d3-source.md'),
+        frontmatter: { sources: [{ kind: 'wiki_comment', commentId: fromOperator }] },
+      }],
+    }))
+    const followUpView = await historyService.getChangeSet(admin, main.connector.id, (followUp as Row).seq)
+    assert.deepEqual(followUpView.comments, [], 'a megtartott forrás nem kérés')
 
     // A részletekben írás sem kerülheti meg a kaput.
     const partPage = await seed(main, 'd3-part.md')
