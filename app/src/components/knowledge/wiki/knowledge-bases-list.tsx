@@ -30,6 +30,7 @@ export type KnowledgeBaseListRow =
       /** A munkatársak, akik elérik ezt a tudásbázist. */
       usedBy: string[]
       inbox: { pending: number; inProgress: number }
+      openComments: number
       sourceCount: number
       pageCount: number
       bytes: number
@@ -96,6 +97,11 @@ export function KnowledgeBasesList({
                   {row.inbox.pending + row.inbox.inProgress > 0 ? (
                     <span className="rounded-full bg-coral/10 px-2 py-0.5 text-xs font-medium text-coral-deep">
                       {t('list.inboxBadge', { count: row.inbox.pending + row.inbox.inProgress })}
+                    </span>
+                  ) : null}
+                  {row.openComments > 0 ? (
+                    <span data-testid="kb-row-comments" className="rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink-soft">
+                      {t('list.commentsBadge', { count: row.openComments })}
                     </span>
                   ) : null}
                   <span className="ml-auto text-xs text-ink-soft" data-testid="kb-row-used-by">

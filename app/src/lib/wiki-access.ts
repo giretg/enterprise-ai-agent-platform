@@ -13,6 +13,8 @@
  *   frissített snapshot) senkinek.
  */
 
+import type { UserRole } from '@prisma/client'
+import { hasMinimumRole } from '@/lib/iam-policy'
 import type { WriteApprovalMode } from './write-approval-modes'
 
 export const WIKI_ACCESS_LEVELS = ['none', 'read', 'submit', 'write'] as const
@@ -155,6 +157,32 @@ export function withoutKbMemberLists<S extends { connectors: WikiSnapshotConnect
 
 /** Egy tudástár emberi közönsége: mindenki (`all`) vagy egy névsor. */
 export type KbAudience = { kind: 'all' } | { kind: 'users'; userIds: ReadonlySet<string> }
+
+/** Mit tehet egy ember a wikivel a felületen. `metaOnly`: a listában tartalom nélkül látja. */
+export type HumanWikiAccess = { view: boolean; contribute: boolean; manage: boolean; metaOnly: boolean }
+
+/** Az emberi jog egy helyen: a konzol és a komment szerzőjének kezelői vizsgálata is ezt használja (#1129 D3). */
+export function humanWikiAccess(actor: { userId: string; role: UserRole | string }, connector: KbVisibilityRow): HumanWikiAccess {
+  const role = actor.role as UserRole
+  const admin = hasMinimumRole(role, 'admin')
+  if (isMembersKnowledgeBase(connector)) {
+    // #1061 F2 D9: a tartalmat csak tag látja — az admin is csak tagként; nem-tag admin metaadatot lát.
+    const member = isKnowledgeBaseMember(connector, actor.userId)
+    return {
+      view: member,
+      contribute: member && hasMinimumRole(role, 'operator'),
+      manage: member && (connector.ownerUserId === actor.userId || admin),
+      metaOnly: !member && admin,
+    }
+  }
+  if (isPrivateKnowledgeBase(connector)) {
+    const owner = !!connector.ownerUserId && connector.ownerUserId === actor.userId
+    return { view: owner, contribute: owner, manage: owner, metaOnly: !owner && admin }
+  }
+  if (connector.visibility !== 'shared') return { view: false, contribute: false, manage: false, metaOnly: false }
+  const operator = hasMinimumRole(role, 'operator')
+  return { view: operator, contribute: operator, manage: admin, metaOnly: false }
+}
 
 /** Ismeretlen láthatóság: üres közönség (senki), így semmit sem idézhet és semmi sem idézheti. */
 export function knowledgeBaseAudience(row: KbVisibilityRow): KbAudience {

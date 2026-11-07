@@ -7,6 +7,7 @@ import {
   extractCrossWikiLinks,
   extractWikiLinks,
   isHumanNoteSource,
+  isWikiCommentSource,
   isReservedWikiPath,
   isValidWikiPath,
   renderWikiPageMarkdown,
@@ -309,7 +310,7 @@ export function validateWikiPages(input: {
         'error',
         'missing_source',
         path,
-        'Every page (except overview) must cite at least one source: frontmatter.sources [{ documentId }] (a raw source of this knowledge base, or { documentId, connectorId } from another one you can read), sourceDocumentIds, or a human_note { kind: "human_note", occasion } recorded in a live session.',
+        'Every page (except overview) must cite at least one source: frontmatter.sources [{ documentId }] (a raw source of this knowledge base, or { documentId, connectorId } from another one you can read), sourceDocumentIds, a human_note { kind: "human_note", occasion } recorded in a live session, or a comment on this wiki { kind: "wiki_comment", commentId }.',
       )
     }
     for (const ref of state.sources) {
@@ -325,6 +326,13 @@ export function validateWikiPages(input: {
         }
         if ((ref.participants?.length ?? 0) > WIKI_HUMAN_NOTE_MAX_PARTICIPANTS) {
           add('error', 'invalid_field', path, `human_note participants is longer than ${WIKI_HUMAN_NOTE_MAX_PARTICIPANTS} characters.`)
+        }
+        continue
+      }
+      if (isWikiCommentSource(ref)) {
+        // #1129 D6: a szerver a komment sorából bélyegzi; bélyeg nélküli forrás nem került át a szűrésen.
+        if (!ref.commentId || !ref.authorUserId || !ref.commentedAt) {
+          add('error', 'invalid_comment_ref', path, 'A wiki_comment source must point to an existing comment of this wiki: { kind: "wiki_comment", commentId }.')
         }
         continue
       }

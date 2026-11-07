@@ -363,6 +363,8 @@
     "test:wiki-structure-db": "tsx scripts/wiki-structure-db.test.ts",
     "test:wiki-sources": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-sources.test.ts",
     "test:wiki-sources-members-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/wiki-sources-members-db.test.ts",
+    "test:wiki-comments": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/wiki-comments.test.ts",
+    "test:wiki-comments-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/wiki-comments-db.test.ts",
     "test:wiki-config": "tsx scripts/wiki-config.test.ts",
     "test:wiki-config-db": "tsx --require ./scripts/_server-only-shim.cjs scripts/wiki-config-db.test.ts",
     "test:wiki-metadata": "tsx scripts/wiki-metadata.test.ts",

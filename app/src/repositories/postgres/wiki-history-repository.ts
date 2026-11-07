@@ -8,6 +8,7 @@ import type {
   WikiStateRow,
 } from '../interfaces'
 import { replaceCategoryPagePath, revisionData } from './wiki-repository'
+import { applyCommentErasureInTx, reopenBoundCommentsInTx, sweepClosedCommentsInTx } from './wiki-comment-repository'
 
 /** A wiki-írást lezáró gateway-sorok, amelyek még döntésre / futásra várnak. */
 const OPEN_GATEWAY_STATUSES = ['requested', 'awaiting_approval', 'approved', 'executing'] as const
@@ -192,7 +193,7 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
     return prisma.$transaction(async (tx) => {
       // Ugyanaz a zár, mint az írásnál: közben ne alkalmazódjon change-set.
       const wiki = await tx.agentWiki.findUnique({ where: { id: wikiId }, select: { connectorId: true } })
-      if (!wiki) return { thinned: 0, deleted: 0, changeSetsPruned: 0 }
+      if (!wiki) return { thinned: 0, deleted: 0, changeSetsPruned: 0, commentsErased: 0 }
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${wiki.connectorId}))`
       // Védett: aktuális verzió, oldalanként a legutóbbi N, címke-állapotok,
       // függő change-set baseVersion-je, sír-jelek (D1, D9).
@@ -264,7 +265,11 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
             AND COALESCE(applied_at, created_at) < ${fullBefore}
           LIMIT ${limit}
         )`)
-      return { thinned, deleted, changeSetsPruned }
+      // #1129 D11: a lezárt kommentekre ugyanez a törlési idő vonatkozik.
+      const commentsErased = deleteBefore
+        ? await sweepClosedCommentsInTx(tx, { wikiId, connectorId: wiki.connectorId, before: deleteBefore, limit, now })
+        : 0
+      return { thinned, deleted, changeSetsPruned, commentsErased }
     })
   }
 
@@ -529,6 +534,12 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
           })
         }
         counts.changeSets = input.changeSets.length
+        // #1129: az elutasított függő módosításhoz kötött komment visszanyílik.
+        for (const row of input.changeSets) {
+          if (row.reject) {
+            await reopenBoundCommentsInTx(tx, { changeSetId: row.id, from: 'pending_approval', systemCode: 'change_erased', now: input.appliedAt })
+          }
+        }
         for (const row of input.logEntries) {
           await tx.wikiLogEntry.updateMany({
             where: { id: row.id, wikiId: input.wikiId },
@@ -570,6 +581,14 @@ export class PostgresWikiHistoryRepository implements WikiHistoryRepository {
           })
         }
         counts.gatewayOperations = input.gatewayOperations.length
+        if (input.comments) {
+          counts.comments = await applyCommentErasureInTx(tx, {
+            connectorId: input.connectorId,
+            erasure: input.comments,
+            erasureId: erasure.id,
+            now: input.appliedAt,
+          })
+        }
 
         await tx.wikiErasure.update({ where: { id: erasure.id }, data: { counts } })
         return { ok: true as const, erasureId: erasure.id, changeSetId, seq, counts }
